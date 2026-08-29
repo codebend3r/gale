@@ -18,12 +18,21 @@ let client: LanguageClient | undefined;
  * Resolve the path to the `gale` binary.
  *
  * Search order:
- *  1. Explicit path from settings (gale.path) — future-proof
+ *  1. Explicit path from settings (gale.path)
  *  2. node_modules/.bin/gale relative to the workspace root
- *  3. Globally installed `gale` on PATH
+ *  3. Bundled binary next to the extension
+ *  4. Globally installed `gale` on PATH
  */
 function findBinary(workspaceRoot: string | undefined): string | undefined {
-	// 1. node_modules/.bin inside workspace
+	// 1. Explicit override from settings
+	const configured = workspace
+		.getConfiguration("gale")
+		.get<string>("path");
+	if (configured) {
+		return configured;
+	}
+
+	// 2. node_modules/.bin inside workspace
 	if (workspaceRoot) {
 		const localBin = path.join(workspaceRoot, "node_modules", ".bin", "gale");
 		if (fs.existsSync(localBin)) {
@@ -31,13 +40,13 @@ function findBinary(workspaceRoot: string | undefined): string | undefined {
 		}
 	}
 
-	// 2. Bundled binary next to the extension (for future bundled distributions)
+	// 3. Bundled binary next to the extension (for future bundled distributions)
 	const bundled = path.join(__dirname, "..", "bin", "gale");
 	if (fs.existsSync(bundled)) {
 		return bundled;
 	}
 
-	// 3. Fall back to PATH — the OS will resolve it
+	// 4. Fall back to PATH — the OS will resolve it
 	return "gale";
 }
 
@@ -52,13 +61,13 @@ function buildServerArgs(): string[] {
 	return args;
 }
 
-async function startClient(context: ExtensionContext): Promise<void> {
+async function startClient(): Promise<void> {
 	const workspaceRoot = workspace.workspaceFolders?.[0]?.uri.fsPath;
 	const binary = findBinary(workspaceRoot);
 
 	if (!binary) {
 		window.showErrorMessage(
-			"Gale binary not found. Install it with `npm i -D gale-lint` or make sure `gale` is on your PATH.",
+			"Gale binary not found. Install it with `npm i -D @lyricalstring/gale`, set `gale.path`, or make sure `gale` is on your PATH.",
 		);
 		return;
 	}
@@ -103,7 +112,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	const config = workspace.getConfiguration("gale");
 
 	if (config.get<boolean>("enable", true)) {
-		await startClient(context);
+		await startClient();
 	}
 
 	// React to configuration changes
@@ -114,7 +123,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 					.getConfiguration("gale")
 					.get<boolean>("enable", true);
 				if (enabled && !client) {
-					await startClient(context);
+					await startClient();
 				} else if (!enabled && client) {
 					await stopClient();
 				}
@@ -122,12 +131,12 @@ export async function activate(context: ExtensionContext): Promise<void> {
 
 			if (
 				e.affectsConfiguration("gale.configPath") ||
-				e.affectsConfiguration("gale.run")
+				e.affectsConfiguration("gale.path")
 			) {
 				// Restart the server to pick up the new settings
 				if (client) {
 					await stopClient();
-					await startClient(context);
+					await startClient();
 				}
 			}
 		}),
@@ -137,7 +146,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	context.subscriptions.push(
 		commands.registerCommand("gale.restart", async () => {
 			await stopClient();
-			await startClient(context);
+			await startClient();
 			window.showInformationMessage("Gale LSP restarted.");
 		}),
 	);
