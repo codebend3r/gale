@@ -113,9 +113,18 @@ impl Formatter for TextFormatter {
 /// JSON formatter matching Stylelint's JSON output format.
 pub struct JsonFormatter;
 
+/// Mirrors Stylelint's per-source JSON object, including the fields Gale never
+/// populates. Consumers (editors, CI reporters, `stylelint.lint()` shims) index
+/// into these unconditionally, so they must be present even when empty.
 #[derive(Serialize)]
 struct JsonResult {
     source: String,
+    deprecations: Vec<serde_json::Value>,
+    #[serde(rename = "invalidOptionWarnings")]
+    invalid_option_warnings: Vec<serde_json::Value>,
+    #[serde(rename = "parseErrors")]
+    parse_errors: Vec<serde_json::Value>,
+    errored: bool,
     warnings: Vec<JsonWarning>,
 }
 
@@ -123,6 +132,10 @@ struct JsonResult {
 struct JsonWarning {
     line: usize,
     column: usize,
+    #[serde(rename = "endLine")]
+    end_line: usize,
+    #[serde(rename = "endColumn")]
+    end_column: usize,
     rule: String,
     severity: String,
     text: String,
@@ -139,12 +152,15 @@ impl Formatter for JsonFormatter {
                     .iter()
                     .map(|diag| {
                         let (line, column) = line_index.offset_to_location(diag.span.offset);
+                        let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
                         // Stylelint appends " (rule-name)" to every message text.
                         // We must replicate this for byte-for-byte identical JSON output.
                         let text = format!("{} ({})", diag.message, diag.rule_name);
                         JsonWarning {
                             line,
                             column,
+                            end_line,
+                            end_column,
                             rule: diag.rule_name.clone(),
                             severity: diag.severity.to_string(),
                             text,
@@ -152,8 +168,17 @@ impl Formatter for JsonFormatter {
                     })
                     .collect();
 
+                let errored = result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error);
+
                 JsonResult {
                     source: result.file_path.clone(),
+                    deprecations: Vec::new(),
+                    invalid_option_warnings: Vec::new(),
+                    parse_errors: Vec::new(),
+                    errored,
                     warnings,
                 }
             })
@@ -194,16 +219,163 @@ impl Formatter for CompactFormatter {
 }
 
 // ---------------------------------------------------------------------------
+// UnixFormatter
+// ---------------------------------------------------------------------------
+
+/// Unix-style `file:line:column: message [severity]`, matching Stylelint's
+/// `unix` formatter.
+///
+/// ```text
+/// src/app.css:2:3: Unexpected empty block [warning]
+///
+/// 1 problem
+/// ```
+pub struct UnixFormatter;
+
+impl Formatter for UnixFormatter {
+    fn format(&self, results: &[LintResult]) -> String {
+        let mut output = String::new();
+        let mut total = 0usize;
+
+        for result in results {
+            let line_index = SourceLineIndex::build(&result.source);
+            for diag in &result.diagnostics {
+                let (line, col) = line_index.offset_to_location(diag.span.offset);
+                output.push_str(&format!(
+                    "{}:{}:{}: {} ({}) [{}]\n",
+                    result.file_path, line, col, diag.message, diag.rule_name, diag.severity,
+                ));
+                total += 1;
+            }
+        }
+
+        if total > 0 {
+            let plural = if total == 1 { "problem" } else { "problems" };
+            output.push_str(&format!("\n{total} {plural}\n"));
+        }
+
+        output
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TapFormatter
+// ---------------------------------------------------------------------------
+
+/// TAP version 13 output, matching Stylelint's `tap` formatter.
+///
+/// One test point per linted file; files with warnings emit a YAML block per
+/// warning.
+pub struct TapFormatter;
+
+impl Formatter for TapFormatter {
+    fn format(&self, results: &[LintResult]) -> String {
+        let mut output = String::from("TAP version 13\n");
+        output.push_str(&format!("1..{}\n", results.len()));
+
+        for (i, result) in results.iter().enumerate() {
+            let n = i + 1;
+            if result.diagnostics.is_empty() {
+                output.push_str(&format!("ok {n} - {}\n", result.file_path));
+                continue;
+            }
+
+            output.push_str(&format!("not ok {n} - {}\n", result.file_path));
+            let line_index = SourceLineIndex::build(&result.source);
+            for diag in &result.diagnostics {
+                let (line, col) = line_index.offset_to_location(diag.span.offset);
+                output.push_str("  ---\n");
+                output.push_str(&format!("  message: {}\n", yaml_scalar(&diag.message)));
+                output.push_str(&format!("  severity: {}\n", diag.severity));
+                output.push_str("  data:\n");
+                output.push_str(&format!("    line: {line}\n"));
+                output.push_str(&format!("    column: {col}\n"));
+                output.push_str(&format!("    ruleId: {}\n", yaml_scalar(&diag.rule_name)));
+                output.push_str("  ...\n");
+            }
+        }
+
+        output
+    }
+}
+
+/// Quote a value for a TAP YAML block, escaping what a double-quoted YAML
+/// scalar cannot contain literally.
+fn yaml_scalar(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!("\"{escaped}\"")
+}
+
+// ---------------------------------------------------------------------------
+// VerboseFormatter
+// ---------------------------------------------------------------------------
+
+/// Stylelint's `verbose` formatter: the standard text output followed by a
+/// summary of how many files were checked and which rules fired.
+pub struct VerboseFormatter;
+
+impl Formatter for VerboseFormatter {
+    fn format(&self, results: &[LintResult]) -> String {
+        let mut output = TextFormatter.format(results);
+
+        let file_count = results.len();
+        let plural = if file_count == 1 { "source" } else { "sources" };
+        if !output.is_empty() && !output.ends_with("\n\n") {
+            output.push('\n');
+        }
+        output.push_str(&format!("{file_count} {plural} checked\n"));
+
+        // Per-rule tallies, most frequent first, then alphabetical so repeated
+        // runs produce identical output.
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for result in results {
+            for diag in &result.diagnostics {
+                *counts.entry(diag.rule_name.as_str()).or_insert(0) += 1;
+            }
+        }
+
+        if counts.is_empty() {
+            return output;
+        }
+
+        let mut ranked: Vec<(&str, usize)> = counts.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+        output.push('\n');
+        output.push_str("warnings by rule\n");
+        for (rule, count) in ranked {
+            output.push_str(&format!("  {rule}: {count}\n"));
+        }
+
+        output
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-/// Create a formatter by name. Supported values: `"text"`, `"json"`, `"compact"`.
+/// Every formatter name `--formatter` accepts.
+pub const FORMATTER_NAMES: &[&str] = &[
+    "text", "string", "json", "compact", "verbose", "tap", "unix",
+];
+
+/// Create a formatter by name.
+///
+/// `"string"` is an alias for `"text"`, matching Stylelint, where `string` is
+/// the name of the default human-readable formatter.
 ///
 /// Defaults to `TextFormatter` for unknown format types.
 pub fn create_formatter(format_type: &str) -> Box<dyn Formatter> {
     match format_type {
         "json" => Box::new(JsonFormatter),
         "compact" => Box::new(CompactFormatter),
+        "unix" => Box::new(UnixFormatter),
+        "tap" => Box::new(TapFormatter),
+        "verbose" => Box::new(VerboseFormatter),
         _ => Box::new(TextFormatter),
     }
 }
@@ -235,6 +407,37 @@ mod tests {
         assert!(output.contains("Unexpected empty block"));
         assert!(output.contains("block-no-empty"));
         assert!(output.contains("1 problem"));
+    }
+
+    #[test]
+    fn json_result_carries_every_stylelint_field() {
+        let output = JsonFormatter.format(&sample_results());
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let entry = &parsed[0];
+        for field in [
+            "source",
+            "deprecations",
+            "invalidOptionWarnings",
+            "parseErrors",
+            "errored",
+            "warnings",
+        ] {
+            assert!(!entry[field].is_null(), "missing result field {field}");
+        }
+        let warning = &entry["warnings"][0];
+        for field in [
+            "line",
+            "column",
+            "endLine",
+            "endColumn",
+            "rule",
+            "severity",
+            "text",
+        ] {
+            assert!(!warning[field].is_null(), "missing warning field {field}");
+        }
+        // The sample is a warning, not an error.
+        assert_eq!(entry["errored"], serde_json::json!(false));
     }
 
     #[test]
@@ -279,6 +482,66 @@ mod tests {
         let _ = create_formatter("json");
         let _ = create_formatter("compact");
         let _ = create_formatter("unknown");
+    }
+
+    #[test]
+    fn every_advertised_formatter_name_is_constructible() {
+        for name in FORMATTER_NAMES {
+            let out = create_formatter(name).format(&sample_results());
+            assert!(!out.is_empty(), "formatter {name} produced no output");
+        }
+    }
+
+    #[test]
+    fn unix_formatter_output() {
+        let output = UnixFormatter.format(&sample_results());
+        assert!(
+            output.contains("src/app.css:2:1: Unexpected empty block (block-no-empty) [warning]"),
+            "unexpected unix output: {output}"
+        );
+        assert!(output.contains("1 problem"), "missing summary: {output}");
+    }
+
+    #[test]
+    fn tap_formatter_output() {
+        let output = TapFormatter.format(&sample_results());
+        assert!(output.starts_with("TAP version 13\n1..1\n"), "{output}");
+        assert!(output.contains("not ok 1 - src/app.css"), "{output}");
+        assert!(output.contains("    line: 2"), "{output}");
+        assert!(
+            output.contains("    ruleId: \"block-no-empty\""),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn tap_formatter_marks_clean_files_ok() {
+        let clean = vec![LintResult::new("src/ok.css", "a { color: red; }", vec![])];
+        let output = TapFormatter.format(&clean);
+        assert!(output.contains("ok 1 - src/ok.css"), "{output}");
+        assert!(!output.contains("not ok"), "{output}");
+    }
+
+    #[test]
+    fn tap_formatter_escapes_quotes_in_messages() {
+        let diag = Diagnostic::new("color-hex-length", "Expected \"#FFFFFF\" to be \"#fff\"")
+            .severity(Severity::Warning)
+            .span(Span::new(0, 1))
+            .file_path("src/app.css");
+        let results = vec![LintResult::new("src/app.css", "a{}", vec![diag])];
+        let output = TapFormatter.format(&results);
+        // The YAML scalar must carry backslash-escaped quotes.
+        assert!(
+            output.contains("\\\"#FFFFFF\\\""),
+            "quotes not escaped: {output}"
+        );
+    }
+
+    #[test]
+    fn verbose_formatter_appends_a_summary() {
+        let output = VerboseFormatter.format(&sample_results());
+        assert!(output.contains("1 source checked"), "{output}");
+        assert!(output.contains("block-no-empty: 1"), "{output}");
     }
 
     #[test]
