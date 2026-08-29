@@ -59,7 +59,16 @@ pub struct Cli {
     config: Option<PathBuf>,
 
     /// Output format
-    #[arg(short = 'f', long, default_value = "text")]
+    ///
+    /// Restricted to the implemented set so a typo (or a formatter Gale does
+    /// not have) is rejected outright rather than silently falling back to
+    /// text output.
+    #[arg(
+        short = 'f',
+        long,
+        default_value = "text",
+        value_parser = clap::builder::PossibleValuesParser::new(gale_formatter::FORMATTER_NAMES)
+    )]
     formatter: String,
 
     /// Maximum number of warnings before erroring
@@ -67,7 +76,18 @@ pub struct Cli {
     max_warnings: Option<usize>,
 
     /// Automatically fix problems (default: strict, or specify =lax)
-    #[arg(long, num_args = 0..=1, default_missing_value = "strict", value_name = "MODE")]
+    ///
+    /// `require_equals` is essential: without it clap treats a bare `--fix` as
+    /// taking the next positional argument as its MODE value, so
+    /// `gale --fix "src/**/*.css"` would consume the glob and then fail with
+    /// "no files provided".
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "strict",
+        value_name = "MODE"
+    )]
     fix: Option<String>,
 
     /// Only report errors
@@ -169,11 +189,7 @@ fn build_explicit_ignore_matcher(
 /// Returns `true` if the string contains glob meta-characters (`*`, `?`, `{`, `[`)
 /// or extglob operators (`+(`, `?(`, `@(`, `*(`, `!(`).
 fn is_glob_pattern(s: &str) -> bool {
-    s.contains('*')
-        || s.contains('?')
-        || s.contains('{')
-        || s.contains('[')
-        || has_extglob(s)
+    s.contains('*') || s.contains('?') || s.contains('{') || s.contains('[') || has_extglob(s)
 }
 
 /// Returns `true` if `s` contains any extglob operator: `+(`, `?(`, `@(`, `*(`, `!(`.
@@ -213,7 +229,7 @@ fn convert_extglob(pattern: &str) -> String {
 
     while i < len {
         // Check for extglob operator: +( ?( @( *( !(
-        if i + 1 < len && bytes[i + 1] == b'(' && matches!(bytes[i], b'+' | b'?' | b'@' | b'!' ) {
+        if i + 1 < len && bytes[i + 1] == b'(' && matches!(bytes[i], b'+' | b'?' | b'@' | b'!') {
             let op = bytes[i];
             if op == b'!' {
                 // Negation extglob is not easily convertible; pass through as-is
@@ -530,7 +546,12 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
                     // Check the glob pattern against the path.
                     if !glob_ref.is_match(entry_path) {
                         let rel = entry_path.strip_prefix(cwd_ref).unwrap_or(entry_path);
-                        if !glob_ref.is_match(rel) {
+                        // A walk rooted at "." yields paths like "./a.css".
+                        // A bare pattern such as `*.css` carries no "./" and
+                        // `*` does not cross a separator, so it would never
+                        // match without stripping the prefix first.
+                        let bare = rel.strip_prefix("./").unwrap_or(rel);
+                        if !glob_ref.is_match(rel) && !glob_ref.is_match(bare) {
                             return ignore::WalkState::Continue;
                         }
                     }
@@ -721,7 +742,7 @@ pub fn run() -> Result<()> {
     // Handle --lsp: start the LSP server and exit early.
     if cli.lsp {
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(gale_lsp::run_server());
+        rt.block_on(gale_lsp::run_server(cli.config.clone()));
         return Ok(());
     }
 
@@ -920,7 +941,9 @@ pub fn run() -> Result<()> {
         rule_options,
         rule_severities,
     );
-    runner.set_report_needless_disables(config.report_needless_disables || cli.report_needless_disables);
+    runner.set_report_needless_disables(
+        config.report_needless_disables || cli.report_needless_disables,
+    );
     runner.set_ignore_disables(cli.ignore_disables);
     runner.set_default_severity(config.default_severity.map(|s| match s {
         gale_config::Severity::Error => gale_diagnostics::Severity::Error,
@@ -1164,7 +1187,16 @@ pub fn run() -> Result<()> {
 
         if files.is_empty() {
             if !cli.allow_empty_input {
-                eprintln!("No CSS files found.");
+                // Stylelint raises NoFilesFoundError and exits 1 here; exiting
+                // 0 would let a CI step that lints a mistyped path pass.
+                let patterns = cli
+                    .files
+                    .iter()
+                    .map(|p| format!("\"{p}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("No files matching the pattern {patterns} were found.");
+                process::exit(1);
             }
             return Ok(());
         }
@@ -1352,6 +1384,15 @@ pub fn run() -> Result<()> {
     if let Some(fix_mode) = &cli.fix {
         let is_strict = fix_mode != "lax";
         let mut total_fixed = 0usize;
+
+        // `apply_fixes` drops overlapping edits, so when two rules want to
+        // rewrite the same span only one lands per pass (e.g. color-hex-case
+        // then color-hex-length on the same `#FFFFFF`).  Iterate until the
+        // source stops changing so a single `--fix` converges the way
+        // Stylelint's does, with a ceiling in case two rules disagree and
+        // would otherwise fight forever.
+        const MAX_FIX_PASSES: usize = 10;
+
         for result in &mut results {
             // In strict mode, skip files that have parse errors.
             if is_strict
@@ -1362,37 +1403,42 @@ pub fn run() -> Result<()> {
             {
                 continue;
             }
-            let (fixed_source, count) = apply_fixes(&result.source, &result.diagnostics);
-            if count > 0 {
-                if cli.stdin {
-                    // For stdin + fix, output the fixed source to stdout.
-                    print!("{fixed_source}");
-                    total_fixed += count;
-                    // Re-lint the fixed source to get remaining diagnostics.
-                    let syntax = detect_syntax(&result.file_path);
-                    *result = lint_file(
-                        &runner,
-                        &fixed_source,
-                        &result.file_path,
-                        syntax,
-                        &config,
-                        has_overrides,
-                    );
-                } else if let Err(err) = std::fs::write(&result.file_path, &fixed_source) {
-                    eprintln!("Error writing {}: {err}", result.file_path);
-                } else {
-                    total_fixed += count;
-                    // Re-lint the fixed source to get remaining diagnostics.
-                    let syntax = detect_syntax(&result.file_path);
-                    *result = lint_file(
-                        &runner,
-                        &fixed_source,
-                        &result.file_path,
-                        syntax,
-                        &config,
-                        has_overrides,
-                    );
+
+            let syntax = detect_syntax(&result.file_path);
+            let mut current = result.source.clone();
+            let mut file_fixed = 0usize;
+
+            for _ in 0..MAX_FIX_PASSES {
+                let (fixed_source, count) = apply_fixes(&current, &result.diagnostics);
+                if count == 0 || fixed_source == current {
+                    break;
                 }
+                current = fixed_source;
+                file_fixed += count;
+                // Re-lint the fixed source to get remaining diagnostics, which
+                // also feeds the next pass.
+                *result = lint_file(
+                    &runner,
+                    &current,
+                    &result.file_path,
+                    syntax,
+                    &config,
+                    has_overrides,
+                );
+            }
+
+            if file_fixed == 0 {
+                continue;
+            }
+
+            if cli.stdin {
+                // For stdin + fix, output the fixed source to stdout.
+                print!("{current}");
+                total_fixed += file_fixed;
+            } else if let Err(err) = std::fs::write(&result.file_path, &current) {
+                eprintln!("Error writing {}: {err}", result.file_path);
+            } else {
+                total_fixed += file_fixed;
             }
         }
         if total_fixed > 0 {
@@ -1669,20 +1715,14 @@ mod tests {
     #[test]
     fn test_expand_braces_three_alternatives() {
         let result = expand_braces("{a,b,c}/**/*.scss");
-        assert_eq!(
-            result,
-            vec!["a/**/*.scss", "b/**/*.scss", "c/**/*.scss"]
-        );
+        assert_eq!(result, vec!["a/**/*.scss", "b/**/*.scss", "c/**/*.scss"]);
     }
 
     #[test]
     fn test_expand_braces_mixed_path_and_extension() {
         // Pattern with both path braces and extension braces.
         let result = expand_braces("{src,lib}/**/*.{css,scss}");
-        assert_eq!(
-            result,
-            vec!["src/**/*.{css,scss}", "lib/**/*.{css,scss}"]
-        );
+        assert_eq!(result, vec!["src/**/*.{css,scss}", "lib/**/*.{css,scss}"]);
     }
 
     // -----------------------------------------------------------------------
