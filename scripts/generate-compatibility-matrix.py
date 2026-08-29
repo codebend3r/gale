@@ -21,30 +21,34 @@ REPO_META = {
 
 
 def parse_result(text: str) -> dict:
-    """Extract metrics from a differential test result."""
+    """Extract metrics from a differential test result.
+
+    A run that crashed, timed out, or never linted anything does NOT produce
+    these lines.  Defaulting the counts to 0 in that case would render a broken
+    run as "0 FP, 0 FN" — indistinguishable from perfect parity.  Missing
+    metrics are therefore reported as `None` and the row is marked failed.
+    """
     metrics = {}
 
-    m = re.search(r"Files analyzed:\s+(\d+)", text)
-    metrics["files_total"] = int(m.group(1)) if m else 0
+    def number(pattern, cast=int):
+        m = re.search(pattern, text)
+        return cast(m.group(1)) if m else None
 
-    m = re.search(r"Files matching:\s+(\d+)", text)
-    metrics["files_match"] = int(m.group(1)) if m else 0
+    metrics["files_total"] = number(r"Files analyzed:\s+(\d+)")
+    metrics["files_match"] = number(r"Files matching:\s+(\d+)")
+    metrics["fp"] = number(r"Gale-only \(FP\):\s+(\d+)")
+    metrics["fn"] = number(r"Stylelint-only \(FN\):\s+(\d+)")
+    metrics["speedup"] = number(r"Speedup:\s+([\d.]+)x", str)
+    metrics["gale_time"] = number(r"Gale:\s+([\d.]+)s", str)
+    metrics["stylelint_time"] = number(r"Stylelint:\s+([\d.]+)s", str)
 
-    m = re.search(r"Gale-only \(FP\):\s+(\d+)", text)
-    metrics["fp"] = int(m.group(1)) if m else 0
-
-    m = re.search(r"Stylelint-only \(FN\):\s+(\d+)", text)
-    metrics["fn"] = int(m.group(1)) if m else 0
-
-    m = re.search(r"Speedup:\s+([\d.]+)x", text)
-    metrics["speedup"] = m.group(1) if m else "?"
-
-    m = re.search(r"Gale:\s+([\d.]+)s", text)
-    metrics["gale_time"] = m.group(1) if m else "?"
-
-    m = re.search(r"Stylelint:\s+([\d.]+)s", text)
-    metrics["stylelint_time"] = m.group(1) if m else "?"
-
+    # A usable run reports both comparison counts over a non-empty file set.
+    metrics["ok"] = (
+        metrics["fp"] is not None
+        and metrics["fn"] is not None
+        and metrics["files_total"] is not None
+        and metrics["files_total"] > 0
+    )
     return metrics
 
 
@@ -65,9 +69,24 @@ def main():
         metrics = parse_result(text)
         meta = REPO_META.get(name, {"full": name, "stars": "?", "description": ""})
 
+        if not metrics["ok"]:
+            rows.append({
+                "name": name,
+                "full": meta["full"],
+                "stars": meta["stars"],
+                "description": meta["description"],
+                "files": "—",
+                "pct": "**run failed**",
+                "fp": "—",
+                "fn": "—",
+                "speedup": "—",
+                "ok": False,
+            })
+            continue
+
         total = metrics["files_total"]
-        match = metrics["files_match"]
-        pct = f"{match/total*100:.0f}%" if total > 0 else "N/A"
+        match = metrics["files_match"] or 0
+        pct = f"{match/total*100:.0f}%"
 
         rows.append({
             "name": name,
@@ -78,9 +97,10 @@ def main():
             "pct": pct,
             "fp": metrics["fp"],
             "fn": metrics["fn"],
-            "speedup": metrics["speedup"],
-            "gale_time": metrics["gale_time"],
-            "stylelint_time": metrics["stylelint_time"],
+            "speedup": metrics["speedup"] or "?",
+            "gale_time": metrics["gale_time"] or "?",
+            "stylelint_time": metrics["stylelint_time"] or "?",
+            "ok": True,
         })
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -97,7 +117,17 @@ def main():
 
     for r in rows:
         repo_link = f"[{r['full']}](https://github.com/{r['full']})"
-        print(f"| {repo_link} | {r['stars']} | {r['files']} | {r['pct']} | {r['fp']} | {r['fn']} | {r['speedup']}x |")
+        speedup = f"{r['speedup']}x" if r["ok"] else r["speedup"]
+        print(f"| {repo_link} | {r['stars']} | {r['files']} | {r['pct']} | {r['fp']} | {r['fn']} | {speedup} |")
+
+    failed = [r["full"] for r in rows if not r["ok"]]
+    if failed:
+        print()
+        print(
+            f"> **{len(failed)} run(s) did not complete** and are shown as "
+            f"`run failed`: {', '.join(failed)}. A failed run is not evidence "
+            "of parity — check the workflow logs."
+        )
 
     print()
     print("### Legend")
@@ -107,6 +137,7 @@ def main():
     print("- **FP**: False positives — warnings Gale reports but Stylelint does not")
     print("- **FN**: False negatives — warnings Stylelint reports but Gale misses")
     print("- **Speedup**: How many times faster Gale is compared to Stylelint")
+    print("- **run failed**: The differential run produced no comparable output; the row carries no parity information")
     print()
     print("### How to reproduce")
     print()
