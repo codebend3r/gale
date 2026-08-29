@@ -51,6 +51,49 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+  npm-package:
+    name: npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build gale
+        run: cargo build --release
+
+      - name: Stage binary for the current platform
+        run: install -Dm755 target/release/gale npm/bin/x86_64-unknown-linux-gnu/gale
+
+      - name: Run programmatic API smoke tests
+        run: node npm/test.mjs
+
+      - name: Check the published file list
+        run: npm pack --dry-run
+        working-directory: npm
+
+  vscode-extension:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install and compile
+        run: |
+          npm install --no-audit --no-fund
+          npm run compile
+        working-directory: editors/vscode
+
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
@@ -62,6 +105,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: oven-sh/setup-bun@v2
+
+      - name: Install hyperfine
+        # Without it run-benchmark.sh silently degrades to `time`, whose output
+        # is too noisy on shared runners to be worth reading.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine
 
       - name: Build release
         run: cargo build --release
