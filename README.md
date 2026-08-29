@@ -6,7 +6,7 @@
 [![CI](https://github.com/LyricalString/gale/actions/workflows/ci.yml/badge.svg)](https://github.com/LyricalString/gale/actions)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output. Just **10x-100x faster**.
+Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **20-100x faster** on real projects.
 
 One line change in your `package.json`. No config migration.
 
@@ -29,7 +29,23 @@ Real-world benchmarks using [hyperfine](https://github.com/sharkdp/hyperfine) (1
 | [PatternFly](https://github.com/patternfly/patternfly) | 204 | 0.377s | 0.013s | **29x** |
 | [SLDS](https://github.com/salesforce-ux/design-system) | 446 | 0.323s | 0.014s | **24x** |
 
-**Parity: 0 false positives and 0 false negatives across 22 tested repositories (5,790+ files).**
+## Parity with Stylelint
+
+Gale's goal is byte-for-byte identical output: every warning Stylelint reports, at the same line and column, with the same text and severity — and nothing extra. Any difference is treated as a bug, not a limitation.
+
+Parity is measured by the [differential harness](tests/differential/) against 22 real-world repositories with **no rule filters** — every warning from both tools is compared. A subset of that corpus runs weekly in CI; current per-repo results (files matched, false positives, false negatives, speedup) are published in [COMPATIBILITY.md](COMPATIBILITY.md). Run the harness yourself to reproduce, or to check a repo the weekly job does not cover.
+
+**Where parity currently stands.** Which warnings Gale reports, and at what line, column, rule and severity, tracks Stylelint closely. The **message wording** does not yet: Gale's strings follow Stylelint v15/v16 phrasing, and v17 rewrote many of them. Spot-checking ten common rules against Stylelint 17.14.1 found identical positions and rule IDs on every warning, but different text on most:
+
+| Rule | Stylelint v17 | Gale |
+|------|---------------|------|
+| `block-no-empty` | `Empty block` | `Unexpected empty block` |
+| `color-named` | `Disallowed named color "red"` | `Unexpected named color "red"` |
+| `length-zero-no-unit` | `Disallowed unit` | `Unexpected unit` |
+| `declaration-block-no-duplicate-properties` | `Duplicate property "color"` | `Unexpected duplicate "color"` |
+| `declaration-no-important` | `Disallowed !important` | `Unexpected !important in declaration "color"` |
+
+`color-hex-length` and `color-named` also echo the source's letter case in v17 (`#FFF`, `"RED"`) where Gale lowercases it. If you compare warning text — snapshot tests, a custom reporter — expect differences until the messages are updated.
 
 ## Quick start
 
@@ -67,9 +83,9 @@ Your `.stylelintrc` stays exactly the same. Gale reads the same config files, fo
 npm install -D @lyricalstring/gale
 ```
 
-The npm package includes prebuilt binaries for supported platforms, so install
-does not run a postinstall script or download executables. Supported platforms:
-macOS (arm64, x64), Linux (x64, arm64).
+The npm package ships prebuilt binaries, so install does not run a postinstall
+script or download executables. A small `bin/gale` shell wrapper picks the right
+one. Supported platforms: macOS (arm64, x64), Linux (x64, arm64).
 
 ### Cargo
 
@@ -94,23 +110,26 @@ Download pre-built binaries from [GitHub Releases](https://github.com/LyricalStr
 
 ## What's supported
 
-### 270+ built-in rules
+### 269 built-in rules
 
-Gale ships 270+ built-in rules across five categories:
+Gale registers 269 rules across these namespaces:
 
-| Category | Count | Examples |
-|----------|------:|---------|
-| Core Stylelint | 146 | `block-no-empty`, `color-no-invalid-hex`, `property-no-unknown`, `display-notation` |
-| SCSS (`scss/*`) | 44 | `scss/at-rule-no-unknown`, `scss/no-duplicate-mixins`, `scss/dollar-variable-pattern` |
-| Stylistic (`@stylistic/*`) | 59 | `stylistic/indentation`, `stylistic/declaration-colon-space-after`, `stylistic/no-eol-whitespace` |
-| Order (`order/*`) | 3 | `order/order`, `order/properties-order`, `order/properties-alphabetical-order` |
-| Plugin (`plugin/*`) | 4 | `plugin/enforce-variable-for-property`, `plugin/no-unknown-custom-properties`, `plugin/no-unused-custom-properties`, `plugin/require-file-header-comment` |
+| Namespace | Count | Examples |
+|-----------|------:|---------|
+| Core Stylelint | 144 | `block-no-empty`, `color-no-invalid-hex`, `property-no-unknown`, `display-notation` |
+| `@stylistic/*` | 69 | `@stylistic/indentation`, `@stylistic/declaration-colon-space-after`, `@stylistic/no-eol-whitespace` |
+| `scss/*` | 45 | `scss/at-rule-no-unknown`, `scss/no-duplicate-mixins`, `scss/dollar-variable-pattern` |
+| `plugin/*` | 5 | `plugin/enforce-variable-for-property`, `plugin/browser-compat` |
+| `order/*` | 3 | `order/order`, `order/properties-order`, `order/properties-alphabetical-order` |
+| Vendor plugins | 3 | `csstools/value-no-unknown-custom-properties`, `material/no-prefixes`, `spectrum-tools/no-unknown-custom-properties` |
 
-SCSS, stylistic, and plugin rules are built in -- no extra plugins required.
+SCSS, stylistic, order, and plugin rules are built in -- no extra plugins required.
+
+> Stylistic rules use the `@stylistic/` prefix, matching `@stylistic/stylelint-plugin`.
 
 ### Config compatibility
 
-All Stylelint config formats are supported:
+Gale walks up from the working directory and uses the first config it finds, in this order:
 
 | File | Format |
 |------|--------|
@@ -119,25 +138,32 @@ All Stylelint config formats are supported:
 | `.stylelintrc` | JSON or YAML |
 | `.stylelintrc.json` | JSON |
 | `.stylelintrc.yml` / `.yaml` | YAML |
-| `stylelint.config.js` / `.cjs` | JavaScript |
+| `stylelint.config.js` / `.mjs` / `.cjs` | JavaScript |
+| `.stylelintrc.js` / `.cjs` / `.mjs` | JavaScript |
+| `package.json` (`"stylelint"` field) | JSON (lowest priority) |
+
+> JavaScript configs are **statically parsed**, not executed. Gale reads the exported
+> object literal (resolving relative `require`/`import` re-exports and simple scalar
+> constants). Configs that compute rules at runtime — loops, function calls, conditionals —
+> will not resolve correctly; convert those to JSON or YAML.
 
 ### Feature overview
 
-- **SCSS and Less** out of the box (no plugins needed)
-- **Autofix** via `--fix`
+- **CSS, SCSS, and Less** out of the box (no plugins needed)
+- **Sass indented syntax** (`.sass`) via an internal Sass-to-SCSS conversion (see caveat below)
+- **Autofix** via `--fix`, applied repeatedly until the file stops changing
 - **File caching** via `--cache` (skips unchanged files)
 - **LSP server** for editor integration (`--lsp`)
 - **Parallel linting** using all CPU cores
 - **Inline disable comments** (`stylelint-disable` and `gale-disable`)
-- **JSON, text, compact, verbose, TAP, and unix** output formatters matching Stylelint's format
-- **Custom JS formatters** via `--custom-formatter`
-- **Programmatic Node.js API** (`lint()`, `resolveConfig()`, `formatters`) compatible with `stylelint.lint()`
+- **Text, JSON, compact, verbose, TAP, and unix** output formatters; JSON matches Stylelint's result shape field-for-field
+- **Programmatic Node.js API** (`lint()`, `resolveConfig()`, `formatters`) modeled on `stylelint.lint()`, usable from both ESM and CommonJS
 - **`extends`** with built-in presets, npm packages, and relative paths
-- **`.galeignore`** files (gitignore syntax) for custom exclusions
+- **`.stylelintignore` and `.galeignore`** files (gitignore syntax) for custom exclusions
 
 ### Declarative plugin rules
 
-Gale includes 4 built-in plugin meta-rules that cover the most common custom plugin patterns (design token enforcement, custom property analysis, file header checks). These replace the need for JS plugins like `stylelint-plugin-carbon-tokens`, Primer's custom plugins, and `stylelint-copyright`:
+Gale includes built-in `plugin/*` meta-rules that cover the most common custom plugin patterns (design token enforcement, custom property analysis, file header checks). These replace the need for JS plugins like `stylelint-plugin-carbon-tokens`, Primer's custom plugins, and `stylelint-copyright`:
 
 | Rule | Description |
 |------|-------------|
@@ -145,8 +171,11 @@ Gale includes 4 built-in plugin meta-rules that cover the most common custom plu
 | `plugin/no-unknown-custom-properties` | Report usage of undefined CSS custom properties |
 | `plugin/no-unused-custom-properties` | Report defined but unused CSS custom properties |
 | `plugin/require-file-header-comment` | Require a file header comment matching a pattern |
+| `plugin/browser-compat` | Report declarations unsupported by the configured browser targets |
 
 ### Programmatic API
+
+Importable from ESM (`import`) and CommonJS (`require`) alike.
 
 ```javascript
 import { lint, resolveConfig, formatters } from '@lyricalstring/gale';
@@ -161,10 +190,24 @@ console.log(result.results);        // LintResult[]
 console.log(result.report);         // formatted string
 ```
 
+The API shells out to the `gale` binary and reshapes its JSON output. Stylelint
+fields Gale does not populate (`deprecations`, `invalidOptionWarnings`,
+`parseErrors`, `ruleMetadata`) are present but always empty. `createPlugin()`
+exists as a no-op compatibility stub and warns when called.
+
+From CommonJS the async functions work the same way:
+
+```javascript
+const { lint } = require('@lyricalstring/gale');
+```
+
 ### Not yet supported
 
-- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 270+ built-in rules and 4 plugin meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
-- **Sass indented syntax.** `.sass` files are not supported (`.scss` works fine).
+- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 269 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
+- **Dynamic JavaScript configs.** See the config compatibility note above.
+- **Accurate positions in `.sass` files.** `.sass` sources are converted to SCSS before parsing, so reported line/column numbers refer to the converted text and drift from the original file. Rules fire correctly; the coordinates are not trustworthy.
+- **Custom JS formatters.** There is no `--custom-formatter` flag; use one of the built-in formatters.
+- **Stylelint v17 message wording.** See [Parity with Stylelint](#parity-with-stylelint) above.
 
 ## Configuration
 
@@ -196,16 +239,24 @@ npx gale --init
 | `false` or `"off"` | Disable |
 | `"error"` | Enable at error severity |
 | `"warning"` | Enable at warning severity |
-| `["error", { options }]` | Enable with options |
+| `<primary>` | Stylelint's primary option, e.g. `"number-max-precision": 4` |
+| `[<primary>, { secondary }]` | Stylelint's array form, e.g. `["never", { ignore: [...] }]` |
+| `[true \| "error" \| "warning", { options }]` | Gale extension: severity first, options second |
+
+Stylelint's per-rule `{ "severity": "warning" }` secondary option is honored in
+every array form, as is the top-level `defaultSeverity` field.
 
 ### Built-in presets
 
 | Preset | Description |
 |--------|-------------|
 | `gale:recommended` | Sensible defaults (29 rules: 15 error + 14 warning) |
-| `gale:all` | All rules enabled at warning severity |
+| `gale:all` | Every one of the 269 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
 
-You can also extend npm packages like `stylelint-config-standard` directly.
+Gale also has built-in equivalents for `stylelint-config-recommended`,
+`stylelint-config-standard`, `stylelint-config-recommended-scss`, and
+`stylelint-config-standard-scss`, and can resolve other shareable configs from
+`node_modules/`.
 
 ### Extends resolution
 
@@ -229,22 +280,31 @@ gale [OPTIONS] [FILES]...
 | Flag | Description |
 |------|-------------|
 | `<files>` | Files, directories, or glob patterns to lint |
-| `--fix` | Automatically fix problems (default: strict mode) |
-| `--fix=lax` | Fix problems even in files with parse errors |
+| `--fix` | Automatically fix problems (default: strict — skips files with parse errors) |
+| `--fix=lax` | Also fix files that have parse errors |
 | `-q, --quiet` | Only report errors |
-| `-f, --formatter <type>` | Output: `text` (default), `string`, `json`, `compact`, `verbose`, `tap`, `unix` |
-| `--custom-formatter <module>` | Path or npm package name for a custom JS formatter |
+| `-f, --formatter <type>` | Output: `text` (default), `string`, `json`, `compact`, `verbose`, `tap`, `unix`. An unknown value is rejected |
 | `-c, --config <path>` | Config file path |
 | `--max-warnings <n>` | Error if warnings exceed threshold |
 | `--cache` | Skip unchanged files |
 | `--cache-location <path>` | Custom cache file path (default: `.gale_cache`) |
 | `--stdin` | Read from stdin |
 | `--stdin-filename <name>` | Virtual filename for stdin (default: `stdin.css`) |
+| `--allow-empty-input` | Don't error when no files match |
 | `--ignore-path <file>` | Custom ignore file (gitignore syntax) |
 | `--no-ignore` | Disable all ignore file processing |
+| `--ignore-disables` | Ignore all `stylelint-disable` comments |
+| `--report-needless-disables` | Report disable comments that suppress nothing |
+| `--report-invalid-scope-disables` | Report disable comments for rules not being linted |
+| `--report-descriptionless-disables` | Report disable comments without a description |
 | `--print-config <file>` | Print resolved config as JSON |
 | `--init` | Generate starter config |
 | `--lsp` | Start LSP server |
+| `-V, --version` | Print version |
+
+Exit code is `1` when any error-severity problem is found, when `--max-warnings`
+is exceeded, or when no files match the given patterns (pass `--allow-empty-input`
+to make an empty match succeed). `0` otherwise. This matches Stylelint.
 
 ## Editor integration
 
@@ -256,11 +316,23 @@ gale --lsp
 
 Works with Neovim, Helix, Zed, and any editor supporting the Language Server Protocol.
 
+### VS Code
+
+An extension lives in [`editors/vscode/`](editors/vscode). It is not published to the
+Marketplace — build a `.vsix` locally:
+
+```bash
+cd editors/vscode
+npm install
+npm run compile   # tsc -p ./
+npm run package   # vsce package
+```
+
 ## Development
 
 ### Prerequisites
 
-- Rust 2024 edition (1.85+)
+- Rust 1.85+ (2024 edition)
 - Python 3 (for differential tests)
 - Node.js 16+ (for differential tests and npm packaging)
 
@@ -302,6 +374,7 @@ python tests/differential/run.py --benchmark  # Include timing comparison
 python tests/differential/run.py --list       # List available repos
 python tests/differential/run.py --css-only   # Skip SCSS/Less
 python tests/differential/run.py --skip-build # Use existing binary
+python tests/differential/run.py --update     # Force re-clone repos
 ```
 
 The test corpus includes Bootstrap, Gutenberg, Carbon, Angular Components, wp-calypso, Discourse, GOV.UK Frontend, Spectrum CSS, Docusaurus, Grafana, Material UI, freeCodeCamp, PatternFly, Primer CSS, Elastic EUI, Mattermost, Mastodon, JupyterLab, Joomla, SLDS, rsuite, and Fundamental Styles.
@@ -310,8 +383,23 @@ The test corpus includes Bootstrap, Gutenberg, Carbon, Angular Components, wp-ca
 
 ```bash
 bash benchmarks/benchmark.sh         # Full benchmark suite
-bash benchmarks/run-benchmark.sh     # Quick benchmark
+bash benchmarks/run-benchmark.sh     # Quick benchmark (Bootstrap CSS, 1x and 20x)
 ```
+
+Both scripts download fixtures on first run and install a local Stylelint with
+`bun`. `run-benchmark.sh` uses `hyperfine` when available and falls back to
+`time` otherwise.
+
+### npm package smoke tests
+
+```bash
+npm test          # from the repo root
+# or:
+cd npm && npm test
+```
+
+Exercises `lint()`, `formatters`, and `resolveConfig()` against the built binary
+from both the ESM and CommonJS entry points. CI runs it on every push.
 
 ## Releasing
 
@@ -329,8 +417,9 @@ The [release workflow](.github/workflows/release.yml) will:
 
 1. Build binaries for Linux (x64, arm64) and macOS (x64, arm64)
 2. Create a GitHub Release with the binaries
-3. Stage those binaries inside the npm package
+3. Stage those binaries inside `npm/bin/<target>/`
 4. Publish the npm package (`@lyricalstring/gale`) with the matching version
+5. Publish the `gale-lint` crate to crates.io
 
 ### Manual npm build
 
@@ -356,7 +445,7 @@ gale (binary)
 gale_cli         CLI definition (clap), file discovery, orchestration
   |
   +-- gale_config       Config loading, resolution, presets
-  +-- gale_linter       Rule trait, registry, runner, 260+ built-in rules
+  +-- gale_linter       Rule trait, registry, runner, 269 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types
   +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix)
@@ -369,7 +458,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
 | `gale_diagnostics` | Core types: `Span`, `Diagnostic`, `LintResult`, `Fix`, `Edit` |
 | `gale_linter` | `Rule` trait, `RuleRegistry`, `LintRunner`, inline disable comments, all rule implementations |
 | `gale_config` | Config file discovery, parsing (JSON/YAML/TOML/JS), `extends` resolution, built-in presets |
-| `gale_formatter` | `TextFormatter`, `JsonFormatter`, `CompactFormatter`, `VerboseFormatter`, `TapFormatter`, `UnixFormatter` matching Stylelint output |
+| `gale_formatter` | `TextFormatter`, `JsonFormatter`, `CompactFormatter`, `VerboseFormatter`, `TapFormatter`, `UnixFormatter` |
 | `gale_cli` | Clap CLI, file discovery with ignore support, cache layer, `--fix` orchestration |
 | `gale_lsp` | LSP server for real-time editor diagnostics |
 
