@@ -35,9 +35,13 @@
     "bin/",
     "index.cjs",
     "index.mjs",
+    "test.mjs",
     "README.md"
   ],
   "engines": {
     "node": ">=16.0.0"
+  },
+  "scripts": {
+    "test": "node test.mjs"
   }
 }
