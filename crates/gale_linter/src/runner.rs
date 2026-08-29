@@ -696,9 +696,18 @@ impl LintRunner {
             eprintln!("[perf] disable-filter: {:.3}s", t4.elapsed().as_secs_f64());
         }
 
-        // Sort diagnostics by position for consistent output.
+        // Sort diagnostics by position for consistent output.  The rule name
+        // breaks ties: rules run in the order `enabled_rules` happens to hold
+        // them, which comes from a HashMap and so varies between processes.
+        // Without a tiebreaker two warnings at the same offset swap places
+        // between runs.
         let t5 = Instant::now();
-        diagnostics.sort_by_key(|d| d.span.offset);
+        diagnostics.sort_by(|a, b| {
+            a.span
+                .offset
+                .cmp(&b.span.offset)
+                .then_with(|| a.rule_name.cmp(&b.rule_name))
+        });
         if debug {
             eprintln!("[perf] sort: {:.3}s", t5.elapsed().as_secs_f64());
             eprintln!("[perf] total diagnostics: {}", diagnostics.len());
@@ -845,7 +854,13 @@ impl LintRunner {
             );
         }
 
-        diagnostics.sort_by_key(|d| d.span.offset);
+        // Tie-broken by rule name for the same reason as in `lint_source`.
+        diagnostics.sort_by(|a, b| {
+            a.span
+                .offset
+                .cmp(&b.span.offset)
+                .then_with(|| a.rule_name.cmp(&b.rule_name))
+        });
 
         LintResult::new(file_path, source, diagnostics)
     }
