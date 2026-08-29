@@ -288,11 +288,8 @@ impl GaleConfig {
                 };
 
             for ov in &self.overrides {
-                let matches =
-                    ov.matches(&relative_path) || ov.matches(file_path);
-                if matches
-                    && let Some(ref syntax_name) = ov.custom_syntax
-                {
+                let matches = ov.matches(&relative_path) || ov.matches(file_path);
+                if matches && let Some(ref syntax_name) = ov.custom_syntax {
                     if !is_supported_custom_syntax(syntax_name) {
                         return Some(syntax_name.clone());
                     }
@@ -496,47 +493,40 @@ impl RuleConfigValue {
                     .unwrap_or(false);
                 let is_bool = first.map(|v| v.is_boolean()).unwrap_or(false);
 
+                // Stylelint allows secondary options to override severity in
+                // every array form: `[true, { severity: "warning" }]`,
+                // `["error", { severity: "warning" }]`, and — the form real
+                // configs use most — `["never", { severity: "warning" }]`.
+                let secondary_severity = severity_from_secondary(items.get(1));
+
                 if is_severity_str {
                     // First element is a severity: ["error", { options }]
-                    let mut severity = first.and_then(|v| v.as_str()).map(parse_severity);
+                    let severity = secondary_severity
+                        .or_else(|| first.and_then(|v| v.as_str()).map(parse_severity));
                     let options = items.get(1).cloned();
-                    // Stylelint allows secondary options to override severity:
-                    // e.g. [true, { severity: "warning" }]
-                    if let Some(serde_json::Value::Object(ref obj)) = options
-                        && let Some(serde_json::Value::String(s)) = obj.get("severity")
-                        && is_severity_string(s)
-                    {
-                        severity = Some(parse_severity(s));
-                    }
                     RuleConfig { severity, options }
                 } else if is_bool {
                     // First element is a boolean: [true, { options }]
                     let enabled = first.and_then(|v| v.as_bool()).unwrap_or(true);
-                    let mut severity = Some(if enabled {
-                        Severity::Error
+                    let severity = if enabled {
+                        secondary_severity.or(Some(Severity::Error))
                     } else {
-                        Severity::Off
-                    });
+                        // An explicit `false` disables the rule outright; a
+                        // secondary severity cannot resurrect it.
+                        Some(Severity::Off)
+                    };
                     let options = items.get(1).cloned();
-                    // Stylelint allows secondary options to override severity:
-                    // e.g. [true, { severity: "warning" }]
-                    if let Some(serde_json::Value::Object(ref obj)) = options
-                        && let Some(serde_json::Value::String(s)) = obj.get("severity")
-                        && is_severity_string(s)
-                    {
-                        severity = Some(parse_severity(s));
-                    }
                     RuleConfig { severity, options }
                 } else {
                     // First element is a primary option (e.g. "always", 4):
                     // ["always", { except: [...] }] or [4, { ... }]
-                    // Severity defaults to Error (enabled), and the entire
-                    // array is stored as options so rules can access
-                    // options[0] for the primary option and options[1] for
-                    // secondary options.
+                    // Severity defaults to Error (enabled) unless the secondary
+                    // options carry an explicit `severity`.  The entire array is
+                    // stored as options so rules can access options[0] for the
+                    // primary option and options[1] for secondary options.
                     let options = Some(serde_json::Value::Array(items.clone()));
                     RuleConfig {
-                        severity: Some(Severity::Error),
+                        severity: secondary_severity.or(Some(Severity::Error)),
                         options,
                     }
                 }
@@ -550,6 +540,20 @@ impl RuleConfigValue {
             }
         }
     }
+}
+
+/// Extract an explicit `severity` from a rule's secondary options object.
+///
+/// Stylelint lets any rule downgrade or upgrade itself via the secondary
+/// options, e.g. `"color-named": ["never", { "severity": "warning" }]`.
+fn severity_from_secondary(secondary: Option<&serde_json::Value>) -> Option<Severity> {
+    let serde_json::Value::Object(obj) = secondary? else {
+        return None;
+    };
+    let serde_json::Value::String(s) = obj.get("severity")? else {
+        return None;
+    };
+    is_severity_string(s).then(|| parse_severity(s))
 }
 
 /// Returns `true` if the string is a known severity keyword.
@@ -609,6 +613,75 @@ fn has_explicit_severity_in_value(v: &RuleConfigValue) -> bool {
 /// All rule names that exist in the linter registry.
 /// Kept in sync with `gale_linter::rules::register_all`.
 const ALL_RULE_NAMES: &[&str] = &[
+    "@stylistic/at-rule-name-case",
+    "@stylistic/at-rule-name-space-after",
+    "@stylistic/at-rule-semicolon-newline-after",
+    "@stylistic/at-rule-semicolon-space-before",
+    "@stylistic/block-closing-brace-empty-line-before",
+    "@stylistic/block-closing-brace-newline-after",
+    "@stylistic/block-closing-brace-newline-before",
+    "@stylistic/block-closing-brace-space-before",
+    "@stylistic/block-opening-brace-newline-after",
+    "@stylistic/block-opening-brace-space-after",
+    "@stylistic/block-opening-brace-space-before",
+    "@stylistic/color-hex-case",
+    "@stylistic/declaration-bang-space-after",
+    "@stylistic/declaration-bang-space-before",
+    "@stylistic/declaration-block-semicolon-newline-after",
+    "@stylistic/declaration-block-semicolon-newline-before",
+    "@stylistic/declaration-block-semicolon-space-after",
+    "@stylistic/declaration-block-semicolon-space-before",
+    "@stylistic/declaration-block-trailing-semicolon",
+    "@stylistic/declaration-colon-newline-after",
+    "@stylistic/declaration-colon-space-after",
+    "@stylistic/declaration-colon-space-before",
+    "@stylistic/function-comma-newline-after",
+    "@stylistic/function-comma-space-after",
+    "@stylistic/function-comma-space-before",
+    "@stylistic/function-max-empty-lines",
+    "@stylistic/function-parentheses-newline-inside",
+    "@stylistic/function-parentheses-space-inside",
+    "@stylistic/function-whitespace-after",
+    "@stylistic/indentation",
+    "@stylistic/max-empty-lines",
+    "@stylistic/media-feature-colon-space-after",
+    "@stylistic/media-feature-colon-space-before",
+    "@stylistic/media-feature-name-case",
+    "@stylistic/media-feature-parentheses-space-inside",
+    "@stylistic/media-feature-range-operator-space-after",
+    "@stylistic/media-feature-range-operator-space-before",
+    "@stylistic/media-query-list-comma-newline-after",
+    "@stylistic/media-query-list-comma-space-after",
+    "@stylistic/media-query-list-comma-space-before",
+    "@stylistic/no-empty-first-line",
+    "@stylistic/no-eol-whitespace",
+    "@stylistic/no-extra-semicolons",
+    "@stylistic/no-missing-end-of-source-newline",
+    "@stylistic/number-leading-zero",
+    "@stylistic/number-no-trailing-zeros",
+    "@stylistic/property-case",
+    "@stylistic/selector-attribute-brackets-space-inside",
+    "@stylistic/selector-attribute-operator-space-after",
+    "@stylistic/selector-attribute-operator-space-before",
+    "@stylistic/selector-combinator-space-after",
+    "@stylistic/selector-combinator-space-before",
+    "@stylistic/selector-descendant-combinator-no-non-space",
+    "@stylistic/selector-list-comma-newline-after",
+    "@stylistic/selector-list-comma-newline-before",
+    "@stylistic/selector-list-comma-space-after",
+    "@stylistic/selector-list-comma-space-before",
+    "@stylistic/selector-max-empty-lines",
+    "@stylistic/selector-pseudo-class-case",
+    "@stylistic/selector-pseudo-class-parentheses-space-inside",
+    "@stylistic/selector-pseudo-element-case",
+    "@stylistic/string-quotes",
+    "@stylistic/unicode-bom",
+    "@stylistic/unit-case",
+    "@stylistic/value-list-comma-newline-after",
+    "@stylistic/value-list-comma-newline-before",
+    "@stylistic/value-list-comma-space-after",
+    "@stylistic/value-list-comma-space-before",
+    "@stylistic/value-list-max-empty-lines",
     "alpha-value-notation",
     "annotation-no-unknown",
     "at-rule-allowed-list",
@@ -637,6 +710,7 @@ const ALL_RULE_NAMES: &[&str] = &[
     "comment-whitespace-inside",
     "comment-word-disallowed-list",
     "container-name-pattern",
+    "csstools/value-no-unknown-custom-properties",
     "custom-media-pattern",
     "custom-property-empty-line-before",
     "custom-property-no-missing-var-function",
@@ -648,8 +722,8 @@ const ALL_RULE_NAMES: &[&str] = &[
     "declaration-block-single-line-max-declarations",
     "declaration-empty-line-before",
     "declaration-no-important",
-    "declaration-property-unit-allowed-list",
     "declaration-property-max-values",
+    "declaration-property-unit-allowed-list",
     "declaration-property-unit-disallowed-list",
     "declaration-property-value-allowed-list",
     "declaration-property-value-disallowed-list",
@@ -679,6 +753,7 @@ const ALL_RULE_NAMES: &[&str] = &[
     "layer-name-pattern",
     "length-zero-no-unit",
     "lightness-notation",
+    "material/no-prefixes",
     "max-line-length",
     "max-nesting-depth",
     "media-feature-name-allowed-list",
@@ -702,11 +777,11 @@ const ALL_RULE_NAMES: &[&str] = &[
     "no-invalid-position-declaration",
     "no-irregular-whitespace",
     "no-unknown-animations",
-    "number-leading-zero",
     "number-max-precision",
     "order/order",
     "order/properties-alphabetical-order",
     "order/properties-order",
+    "plugin/browser-compat",
     "plugin/enforce-variable-for-property",
     "plugin/no-unknown-custom-properties",
     "plugin/no-unused-custom-properties",
@@ -719,23 +794,51 @@ const ALL_RULE_NAMES: &[&str] = &[
     "rule-empty-line-before",
     "rule-nesting-at-rule-required-list",
     "rule-selector-property-disallowed-list",
-    // SCSS-specific rules
+    "scss/at-else-closing-brace-newline-after",
+    "scss/at-else-closing-brace-space-after",
+    "scss/at-else-empty-line-before",
+    "scss/at-else-if-parentheses-space-before",
     "scss/at-extend-no-missing-placeholder",
+    "scss/at-function-parentheses-space-before",
+    "scss/at-function-pattern",
+    "scss/at-if-closing-brace-newline-after",
+    "scss/at-if-closing-brace-space-after",
     "scss/at-if-no-null",
+    "scss/at-import-partial-extension",
+    "scss/at-import-partial-extension-disallowed-list",
+    "scss/at-mixin-argumentless-call-parentheses",
     "scss/at-mixin-disallowed-list",
+    "scss/at-mixin-parentheses-space-before",
+    "scss/at-mixin-pattern",
+    "scss/at-rule-conditional-no-parentheses",
     "scss/at-rule-no-unknown",
     "scss/comment-no-empty",
+    "scss/comment-no-loud",
+    "scss/declaration-nested-properties",
     "scss/declaration-nested-properties-no-divided-groups",
+    "scss/dollar-variable-colon-space-after",
+    "scss/dollar-variable-colon-space-before",
+    "scss/dollar-variable-empty-line-before",
     "scss/dollar-variable-no-missing-interpolation",
+    "scss/dollar-variable-pattern",
+    "scss/double-slash-comment-empty-line-before",
+    "scss/double-slash-comment-inline",
+    "scss/double-slash-comment-whitespace-inside",
+    "scss/function-disallowed-list",
+    "scss/function-no-unknown",
     "scss/function-quote-no-quoted-strings-inside",
     "scss/function-unquote-no-unquoted-strings-inside",
     "scss/load-no-partial-leading-underscore",
     "scss/load-partial-extension",
+    "scss/no-duplicate-dollar-variables",
     "scss/no-duplicate-mixins",
     "scss/no-global-function-names",
     "scss/operator-no-newline-after",
     "scss/operator-no-newline-before",
     "scss/operator-no-unspaced",
+    "scss/partial-no-import",
+    "scss/percent-placeholder-pattern",
+    "scss/selector-no-redundant-nesting-selector",
     "selector-anb-no-unmatchable",
     "selector-attribute-name-disallowed-list",
     "selector-attribute-operator-allowed-list",
@@ -769,6 +872,7 @@ const ALL_RULE_NAMES: &[&str] = &[
     "selector-type-case",
     "selector-type-no-unknown",
     "shorthand-property-no-redundant-values",
+    "spectrum-tools/no-unknown-custom-properties",
     "string-no-newline",
     "string-quotes",
     "syntax-string-no-invalid",
@@ -779,6 +883,18 @@ const ALL_RULE_NAMES: &[&str] = &[
     "value-keyword-case",
     "value-no-vendor-prefix",
 ];
+
+/// The rule names that make up `gale:recommended`, error rules first.
+///
+/// Exposed so other crates (the LSP) can fall back to the same default set
+/// instead of inventing their own.
+pub fn recommended_rule_names() -> Vec<&'static str> {
+    RECOMMENDED_ERROR_RULES
+        .iter()
+        .chain(RECOMMENDED_WARNING_RULES.iter())
+        .copied()
+        .collect()
+}
 
 /// Rules enabled at **error** severity in `gale:recommended`.
 const RECOMMENDED_ERROR_RULES: &[&str] = &[
@@ -1960,7 +2076,7 @@ fn parse_js_config(source: &str, file_dir: Option<&Path>) -> Result<ConfigFile, 
                         } else {
                             "module.exports = "
                         },
-                        &value
+                        value
                     );
                     let new_marker_pos = pos;
                     let new_after = new_marker_pos
@@ -5086,8 +5202,7 @@ module.exports = {
 
     #[test]
     fn resolved_override_matches_glob() {
-        let ov =
-            ResolvedOverride::new(vec!["**/*.scss".to_string()], vec![], HashMap::new(), None);
+        let ov = ResolvedOverride::new(vec!["**/*.scss".to_string()], vec![], HashMap::new(), None);
         assert!(ov.matches("src/styles/main.scss"));
         assert!(ov.matches("main.scss"));
         assert!(!ov.matches("main.css"));
