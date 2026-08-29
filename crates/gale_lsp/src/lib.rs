@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 use tower_lsp::jsonrpc::Result;
@@ -35,25 +37,36 @@ fn byte_col_to_utf16(source: &str, line_start_byte: usize, byte_col: usize) -> u
 pub struct GaleLspServer {
     client: Client,
     runner: RwLock<Option<LintRunner>>,
+    /// Explicit config path from `gale --lsp --config <path>`, if any.
+    config_path: Option<PathBuf>,
 }
 
 impl GaleLspServer {
-    fn new(client: Client) -> Self {
+    fn new(client: Client, config_path: Option<PathBuf>) -> Self {
         Self {
             client,
             runner: RwLock::new(None),
+            config_path,
         }
     }
 
     /// Build `LintRunner` from the resolved config.
+    ///
+    /// This must configure the runner exactly as the CLI does — enabled rules,
+    /// per-rule options, per-rule severities and the default severity —
+    /// otherwise the editor reports different results than `gale` on the same
+    /// file with the same config.
     fn build_runner(config: &GaleConfig, has_config_file: bool) -> LintRunner {
         let registry = RuleRegistry::default();
+
         let enabled_rules: Vec<String> = if config.rules.is_empty() && !has_config_file {
-            // No config file found — enable all rules as a sensible default.
-            registry
-                .all()
+            // No config file found — fall back to the recommended preset rather
+            // than every rule.  Enabling all of them (including the whole
+            // @stylistic namespace) buries a config-less project in
+            // formatting warnings it never asked for.
+            gale_config::recommended_rule_names()
                 .iter()
-                .map(|r| r.name().to_string())
+                .map(|name| name.to_string())
                 .collect()
         } else {
             config
@@ -68,7 +81,48 @@ impl GaleLspServer {
                 .map(|(name, _)| name.clone())
                 .collect()
         };
-        LintRunner::new(registry, enabled_rules)
+
+        // Resolve config keys (which may be deprecated aliases) to the
+        // canonical rule names the runner looks options up by.
+        let canonical = |name: &String| {
+            registry
+                .get(name)
+                .map(|r| r.name().to_string())
+                .unwrap_or_else(|| name.clone())
+        };
+
+        let rule_options: HashMap<String, serde_json::Value> = config
+            .rules
+            .iter()
+            .filter_map(|(name, cfg)| {
+                cfg.options
+                    .as_ref()
+                    .map(|opts| (canonical(name), opts.clone()))
+            })
+            .collect();
+
+        let rule_severities: HashMap<String, Severity> = config
+            .rules
+            .iter()
+            .filter_map(|(name, cfg)| match cfg.severity.as_ref()? {
+                gale_config::Severity::Error => Some((canonical(name), Severity::Error)),
+                gale_config::Severity::Warning => Some((canonical(name), Severity::Warning)),
+                gale_config::Severity::Off => None,
+            })
+            .collect();
+
+        let mut runner = LintRunner::with_options_and_severities(
+            registry,
+            enabled_rules,
+            rule_options,
+            rule_severities,
+        );
+        runner.set_default_severity(config.default_severity.map(|s| match s {
+            gale_config::Severity::Error => Severity::Error,
+            gale_config::Severity::Warning => Severity::Warning,
+            gale_config::Severity::Off => Severity::Warning,
+        }));
+        runner
     }
 
     /// Lint source text and convert to LSP diagnostics (sync part).
@@ -151,8 +205,21 @@ impl GaleLspServer {
 #[tower_lsp::async_trait]
 impl LanguageServer for GaleLspServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        // Resolve config from workspace root if available.
-        let (config, has_config_file) = if let Some(root_uri) = params.root_uri {
+        // An explicit `--config` wins over discovery, matching the CLI.
+        let (config, has_config_file) = if let Some(path) = &self.config_path {
+            match gale_config::load_config(path) {
+                Ok(cfg) => (cfg, true),
+                Err(err) => {
+                    self.client
+                        .log_message(
+                            MessageType::ERROR,
+                            format!("Failed to load config {}: {err}", path.display()),
+                        )
+                        .await;
+                    (GaleConfig::default(), false)
+                }
+            }
+        } else if let Some(root_uri) = params.root_uri {
             if let Ok(root_path) = root_uri.to_file_path() {
                 debug!("LSP workspace root: {}", root_path.display());
                 match gale_config::resolve_config(&root_path) {
@@ -210,6 +277,14 @@ impl LanguageServer for GaleLspServer {
         }
     }
 
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        // Clear diagnostics for the closed file, otherwise the editor keeps
+        // showing warnings for a document that is no longer open.
+        self.client
+            .publish_diagnostics(params.text_document.uri, Vec::new(), None)
+            .await;
+    }
+
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         // If the save notification includes text, use it; otherwise read from disk.
@@ -232,10 +307,14 @@ impl LanguageServer for GaleLspServer {
 // ---------------------------------------------------------------------------
 
 /// Start the Gale LSP server on stdin/stdout.
-pub async fn run_server() {
+///
+/// `config_path` mirrors the CLI's `--config` flag; when `None` the server
+/// discovers a config from the workspace root the client reports.
+pub async fn run_server(config_path: Option<PathBuf>) {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(GaleLspServer::new);
+    let (service, socket) =
+        LspService::new(move |client| GaleLspServer::new(client, config_path.clone()));
     Server::new(stdin, stdout, socket).serve(service).await;
 }
