@@ -250,9 +250,9 @@ fn is_stylelint_command(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gale_css_parser::{StyleRule, Syntax};
+    use gale_css_parser::Syntax;
 
-    fn make_ctx(source: &str) -> RuleContext {
+    fn make_ctx(source: &str) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.css",
             source,

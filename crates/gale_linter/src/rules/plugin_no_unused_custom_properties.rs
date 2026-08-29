@@ -244,10 +244,7 @@ impl Rule for PluginNoUnusedCustomProperties {
             diagnostics.push(
                 Diagnostic::new(
                     self.name(),
-                    format!(
-                        "Unexpected unused custom property \"{}\"",
-                        def.name
-                    ),
+                    format!("Unexpected unused custom property \"{}\"", def.name),
                 )
                 .severity(self.default_severity())
                 .span(Span::new(def.offset, def.length)),
@@ -347,11 +344,7 @@ mod tests {
     fn multiple_unused() {
         let rule = PluginNoUnusedCustomProperties;
         let ctx = ctx();
-        let nodes = make_nodes(vec![
-            ("--a", "1"),
-            ("--b", "2"),
-            ("color", "var(--a)"),
-        ]);
+        let nodes = make_nodes(vec![("--a", "1"), ("--b", "2"), ("color", "var(--a)")]);
         let diags = rule.check_root(&nodes, &ctx);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("--b"));

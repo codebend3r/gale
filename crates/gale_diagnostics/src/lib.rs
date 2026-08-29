@@ -302,7 +302,7 @@ pub fn apply_fixes(source: &str, diagnostics: &[Diagnostic]) -> (String, usize) 
     }
 
     // Sort edits by offset descending so we apply from end to start.
-    edits.sort_by(|a, b| b.span.offset.cmp(&a.span.offset));
+    edits.sort_by_key(|e| std::cmp::Reverse(e.span.offset));
 
     let mut result = source.to_string();
     let mut applied = 0;

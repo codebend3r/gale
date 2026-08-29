@@ -204,18 +204,24 @@ mod tests {
     #[test]
     fn counts_pseudo_classes_inside_not() {
         // Stylelint v17: `:not(:hover)` counts as 2 pseudo-classes (`:not` and `:hover`).
-        let d =
-            SelectorMaxPseudoClass.check(&style_with_selector("a:not(:hover)"), &ctx());
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for 2 pseudo-classes with max 1");
+        let d = SelectorMaxPseudoClass.check(&style_with_selector("a:not(:hover)"), &ctx());
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for 2 pseudo-classes with max 1"
+        );
         assert!(d[0].message.contains("found 2"));
     }
 
     #[test]
     fn counts_pseudo_classes_inside_is() {
         // Stylelint v17: `a:is(:hover)` counts as 2 pseudo-classes (`:is` and `:hover`).
-        let d =
-            SelectorMaxPseudoClass.check(&style_with_selector("a:is(:hover)"), &ctx());
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for 2 pseudo-classes with max 1");
+        let d = SelectorMaxPseudoClass.check(&style_with_selector("a:is(:hover)"), &ctx());
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for 2 pseudo-classes with max 1"
+        );
         assert!(d[0].message.contains("found 2"));
     }
 

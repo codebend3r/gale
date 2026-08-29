@@ -1824,9 +1824,10 @@ mod tests {
         if raffia_result.is_err() {
             // Raffia failed as expected — public parse should either succeed
             // (via lightningcss fallback) or return an error (never silently empty).
-            match &public_result {
-                Ok(result) => assert_eq!(result.syntax, Syntax::Scss),
-                Err(_) => {} // Both failed — error is propagated, not swallowed.
+            // An Err here is fine: both parsers failed and the error is
+            // propagated rather than swallowed.
+            if let Ok(result) = &public_result {
+                assert_eq!(result.syntax, Syntax::Scss);
             }
         }
         // If raffia somehow succeeds, that's fine too — no fallback needed.

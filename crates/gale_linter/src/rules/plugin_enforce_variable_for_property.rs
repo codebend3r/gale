@@ -66,9 +66,7 @@ impl Pattern {
     }
 }
 
-fn parse_options(
-    context: &RuleContext,
-) -> HashMap<String, Vec<Pattern>> {
+fn parse_options(context: &RuleContext) -> HashMap<String, Vec<Pattern>> {
     let secondary = match context.secondary_options() {
         Some(opts) => opts,
         None => return HashMap::new(),
@@ -276,7 +274,11 @@ mod tests {
         let node = style_with_decl("color", "red");
         let diags = rule.check(&node, &ctx);
         assert_eq!(diags.len(), 1);
-        assert!(diags[0].message.contains("Expected variable or allowed value"));
+        assert!(
+            diags[0]
+                .message
+                .contains("Expected variable or allowed value")
+        );
         assert!(diags[0].message.contains("'color'"));
         assert!(diags[0].message.contains("'red'"));
     }

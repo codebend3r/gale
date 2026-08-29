@@ -273,7 +273,11 @@ mod tests {
         // `:is(.a .b .c .d)` has 4 compound selectors.
         let d =
             SelectorMaxCompoundSelectors.check(&style_with_selector(":is(.a .b .c .d)"), &ctx());
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for 4 compounds inside :is()");
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for 4 compounds inside :is()"
+        );
         assert!(d[0].message.contains("found 4"));
     }
 
@@ -281,8 +285,10 @@ mod tests {
     fn counts_compounds_inside_has() {
         // Stylelint v17: `.foo:has(.bar > .baz > .qux > .quux)` has compounds
         // counted across the whole selector as-written.
-        let d = SelectorMaxCompoundSelectors
-            .check(&style_with_selector(".foo:has(.bar > .baz > .qux > .quux)"), &ctx());
+        let d = SelectorMaxCompoundSelectors.check(
+            &style_with_selector(".foo:has(.bar > .baz > .qux > .quux)"),
+            &ctx(),
+        );
         assert_eq!(d.len(), 1);
     }
 }

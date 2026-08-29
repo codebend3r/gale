@@ -124,7 +124,12 @@ fn collect_usages(nodes: &[CssNode], usages: &mut Vec<VarUsage>) {
     for node in nodes {
         match node {
             CssNode::Declaration(decl) => {
-                collect_var_refs_from_value(&decl.value, decl.span.offset, decl.span.length, usages);
+                collect_var_refs_from_value(
+                    &decl.value,
+                    decl.span.offset,
+                    decl.span.length,
+                    usages,
+                );
             }
             CssNode::Style(rule) => {
                 for decl in &rule.declarations {
@@ -243,10 +248,7 @@ impl Rule for PluginNoUnknownCustomProperties {
             diagnostics.push(
                 Diagnostic::new(
                     self.name(),
-                    format!(
-                        "Unexpected unknown custom property \"{}\"",
-                        usage.name
-                    ),
+                    format!("Unexpected unknown custom property \"{}\"", usage.name),
                 )
                 .severity(self.default_severity())
                 .span(Span::new(usage.decl_offset, usage.decl_length)),

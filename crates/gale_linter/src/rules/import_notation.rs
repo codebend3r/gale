@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
 
-    fn ctx_with_source(source: &str) -> RuleContext {
+    fn ctx_with_source(source: &str) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.css",
             source,

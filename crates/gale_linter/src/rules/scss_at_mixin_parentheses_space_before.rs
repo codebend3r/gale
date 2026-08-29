@@ -145,7 +145,7 @@ mod tests {
         }
     }
 
-    fn scss_ctx(source: &str) -> RuleContext {
+    fn scss_ctx(source: &str) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.scss",
             source,

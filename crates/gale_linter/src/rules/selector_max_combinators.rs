@@ -198,7 +198,11 @@ mod tests {
         // `:is(.a .b)` has 1 descendant combinator.
         let ctx = ctx_with_options(serde_json::json!(0));
         let d = SelectorMaxCombinators.check(&style_with_selector(":is(.a .b)"), &ctx);
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for combinator inside :is()");
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for combinator inside :is()"
+        );
     }
 
     #[test]

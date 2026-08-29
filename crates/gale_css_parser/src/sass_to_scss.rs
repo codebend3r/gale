@@ -156,7 +156,7 @@ fn measure_indent(line: &str, unit: IndentUnit) -> usize {
         IndentUnit::Tab => line.len() - line.trim_start_matches('\t').len(),
         IndentUnit::Spaces(w) => {
             let spaces = line.len() - line.trim_start_matches(' ').len();
-            if w == 0 { 0 } else { spaces / w }
+            spaces.checked_div(w).unwrap_or(0)
         }
     }
 }

@@ -161,7 +161,11 @@ mod tests {
             ),
             &ctx,
         );
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for 6 attributes with max 2");
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for 6 attributes with max 2"
+        );
         assert!(d[0].message.contains("found 6"));
     }
 
@@ -173,7 +177,11 @@ mod tests {
             &style_with_selector(".foo:has([disabled][required])"),
             &ctx(),
         );
-        assert_eq!(d.len(), 1, "expected 1 diagnostic for 2 attributes with max 1");
+        assert_eq!(
+            d.len(),
+            1,
+            "expected 1 diagnostic for 2 attributes with max 1"
+        );
         assert!(d[0].message.contains("found 2"));
     }
 
