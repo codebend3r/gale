@@ -9,8 +9,16 @@
     "type": "git",
     "url": "https://github.com/LyricalString/gale"
   },
-  "categories": ["Linters"],
-  "keywords": ["css", "scss", "less", "sass", "linter"],
+  "categories": [
+    "Linters"
+  ],
+  "keywords": [
+    "css",
+    "scss",
+    "less",
+    "sass",
+    "linter"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -35,23 +43,30 @@
           "default": "",
           "description": "Path to a Gale configuration file. If empty, Gale will auto-discover the config."
         },
-        "gale.run": {
+        "gale.path": {
           "type": "string",
-          "enum": ["onType", "onSave"],
-          "default": "onType",
-          "description": "When to run the linter: on every keystroke or only on save."
+          "default": "",
+          "description": "Absolute path to the gale binary. If empty, Gale is looked up in node_modules/.bin, then on PATH."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "gale.restart",
+        "title": "Gale: Restart Language Server"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "package": "vsce package"
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.2.2",
     "typescript": "^5.7.0"

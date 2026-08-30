@@ -348,8 +348,7 @@ mod tests {
     #[test]
     fn ignore_properties_matches_full_prefixed_name() {
         // v17: ignoreProperties: ["-webkit-transform"] SHOULD match -webkit-transform
-        let opts =
-            serde_json::json!(["true", {"ignoreProperties": ["-webkit-transform"]}]);
+        let opts = serde_json::json!(["true", {"ignoreProperties": ["-webkit-transform"]}]);
         let ctx = RuleContext {
             file_path: "t.css",
             source: "",

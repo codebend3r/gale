@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use gale_css_parser::Syntax;
 
-    fn ctx(source: &str) -> RuleContext {
+    fn ctx(source: &str) -> RuleContext<'_> {
         RuleContext {
             file_path: "test.css",
             source,

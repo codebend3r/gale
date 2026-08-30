@@ -134,6 +134,11 @@ jobs:
           cd npm
           npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
+      - name: Set root (GitHub-install) package version
+        # The root package.json is what `npm i github:owner/gale` installs.
+        # It ships the same npm/ directory, so it must carry the same version.
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -146,4 +151,28 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        # Member crates must be published before the binary crate that depends
+        # on them, in dependency order.  Publishing only `gale-lint` makes cargo
+        # resolve the workspace `version` requirements against whatever is
+        # already on crates.io, so the released binary would be built from stale
+        # member crates.  `--no-verify` skips a redundant rebuild per crate;
+        # the workspace is already tested and built above.
+        run: |
+          set -euo pipefail
+          for crate in \
+            gale_diagnostics \
+            gale_css_parser \
+            gale_config \
+            gale_formatter \
+            gale_linter \
+            gale_lsp \
+            gale_cli
+          do
+            echo "==> Publishing $crate"
+            cargo publish -p "$crate" --no-verify
+            # Give the index time to expose the new version to the next crate.
+            cargo owner --list "$crate" >/dev/null 2>&1 || true
+            sleep 20
+          done
+          echo "==> Publishing gale-lint"
+          cargo publish -p gale-lint --no-verify

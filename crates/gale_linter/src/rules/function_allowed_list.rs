@@ -157,12 +157,9 @@ fn find_disallowed_functions(
                 let fname = &value[start..end];
                 if !is_function_allowed(fname, plain_names, regex_patterns) {
                     diags.push(
-                        Diagnostic::new(
-                            rule.name(),
-                            format!("Unexpected function \"{fname}\""),
-                        )
-                        .severity(rule.default_severity())
-                        .span(Span::new(base_offset + start, end - start)),
+                        Diagnostic::new(rule.name(), format!("Unexpected function \"{fname}\""))
+                            .severity(rule.default_severity())
+                            .span(Span::new(base_offset + start, end - start)),
                     );
                 }
             }

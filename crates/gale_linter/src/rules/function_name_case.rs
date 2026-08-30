@@ -261,7 +261,7 @@ fn extract_function_names_with_offsets(value: &str) -> Vec<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+    use gale_css_parser::Syntax;
 
     fn make_ctx_with_source_and_options<'a>(
         source: &'a str,

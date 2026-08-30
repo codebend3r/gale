@@ -45,7 +45,9 @@ binary="$bin_dir/$target/gale"
 
 if [ ! -x "$binary" ]; then
   echo "Gale binary missing for $target at $binary" >&2
-  echo "This package should include prebuilt binaries. Please reinstall @johnnybenson/gale or report a packaging bug." >&2
+  echo "This package should ship prebuilt binaries for $target." >&2
+  echo "Try reinstalling the package, or build from source:" >&2
+  echo "  cargo install gale-lint" >&2
   exit 1
 fi
 

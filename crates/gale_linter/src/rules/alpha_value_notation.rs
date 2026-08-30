@@ -494,7 +494,7 @@ mod tests {
         }
     }
 
-    fn ctx_with_options(options: &serde_json::Value) -> RuleContext {
+    fn ctx_with_options(options: &serde_json::Value) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.css",
             source: "",

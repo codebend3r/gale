@@ -46,9 +46,10 @@ impl Rule for ScssAtMixinDisallowedList {
         }
 
         let disallowed: Vec<String> = match ctx.options {
-            Some(serde_json::Value::Array(arr)) => {
-                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-            }
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             _ => return vec![],
         };
 
@@ -70,12 +71,9 @@ impl Rule for ScssAtMixinDisallowedList {
 
         if is_disallowed(mixin_name, &disallowed) {
             vec![
-                Diagnostic::new(
-                    self.name(),
-                    format!("Unexpected mixin \"{}\"", mixin_name),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(at.span.offset, at.span.length)),
+                Diagnostic::new(self.name(), format!("Unexpected mixin \"{}\"", mixin_name))
+                    .severity(self.default_severity())
+                    .span(Span::new(at.span.offset, at.span.length)),
             ]
         } else {
             vec![]
@@ -109,7 +107,7 @@ mod tests {
     use super::*;
     use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
 
-    fn scss_ctx_with_options(opts: &serde_json::Value) -> RuleContext {
+    fn scss_ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.scss",
             source: "",
@@ -118,7 +116,7 @@ mod tests {
         }
     }
 
-    fn css_ctx_with_options(opts: &serde_json::Value) -> RuleContext {
+    fn css_ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
         RuleContext {
             file_path: "t.css",
             source: "",
@@ -150,10 +148,8 @@ mod tests {
     #[test]
     fn detects_disallowed_mixin_no_args() {
         let opts = serde_json::json!(["breakpoint"]);
-        let d = ScssAtMixinDisallowedList.check(
-            &include_node("breakpoint"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d = ScssAtMixinDisallowedList
+            .check(&include_node("breakpoint"), &scss_ctx_with_options(&opts));
         assert_eq!(d.len(), 1);
         assert!(d[0].message.contains("breakpoint"));
     }
@@ -209,22 +205,16 @@ mod tests {
         );
         assert_eq!(d1.len(), 1);
 
-        let d2 = ScssAtMixinDisallowedList.check(
-            &include_node("legacy-mixin"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d2 = ScssAtMixinDisallowedList
+            .check(&include_node("legacy-mixin"), &scss_ctx_with_options(&opts));
         assert_eq!(d2.len(), 1);
 
-        let d3 = ScssAtMixinDisallowedList.check(
-            &include_node("old-header"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d3 = ScssAtMixinDisallowedList
+            .check(&include_node("old-header"), &scss_ctx_with_options(&opts));
         assert_eq!(d3.len(), 1);
 
-        let d4 = ScssAtMixinDisallowedList.check(
-            &include_node("new-button"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d4 = ScssAtMixinDisallowedList
+            .check(&include_node("new-button"), &scss_ctx_with_options(&opts));
         assert!(d4.is_empty());
     }
 
@@ -256,20 +246,16 @@ mod tests {
     #[test]
     fn exact_match_is_case_sensitive() {
         let opts = serde_json::json!(["Breakpoint"]);
-        let d = ScssAtMixinDisallowedList.check(
-            &include_node("breakpoint"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d = ScssAtMixinDisallowedList
+            .check(&include_node("breakpoint"), &scss_ctx_with_options(&opts));
         assert!(d.is_empty());
     }
 
     #[test]
     fn works_with_empty_parens() {
         let opts = serde_json::json!(["reset"]);
-        let d = ScssAtMixinDisallowedList.check(
-            &include_node("reset()"),
-            &scss_ctx_with_options(&opts),
-        );
+        let d = ScssAtMixinDisallowedList
+            .check(&include_node("reset()"), &scss_ctx_with_options(&opts));
         assert_eq!(d.len(), 1);
         assert!(d[0].message.contains("reset"));
     }

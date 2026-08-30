@@ -131,7 +131,7 @@ impl Rule for PluginRequireFileHeaderComment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gale_css_parser::{Comment, Declaration, Span as ParserSpan, StyleRule, Syntax};
+    use gale_css_parser::{Comment, Span as ParserSpan, StyleRule, Syntax};
     use serde_json::json;
 
     fn ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
@@ -290,6 +290,10 @@ mod tests {
         let fix = diags[0].fix.as_ref().unwrap();
         assert_eq!(fix.edits.len(), 1);
         assert_eq!(fix.edits[0].span.offset, 0);
-        assert!(fix.edits[0].new_text.contains("TODO: Add file header comment"));
+        assert!(
+            fix.edits[0]
+                .new_text
+                .contains("TODO: Add file header comment")
+        );
     }
 }

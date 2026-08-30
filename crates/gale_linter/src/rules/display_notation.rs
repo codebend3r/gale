@@ -80,9 +80,7 @@ impl Rule for DisplayNotation {
                             diags.push(
                                 Diagnostic::new(
                                     self.name(),
-                                    format!(
-                                        "Expected \"{single}\" instead of \"{multi}\""
-                                    ),
+                                    format!("Expected \"{single}\" instead of \"{multi}\""),
                                 )
                                 .severity(self.default_severity())
                                 .span(Span::new(decl.span.offset, decl.span.length)),
@@ -98,9 +96,7 @@ impl Rule for DisplayNotation {
                             diags.push(
                                 Diagnostic::new(
                                     self.name(),
-                                    format!(
-                                        "Expected \"{multi}\" instead of \"{single}\""
-                                    ),
+                                    format!("Expected \"{multi}\" instead of \"{single}\""),
                                 )
                                 .severity(self.default_severity())
                                 .span(Span::new(decl.span.offset, decl.span.length)),
@@ -208,9 +204,21 @@ mod tests {
     fn no_equivalent_values_are_skipped() {
         // Values like list-item, contents, none have no multi-keyword equivalent
         let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-        assert!(DisplayNotation.check(&style_with_decl("display", "list-item"), &ctx).is_empty());
-        assert!(DisplayNotation.check(&style_with_decl("display", "contents"), &ctx).is_empty());
-        assert!(DisplayNotation.check(&style_with_decl("display", "none"), &ctx).is_empty());
+        assert!(
+            DisplayNotation
+                .check(&style_with_decl("display", "list-item"), &ctx)
+                .is_empty()
+        );
+        assert!(
+            DisplayNotation
+                .check(&style_with_decl("display", "contents"), &ctx)
+                .is_empty()
+        );
+        assert!(
+            DisplayNotation
+                .check(&style_with_decl("display", "none"), &ctx)
+                .is_empty()
+        );
     }
 
     #[test]
