@@ -1,16 +1,18 @@
 # Compatibility Matrix
 
-Last updated: 2026-05-18
+Last updated: 2026-08-31
 
 Gale is tested weekly against popular open-source repositories that use Stylelint.
 Both tools run on the same files with the same config. Results are compared automatically.
 
 | Repository | Stars | Files | Pass | FP | FN | Speedup |
 |------------|-------|-------|------|----|----|---------|
-| [twbs/bootstrap](https://github.com/twbs/bootstrap) | 168K | 97/98 | 99% | 1 | 0 | 25.1x |
-| [grafana/grafana](https://github.com/grafana/grafana) | 62K | 0/0 | N/A | 0 | 0 | ?x |
-| [wordpress/gutenberg](https://github.com/wordpress/gutenberg) | 10K | 701/701 | 100% | 0 | 0 | 31.6x |
-| [primer/css](https://github.com/primer/css) | 12K | 113/113 | 100% | 0 | 0 | 2.0x |
+| [twbs/bootstrap](https://github.com/twbs/bootstrap) | 168K | — | **run failed** | — | — | — |
+| [grafana/grafana](https://github.com/grafana/grafana) | 62K | — | **run failed** | — | — | — |
+| [wordpress/gutenberg](https://github.com/wordpress/gutenberg) | 10K | 588/598 | 98% | 5 | 20 | 48.0x |
+| [primer/css](https://github.com/primer/css) | 12K | 113/113 | 100% | 0 | 0 | 2.1x |
+
+> **2 run(s) did not complete** and are shown as `run failed`: twbs/bootstrap, grafana/grafana. A failed run is not evidence of parity — check the workflow logs.
 
 ### Legend
 
@@ -19,6 +21,7 @@ Both tools run on the same files with the same config. Results are compared auto
 - **FP**: False positives — warnings Gale reports but Stylelint does not
 - **FN**: False negatives — warnings Stylelint reports but Gale misses
 - **Speedup**: How many times faster Gale is compared to Stylelint
+- **run failed**: The differential run produced no comparable output; the row carries no parity information
 
 ### How to reproduce
 
