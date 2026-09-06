@@ -1,0 +1,49 @@
+name: ✅ Sanity check
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sanity-check:
+    name: 🩺 Sanity check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: ♻️ Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 💅 Check formatting
+        run: cargo fmt --check
+
+      - name: 🔍 Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: 🧪 Test
+        run: cargo test --workspace
+
+      - name: 🎉 All clear
+        run: echo "✅ ${GITHUB_SHA:0:7} landed on \`main\` clean — fmt, clippy, and the workspace test suite all green." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🚨 Something broke
+        if: failure()
+        run: echo "💥 ${GITHUB_SHA:0:7} broke \`main\` — check the failed step above." >> "$GITHUB_STEP_SUMMARY"
