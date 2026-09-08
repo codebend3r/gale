@@ -1,6 +1,6 @@
 # Publishing Gale to npm
 
-Gale is distributed on npm as `@lyricalstring/gale`. The package includes
+Gale is distributed on npm as `@codebend3r/gale`. The package includes
 precompiled binaries for supported platforms in the npm tarball, so install does
 not run a lifecycle script or download executables from GitHub Releases.
 
@@ -8,13 +8,13 @@ not run a lifecycle script or download executables from GitHub Releases.
 
 ```
 npm/
-  package.json    @lyricalstring/gale — main package
+  package.json    @codebend3r/gale — main package
   bin/gale        POSIX launcher that selects the current platform binary
   bin/<target>/   Precompiled platform binaries
   README.md       npm page README
 ```
 
-When a user runs `npm install @lyricalstring/gale`, package managers unpack the
+When a user runs `npm install @codebend3r/gale`, package managers unpack the
 launcher and the platform binaries directly from the npm tarball. Running
 `gale` executes `bin/gale`, which selects the matching native binary.
 
@@ -44,7 +44,7 @@ The workflow will:
 3. Create a GitHub Release with the binaries
 4. Stage the binaries into `npm/bin/<target>/gale`
 5. Set the npm package version to match
-6. Publish `@lyricalstring/gale` to npm
+6. Publish `@codebend3r/gale` to npm
 
 ### Option B: Manual
 
@@ -99,7 +99,7 @@ npx gale --version
 ## Troubleshooting
 
 **"Gale binary missing"**: The npm tarball did not include the expected
-`bin/<target>/gale` file. Reinstall `@lyricalstring/gale`; if the error
+`bin/<target>/gale` file. Reinstall `@codebend3r/gale`; if the error
 persists, report a packaging bug.
 
 **Unsupported platform**: The npm launcher supports darwin and linux on

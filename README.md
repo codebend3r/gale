@@ -2,7 +2,7 @@
 
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
-[![npm version](https://img.shields.io/npm/v/@lyricalstring/gale)](https://www.npmjs.com/package/@lyricalstring/gale)
+[![npm version](https://img.shields.io/npm/v/@codebend3r/gale)](https://www.npmjs.com/package/@codebend3r/gale)
 [![CI](https://github.com/LyricalString/gale/actions/workflows/ci.yml/badge.svg)](https://github.com/LyricalString/gale/actions)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -51,7 +51,7 @@ Parity is measured by the [differential harness](tests/differential/) against 22
 
 ```bash
 # Install
-npm install -D @lyricalstring/gale
+npm install -D @codebend3r/gale
 
 # Lint (uses your existing .stylelintrc)
 npx gale "src/**/*.css"
@@ -80,7 +80,7 @@ Your `.stylelintrc` stays exactly the same. Gale reads the same config files, fo
 ### npm (recommended)
 
 ```bash
-npm install -D @lyricalstring/gale
+npm install -D @codebend3r/gale
 ```
 
 The npm package ships prebuilt binaries, so install does not run a postinstall
@@ -178,7 +178,7 @@ Gale includes built-in `plugin/*` meta-rules that cover the most common custom p
 Importable from ESM (`import`) and CommonJS (`require`) alike.
 
 ```javascript
-import { lint, resolveConfig, formatters } from '@lyricalstring/gale';
+import { lint, resolveConfig, formatters } from '@codebend3r/gale';
 
 const result = await lint({
   files: 'src/**/*.css',
@@ -198,7 +198,7 @@ exists as a no-op compatibility stub and warns when called.
 From CommonJS the async functions work the same way:
 
 ```javascript
-const { lint } = require('@lyricalstring/gale');
+const { lint } = require('@codebend3r/gale');
 ```
 
 ### Not yet supported
@@ -418,7 +418,7 @@ The [release workflow](.github/workflows/release.yml) will:
 1. Build binaries for Linux (x64, arm64) and macOS (x64, arm64)
 2. Create a GitHub Release with the binaries
 3. Stage those binaries inside `npm/bin/<target>/`
-4. Publish the npm package (`@lyricalstring/gale`) with the matching version
+4. Publish the npm package (`@codebend3r/gale`) with the matching version
 5. Publish the `gale-lint` crate to crates.io
 
 ### Manual npm build

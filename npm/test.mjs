@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Basic smoke tests for the @lyricalstring/gale programmatic API.
+ * Basic smoke tests for the @codebend3r/gale programmatic API.
  *
  * Run: node test.mjs
  *
@@ -189,7 +189,7 @@ async function testLinterResultShape() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log("=== @lyricalstring/gale programmatic API tests ===");
+  console.log("=== @codebend3r/gale programmatic API tests ===");
 
   await testLintCodeEmptyBlock();
   await testLintCodeWithConfig();

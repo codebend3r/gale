@@ -183,7 +183,7 @@ footer a:hover{color:var(--fg)}
 
   <div class="install-cta">
     <div class="install-cmd" onclick="copyInstall(this)" title="Click to copy">
-      <span class="prompt">$</span> bun add -D @lyricalstring/gale
+      <span class="prompt">$</span> bun add -D @codebend3r/gale
       <svg class="copy-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       <span class="copied">Copied!</span>
     </div>
@@ -509,7 +509,7 @@ footer a:hover{color:var(--fg)}
     </div>
     <div class="terminal-body">
       <div><span class="comment"># Install</span></div>
-      <div><span class="prompt">$</span> <span class="cmd">bun add -D @lyricalstring/gale</span></div>
+      <div><span class="prompt">$</span> <span class="cmd">bun add -D @codebend3r/gale</span></div>
       <div>&nbsp;</div>
       <div><span class="comment"># Lint your project (uses your existing .stylelintrc)</span></div>
       <div><span class="prompt">$</span> <span class="cmd">bunx gale "src/**/*.css"</span></div>
@@ -533,7 +533,7 @@ footer a:hover{color:var(--fg)}
       <div class="unchanged">&nbsp; },</div>
       <div class="unchanged">&nbsp; "devDependencies": {</div>
       <div class="removed">&minus;&nbsp;&nbsp;&nbsp; "stylelint": "^16.0.0"</div>
-      <div class="added">&plus;&nbsp;&nbsp;&nbsp; "@lyricalstring/gale": "^0.1.1"</div>
+      <div class="added">&plus;&nbsp;&nbsp;&nbsp; "@codebend3r/gale": "^0.1.1"</div>
       <div class="unchanged">&nbsp; }</div>
       <div class="unchanged">}</div>
     </div>
@@ -543,7 +543,7 @@ footer a:hover{color:var(--fg)}
 <footer>
   <div class="links">
     <a href="https://github.com/LyricalString/gale">GitHub</a>
-    <a href="https://www.npmjs.com/package/@lyricalstring/gale">npm</a>
+    <a href="https://www.npmjs.com/package/@codebend3r/gale">npm</a>
     <a href="https://github.com/LyricalString/gale/blob/main/README.md">Docs</a>
   </div>
   <p>MIT License &middot; Built with Rust</p>
@@ -552,7 +552,7 @@ footer a:hover{color:var(--fg)}
 <script>
 // Copy install command
 function copyInstall(el) {
-  navigator.clipboard.writeText('bun add -D @lyricalstring/gale');
+  navigator.clipboard.writeText('bun add -D @codebend3r/gale');
   const badge = el.querySelector('.copied');
   badge.classList.add('show');
   setTimeout(() => badge.classList.remove('show'), 1500);

@@ -67,7 +67,7 @@ async function startClient(): Promise<void> {
 
 	if (!binary) {
 		window.showErrorMessage(
-			"Gale binary not found. Install it with `npm i -D @lyricalstring/gale`, set `gale.path`, or make sure `gale` is on your PATH.",
+			"Gale binary not found. Install it with `npm i -D @codebend3r/gale`, set `gale.path`, or make sure `gale` is on your PATH.",
 		);
 		return;
 	}

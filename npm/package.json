@@ -1,6 +1,6 @@
 {
-  "name": "@lyricalstring/gale",
-  "version": "0.1.5",
+  "name": "@codebend3r/gale",
+  "version": "0.2.0",
   "description": "An extremely fast CSS linter, written in Rust. Drop-in replacement for Stylelint.",
   "license": "MIT",
   "repository": {

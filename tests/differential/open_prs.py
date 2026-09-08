@@ -29,7 +29,7 @@ REPOS_JSON = SCRIPT_DIR / "repos.json"
 CLONES_DIR = SCRIPT_DIR / ".clones"
 GALE_ROOT = SCRIPT_DIR.parent.parent
 GALE_VERSION = "0.1.4"
-GALE_NPM_PACKAGE = "@lyricalstring/gale"
+GALE_NPM_PACKAGE = "@codebend3r/gale"
 GALE_GITHUB = "https://github.com/LyricalString/gale"
 
 # ---------------------------------------------------------------------------
@@ -122,12 +122,12 @@ def modify_package_json_source(source: str) -> tuple[str, list[str]]:
     changes = []
     result = source
 
-    # Replace "stylelint": "^x.y.z" with "@lyricalstring/gale": "^VERSION" in deps
+    # Replace "stylelint": "^x.y.z" with "@codebend3r/gale": "^VERSION" in deps
     dep_pattern = r'"stylelint"\s*:\s*"[^"]*"'
     dep_replacement = f'"{GALE_NPM_PACKAGE}": "^{GALE_VERSION}"'
     if re.search(dep_pattern, result):
         result = re.sub(dep_pattern, dep_replacement, result, count=1)
-        changes.append("Replaced stylelint dependency with @lyricalstring/gale")
+        changes.append("Replaced stylelint dependency with @codebend3r/gale")
 
     # In scripts: replace "stylelint" command with "gale", and .stylelintcache with .galecache
     # Only replace in script values, not in script names or other fields

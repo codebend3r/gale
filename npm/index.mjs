@@ -1,5 +1,5 @@
 /**
- * @lyricalstring/gale — Stylelint-compatible programmatic API
+ * @codebend3r/gale — Stylelint-compatible programmatic API
  *
  * This module wraps the native Gale binary and exposes the same API surface
  * as `stylelint.lint()`, `stylelint.formatters`, and `stylelint.resolveConfig`.
@@ -58,7 +58,7 @@ function runGale(args, { stdinData, cwd } = {}) {
         reject(
           new Error(
             `Gale binary not found. Looked for "${bin}". ` +
-              "Install @lyricalstring/gale or ensure gale is on your PATH.",
+              "Install @codebend3r/gale or ensure gale is on your PATH.",
           ),
         );
       } else {

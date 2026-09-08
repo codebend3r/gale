@@ -7,7 +7,7 @@
 > **Compatibility:** Gale targets **Stylelint v17** semantics.
 
 ```bash
-npm install -D @lyricalstring/gale
+npm install -D @codebend3r/gale
 
 # Uses your existing .stylelintrc
 npx gale "src/**/*.css"
@@ -16,7 +16,7 @@ npx gale "src/**/*.css"
 ## Programmatic API
 
 ```javascript
-import { lint, resolveConfig, formatters } from '@lyricalstring/gale';
+import { lint, resolveConfig, formatters } from '@codebend3r/gale';
 
 const result = await lint({
   files: 'src/**/*.css',

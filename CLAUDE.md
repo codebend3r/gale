@@ -14,7 +14,7 @@ The bar: `bunx gale 'src/**/*.scss'` must produce **byte-for-byte identical warn
 - Differential tested against 22 real-world repos with ZERO rule filters
 - 6 output formatters (text, json, compact, verbose, tap, unix) + `--custom-formatter`
 - Programmatic Node.js API (`lint()`, `resolveConfig()`, `formatters`)
-- Published on npm as `@lyricalstring/gale`
+- Published on npm as `@codebend3r/gale`
 - Published on crates.io as `gale-lint` (binary name is `gale`)
 
 ## Build and test commands
@@ -131,7 +131,7 @@ gale/
   editors/
     vscode/               VS Code extension (gale-lint)
   npm/
-    package.json          npm package (@lyricalstring/gale)
+    package.json          npm package (@codebend3r/gale)
     install.js            Post-install script (downloads platform binary from GitHub releases)
     bin/                  Binary placeholder
     README.md             npm page README
@@ -389,7 +389,7 @@ Three workflows:
 
 ### npm package
 
-The npm package (`@lyricalstring/gale`) uses a postinstall script (`npm/install.js`) that downloads the correct platform binary from GitHub Releases. Supported platforms: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
+The npm package (`@codebend3r/gale`) uses a postinstall script (`npm/install.js`) that downloads the correct platform binary from GitHub Releases. Supported platforms: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
 
 The `scripts/build-npm.sh` script handles building the binary and copying it into `npm/bin/`.
 
