@@ -170,6 +170,9 @@ pub struct GaleConfig {
   /// Stylelint's `reportDescriptionlessDisables`: report disable comments
   /// that carry no `-- description`.
   pub report_descriptionless_disables: bool,
+  /// Stylelint's `reportUnscopedDisables`: report disable comments that
+  /// name no rule at all.
+  pub report_unscoped_disables: bool,
   /// Stylelint's `allowEmptyInput`: succeed when no files match.
   pub allow_empty_input: bool,
   /// Stylelint's `quiet`: only report error-severity problems.
@@ -318,6 +321,7 @@ impl Default for GaleConfig {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       allow_empty_input: false,
       quiet: false,
       fix: None,
@@ -395,6 +399,9 @@ pub struct ConfigFile {
   /// Stylelint's `reportDescriptionlessDisables` option (same shapes).
   #[serde(default)]
   pub report_descriptionless_disables: Option<serde_json::Value>,
+  /// Stylelint's `reportUnscopedDisables` option (same shapes).
+  #[serde(default)]
+  pub report_unscoped_disables: Option<serde_json::Value>,
   /// Stylelint's `allowEmptyInput` option.
   #[serde(default)]
   pub allow_empty_input: Option<bool>,
@@ -3969,6 +3976,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     disable_report_enabled(raw.report_invalid_scope_disables.as_ref());
   let report_descriptionless_disables =
     disable_report_enabled(raw.report_descriptionless_disables.as_ref());
+  let report_unscoped_disables = disable_report_enabled(raw.report_unscoped_disables.as_ref());
 
   // 6. Parse defaultSeverity.
   let default_severity = raw.default_severity.as_deref().and_then(|s| match s {
@@ -4000,6 +4008,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     ignore_disables: raw.ignore_disables.unwrap_or(false),
     report_invalid_scope_disables,
     report_descriptionless_disables,
+    report_unscoped_disables,
     allow_empty_input: raw.allow_empty_input.unwrap_or(false),
     quiet: raw.quiet.unwrap_or(false),
     fix,
@@ -5844,6 +5853,7 @@ overrides:
     assert!(!cfg.ignore_disables);
     assert!(!cfg.report_invalid_scope_disables);
     assert!(!cfg.report_descriptionless_disables);
+    assert!(!cfg.report_unscoped_disables);
     assert!(!cfg.allow_empty_input);
     assert!(!cfg.quiet);
     assert_eq!(cfg.fix, None);
@@ -5876,11 +5886,13 @@ overrides:
       r#"{
                 "rules": {},
                 "reportInvalidScopeDisables": true,
-                "reportDescriptionlessDisables": [true, { "except": ["a"] }]
+                "reportDescriptionlessDisables": [true, { "except": ["a"] }],
+                "reportUnscopedDisables": true
             }"#,
     );
     assert!(cfg.report_invalid_scope_disables);
     assert!(cfg.report_descriptionless_disables);
+    assert!(cfg.report_unscoped_disables);
 
     let cfg = resolve_json(
       r#"{

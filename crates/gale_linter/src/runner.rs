@@ -355,6 +355,7 @@ struct DisableReports {
   needless: bool,
   invalid_scope: bool,
   descriptionless: bool,
+  unscoped: bool,
   severity: Severity,
 }
 
@@ -420,6 +421,10 @@ fn filter_disabled_and_report(
 
   if reports.descriptionless {
     report_descriptionless_disables(diagnostics, ranges, reports.severity, file_path);
+  }
+
+  if reports.unscoped {
+    report_unscoped_disables(diagnostics, ranges, reports.severity, file_path);
   }
 
   if !reports.needless {
@@ -551,6 +556,31 @@ fn report_invalid_scope_disables(
   }
 }
 
+/// Stylelint's `reportUnscopedDisables`: a disable comment that names no
+/// rule.  Reported once per comment.
+fn report_unscoped_disables(
+  diagnostics: &mut Vec<Diagnostic>,
+  ranges: &[DisabledRange],
+  severity: Severity,
+  file_path: &str,
+) {
+  let mut reported: HashSet<usize> = HashSet::new();
+  for range in ranges {
+    if range.rule.is_some() || !reported.insert(range.comment_start) {
+      continue;
+    }
+    diagnostics.push(
+      Diagnostic::new(
+        "--report-unscoped-disables",
+        "Configuration comment must be scoped",
+      )
+      .severity(severity)
+      .span(Span::new(range.comment_start, 0))
+      .file_path(file_path),
+    );
+  }
+}
+
 /// Stylelint's `reportDescriptionlessDisables`: a disable comment with no
 /// `-- description`.  Reported once per comment, naming its first rule (or
 /// `all` for a blanket disable).
@@ -642,6 +672,8 @@ pub struct LintRunner {
   report_invalid_scope_disables: bool,
   /// Stylelint's `reportDescriptionlessDisables`.
   report_descriptionless_disables: bool,
+  /// Stylelint's `reportUnscopedDisables`.
+  report_unscoped_disables: bool,
   /// Rule names from the config (including plugin rules Gale doesn't
   /// implement).  Used to suppress false needless-disable reports for
   /// rules that are configured but not in Gale's registry.
@@ -663,6 +695,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -683,6 +716,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -704,6 +738,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -732,6 +767,12 @@ impl LintRunner {
     self.report_descriptionless_disables = enabled;
   }
 
+  /// Enable or disable `reportUnscopedDisables` — report disable comments
+  /// that name no rule.
+  pub fn set_report_unscoped_disables(&mut self, enabled: bool) {
+    self.report_unscoped_disables = enabled;
+  }
+
   /// The disable-comment reports this runner emits, at the severity
   /// Stylelint would use (`defaultSeverity`, falling back to error).
   fn disable_reports(&self) -> DisableReports {
@@ -739,6 +780,7 @@ impl LintRunner {
       needless: self.report_needless_disables,
       invalid_scope: self.report_invalid_scope_disables,
       descriptionless: self.report_descriptionless_disables,
+      unscoped: self.report_unscoped_disables,
       severity: self.default_severity.unwrap_or(Severity::Error),
     }
   }
@@ -749,6 +791,7 @@ impl LintRunner {
       || self.report_needless_disables
       || self.report_invalid_scope_disables
       || self.report_descriptionless_disables
+      || self.report_unscoped_disables
   }
 
   /// Whether a rule name counts as configured for `reportInvalidScopeDisables`.
@@ -1503,6 +1546,34 @@ mod tests {
       result.diagnostics[0].rule_name,
       "--report-descriptionless-disables"
     );
+  }
+
+  #[test]
+  fn unscoped_disable_is_reported_once_per_comment() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_unscoped_disables(true);
+    // Inline placement creates two ranges for one comment.
+    let src = "a { color: red; } /* stylelint-disable */\nb {}\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    let d = &result.diagnostics[0];
+    assert_eq!(d.rule_name, "--report-unscoped-disables");
+    assert_eq!(d.message, "Configuration comment must be scoped");
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.span.offset, 18);
+  }
+
+  #[test]
+  fn scoped_disables_are_not_unscoped() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_unscoped_disables(true);
+    for src in [
+      "/* stylelint-disable block-no-empty */\na {}\n",
+      "/* stylelint-disable-next-line block-no-empty */\na {}\n",
+    ] {
+      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      assert!(result.diagnostics.is_empty(), "{src}");
+    }
   }
 
   #[test]

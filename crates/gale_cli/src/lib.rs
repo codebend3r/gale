@@ -149,6 +149,10 @@ pub struct Cli {
   /// Report `/* stylelint-disable */` comments without a description
   #[arg(long)]
   report_descriptionless_disables: bool,
+
+  /// Report `/* stylelint-disable */` comments that name no rule
+  #[arg(long)]
+  report_unscoped_disables: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,6 +1059,8 @@ pub fn run() -> Result<()> {
   runner.set_report_descriptionless_disables(
     config.report_descriptionless_disables || cli.report_descriptionless_disables,
   );
+  runner
+    .set_report_unscoped_disables(config.report_unscoped_disables || cli.report_unscoped_disables);
   runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
   // Plugin rules the config names but Gale does not implement still count
   // as configured for reportInvalidScopeDisables.
