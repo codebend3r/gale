@@ -384,12 +384,16 @@ struct DisableReports {
 ///
 /// When `apply_disables` is `false` (Stylelint's `ignoreDisables`) the ranges
 /// suppress nothing, but the reports above still run.
+///
+/// `forbids_disable` says whether a rule was configured with
+/// `reportDisables: true`; any disable naming such a rule is reported.
 fn filter_disabled_and_report(
   diagnostics: &mut Vec<Diagnostic>,
   ranges: &[DisabledRange],
   apply_disables: bool,
   reports: DisableReports,
   is_configured: &dyn Fn(&str) -> bool,
+  forbids_disable: &dyn Fn(&str) -> bool,
   file_path: &str,
 ) {
   if ranges.is_empty() {
@@ -426,6 +430,8 @@ fn filter_disabled_and_report(
   if reports.unscoped {
     report_unscoped_disables(diagnostics, ranges, reports.severity, file_path);
   }
+
+  report_forbidden_disables(diagnostics, ranges, forbids_disable, file_path);
 
   if !reports.needless {
     return;
@@ -550,6 +556,34 @@ fn report_invalid_scope_disables(
         format!("Rule \"{name}\" isn't enabled"),
       )
       .severity(severity)
+      .span(Span::new(range.comment_start, 0))
+      .file_path(file_path),
+    );
+  }
+}
+
+/// Stylelint's per-rule `reportDisables: true`: a disable that names a rule
+/// which may not be disabled.  Always an error, once per comment and rule.
+fn report_forbidden_disables(
+  diagnostics: &mut Vec<Diagnostic>,
+  ranges: &[DisabledRange],
+  forbids_disable: &dyn Fn(&str) -> bool,
+  file_path: &str,
+) {
+  let mut reported: HashSet<(usize, &str)> = HashSet::new();
+  for range in ranges {
+    let Some(name) = range.rule.as_deref() else {
+      continue;
+    };
+    if !forbids_disable(name) || !reported.insert((range.comment_start, name)) {
+      continue;
+    }
+    diagnostics.push(
+      Diagnostic::new(
+        "reportDisables",
+        format!("Rule \"{name}\" may not be disabled"),
+      )
+      .severity(Severity::Error)
       .span(Span::new(range.comment_start, 0))
       .file_path(file_path),
     );
@@ -794,6 +828,25 @@ impl LintRunner {
       || self.report_unscoped_disables
   }
 
+  /// Whether a rule was configured with `reportDisables: true`, looking at
+  /// the per-file options first and the runner's own second.
+  fn rule_forbids_disable(
+    &self,
+    extra_options: &HashMap<String, serde_json::Value>,
+    name: &str,
+  ) -> bool {
+    let lookup = |n: &str| {
+      extra_options
+        .get(n)
+        .or_else(|| self.rule_options.get(n))
+        .and_then(secondary_options_of)
+        .and_then(|s| s.get("reportDisables"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    };
+    lookup(name) || crate::registry::resolve_deprecated_alias(name).is_some_and(lookup)
+  }
+
   /// Whether a rule name counts as configured for `reportInvalidScopeDisables`.
   ///
   /// Both the config's own keys (which may include plugin rules Gale does
@@ -940,6 +993,7 @@ impl LintRunner {
         !self.ignore_disables,
         self.disable_reports(),
         &|rule_name| self.is_configured_rule(&[], rule_name),
+        &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
         file_path,
       );
     }
@@ -1109,6 +1163,7 @@ impl LintRunner {
         !self.ignore_disables,
         self.disable_reports(),
         &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
+        &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
         file_path,
       );
     }
@@ -1570,6 +1625,41 @@ mod tests {
     for src in [
       "/* stylelint-disable block-no-empty */\na {}\n",
       "/* stylelint-disable-next-line block-no-empty */\na {}\n",
+    ] {
+      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      assert!(result.diagnostics.is_empty(), "{src}");
+    }
+  }
+
+  #[test]
+  fn report_disables_option_flags_a_disable_of_that_rule() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "reportDisables": true }]),
+    );
+    for src in [
+      "/* stylelint-disable block-no-empty */\na {}\n",
+      "/* stylelint-disable-next-line block-no-empty */\na {}\n",
+    ] {
+      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      assert_eq!(result.diagnostics.len(), 1, "{src}");
+      let d = &result.diagnostics[0];
+      assert_eq!(d.rule_name, "reportDisables");
+      assert_eq!(d.message, "Rule \"block-no-empty\" may not be disabled");
+      assert_eq!(d.severity, Severity::Error);
+      assert_eq!(d.span.offset, 0);
+    }
+  }
+
+  #[test]
+  fn report_disables_ignores_other_rules_and_blanket_disables() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "reportDisables": true }]),
+    );
+    for src in [
+      "/* stylelint-disable color-named */\na { color: red; }\n",
+      "/* stylelint-disable */\na {}\n",
     ] {
       let result = runner.lint_source(src, "test.css", Syntax::Css);
       assert!(result.diagnostics.is_empty(), "{src}");
