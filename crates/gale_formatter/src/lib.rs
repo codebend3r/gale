@@ -139,6 +139,10 @@ struct JsonWarning {
   rule: String,
   severity: String,
   text: String,
+  /// Only present when the rule's `url` secondary option is set, as in
+  /// Stylelint, where an undefined `url` is dropped by `JSON.stringify`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  url: Option<String>,
 }
 
 impl Formatter for JsonFormatter {
@@ -165,6 +169,7 @@ impl Formatter for JsonFormatter {
               rule: diag.rule_name.clone(),
               severity: diag.severity.to_string(),
               text,
+              url: diag.url.clone(),
             }
           })
           .collect();
@@ -513,6 +518,22 @@ mod tests {
       .severity(Severity::Error)
       .span(Span::new(0, 0));
     vec![LintResult::new("src/app.css", source, vec![diag])]
+  }
+
+  #[test]
+  fn json_warning_carries_url_only_when_set() {
+    let output = JsonFormatter.format(&sample_results());
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(parsed[0]["warnings"][0].get("url").is_none());
+
+    let source = "a {\n  \n}\n";
+    let diag = Diagnostic::new("block-no-empty", "Unexpected empty block")
+      .span(Span::new(4, 3))
+      .url("https://example.com/empty");
+    let results = vec![LintResult::new("src/app.css", source, vec![diag])];
+    let output = JsonFormatter.format(&results);
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed[0]["warnings"][0]["url"], "https://example.com/empty");
   }
 
   #[test]

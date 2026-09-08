@@ -193,6 +193,10 @@ pub struct Diagnostic {
   pub file_path: String,
   /// Optional auto-fix.
   pub fix: Option<Fix>,
+  /// Documentation URL from the rule's `url` secondary option, surfaced as
+  /// the `url` field of a Stylelint warning.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub url: Option<String>,
 }
 
 impl Diagnostic {
@@ -225,6 +229,7 @@ impl Diagnostic {
       span: Span::new(0, 0),
       file_path: String::new(),
       fix: None,
+      url: None,
     }
   }
 
@@ -240,6 +245,11 @@ impl Diagnostic {
 
   pub fn file_path(mut self, path: impl Into<String>) -> Self {
     self.file_path = path.into();
+    self
+  }
+
+  pub fn url(mut self, url: impl Into<String>) -> Self {
+    self.url = Some(url.into());
     self
   }
 
@@ -454,6 +464,20 @@ mod tests {
     let (fixed, count) = apply_fixes(source, &diags);
     assert_eq!(fixed, source);
     assert_eq!(count, 0);
+  }
+
+  #[test]
+  fn url_is_absent_from_serialised_output_unless_set() {
+    let plain = Diagnostic::new("block-no-empty", "Unexpected empty block");
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("\"url\""), "{json}");
+
+    let with_url = plain.url("https://example.com/rule");
+    let json = serde_json::to_string(&with_url).unwrap();
+    assert!(
+      json.contains("\"url\":\"https://example.com/rule\""),
+      "{json}"
+    );
   }
 
   #[test]

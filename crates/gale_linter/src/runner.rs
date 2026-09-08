@@ -5,7 +5,7 @@ use gale_css_parser::{CssNode, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::registry::RuleRegistry;
-use crate::rule::RuleContext;
+use crate::rule::{RuleContext, secondary_options_of};
 
 // ---------------------------------------------------------------------------
 // Inline disable-comment support
@@ -594,6 +594,27 @@ fn is_noop_stub_rule(name: &str) -> bool {
   matches!(name, "material/no-prefixes")
 }
 
+/// Apply the secondary options every Stylelint rule accepts, whatever the
+/// rule itself does with its options:
+///
+/// - `message` replaces the warning text,
+/// - `url` attaches a documentation link to the warning,
+/// - `disableFix: true` keeps the report but drops its autofix.
+fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::Value>) {
+  let Some(secondary) = options.and_then(secondary_options_of) else {
+    return;
+  };
+  if let Some(message) = secondary.get("message").and_then(|v| v.as_str()) {
+    diag.message = message.to_string();
+  }
+  if let Some(url) = secondary.get("url").and_then(|v| v.as_str()) {
+    diag.url = Some(url.to_string());
+  }
+  if secondary.get("disableFix").and_then(|v| v.as_bool()) == Some(true) {
+    diag.fix = None;
+  }
+}
+
 /// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
 fn perf_enabled() -> bool {
   std::env::var("GALE_DEBUG_PERF")
@@ -849,6 +870,7 @@ impl LintRunner {
       if diag.file_path.is_empty() {
         diag.file_path = file_path.to_string();
       }
+      apply_secondary_options(diag, self.rule_options.get(&diag.rule_name));
       // Apply config-specified severity overrides.
       if let Some(&sev) = self.rule_severities.get(&diag.rule_name) {
         diag.severity = sev;
@@ -1013,6 +1035,12 @@ impl LintRunner {
       if diag.file_path.is_empty() {
         diag.file_path = file_path.to_string();
       }
+      apply_secondary_options(
+        diag,
+        rule_options
+          .get(&diag.rule_name)
+          .or_else(|| self.rule_options.get(&diag.rule_name)),
+      );
       // Apply config-specified severity overrides BEFORE relabeling,
       // because severities are keyed by canonical rule name.
       if let Some(&sev) = rule_severities
@@ -1291,6 +1319,78 @@ mod tests {
     // from the fallback parse, or a parse-error diagnostic was emitted.
     // (If both parsers happen to recover and produce a clean AST with no
     // violations, that is also acceptable — but the code path is correct.)
+  }
+
+  // -- Secondary options every rule accepts --
+
+  fn runner_with_options(rule: &str, options: serde_json::Value) -> LintRunner {
+    let mut opts = HashMap::new();
+    opts.insert(rule.to_string(), options);
+    LintRunner::with_options(RuleRegistry::default(), vec![rule.to_string()], opts)
+  }
+
+  #[test]
+  fn message_option_replaces_the_warning_text() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "message": "No empty blocks please" }]),
+    );
+    let result = runner.lint_source("a {}", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].message, "No empty blocks please");
+    assert_eq!(result.diagnostics[0].rule_name, "block-no-empty");
+  }
+
+  #[test]
+  fn url_option_is_attached_to_every_warning_of_the_rule() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "url": "https://example.com/empty" }]),
+    );
+    let result = runner.lint_source("a {}\nb {}", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 2);
+    for d in &result.diagnostics {
+      assert_eq!(d.url.as_deref(), Some("https://example.com/empty"));
+    }
+  }
+
+  #[test]
+  fn disable_fix_option_keeps_the_report_but_drops_the_fix() {
+    let fixable = runner_with_options("color-hex-case", serde_json::json!(["lower"]));
+    let with_fix = fixable.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    assert!(
+      with_fix.diagnostics[0].fix.is_some(),
+      "precondition: rule is fixable"
+    );
+
+    let runner = runner_with_options(
+      "color-hex-case",
+      serde_json::json!(["lower", { "disableFix": true }]),
+    );
+    let result = runner.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(result.diagnostics[0].fix.is_none());
+  }
+
+  #[test]
+  fn secondary_options_apply_through_per_file_rule_sets() {
+    let runner = LintRunner::new(RuleRegistry::default(), vec![]);
+    let enabled = vec!["block-no-empty".to_string()];
+    let mut opts = HashMap::new();
+    opts.insert(
+      "block-no-empty".to_string(),
+      serde_json::json!([true, { "message": "Custom", "url": "https://x.y" }]),
+    );
+    let result = runner.lint_source_with_rules(
+      "a {}",
+      "test.css",
+      Syntax::Css,
+      &enabled,
+      &opts,
+      &HashMap::new(),
+    );
+    assert_eq!(result.diagnostics[0].message, "Custom");
+    assert_eq!(result.diagnostics[0].url.as_deref(), Some("https://x.y"));
   }
 
   // -- Disable-comment reports --

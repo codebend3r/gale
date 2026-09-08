@@ -632,6 +632,7 @@ dependencies = [
  "miette",
  "owo-colors",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
