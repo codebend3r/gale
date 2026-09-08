@@ -41,7 +41,7 @@ describe("[tier 1] ignoreDisables config key", () => {
     expect(warnings.map((w) => w.rule)).toEqual(["block-no-empty"]);
   });
 
-  test.failing("ignoreDisables: true reports the suppressed warning", () => {
+  test("ignoreDisables: true reports the suppressed warning", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }, { ignoreDisables: true }),
       "a.css": source,
@@ -80,7 +80,7 @@ describe("[tier 1] allowEmptyInput config key", () => {
     ).toBe(0);
   });
 
-  test.failing("allowEmptyInput: true makes no matches succeed", () => {
+  test("allowEmptyInput: true makes no matches succeed", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }, { allowEmptyInput: true }),
     });
@@ -101,7 +101,7 @@ describe("[tier 1] quiet config key", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(1);
   });
 
-  test.failing("quiet: true drops warning-severity problems", () => {
+  test("quiet: true drops warning-severity problems", () => {
     const project = makeProject({
       ".stylelintrc.json": config(rules, { quiet: true }),
       "a.css": EMPTY_BLOCK,
@@ -133,7 +133,7 @@ describe("[tier 1] fix config key", () => {
     expect(project.read("a.css")).toBe(UPPER_HEX);
   });
 
-  test.failing("fix: true rewrites the file in place", () => {
+  test("fix: true rewrites the file in place", () => {
     const project = makeProject({
       ".stylelintrc.json": config(rules, { fix: true }),
       "a.css": UPPER_HEX,
@@ -144,7 +144,7 @@ describe("[tier 1] fix config key", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test.failing('fix: "lax" is accepted like --fix=lax', () => {
+  test('fix: "lax" is accepted like --fix=lax', () => {
     const project = makeProject({
       ".stylelintrc.json": config(rules, { fix: "lax" }),
       "a.css": UPPER_HEX,
@@ -166,7 +166,7 @@ describe("[tier 1] cache and cacheLocation config keys", () => {
     expect(project.exists(".gale_cache")).toBe(false);
   });
 
-  test.failing("cache: true writes the default cache file", () => {
+  test("cache: true writes the default cache file", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }, { cache: true }),
       "a.css": "a { color: red; }\n",
@@ -176,7 +176,7 @@ describe("[tier 1] cache and cacheLocation config keys", () => {
     expect(project.exists(".gale_cache")).toBe(true);
   });
 
-  test.failing("cacheLocation moves the cache file", () => {
+  test("cacheLocation moves the cache file", () => {
     const project = makeProject({
       ".stylelintrc.json": config(
         { "block-no-empty": true },
