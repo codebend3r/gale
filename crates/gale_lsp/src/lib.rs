@@ -9,7 +9,7 @@ use tracing::debug;
 
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
-use gale_diagnostics::{Severity, SourceLineIndex};
+use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
 use gale_linter::{LintRunner, RuleRegistry};
 
 // ---------------------------------------------------------------------------
@@ -30,15 +30,50 @@ fn byte_col_to_utf16(source: &str, line_start_byte: usize, byte_col: usize) -> u
   slice.chars().map(|ch| ch.len_utf16() as u32).sum()
 }
 
+/// Convert a byte span in `source` to an LSP range (0-indexed lines, UTF-16
+/// characters).
+fn span_to_range(source: &str, line_index: &SourceLineIndex, span: Span) -> Range {
+  let (start_line, start_col) = line_index.offset_to_location(span.offset);
+  let (end_line, end_col) = line_index.offset_to_location(span.end());
+
+  // SourceLineIndex returns 1-indexed line/col where col is byte-based.
+  let start_line_byte = span.offset - (start_col - 1);
+  let end_line_byte = span.end() - (end_col - 1);
+
+  Range {
+    start: Position {
+      line: start_line.saturating_sub(1) as u32,
+      character: byte_col_to_utf16(source, start_line_byte, start_col - 1),
+    },
+    end: Position {
+      line: end_line.saturating_sub(1) as u32,
+      character: byte_col_to_utf16(source, end_line_byte, end_col - 1),
+    },
+  }
+}
+
+/// Whether two ranges share at least one position.
+fn ranges_overlap(a: &Range, b: &Range) -> bool {
+  a.start <= b.end && b.start <= a.end
+}
+
 // ---------------------------------------------------------------------------
 // Server state
 // ---------------------------------------------------------------------------
+
+/// The last text the client sent for a document and what the linter found in
+/// it, kept so code actions can offer the fixes those diagnostics carry.
+struct Document {
+  text: String,
+  diagnostics: Vec<GaleDiagnostic>,
+}
 
 pub struct GaleLspServer {
   client: Client,
   runner: RwLock<Option<LintRunner>>,
   /// Explicit config path from `gale --lsp --config <path>`, if any.
   config_path: Option<PathBuf>,
+  documents: RwLock<HashMap<Url, Document>>,
 }
 
 impl GaleLspServer {
@@ -47,6 +82,7 @@ impl GaleLspServer {
       client,
       runner: RwLock::new(None),
       config_path,
+      documents: RwLock::new(HashMap::new()),
     }
   }
 
@@ -127,8 +163,31 @@ impl GaleLspServer {
     runner
   }
 
-  /// Lint source text and convert to LSP diagnostics (sync part).
-  fn lint_to_diagnostics(&self, uri: &Url, source: &str) -> Vec<tower_lsp::lsp_types::Diagnostic> {
+  /// Convert one of Gale's diagnostics to the LSP shape.
+  fn to_lsp_diagnostic(
+    d: &GaleDiagnostic,
+    source: &str,
+    line_index: &SourceLineIndex,
+  ) -> tower_lsp::lsp_types::Diagnostic {
+    let severity = match d.severity {
+      Severity::Error => Some(DiagnosticSeverity::ERROR),
+      Severity::Warning => Some(DiagnosticSeverity::WARNING),
+      Severity::Info => Some(DiagnosticSeverity::INFORMATION),
+      Severity::Hint => Some(DiagnosticSeverity::HINT),
+    };
+
+    tower_lsp::lsp_types::Diagnostic {
+      range: span_to_range(source, line_index, d.span),
+      severity,
+      code: Some(NumberOrString::String(d.rule_name.clone())),
+      source: Some("gale".to_string()),
+      message: d.message.clone(),
+      ..Default::default()
+    }
+  }
+
+  /// Lint source text (sync part), returning Gale's own diagnostics.
+  fn lint(&self, uri: &Url, source: &str) -> Vec<GaleDiagnostic> {
     let runner_guard = self.runner.read().unwrap_or_else(|e| e.into_inner());
     let Some(runner) = runner_guard.as_ref() else {
       return Vec::new();
@@ -140,60 +199,80 @@ impl GaleLspServer {
       .unwrap_or_else(|_| uri.to_string());
 
     let syntax = detect_syntax(&file_path);
-    let result = runner.lint_source(source, &file_path, syntax);
-
-    let line_index = SourceLineIndex::build(source);
-
-    result
-      .diagnostics
-      .iter()
-      .map(|d| {
-        let (start_line, start_col) = line_index.offset_to_location(d.span.offset);
-        let (end_line, end_col) = line_index.offset_to_location(d.span.end());
-
-        // SourceLineIndex returns 1-indexed line/col where col is
-        // byte-based. LSP uses 0-indexed line and UTF-16 code-unit
-        // character offsets.
-        let start_line_byte = d.span.offset - (start_col - 1);
-        let end_line_byte = d.span.end() - (end_col - 1);
-
-        let range = Range {
-          start: Position {
-            line: start_line.saturating_sub(1) as u32,
-            character: byte_col_to_utf16(source, start_line_byte, start_col - 1),
-          },
-          end: Position {
-            line: end_line.saturating_sub(1) as u32,
-            character: byte_col_to_utf16(source, end_line_byte, end_col - 1),
-          },
-        };
-
-        let severity = match d.severity {
-          Severity::Error => Some(DiagnosticSeverity::ERROR),
-          Severity::Warning => Some(DiagnosticSeverity::WARNING),
-          Severity::Info => Some(DiagnosticSeverity::INFORMATION),
-          Severity::Hint => Some(DiagnosticSeverity::HINT),
-        };
-
-        tower_lsp::lsp_types::Diagnostic {
-          range,
-          severity,
-          code: Some(NumberOrString::String(d.rule_name.clone())),
-          source: Some("gale".to_string()),
-          message: d.message.clone(),
-          ..Default::default()
-        }
-      })
-      .collect()
+    runner.lint_source(source, &file_path, syntax).diagnostics
   }
 
-  /// Lint source text and publish diagnostics to the client.
+  /// Lint source text, remember it for code actions, and publish
+  /// diagnostics to the client.
   async fn lint_and_publish(&self, uri: Url, source: &str) {
-    let diagnostics = self.lint_to_diagnostics(&uri, source);
+    let diagnostics = self.lint(&uri, source);
+    let line_index = SourceLineIndex::build(source);
+    let lsp_diagnostics = diagnostics
+      .iter()
+      .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
+      .collect();
+
+    self
+      .documents
+      .write()
+      .unwrap_or_else(|e| e.into_inner())
+      .insert(
+        uri.clone(),
+        Document {
+          text: source.to_string(),
+          diagnostics,
+        },
+      );
+
     self
       .client
-      .publish_diagnostics(uri, diagnostics, None)
+      .publish_diagnostics(uri, lsp_diagnostics, None)
       .await;
+  }
+
+  /// Quick fixes for the fixable diagnostics that touch `range` in the
+  /// document at `uri`, built from the last text the client sent.
+  fn quick_fixes(&self, uri: &Url, range: &Range) -> Vec<CodeActionOrCommand> {
+    let documents = self.documents.read().unwrap_or_else(|e| e.into_inner());
+    let Some(doc) = documents.get(uri) else {
+      return Vec::new();
+    };
+    let line_index = SourceLineIndex::build(&doc.text);
+
+    doc
+      .diagnostics
+      .iter()
+      .filter_map(|d| {
+        let fix = d.fix.as_ref()?;
+        let diag_range = span_to_range(&doc.text, &line_index, d.span);
+        if !ranges_overlap(&diag_range, range) {
+          return None;
+        }
+
+        let edits: Vec<TextEdit> = fix
+          .edits
+          .iter()
+          .map(|edit| TextEdit {
+            range: span_to_range(&doc.text, &line_index, edit.span),
+            new_text: edit.new_text.clone(),
+          })
+          .collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), edits);
+
+        Some(CodeActionOrCommand::CodeAction(CodeAction {
+          title: format!("Fix: {}", d.message),
+          kind: Some(CodeActionKind::QUICKFIX),
+          diagnostics: Some(vec![Self::to_lsp_diagnostic(d, &doc.text, &line_index)]),
+          edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+          }),
+          is_preferred: Some(true),
+          ..Default::default()
+        }))
+      })
+      .collect()
   }
 }
 
@@ -244,6 +323,7 @@ impl LanguageServer for GaleLspServer {
     Ok(InitializeResult {
       capabilities: ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         ..Default::default()
       },
       server_info: Some(ServerInfo {
@@ -276,12 +356,23 @@ impl LanguageServer for GaleLspServer {
   }
 
   async fn did_close(&self, params: DidCloseTextDocumentParams) {
+    self
+      .documents
+      .write()
+      .unwrap_or_else(|e| e.into_inner())
+      .remove(&params.text_document.uri);
     // Clear diagnostics for the closed file, otherwise the editor keeps
     // showing warnings for a document that is no longer open.
     self
       .client
       .publish_diagnostics(params.text_document.uri, Vec::new(), None)
       .await;
+  }
+
+  async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+    Ok(Some(
+      self.quick_fixes(&params.text_document.uri, &params.range),
+    ))
   }
 
   async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -316,4 +407,30 @@ pub async fn run_server(config_path: Option<PathBuf>) {
   let (service, socket) =
     LspService::new(move |client| GaleLspServer::new(client, config_path.clone()));
   Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn span_to_range_uses_zero_based_lines_and_utf16_columns() {
+    let source = "a { color: #FFF; }\nb { }\n";
+    let line_index = SourceLineIndex::build(source);
+    let range = span_to_range(source, &line_index, Span::new(11, 4));
+    assert_eq!(range.start, Position::new(0, 11));
+    assert_eq!(range.end, Position::new(0, 15));
+
+    let range = span_to_range(source, &line_index, Span::new(23, 1));
+    assert_eq!(range.start, Position::new(1, 4));
+  }
+
+  #[test]
+  fn ranges_overlap_when_they_share_a_position() {
+    let r = |sl, sc, el, ec| Range::new(Position::new(sl, sc), Position::new(el, ec));
+    assert!(ranges_overlap(&r(0, 11, 0, 15), &r(0, 0, 0, 18)));
+    assert!(ranges_overlap(&r(0, 11, 0, 15), &r(0, 15, 0, 15)));
+    assert!(!ranges_overlap(&r(0, 11, 0, 15), &r(1, 0, 1, 3)));
+    assert!(!ranges_overlap(&r(0, 11, 0, 15), &r(0, 0, 0, 10)));
+  }
 }
