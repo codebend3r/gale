@@ -147,6 +147,16 @@ pub fn is_supported_custom_syntax(syntax_name: &str) -> bool {
     )
 }
 
+/// How autofix behaves when it is switched on from the config file.
+///
+/// Mirrors the `--fix` flag: `Strict` skips files with parse errors, `Lax`
+/// fixes them anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixMode {
+    Strict,
+    Lax,
+}
+
 /// The fully-resolved configuration used by the linter at runtime.
 #[derive(Debug, Clone)]
 pub struct GaleConfig {
@@ -169,6 +179,26 @@ pub struct GaleConfig {
     /// Top-level `customSyntax` value from the config file.
     /// When set to an unsupported syntax, all files should be skipped.
     pub custom_syntax: Option<String>,
+    /// Stylelint's `ignoreDisables`: report problems even inside
+    /// `stylelint-disable` ranges.
+    pub ignore_disables: bool,
+    /// Stylelint's `reportInvalidScopeDisables`: report disable comments that
+    /// name a rule which is not configured.
+    pub report_invalid_scope_disables: bool,
+    /// Stylelint's `reportDescriptionlessDisables`: report disable comments
+    /// that carry no `-- description`.
+    pub report_descriptionless_disables: bool,
+    /// Stylelint's `allowEmptyInput`: succeed when no files match.
+    pub allow_empty_input: bool,
+    /// Stylelint's `quiet`: only report error-severity problems.
+    pub quiet: bool,
+    /// Stylelint's `fix`: autofix without passing `--fix`.  `None` leaves
+    /// fixing off unless the CLI asks for it.
+    pub fix: Option<FixMode>,
+    /// Stylelint's `cache`: skip files that were clean on the previous run.
+    pub cache: bool,
+    /// Stylelint's `cacheLocation`, relative to the working directory.
+    pub cache_location: Option<PathBuf>,
 }
 
 impl GaleConfig {
@@ -323,6 +353,14 @@ impl Default for GaleConfig {
             report_needless_disables: false,
             default_severity: None,
             custom_syntax: None,
+            ignore_disables: false,
+            report_invalid_scope_disables: false,
+            report_descriptionless_disables: false,
+            allow_empty_input: false,
+            quiet: false,
+            fix: None,
+            cache: false,
+            cache_location: None,
         }
     }
 }
@@ -385,6 +423,31 @@ pub struct ConfigFile {
     /// unsupported value, all files are skipped gracefully.
     #[serde(default)]
     pub custom_syntax: Option<serde_json::Value>,
+    /// Stylelint's `ignoreDisables` option.
+    #[serde(default)]
+    pub ignore_disables: Option<bool>,
+    /// Stylelint's `reportInvalidScopeDisables` option (`true`, `false`, or
+    /// `[bool, { except, severity }]`).
+    #[serde(default)]
+    pub report_invalid_scope_disables: Option<serde_json::Value>,
+    /// Stylelint's `reportDescriptionlessDisables` option (same shapes).
+    #[serde(default)]
+    pub report_descriptionless_disables: Option<serde_json::Value>,
+    /// Stylelint's `allowEmptyInput` option.
+    #[serde(default)]
+    pub allow_empty_input: Option<bool>,
+    /// Stylelint's `quiet` option.
+    #[serde(default)]
+    pub quiet: Option<bool>,
+    /// Stylelint's `fix` option: `true`, `false`, `"strict"` or `"lax"`.
+    #[serde(default)]
+    pub fix: Option<serde_json::Value>,
+    /// Stylelint's `cache` option.
+    #[serde(default)]
+    pub cache: Option<bool>,
+    /// Stylelint's `cacheLocation` option.
+    #[serde(default)]
+    pub cache_location: Option<String>,
 }
 
 /// A single override entry as it appears in the config file.
@@ -3960,18 +4023,14 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         .map(extract_plugin_names)
         .unwrap_or_default();
 
-    // 5. Parse reportNeedlessDisables — accepts `true`, `false`, or an array
-    //    (Stylelint also supports per-rule arrays, but we only support the
-    //    boolean form for now).
-    let report_needless_disables = raw
-        .report_needless_disables
-        .as_ref()
-        .map(|v| match v {
-            serde_json::Value::Bool(b) => *b,
-            // Treat any non-false value (e.g. an array of rules) as enabled.
-            _ => true,
-        })
-        .unwrap_or(false);
+    // 5. Parse the disable-report switches.  Each accepts `true`, `false`, or
+    //    Stylelint's `[bool, { except, severity }]` array form, of which only
+    //    the leading boolean is honoured.
+    let report_needless_disables = disable_report_enabled(raw.report_needless_disables.as_ref());
+    let report_invalid_scope_disables =
+        disable_report_enabled(raw.report_invalid_scope_disables.as_ref());
+    let report_descriptionless_disables =
+        disable_report_enabled(raw.report_descriptionless_disables.as_ref());
 
     // 6. Parse defaultSeverity.
     let default_severity = raw.default_severity.as_deref().and_then(|s| match s {
@@ -3986,6 +4045,10 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         .as_ref()
         .and_then(|v| v.as_str().map(String::from));
 
+    // 8. The CLI-equivalent switches.
+    let fix = raw.fix.as_ref().and_then(fix_mode_from_value);
+    let cache_location = raw.cache_location.as_deref().map(PathBuf::from);
+
     GaleConfig {
         rules,
         ignore_patterns,
@@ -3996,6 +4059,47 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         report_needless_disables,
         default_severity,
         custom_syntax,
+        ignore_disables: raw.ignore_disables.unwrap_or(false),
+        report_invalid_scope_disables,
+        report_descriptionless_disables,
+        allow_empty_input: raw.allow_empty_input.unwrap_or(false),
+        quiet: raw.quiet.unwrap_or(false),
+        fix,
+        cache: raw.cache.unwrap_or(false),
+        cache_location,
+    }
+}
+
+/// Interpret one of Stylelint's `report*Disables` settings.
+///
+/// `true` / `false` are the common forms.  The array form
+/// `[bool, { except, severity }]` is read for its leading boolean; any other
+/// truthy value enables the report.
+fn disable_report_enabled(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Array(items)) => {
+            items.first().and_then(|v| v.as_bool()).unwrap_or(true)
+        }
+        Some(serde_json::Value::Null) => false,
+        Some(_) => true,
+    }
+}
+
+/// Interpret Stylelint's `fix` config value.
+///
+/// `true` and `"strict"` enable strict fixing, `"lax"` enables lax fixing,
+/// and anything else leaves fixing off.
+fn fix_mode_from_value(value: &serde_json::Value) -> Option<FixMode> {
+    match value {
+        serde_json::Value::Bool(true) => Some(FixMode::Strict),
+        serde_json::Value::String(s) => match s.to_lowercase().as_str() {
+            "strict" => Some(FixMode::Strict),
+            "lax" => Some(FixMode::Lax),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -5821,5 +5925,97 @@ overrides:
             raw.custom_syntax,
             Some(serde_json::Value::String("postcss-scss".to_string()))
         );
+    }
+
+    // -- CLI-equivalent config keys --------------------------------------
+
+    fn resolve_json(json: &str) -> GaleConfig {
+        let raw: ConfigFile = serde_json::from_str(json).unwrap();
+        resolve_raw(raw, Path::new("."))
+    }
+
+    #[test]
+    fn cli_equivalent_keys_default_to_off() {
+        let cfg = resolve_json(r#"{ "rules": {} }"#);
+        assert!(!cfg.ignore_disables);
+        assert!(!cfg.report_invalid_scope_disables);
+        assert!(!cfg.report_descriptionless_disables);
+        assert!(!cfg.allow_empty_input);
+        assert!(!cfg.quiet);
+        assert_eq!(cfg.fix, None);
+        assert!(!cfg.cache);
+        assert_eq!(cfg.cache_location, None);
+    }
+
+    #[test]
+    fn cli_equivalent_boolean_keys_are_read() {
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "ignoreDisables": true,
+                "allowEmptyInput": true,
+                "quiet": true,
+                "cache": true,
+                "cacheLocation": "tmp/lint.cache"
+            }"#,
+        );
+        assert!(cfg.ignore_disables);
+        assert!(cfg.allow_empty_input);
+        assert!(cfg.quiet);
+        assert!(cfg.cache);
+        assert_eq!(cfg.cache_location, Some(PathBuf::from("tmp/lint.cache")));
+    }
+
+    #[test]
+    fn disable_report_keys_accept_bool_and_array_forms() {
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "reportInvalidScopeDisables": true,
+                "reportDescriptionlessDisables": [true, { "except": ["a"] }]
+            }"#,
+        );
+        assert!(cfg.report_invalid_scope_disables);
+        assert!(cfg.report_descriptionless_disables);
+
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "reportInvalidScopeDisables": false,
+                "reportDescriptionlessDisables": [false, { "except": ["a"] }],
+                "reportNeedlessDisables": null
+            }"#,
+        );
+        assert!(!cfg.report_invalid_scope_disables);
+        assert!(!cfg.report_descriptionless_disables);
+        assert!(!cfg.report_needless_disables);
+    }
+
+    #[test]
+    fn fix_key_maps_to_fix_mode() {
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": true }"#).fix,
+            Some(FixMode::Strict)
+        );
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": "strict" }"#).fix,
+            Some(FixMode::Strict)
+        );
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": "lax" }"#).fix,
+            Some(FixMode::Lax)
+        );
+        assert_eq!(resolve_json(r#"{ "rules": {}, "fix": false }"#).fix, None);
+        assert_eq!(resolve_json(r#"{ "rules": {}, "fix": "bogus" }"#).fix, None);
+    }
+
+    #[test]
+    fn cli_equivalent_keys_parse_from_yaml() {
+        let yaml = "rules: {}\nignoreDisables: true\nquiet: true\nfix: lax\n";
+        let raw: ConfigFile = serde_yaml::from_str(yaml).unwrap();
+        let cfg = resolve_raw(raw, Path::new("."));
+        assert!(cfg.ignore_disables);
+        assert!(cfg.quiet);
+        assert_eq!(cfg.fix, Some(FixMode::Lax));
     }
 }
