@@ -164,6 +164,20 @@ pub struct Cli {
 }
 
 // ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+
+// Stylelint's exit codes, which CI scripts key off.  A fatal error such as
+// no files matching the patterns exits 1, as in Stylelint.
+
+/// Lint problems were found, or `--max-warnings` was exceeded.
+const EXIT_LINT_PROBLEM: i32 = 2;
+/// The command line could not be understood.
+const EXIT_INVALID_USAGE: i32 = 64;
+/// The configuration file could not be loaded.
+const EXIT_INVALID_CONFIG: i32 = 78;
+
+// ---------------------------------------------------------------------------
 // Supported file extensions
 // ---------------------------------------------------------------------------
 
@@ -853,7 +867,18 @@ fn generate_init_config() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> Result<()> {
-  let cli = Cli::parse();
+  let cli = match Cli::try_parse() {
+    Ok(cli) => cli,
+    Err(err) => {
+      // --help and --version are not errors.  Anything else is a usage
+      // error, which Stylelint reports with exit code 64.
+      if err.use_stderr() {
+        let _ = err.print();
+        process::exit(EXIT_INVALID_USAGE);
+      }
+      err.exit();
+    }
+  };
 
   // Initialise tracing (controlled via GALE_LOG env var).
   tracing_subscriber::fmt()
@@ -887,17 +912,24 @@ pub fn run() -> Result<()> {
   // is linted with the closest config in the directory hierarchy).
   let use_per_file_config = cli.config.is_none();
 
+  // A config that exists but cannot be loaded is a configuration error
+  // (exit 78), not something to paper over with defaults.
+  let load_or_exit = |path: &Path| -> GaleConfig {
+    match gale_config::load_config(path) {
+      Ok(cfg) => cfg,
+      Err(err) => {
+        eprintln!("Error: failed to load config {}: {err}", path.display());
+        process::exit(EXIT_INVALID_CONFIG);
+      }
+    }
+  };
   let (config, has_config_file) = if let Some(ref cfg_path) = cli.config {
     debug!("Using config file: {}", cfg_path.display());
-    let cfg = gale_config::load_config(cfg_path).unwrap_or_else(|err| {
-      eprintln!("Warning: failed to load config: {err}");
-      GaleConfig::default()
-    });
-    (cfg, true)
+    (load_or_exit(cfg_path), true)
   } else {
     let cwd = std::env::current_dir().unwrap_or_default();
-    match gale_config::resolve_config(&cwd) {
-      Some(cfg) => (cfg, true),
+    match gale_config::find_config(&cwd) {
+      Some(path) => (load_or_exit(&path), true),
       None => (GaleConfig::default(), false),
     }
   };
@@ -1645,12 +1677,12 @@ pub fn run() -> Result<()> {
     && total_warnings > max
   {
     eprintln!("Found {total_warnings} warning(s) (max allowed: {max})");
-    process::exit(1);
+    process::exit(EXIT_LINT_PROBLEM);
   }
 
-  // Exit with code 1 if there were any errors.
+  // Lint problems exit 2, as in Stylelint.
   if total_errors > 0 {
-    process::exit(1);
+    process::exit(EXIT_LINT_PROBLEM);
   }
 
   Ok(())
