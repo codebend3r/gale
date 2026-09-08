@@ -364,6 +364,42 @@ impl Formatter for VerboseFormatter {
 }
 
 // ---------------------------------------------------------------------------
+// ANSI stripping
+// ---------------------------------------------------------------------------
+
+/// Remove ANSI escape sequences (colours, styles, cursor moves) from `input`.
+///
+/// Used when a coloured report is written to a file, where Stylelint strips
+/// the escapes too.
+pub fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI sequence: ESC [ <params> <final byte in 0x40..=0x7e>
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // Two-character escapes such as ESC ( B.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -504,6 +540,24 @@ mod tests {
             unix.contains(": Needless disable for \"x\" [error]"),
             "{unix}"
         );
+    }
+
+    #[test]
+    fn strip_ansi_removes_colour_codes_and_keeps_text() {
+        let coloured =
+            "\x1b[4msrc/app.css\x1b[0m\n  \x1b[31m\u{2716}\x1b[39m  plain \x1b[1mbold\x1b[22m";
+        assert_eq!(strip_ansi(coloured), "src/app.css\n  \u{2716}  plain bold");
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn text_formatter_output_strips_clean() {
+        let coloured = TextFormatter.format(&sample_results());
+        let plain = strip_ansi(&coloured);
+        assert!(!plain.contains('\x1b'));
+        assert!(plain.contains("src/app.css\n"));
+        assert!(plain.contains("Unexpected empty block  block-no-empty"));
     }
 
     #[test]

@@ -12,9 +12,9 @@ use rayon::prelude::*;
 use tracing::debug;
 
 use gale_config::{ConfigResolver, GaleConfig};
-use gale_css_parser::detect_syntax;
+use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
-use gale_formatter::create_formatter;
+use gale_formatter::{create_formatter, strip_ansi};
 use gale_linter::{LintRunner, RuleRegistry};
 
 use crate::cache::{LintCache, compute_config_hash, compute_hash, resolve_cache_path};
@@ -110,6 +110,14 @@ pub struct Cli {
     #[arg(long)]
     quiet_deprecation_warnings: bool,
 
+    /// Parse every file with this syntax: postcss, postcss-scss, postcss-less or postcss-sass
+    #[arg(long, value_name = "SYNTAX")]
+    custom_syntax: Option<String>,
+
+    /// Write the report to this file as well as printing it
+    #[arg(short = 'o', long, value_name = "PATH")]
+    output_file: Option<PathBuf>,
+
     /// Disable all ignore file processing (gitignore, .galeignore, custom)
     #[arg(long)]
     no_ignore: bool,
@@ -148,6 +156,31 @@ pub struct Cli {
 // ---------------------------------------------------------------------------
 
 const CSS_EXTENSIONS: &[&str] = &["css", "scss", "less", "sass"];
+
+/// Map a Stylelint `customSyntax` package name onto the parser Gale uses.
+///
+/// Returns `None` for syntaxes Gale cannot parse (`postcss-html`,
+/// `postcss-markdown`, ...).
+fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
+    match name.to_ascii_lowercase().as_str() {
+        "postcss" => Some(Syntax::Css),
+        "postcss-scss" => Some(Syntax::Scss),
+        "postcss-less" => Some(Syntax::Less),
+        "postcss-sass" => Some(Syntax::Sass),
+        _ => None,
+    }
+}
+
+/// Write a report to `path`, creating parent directories and stripping ANSI
+/// escapes the way Stylelint's `--output-file` does.
+fn write_output_file(path: &Path, report: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, strip_ansi(report))
+}
 
 fn is_css_file(path: &Path) -> bool {
     path.extension()
@@ -887,6 +920,21 @@ pub fn run() -> Result<()> {
         debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
     }
 
+    // --custom-syntax names a PostCSS syntax package.  A supported one forces
+    // that parser for every file; an unsupported one skips every file, the
+    // same way an unsupported customSyntax in the config does.
+    let forced_syntax: Option<Syntax> = cli
+        .custom_syntax
+        .as_deref()
+        .and_then(syntax_for_custom_syntax);
+    let skip_all_for_custom_syntax = cli.custom_syntax.is_some() && forced_syntax.is_none();
+    if let Some(name) = &cli.custom_syntax
+        && skip_all_for_custom_syntax
+    {
+        debug!("Skipping every file: unsupported --custom-syntax '{name}'");
+    }
+    let syntax_for = |path: &str| forced_syntax.unwrap_or_else(|| detect_syntax(path));
+
     // Every switch below can come from the CLI or from the config file.  A
     // flag on the command line wins; otherwise the config decides, matching
     // Stylelint where unspecified CLI flags fall back to config properties.
@@ -1219,10 +1267,10 @@ pub fn run() -> Result<()> {
         std::io::stdin().read_to_string(&mut source)?;
 
         let file_path = &cli.stdin_filename;
-        if should_skip_custom_syntax(&config, file_path) {
+        if skip_all_for_custom_syntax || should_skip_custom_syntax(&config, file_path) {
             vec![]
         } else {
-            let syntax = detect_syntax(file_path);
+            let syntax = syntax_for(file_path);
             let result = lint_file(&runner, &source, file_path, syntax, &config, has_overrides);
             vec![result]
         }
@@ -1237,10 +1285,13 @@ pub fn run() -> Result<()> {
             ignore_patterns: &ignore_patterns,
             disable_default_ignores: cli.disable_default_ignores,
         };
-        let files = discover_files(&cli.files, &discover_opts);
+        let mut files = discover_files(&cli.files, &discover_opts);
         debug!("Discovered {} CSS file(s)", files.len());
+        if skip_all_for_custom_syntax {
+            files.clear();
+        }
 
-        if files.is_empty() {
+        if files.is_empty() && !skip_all_for_custom_syntax {
             if !allow_empty_input {
                 // Stylelint raises NoFilesFoundError and exits 1 here; exiting
                 // 0 would let a CI step that lints a mistyped path pass.
@@ -1346,7 +1397,7 @@ pub fn run() -> Result<()> {
                         }
                     }
 
-                    let syntax = detect_syntax(&file_path);
+                    let syntax = syntax_for(&file_path);
                     let result = if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1398,7 +1449,7 @@ pub fn run() -> Result<()> {
                         return None;
                     }
 
-                    let syntax = detect_syntax(&file_path);
+                    let syntax = syntax_for(&file_path);
                     if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1459,7 +1510,7 @@ pub fn run() -> Result<()> {
                 continue;
             }
 
-            let syntax = detect_syntax(&result.file_path);
+            let syntax = syntax_for(&result.file_path);
             let mut current = result.source.clone();
             let mut file_fixed = 0usize;
 
@@ -1523,6 +1574,11 @@ pub fn run() -> Result<()> {
     }
     if !output.is_empty() {
         print!("{output}");
+        if let Some(path) = &cli.output_file
+            && let Err(err) = write_output_file(path, &output)
+        {
+            eprintln!("Error writing report to {}: {err}", path.display());
+        }
     }
 
     // Summarise counts.
@@ -1780,6 +1836,24 @@ mod tests {
         );
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("a.css"));
+    }
+
+    #[test]
+    fn custom_syntax_names_map_to_parsers() {
+        assert_eq!(syntax_for_custom_syntax("postcss"), Some(Syntax::Css));
+        assert_eq!(syntax_for_custom_syntax("postcss-scss"), Some(Syntax::Scss));
+        assert_eq!(syntax_for_custom_syntax("PostCSS-Less"), Some(Syntax::Less));
+        assert_eq!(syntax_for_custom_syntax("postcss-sass"), Some(Syntax::Sass));
+        assert_eq!(syntax_for_custom_syntax("postcss-html"), None);
+        assert_eq!(syntax_for_custom_syntax("postcss-markdown"), None);
+    }
+
+    #[test]
+    fn output_file_is_written_without_ansi_into_new_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out").join("nested").join("report.txt");
+        write_output_file(&path, "\x1b[31mred\x1b[39m plain\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "red plain\n");
     }
 
     #[test]
