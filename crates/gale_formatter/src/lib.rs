@@ -153,9 +153,10 @@ impl Formatter for JsonFormatter {
                     .map(|diag| {
                         let (line, column) = line_index.offset_to_location(diag.span.offset);
                         let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
-                        // Stylelint appends " (rule-name)" to every message text.
-                        // We must replicate this for byte-for-byte identical JSON output.
-                        let text = format!("{} ({})", diag.message, diag.rule_name);
+                        // Stylelint appends " (rule-name)" to every rule
+                        // warning, but not to reports about disable comments.
+                        // Replicate both for byte-for-byte identical output.
+                        let text = diag.stylelint_text();
                         JsonWarning {
                             line,
                             column,
@@ -208,8 +209,12 @@ impl Formatter for CompactFormatter {
             for diag in &result.diagnostics {
                 let (line, col) = line_index.offset_to_location(diag.span.offset);
                 output.push_str(&format!(
-                    "{}: line {}, col {}, {} - {} ({})\n",
-                    result.file_path, line, col, diag.severity, diag.message, diag.rule_name,
+                    "{}: line {}, col {}, {} - {}\n",
+                    result.file_path,
+                    line,
+                    col,
+                    diag.severity,
+                    diag.stylelint_text(),
                 ));
             }
         }
@@ -242,8 +247,12 @@ impl Formatter for UnixFormatter {
             for diag in &result.diagnostics {
                 let (line, col) = line_index.offset_to_location(diag.span.offset);
                 output.push_str(&format!(
-                    "{}:{}:{}: {} ({}) [{}]\n",
-                    result.file_path, line, col, diag.message, diag.rule_name, diag.severity,
+                    "{}:{}:{}: {} [{}]\n",
+                    result.file_path,
+                    line,
+                    col,
+                    diag.stylelint_text(),
+                    diag.severity,
                 ));
                 total += 1;
             }
@@ -459,6 +468,42 @@ mod tests {
         assert!(output.contains(
             "src/app.css: line 2, col 1, warning - Unexpected empty block (block-no-empty)"
         ));
+    }
+
+    fn comment_problem_results() -> Vec<LintResult> {
+        let source = "/* stylelint-disable x */\na {}\n";
+        let diag = Diagnostic::new("--report-needless-disables", "Needless disable for \"x\"")
+            .severity(Severity::Error)
+            .span(Span::new(0, 0));
+        vec![LintResult::new("src/app.css", source, vec![diag])]
+    }
+
+    #[test]
+    fn comment_problems_have_no_rule_suffix_in_json() {
+        let output = JsonFormatter.format(&comment_problem_results());
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            parsed[0]["warnings"][0]["text"],
+            "Needless disable for \"x\""
+        );
+        assert_eq!(
+            parsed[0]["warnings"][0]["rule"],
+            "--report-needless-disables"
+        );
+    }
+
+    #[test]
+    fn comment_problems_have_no_rule_suffix_in_compact_and_unix() {
+        let compact = CompactFormatter.format(&comment_problem_results());
+        assert!(
+            compact.contains("error - Needless disable for \"x\"\n"),
+            "{compact}"
+        );
+        let unix = UnixFormatter.format(&comment_problem_results());
+        assert!(
+            unix.contains(": Needless disable for \"x\" [error]"),
+            "{unix}"
+        );
     }
 
     #[test]
