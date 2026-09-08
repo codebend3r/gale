@@ -41,6 +41,7 @@
   },
   "scripts": {
     "test": "node npm/test.mjs",
+    "test:features": "bun test tests/features",
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all"
   }
