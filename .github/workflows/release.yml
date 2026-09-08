@@ -90,9 +90,39 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  build-windows:
+    name: Build Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            artifact: gale-x86_64-pc-windows-msvc.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: pwsh
+        run: Copy-Item "target/${{ matrix.target }}/release/gale.exe" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
   release:
     name: Create Release & Publish npm
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -120,7 +150,8 @@ jobs:
           install -Dm755 release-assets/gale-x86_64-apple-darwin npm/bin/x86_64-apple-darwin/gale
           install -Dm755 release-assets/gale-aarch64-unknown-linux-gnu npm/bin/aarch64-unknown-linux-gnu/gale
           install -Dm755 release-assets/gale-x86_64-unknown-linux-gnu npm/bin/x86_64-unknown-linux-gnu/gale
-          chmod +x npm/bin/gale
+          install -Dm755 release-assets/gale-x86_64-pc-windows-msvc.exe npm/bin/x86_64-pc-windows-msvc/gale.exe
+          chmod +x npm/bin/gale.cjs
           find npm/bin -maxdepth 3 -type f -print
 
       - name: Create GitHub Release

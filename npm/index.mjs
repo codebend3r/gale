@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { binaryFileName, resolveTarget } from "./platform.cjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -27,10 +29,13 @@ function findBinary() {
     return override;
   }
 
-  // 1. Check the bin/ directory within the npm package
-  const localBin = join(__dirname, "bin", "gale");
-  if (existsSync(localBin)) {
-    return localBin;
+  // 1. The binary bundled for this platform inside the npm package
+  const target = resolveTarget(process.platform, process.arch);
+  if (target) {
+    const bundled = join(__dirname, "bin", target, binaryFileName(process.platform));
+    if (existsSync(bundled)) {
+      return bundled;
+    }
   }
 
   // 2. Fall back to gale on PATH
