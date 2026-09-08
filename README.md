@@ -84,8 +84,8 @@ npm install -D @codebend3r/gale
 ```
 
 The npm package ships prebuilt binaries, so install does not run a postinstall
-script or download executables. A small `bin/gale` shell wrapper picks the right
-one. Supported platforms: macOS (arm64, x64), Linux (x64, arm64).
+script or download executables. A small Node launcher picks the right one.
+Supported platforms: macOS (arm64, x64), Linux (x64, arm64), Windows (x64).
 
 ### Cargo
 
@@ -248,9 +248,10 @@ npx gale --init
 | `[true \| "error" \| "warning", { options }]` | Gale extension: severity first, options second |
 
 Stylelint's per-rule secondary options are honored in every array form:
-`severity`, `message` (string form), `url` (surfaced on each JSON warning), and
-`disableFix` (report but never autofix). So is the top-level `defaultSeverity`
-field.
+`severity`, `message` (string form), `url` (surfaced on each JSON warning),
+`disableFix` (report but never autofix), and `reportDisables` (report any
+`stylelint-disable` comment that names the rule). So is the top-level
+`defaultSeverity` field.
 
 ### Config-file switches
 
@@ -269,6 +270,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | `"fix": true` or `"strict"` / `"lax"` | `--fix` / `--fix=lax` |
 | `"cache": true` | `--cache` |
 | `"cacheLocation": "path"` | `--cache-location path` |
+| `"cacheStrategy": "content"` | `--cache-strategy content` |
 
 ### Built-in presets
 
@@ -312,6 +314,7 @@ gale [OPTIONS] [FILES]...
 | `--max-warnings <n>` | Error if warnings exceed threshold |
 | `--cache` | Skip unchanged files |
 | `--cache-location <path>` | Custom cache file path (default: `.gale_cache`) |
+| `--cache-strategy <name>` | `metadata` (default: mtime and size) or `content` (hash) decides what counts as unchanged |
 | `--stdin` | Read from stdin |
 | `--stdin-filename <name>` | Virtual filename for stdin (default: `stdin.css`) |
 | `--allow-empty-input` | Don't error when no files match |
@@ -356,6 +359,7 @@ gale --lsp
 ```
 
 Works with Neovim, Helix, Zed, and any editor supporting the Language Server Protocol.
+Every fixable diagnostic is offered as a quick-fix code action.
 
 ### VS Code
 
@@ -457,7 +461,7 @@ git push && git push --tags
 
 The [release workflow](.github/workflows/release.yml) will:
 
-1. Build binaries for Linux (x64, arm64) and macOS (x64, arm64)
+1. Build binaries for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64)
 2. Create a GitHub Release with the binaries
 3. Stage those binaries inside `npm/bin/<target>/`
 4. Publish the npm package (`@codebend3r/gale`) with the matching version
