@@ -73,10 +73,17 @@ impl LintCache {
         cache
     }
 
-    /// Save the cache to disk.
+    /// Save the cache to disk, creating the parent directory if needed so a
+    /// `cacheLocation` such as `tmp/lint.cache` works on a fresh checkout.
     pub fn save(&self, path: &Path) {
         match serde_json::to_string(self) {
             Ok(data) => {
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                    && let Err(err) = std::fs::create_dir_all(parent)
+                {
+                    debug!("Failed to create cache directory: {err}");
+                }
                 if let Err(err) = std::fs::write(path, data) {
                     debug!("Failed to write cache file: {err}");
                 }
@@ -149,5 +156,25 @@ pub fn resolve_cache_path(custom: Option<&Path>) -> PathBuf {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(".gale_cache")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_creates_missing_parent_directories() {
+        let dir = std::env::temp_dir().join(format!("gale-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("lint.cache");
+
+        let mut cache = LintCache::default();
+        cache.record("a.css".to_string(), 1, 0);
+        cache.save(&path);
+
+        assert!(path.is_file(), "cache file was not written");
+        assert!(LintCache::load(&path).is_clean("a.css", 1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
