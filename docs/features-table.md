@@ -77,14 +77,14 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `ignoreFiles` / `ignorePatterns` | Exclude files from the config | ✅ Both names accepted | ✅ `ignoreFiles` |
 | `.stylelintignore` | Ignore file in gitignore syntax | ✅ | ✅ |
 | `.galeignore` | Gale's own ignore file | ✅ | ❌ |
-| `.gitignore` | Honor the repo's gitignore when discovering files | ✅ | ❌ |
+| `.gitignore` | Honor the repo's gitignore when discovering files | ❌ Intentional: only `.stylelintignore` and `.galeignore` apply, matching Stylelint | ❌ |
 | `plugins` config key | Declare JS plugins to load | ⚠️ Accepted so configs parse; plugins are not executed | ✅ |
 | `reportNeedlessDisables` config key | Enable needless-disable reporting from config | ✅ | ✅ |
-| `ignoreDisables` config key | Ignore disable comments from config | ❌ CLI flag only | ✅ |
-| `reportInvalidScopeDisables` config key | Enable from config | ❌ CLI flag only | ✅ |
-| `reportDescriptionlessDisables` config key | Enable from config | ❌ CLI flag only | ✅ |
+| `ignoreDisables` config key | Ignore disable comments from config | ✅ | ✅ |
+| `reportInvalidScopeDisables` config key | Enable from config | ✅ | ✅ |
+| `reportDescriptionlessDisables` config key | Enable from config | ✅ | ✅ |
 | `reportUnscopedDisables` | Report disable comments that name no rule | ❌ | ✅ |
-| `allowEmptyInput` / `cache` / `fix` / `quiet` config keys | Set CLI behaviour from config | ❌ CLI flags only | ✅ |
+| `allowEmptyInput` / `cache` / `cacheLocation` / `fix` / `quiet` config keys | Set CLI behaviour from config | ✅ A CLI flag still wins | ✅ |
 | `languageOptions` | Extend known at-rules, properties, types, and CSS-wide keywords | ❌ | ✅ |
 | `computeEditInfo` | Include fix edit ranges in warnings | ❌ | ✅ |
 | `validate` | Toggle rule-option validation | ❌ | ✅ |
@@ -114,23 +114,23 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Files and glob patterns | Positional file, directory, or glob arguments | ✅ | ✅ |
 | `--globby-options` | Tune glob expansion | ❌ | ✅ |
 | `--ignore-path` | Custom ignore file | ✅ | ✅ |
-| `--ignore-pattern` / `-ip` | Extra ignore globs on the command line | ❌ | ✅ |
-| `--disable-default-ignores` | Lint `node_modules` too | ❌ | ✅ |
+| `--ignore-pattern` / `--ip` | Extra ignore globs on the command line | ✅ | ✅ |
+| `--disable-default-ignores` / `--di` | Lint `node_modules` too | ✅ | ✅ |
 | `--no-ignore` | Skip every ignore file | ✅ | ❌ |
 | `--stdin` / `--stdin-filename` | Lint source from standard input | ✅ | ✅ |
 | `--fix` | Autofix problems (strict mode by default) | ✅ | ✅ |
 | `--fix=lax` | Also fix files that have parse errors | ✅ | ✅ |
 | `--formatter` / `-f` | Pick an output format | ✅ | ✅ |
 | `--custom-formatter` | Load a formatter from a JS module | ❌ | ✅ |
-| `--custom-syntax` | Pick a parser from the command line | ❌ | ✅ |
+| `--custom-syntax` | Pick a parser from the command line | ⚠️ Same four syntaxes as the config key; anything else skips every file | ✅ Any PostCSS syntax package |
 | `--quiet` / `-q` | Only report errors | ✅ | ✅ |
-| `--quiet-deprecation-warnings` | Silence deprecation notices | ❌ | ✅ |
+| `--quiet-deprecation-warnings` | Silence deprecation notices | ✅ Accepted; Gale has none to silence | ✅ |
 | `--max-warnings` | Fail when warnings exceed a threshold | ✅ | ✅ |
 | `--cache` | Skip unchanged files on repeat runs | ✅ | ✅ |
 | `--cache-location` | Where the cache file lives | ✅ | ✅ |
 | `--cache-strategy` | Choose `metadata` or `content` invalidation | ❌ Content hashing only | ✅ |
 | `--allow-empty-input` | Exit 0 when no files match | ✅ | ✅ |
-| `--output-file` | Write the report to a file | ❌ | ✅ |
+| `--output-file` / `-o` | Write the report to a file, colour stripped | ✅ | ✅ |
 | `--color` / `--no-color` | Force or suppress ANSI colour | ❌ | ✅ |
 | `--print-config` | Print the resolved config for a file | ✅ | ✅ |
 | `--validate` / `--no-validate` | Toggle option validation | ❌ | ✅ |

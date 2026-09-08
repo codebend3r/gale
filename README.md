@@ -249,6 +249,23 @@ npx gale --init
 Stylelint's per-rule `{ "severity": "warning" }` secondary option is honored in
 every array form, as is the top-level `defaultSeverity` field.
 
+### Config-file switches
+
+Every switch below can be set in the config file instead of on the command
+line, exactly as in Stylelint. A flag on the command line always wins.
+
+| Config key | Equivalent flag |
+|------------|-----------------|
+| `"ignoreDisables": true` | `--ignore-disables` |
+| `"reportNeedlessDisables": true` | `--report-needless-disables` |
+| `"reportInvalidScopeDisables": true` | `--report-invalid-scope-disables` |
+| `"reportDescriptionlessDisables": true` | `--report-descriptionless-disables` |
+| `"allowEmptyInput": true` | `--allow-empty-input` |
+| `"quiet": true` | `--quiet` |
+| `"fix": true` or `"strict"` / `"lax"` | `--fix` / `--fix=lax` |
+| `"cache": true` | `--cache` |
+| `"cacheLocation": "path"` | `--cache-location path` |
+
 ### Built-in presets
 
 | Preset | Description |
@@ -295,11 +312,16 @@ gale [OPTIONS] [FILES]...
 | `--stdin-filename <name>` | Virtual filename for stdin (default: `stdin.css`) |
 | `--allow-empty-input` | Don't error when no files match |
 | `--ignore-path <file>` | Custom ignore file (gitignore syntax) |
+| `--ignore-pattern <glob>`, `--ip` | Extra ignore glob, on top of the ignore files (repeatable) |
+| `--disable-default-ignores`, `--di` | Lint `node_modules` too instead of always skipping it |
 | `--no-ignore` | Disable all ignore file processing |
 | `--ignore-disables` | Ignore all `stylelint-disable` comments |
 | `--report-needless-disables` | Report disable comments that suppress nothing |
 | `--report-invalid-scope-disables` | Report disable comments for rules not being linted |
 | `--report-descriptionless-disables` | Report disable comments without a description |
+| `--custom-syntax <name>` | Parse every file as `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`; any other syntax skips every file |
+| `-o, --output-file <path>` | Write the report to a file (colour stripped) as well as printing it |
+| `--quiet-deprecation-warnings` | Accepted for compatibility; Gale emits no deprecation warnings |
 | `--print-config <file>` | Print resolved config as JSON |
 | `--init` | Generate starter config |
 | `--lsp` | Start LSP server |
