@@ -23,11 +23,11 @@ function readJson(rel: string): Record<string, unknown> {
 describe("TypeScript declarations", () => {
   const dts = join(NPM_DIR, "index.d.ts");
 
-  test.failing("npm/index.d.ts exists", () => {
+  test("npm/index.d.ts exists", () => {
     expect(existsSync(dts)).toBe(true);
   });
 
-  test.failing("declares the public API", () => {
+  test("declares the public API", () => {
     const text = readFileSync(dts, "utf8");
 
     expect(text).toMatch(/export (declare )?function lint\(/);
@@ -39,7 +39,7 @@ describe("TypeScript declarations", () => {
     expect(text).toMatch(/interface Warning/);
   });
 
-  test.failing("the npm package.json points at the declarations", () => {
+  test("the npm package.json points at the declarations", () => {
     const pkg = readJson("npm/package.json");
     const exports = pkg.exports as Record<string, Record<string, string>>;
 
@@ -48,7 +48,7 @@ describe("TypeScript declarations", () => {
     expect(pkg.files as string[]).toContain("index.d.ts");
   });
 
-  test.failing("the root package.json points at the declarations", () => {
+  test("the root package.json points at the declarations", () => {
     const pkg = readJson("package.json");
     const exports = pkg.exports as Record<string, Record<string, string>>;
 
@@ -73,7 +73,7 @@ describe("lint() warning shape", () => {
     expect(warning.text).toContain("block-no-empty");
   });
 
-  test.failing("warnings carry endLine and endColumn", async () => {
+  test("warnings carry endLine and endColumn", async () => {
     const { lint } = await import("../../npm/index.mjs");
 
     const result = await lint({ code: "a {}", config: { rules: { "block-no-empty": true } } });
@@ -83,7 +83,7 @@ describe("lint() warning shape", () => {
     expect(typeof warning.endColumn).toBe("number");
   });
 
-  test.failing("warnings carry the configured url", async () => {
+  test("warnings carry the configured url", async () => {
     const { lint } = await import("../../npm/index.mjs");
 
     const result = await lint({

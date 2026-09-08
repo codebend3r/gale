@@ -33,7 +33,7 @@ describe("exit codes", () => {
     expect(runGale(["a.css"], { cwd: project.dir }).exitCode).toBe(0);
   });
 
-  test.failing("2 when an error-severity problem is found", () => {
+  test("2 when an error-severity problem is found", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
       "a.css": EMPTY_BLOCK,
@@ -42,7 +42,7 @@ describe("exit codes", () => {
     expect(runGale(["a.css"], { cwd: project.dir }).exitCode).toBe(2);
   });
 
-  test.failing("2 when --max-warnings is exceeded", () => {
+  test("2 when --max-warnings is exceeded", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": [true, { severity: "warning" }] }),
       "a.css": EMPTY_BLOCK,
@@ -51,26 +51,26 @@ describe("exit codes", () => {
     expect(runGale(["--max-warnings", "0", "a.css"], { cwd: project.dir }).exitCode).toBe(2);
   });
 
-  test.failing("64 for an unknown flag", () => {
+  test("64 for an unknown flag", () => {
     const project = makeProject({ "a.css": "a { color: red; }\n" });
 
     expect(runGale(["--definitely-not-a-flag", "a.css"], { cwd: project.dir }).exitCode).toBe(64);
   });
 
-  test.failing("64 for an unknown formatter", () => {
+  test("64 for an unknown formatter", () => {
     const project = makeProject({ "a.css": "a { color: red; }\n" });
 
     expect(runGale(["--formatter", "nope", "a.css"], { cwd: project.dir }).exitCode).toBe(64);
   });
 
-  test.failing("78 when --config points at a missing file", () => {
+  test("78 when --config points at a missing file", () => {
     const project = makeProject({ "a.css": "a { color: red; }\n" });
 
     const result = runGale(["--config", "missing.json", "a.css"], { cwd: project.dir });
     expect(result.exitCode).toBe(78);
   });
 
-  test.failing("78 when the discovered config cannot be parsed", () => {
+  test("78 when the discovered config cannot be parsed", () => {
     const project = makeProject({
       ".stylelintrc.json": '{ "rules": { "block-no-empty": true ',
       "a.css": "a { color: red; }\n",

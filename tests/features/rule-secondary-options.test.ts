@@ -23,7 +23,7 @@ describe("message secondary option", () => {
     expect(warning.text).toBe("Bad custom property (custom-property-pattern)");
   });
 
-  test.failing("a boolean-primary rule uses the custom message", () => {
+  test("a boolean-primary rule uses the custom message", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "block-no-empty": [true, { message: "No empty blocks please" }],
@@ -36,7 +36,7 @@ describe("message secondary option", () => {
     expect(warning.rule).toBe("block-no-empty");
   });
 
-  test.failing("a string-primary rule uses the custom message", () => {
+  test("a string-primary rule uses the custom message", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "color-hex-case": ["lower", { message: "Lowercase hex only" }],
@@ -48,7 +48,7 @@ describe("message secondary option", () => {
     expect(warning.text).toBe("Lowercase hex only (color-hex-case)");
   });
 
-  test.failing("the custom message still respects severity", () => {
+  test("the custom message still respects severity", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "block-no-empty": [true, { message: "Custom", severity: "warning" }],
@@ -73,7 +73,7 @@ describe("url secondary option", () => {
     expect("url" in warning).toBe(false);
   });
 
-  test.failing("the configured url is attached to every warning of the rule", () => {
+  test("the configured url is attached to every warning of the rule", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "block-no-empty": [true, { url: "https://example.com/rules/block-no-empty" }],
@@ -88,7 +88,7 @@ describe("url secondary option", () => {
     }
   });
 
-  test.failing("other rules do not inherit the url", () => {
+  test("other rules do not inherit the url", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "block-no-empty": [true, { url: "https://example.com/empty" }],
@@ -115,7 +115,7 @@ describe("disableFix secondary option", () => {
     expect(project.read("a.css")).toBe("a { color: #fff; }\n");
   });
 
-  test.failing("the rule is still reported but never fixed", () => {
+  test("the rule is still reported but never fixed", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "color-hex-case": ["lower", { disableFix: true }] }),
       "a.css": UPPER_HEX,
@@ -126,7 +126,7 @@ describe("disableFix secondary option", () => {
     expect(result.warnings().map((w) => w.rule)).toEqual(["color-hex-case"]);
   });
 
-  test.failing("other rules keep fixing", () => {
+  test("other rules keep fixing", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
         "color-hex-case": ["lower", { disableFix: true }],
