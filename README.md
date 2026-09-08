@@ -110,6 +110,9 @@ Download pre-built binaries from [GitHub Releases](https://github.com/LyricalStr
 
 ## What's supported
 
+For a row-by-row comparison of every feature in Gale and Stylelint, see the
+[feature table](docs/features-table.md).
+
 ### 269 built-in rules
 
 Gale registers 269 rules across these namespaces:
