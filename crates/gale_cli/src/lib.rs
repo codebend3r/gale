@@ -862,10 +862,27 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Every switch below can come from the CLI or from the config file.  A
+    // flag on the command line wins; otherwise the config decides, matching
+    // Stylelint where unspecified CLI flags fall back to config properties.
+    let quiet = cli.quiet || config.quiet;
+    let use_cache = cli.cache || config.cache;
+    let allow_empty_input = cli.allow_empty_input || config.allow_empty_input;
+    let cache_location: Option<PathBuf> = cli
+        .cache_location
+        .clone()
+        .or_else(|| config.cache_location.clone());
+    let fix_mode: Option<String> = cli.fix.clone().or_else(|| {
+        config.fix.map(|mode| match mode {
+            gale_config::FixMode::Strict => "strict".to_string(),
+            gale_config::FixMode::Lax => "lax".to_string(),
+        })
+    });
+
     // Set up caching if --cache is enabled.
-    let cache_path = resolve_cache_path(cli.cache_location.as_deref());
+    let cache_path = resolve_cache_path(cache_location.as_deref());
     let config_hash = compute_config_hash(&config.rules);
-    let mut lint_cache = if cli.cache {
+    let mut lint_cache = if use_cache {
         debug!("Loading cache from {}", cache_path.display());
         LintCache::load(&cache_path)
     } else {
@@ -944,7 +961,16 @@ pub fn run() -> Result<()> {
     runner.set_report_needless_disables(
         config.report_needless_disables || cli.report_needless_disables,
     );
-    runner.set_ignore_disables(cli.ignore_disables);
+    runner.set_report_invalid_scope_disables(
+        config.report_invalid_scope_disables || cli.report_invalid_scope_disables,
+    );
+    runner.set_report_descriptionless_disables(
+        config.report_descriptionless_disables || cli.report_descriptionless_disables,
+    );
+    runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
+    // Plugin rules the config names but Gale does not implement still count
+    // as configured for reportInvalidScopeDisables.
+    runner.set_configured_rules(config.rules.keys().cloned().collect());
     runner.set_default_severity(config.default_severity.map(|s| match s {
         gale_config::Severity::Error => gale_diagnostics::Severity::Error,
         gale_config::Severity::Warning => gale_diagnostics::Severity::Warning,
@@ -1186,7 +1212,7 @@ pub fn run() -> Result<()> {
         debug!("Discovered {} CSS file(s)", files.len());
 
         if files.is_empty() {
-            if !cli.allow_empty_input {
+            if !allow_empty_input {
                 // Stylelint raises NoFilesFoundError and exits 1 here; exiting
                 // 0 would let a CI step that lints a mistyped path pass.
                 let patterns = cli
@@ -1253,7 +1279,7 @@ pub fn run() -> Result<()> {
                 None
             };
 
-        if cli.cache {
+        if use_cache {
             // With caching: read files, check cache, skip clean ones.
             let cache_mutex = Mutex::new(&mut lint_cache);
             let results: Vec<LintResult> = files
@@ -1381,7 +1407,7 @@ pub fn run() -> Result<()> {
     };
 
     // Apply fixes when --fix is set.
-    if let Some(fix_mode) = &cli.fix {
+    if let Some(fix_mode) = &fix_mode {
         let is_strict = fix_mode != "lax";
         let mut total_fixed = 0usize;
 
@@ -1447,14 +1473,14 @@ pub fn run() -> Result<()> {
     }
 
     // Filter to errors-only when --quiet is set.
-    if cli.quiet {
+    if quiet {
         for result in &mut results {
             result.diagnostics.retain(|d| d.severity == Severity::Error);
         }
     }
 
     // Save cache if --cache is enabled.
-    if cli.cache {
+    if use_cache {
         debug!("Saving cache to {}", cache_path.display());
         lint_cache.save(&cache_path);
     }
