@@ -178,7 +178,8 @@ Gale includes built-in `plugin/*` meta-rules that cover the most common custom p
 
 ### Programmatic API
 
-Importable from ESM (`import`) and CommonJS (`require`) alike.
+Importable from ESM (`import`) and CommonJS (`require`) alike, with TypeScript
+declarations included.
 
 ```javascript
 import { lint, resolveConfig, formatters } from '@codebend3r/gale';
@@ -246,8 +247,10 @@ npx gale --init
 | `[<primary>, { secondary }]` | Stylelint's array form, e.g. `["never", { ignore: [...] }]` |
 | `[true \| "error" \| "warning", { options }]` | Gale extension: severity first, options second |
 
-Stylelint's per-rule `{ "severity": "warning" }` secondary option is honored in
-every array form, as is the top-level `defaultSeverity` field.
+Stylelint's per-rule secondary options are honored in every array form:
+`severity`, `message` (string form), `url` (surfaced on each JSON warning), and
+`disableFix` (report but never autofix). So is the top-level `defaultSeverity`
+field.
 
 ### Config-file switches
 
@@ -260,6 +263,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | `"reportNeedlessDisables": true` | `--report-needless-disables` |
 | `"reportInvalidScopeDisables": true` | `--report-invalid-scope-disables` |
 | `"reportDescriptionlessDisables": true` | `--report-descriptionless-disables` |
+| `"reportUnscopedDisables": true` | `--report-unscoped-disables` |
 | `"allowEmptyInput": true` | `--allow-empty-input` |
 | `"quiet": true` | `--quiet` |
 | `"fix": true` or `"strict"` / `"lax"` | `--fix` / `--fix=lax` |
@@ -319,6 +323,8 @@ gale [OPTIONS] [FILES]...
 | `--report-needless-disables` | Report disable comments that suppress nothing |
 | `--report-invalid-scope-disables` | Report disable comments for rules not being linted |
 | `--report-descriptionless-disables` | Report disable comments without a description |
+| `--report-unscoped-disables` | Report disable comments that name no rule |
+| `--color` / `--no-color` | Force colour on or off in the text and verbose formatters |
 | `--custom-syntax <name>` | Parse every file as `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`; any other syntax skips every file |
 | `-o, --output-file <path>` | Write the report to a file (colour stripped) as well as printing it |
 | `--quiet-deprecation-warnings` | Accepted for compatibility; Gale emits no deprecation warnings |
@@ -327,9 +333,19 @@ gale [OPTIONS] [FILES]...
 | `--lsp` | Start LSP server |
 | `-V, --version` | Print version |
 
-Exit code is `1` when any error-severity problem is found, when `--max-warnings`
-is exceeded, or when no files match the given patterns (pass `--allow-empty-input`
-to make an empty match succeed). `0` otherwise. This matches Stylelint.
+Exit codes match Stylelint's:
+
+| Code | Meaning |
+|-----:|---------|
+| `0` | No error-severity problems |
+| `1` | Fatal error, including no files matching the patterns (pass `--allow-empty-input` to make an empty match succeed) |
+| `2` | Error-severity problems found, or `--max-warnings` exceeded |
+| `64` | Invalid command line, such as an unknown flag or formatter |
+| `78` | A config file that exists but cannot be loaded |
+
+Colour in the `text` and `verbose` formatters follows the same rule as Stylelint:
+`NO_COLOR` or `--no-color` turn it off; otherwise `FORCE_COLOR`, `--color`, or `CI`
+turn it on; otherwise it is on only when stdout is a terminal.
 
 ## Editor integration
 
