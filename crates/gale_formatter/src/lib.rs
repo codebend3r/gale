@@ -33,10 +33,74 @@ pub fn compute_location(source: &str, offset: usize) -> (usize, usize) {
 ///
 /// ✖ 1 problem (0 errors, 1 warning)
 /// ```
-pub struct TextFormatter;
+///
+/// `color` switches the ANSI styling on or off; the CLI decides it the way
+/// picocolors does for Stylelint (flags, `NO_COLOR`, `FORCE_COLOR`, `CI`,
+/// and whether stdout is a terminal).
+#[derive(Debug, Clone, Copy)]
+pub struct TextFormatter {
+  pub color: bool,
+}
+
+impl Default for TextFormatter {
+  fn default() -> Self {
+    Self { color: true }
+  }
+}
+
+/// Paints text with ANSI styles, or leaves it alone when colour is off.
+#[derive(Debug, Clone, Copy)]
+struct Palette {
+  enabled: bool,
+}
+
+impl Palette {
+  fn red(self, text: &str) -> String {
+    if self.enabled {
+      text.red().to_string()
+    } else {
+      text.to_string()
+    }
+  }
+
+  fn yellow(self, text: &str) -> String {
+    if self.enabled {
+      text.yellow().to_string()
+    } else {
+      text.to_string()
+    }
+  }
+
+  fn dimmed(self, text: &str) -> String {
+    if self.enabled {
+      text.dimmed().to_string()
+    } else {
+      text.to_string()
+    }
+  }
+
+  fn underline(self, text: &str) -> String {
+    if self.enabled {
+      text.underline().to_string()
+    } else {
+      text.to_string()
+    }
+  }
+
+  fn bold(self, text: &str) -> String {
+    if self.enabled {
+      text.bold().to_string()
+    } else {
+      text.to_string()
+    }
+  }
+}
 
 impl Formatter for TextFormatter {
   fn format(&self, results: &[LintResult]) -> String {
+    let paint = Palette {
+      enabled: self.color,
+    };
     let mut output = String::new();
     let mut total_errors: usize = 0;
     let mut total_warnings: usize = 0;
@@ -48,7 +112,7 @@ impl Formatter for TextFormatter {
 
       let line_index = SourceLineIndex::build(&result.source);
 
-      output.push_str(&result.file_path.underline().to_string());
+      output.push_str(&paint.underline(&result.file_path));
       output.push('\n');
 
       for diag in &result.diagnostics {
@@ -58,25 +122,15 @@ impl Formatter for TextFormatter {
         let (icon, colored_message) = match diag.severity {
           Severity::Error => {
             total_errors += 1;
-            ("\u{2716}".red().to_string(), diag.message.red().to_string())
+            (paint.red("\u{2716}"), paint.red(&diag.message))
           }
-          Severity::Warning => {
+          Severity::Warning | Severity::Info | Severity::Hint => {
             total_warnings += 1;
-            (
-              "\u{26A0}".yellow().to_string(),
-              diag.message.yellow().to_string(),
-            )
-          }
-          Severity::Info | Severity::Hint => {
-            total_warnings += 1;
-            (
-              "\u{26A0}".yellow().to_string(),
-              diag.message.yellow().to_string(),
-            )
+            (paint.yellow("\u{26A0}"), paint.yellow(&diag.message))
           }
         };
 
-        let rule = diag.rule_name.dimmed();
+        let rule = paint.dimmed(&diag.rule_name);
         output.push_str(&format!(
           "  {location:<8} {icon}  {colored_message}  {rule}\n"
         ));
@@ -98,7 +152,7 @@ impl Formatter for TextFormatter {
       let summary = format!(
         "\u{2716} {total} {problem_word} ({total_errors} {error_word}, {total_warnings} {warning_word})"
       );
-      output.push_str(&summary.bold().to_string());
+      output.push_str(&paint.bold(&summary));
       output.push('\n');
     }
 
@@ -329,11 +383,20 @@ fn yaml_scalar(value: &str) -> String {
 
 /// Stylelint's `verbose` formatter: the standard text output followed by a
 /// summary of how many files were checked and which rules fired.
-pub struct VerboseFormatter;
+#[derive(Debug, Clone, Copy)]
+pub struct VerboseFormatter {
+  pub color: bool,
+}
+
+impl Default for VerboseFormatter {
+  fn default() -> Self {
+    Self { color: true }
+  }
+}
 
 impl Formatter for VerboseFormatter {
   fn format(&self, results: &[LintResult]) -> String {
-    let mut output = TextFormatter.format(results);
+    let mut output = TextFormatter { color: self.color }.format(results);
 
     let file_count = results.len();
     let plural = if file_count == 1 { "source" } else { "sources" };
@@ -413,20 +476,26 @@ pub const FORMATTER_NAMES: &[&str] = &[
   "text", "string", "json", "compact", "verbose", "tap", "unix",
 ];
 
-/// Create a formatter by name.
+/// Create a formatter by name, with colour on for the human-readable ones.
 ///
 /// `"string"` is an alias for `"text"`, matching Stylelint, where `string` is
 /// the name of the default human-readable formatter.
 ///
 /// Defaults to `TextFormatter` for unknown format types.
 pub fn create_formatter(format_type: &str) -> Box<dyn Formatter> {
+  create_formatter_with_color(format_type, true)
+}
+
+/// Create a formatter by name, choosing whether `text` and `verbose` colour
+/// their output.  The machine-readable formatters never do.
+pub fn create_formatter_with_color(format_type: &str, color: bool) -> Box<dyn Formatter> {
   match format_type {
     "json" => Box::new(JsonFormatter),
     "compact" => Box::new(CompactFormatter),
     "unix" => Box::new(UnixFormatter),
     "tap" => Box::new(TapFormatter),
-    "verbose" => Box::new(VerboseFormatter),
-    _ => Box::new(TextFormatter),
+    "verbose" => Box::new(VerboseFormatter { color }),
+    _ => Box::new(TextFormatter { color }),
   }
 }
 
@@ -451,7 +520,7 @@ mod tests {
 
   #[test]
   fn text_formatter_output() {
-    let formatter = TextFormatter;
+    let formatter = TextFormatter::default();
     let output = formatter.format(&sample_results());
     assert!(output.contains("src/app.css"));
     assert!(output.contains("Unexpected empty block"));
@@ -565,6 +634,43 @@ mod tests {
   }
 
   #[test]
+  fn text_formatter_without_colour_matches_the_stripped_coloured_output() {
+    let coloured = TextFormatter { color: true }.format(&sample_results());
+    let plain = TextFormatter { color: false }.format(&sample_results());
+    assert!(coloured.contains('\x1b'));
+    assert!(!plain.contains('\x1b'));
+    assert_eq!(plain, strip_ansi(&coloured));
+  }
+
+  #[test]
+  fn verbose_formatter_follows_the_colour_switch() {
+    assert!(
+      VerboseFormatter { color: true }
+        .format(&sample_results())
+        .contains('\x1b')
+    );
+    assert!(
+      !VerboseFormatter { color: false }
+        .format(&sample_results())
+        .contains('\x1b')
+    );
+  }
+
+  #[test]
+  fn factory_colour_switch_only_affects_human_formatters() {
+    for name in ["text", "string", "verbose"] {
+      let out = create_formatter_with_color(name, false).format(&sample_results());
+      assert!(!out.contains('\x1b'), "{name}");
+      let out = create_formatter_with_color(name, true).format(&sample_results());
+      assert!(out.contains('\x1b'), "{name}");
+    }
+    for name in ["json", "compact", "unix", "tap"] {
+      let out = create_formatter_with_color(name, true).format(&sample_results());
+      assert!(!out.contains('\x1b'), "{name}");
+    }
+  }
+
+  #[test]
   fn strip_ansi_removes_colour_codes_and_keeps_text() {
     let coloured =
       "\x1b[4msrc/app.css\x1b[0m\n  \x1b[31m\u{2716}\x1b[39m  plain \x1b[1mbold\x1b[22m";
@@ -575,7 +681,7 @@ mod tests {
 
   #[test]
   fn text_formatter_output_strips_clean() {
-    let coloured = TextFormatter.format(&sample_results());
+    let coloured = TextFormatter::default().format(&sample_results());
     let plain = strip_ansi(&coloured);
     assert!(!plain.contains('\x1b'));
     assert!(plain.contains("src/app.css\n"));
@@ -660,14 +766,14 @@ mod tests {
 
   #[test]
   fn verbose_formatter_appends_a_summary() {
-    let output = VerboseFormatter.format(&sample_results());
+    let output = VerboseFormatter::default().format(&sample_results());
     assert!(output.contains("1 source checked"), "{output}");
     assert!(output.contains("block-no-empty: 1"), "{output}");
   }
 
   #[test]
   fn empty_results_produce_no_output() {
-    let formatter = TextFormatter;
+    let formatter = TextFormatter::default();
     let output = formatter.format(&[]);
     assert!(output.is_empty());
   }
