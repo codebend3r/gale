@@ -98,6 +98,18 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     ignore_path: Option<PathBuf>,
 
+    /// Glob pattern of files to ignore, on top of the ignore files (repeatable)
+    #[arg(long, visible_alias = "ip", value_name = "PATTERN", action = clap::ArgAction::Append)]
+    ignore_pattern: Vec<String>,
+
+    /// Lint node_modules too instead of always skipping it
+    #[arg(long, visible_alias = "di")]
+    disable_default_ignores: bool,
+
+    /// Accepted for Stylelint compatibility; Gale emits no deprecation warnings
+    #[arg(long)]
+    quiet_deprecation_warnings: bool,
+
     /// Disable all ignore file processing (gitignore, .galeignore, custom)
     #[arg(long)]
     no_ignore: bool,
@@ -151,6 +163,8 @@ struct DiscoverOptions<'a> {
     no_ignore: bool,
     ignore_path: Option<&'a Path>,
     ignore_patterns: &'a [String],
+    /// Stylelint's `--disable-default-ignores`: walk into `node_modules`.
+    disable_default_ignores: bool,
 }
 
 /// Build an `ignore::gitignore::Gitignore` matcher from `.stylelintignore`,
@@ -508,10 +522,13 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
                     );
                 }
 
-                // Always exclude node_modules (Stylelint default behavior).
+                // Exclude node_modules unless asked not to (Stylelint's
+                // default ignore, lifted by --disable-default-ignores).
                 {
                     let mut overrides = ignore::overrides::OverrideBuilder::new(&walk_root);
-                    let _ = overrides.add("!**/node_modules/**");
+                    if !opts.disable_default_ignores {
+                        let _ = overrides.add("!**/node_modules/**");
+                    }
                     for pat in opts.ignore_patterns {
                         if let Err(err) = overrides.add(&format!("!{pat}")) {
                             eprintln!("Warning: invalid ignore pattern '{pat}': {err}");
@@ -655,10 +672,13 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
             }
 
             // Apply ignore_patterns from config as glob overrides.
-            // Always exclude node_modules (Stylelint default behavior).
+            // Exclude node_modules unless asked not to (Stylelint's default
+            // ignore, lifted by --disable-default-ignores).
             {
                 let mut overrides = ignore::overrides::OverrideBuilder::new(path);
-                let _ = overrides.add("!**/node_modules/**");
+                if !opts.disable_default_ignores {
+                    let _ = overrides.add("!**/node_modules/**");
+                }
                 for pat in opts.ignore_patterns {
                     // Negate the pattern so matching files are excluded.
                     if let Err(err) = overrides.add(&format!("!{pat}")) {
@@ -860,6 +880,11 @@ pub fn run() -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
+    }
+
+    // Gale never emits deprecation warnings, so the flag only needs accepting.
+    if cli.quiet_deprecation_warnings {
+        debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
     }
 
     // Every switch below can come from the CLI or from the config file.  A
@@ -1202,11 +1227,15 @@ pub fn run() -> Result<()> {
             vec![result]
         }
     } else {
-        // Discover files.
+        // Discover files.  `--ignore-pattern` globs join the config's
+        // ignoreFiles so both exclude matches everywhere.
+        let mut ignore_patterns = config.ignore_patterns.clone();
+        ignore_patterns.extend(cli.ignore_pattern.iter().cloned());
         let discover_opts = DiscoverOptions {
             no_ignore: cli.no_ignore,
             ignore_path: cli.ignore_path.as_deref(),
-            ignore_patterns: &config.ignore_patterns,
+            ignore_patterns: &ignore_patterns,
+            disable_default_ignores: cli.disable_default_ignores,
         };
         let files = discover_files(&cli.files, &discover_opts);
         debug!("Discovered {} CSS file(s)", files.len());
@@ -1585,6 +1614,7 @@ mod tests {
             no_ignore: true,
             ignore_path: None,
             ignore_patterns: &[],
+            disable_default_ignores: false,
         }
     }
 
@@ -1702,6 +1732,54 @@ mod tests {
 
         // a.css, b.scss, sub/d.css (not sub/e.less)
         assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn node_modules_is_walked_only_with_disable_default_ignores() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.css"), "a {}").unwrap();
+        let nm = tmp.path().join("node_modules").join("pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("x.css"), "a {}").unwrap();
+        let pattern = format!("{}/**/*.css", tmp.path().display());
+
+        let default = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                ..default_opts()
+            },
+        );
+        assert_eq!(default.len(), 1);
+
+        let lifted = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                disable_default_ignores: true,
+                ..default_opts()
+            },
+        );
+        assert_eq!(lifted.len(), 2);
+    }
+
+    #[test]
+    fn ignore_patterns_exclude_matching_files_from_a_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_test_tree(tmp.path());
+        let pattern = format!("{}/**/*.css", tmp.path().display());
+        let patterns = vec!["**/sub/**".to_string()];
+
+        let files = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                ignore_patterns: &patterns,
+                ..default_opts()
+            },
+        );
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.css"));
     }
 
     #[test]
