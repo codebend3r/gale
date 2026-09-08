@@ -247,7 +247,7 @@ describe("reportDisables secondary option", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("a range disable for the rule is reported", () => {
+  test("a range disable for the rule is reported", () => {
     const project = makeProject({
       ".stylelintrc.json": config(rules),
       "a.css": "/* stylelint-disable block-no-empty */\na {}\n",
@@ -256,7 +256,7 @@ describe("reportDisables secondary option", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toEqual([expected]);
   });
 
-  test.failing("a disable-next-line for the rule is reported", () => {
+  test("a disable-next-line for the rule is reported", () => {
     const project = makeProject({
       ".stylelintrc.json": config(rules),
       "a.css": "/* stylelint-disable-next-line block-no-empty */\na {}\n",

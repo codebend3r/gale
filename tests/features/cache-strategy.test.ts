@@ -37,7 +37,7 @@ describe("--cache-strategy", () => {
     expect(hit(second)).toBe(true);
   });
 
-  test.failing("content: touching a file without changing it still hits", () => {
+  test("content: touching a file without changing it still hits", () => {
     const p = project();
 
     runGale(["--cache", "--cache-strategy", "content", "a.css"], { cwd: p.dir, env: DEBUG });
@@ -50,7 +50,7 @@ describe("--cache-strategy", () => {
     expect(hit(result)).toBe(true);
   });
 
-  test.failing("content: changing the content misses", () => {
+  test("content: changing the content misses", () => {
     const p = project();
 
     runGale(["--cache", "--cache-strategy", "content", "a.css"], { cwd: p.dir, env: DEBUG });
@@ -64,7 +64,7 @@ describe("--cache-strategy", () => {
     expect(hit(result)).toBe(false);
   });
 
-  test.failing("metadata: touching a file without changing it misses", () => {
+  test("metadata: touching a file without changing it misses", () => {
     const p = project();
 
     runGale(["--cache", "--cache-strategy", "metadata", "a.css"], { cwd: p.dir, env: DEBUG });
@@ -78,7 +78,7 @@ describe("--cache-strategy", () => {
     expect(hit(result)).toBe(false);
   });
 
-  test.failing("metadata is the default strategy", () => {
+  test("metadata is the default strategy", () => {
     const p = project();
 
     runGale(["--cache", "a.css"], { cwd: p.dir, env: DEBUG });
@@ -103,7 +103,7 @@ describe("--cache-strategy", () => {
     expect(hit(result)).toBe(true);
   });
 
-  test.failing("cacheStrategy: metadata in the config misses after a touch", () => {
+  test("cacheStrategy: metadata in the config misses after a touch", () => {
     const p = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }, { cacheStrategy: "metadata" }),
       "a.css": "a { color: red; }\n",
@@ -117,12 +117,13 @@ describe("--cache-strategy", () => {
     expect(hit(result)).toBe(false);
   });
 
-  test.failing("an unknown strategy is a usage error", () => {
+  test("an unknown strategy is a fatal error", () => {
+    // Stylelint throws a plain Error here, which its CLI reports as exit 1.
     const { dir } = project();
 
     const result = runGale(["--cache", "--cache-strategy", "bogus", "a.css"], { cwd: dir });
 
-    expect(result.exitCode).toBe(64);
+    expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
       '"bogus" cache strategy is unsupported. Specify either "metadata" or "content"',
     );

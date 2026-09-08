@@ -97,7 +97,7 @@ describe("lint() warning shape", () => {
 });
 
 describe("platform launcher", () => {
-  test.failing("maps every supported platform to a Rust target", async () => {
+  test("maps every supported platform to a Rust target", async () => {
     const { resolveTarget } = await import("../../npm/platform.cjs");
 
     expect(resolveTarget("darwin", "arm64")).toBe("aarch64-apple-darwin");
@@ -109,7 +109,7 @@ describe("platform launcher", () => {
     expect(resolveTarget("freebsd", "x64")).toBeNull();
   });
 
-  test.failing("names the Windows binary with an .exe suffix", async () => {
+  test("names the Windows binary with an .exe suffix", async () => {
     const { binaryFileName } = await import("../../npm/platform.cjs");
 
     expect(binaryFileName("win32")).toBe("gale.exe");
@@ -117,7 +117,7 @@ describe("platform launcher", () => {
     expect(binaryFileName("linux")).toBe("gale");
   });
 
-  test.failing("the bin entry is a Node script, not a POSIX shell script", () => {
+  test("the bin entry is a Node script, not a POSIX shell script", () => {
     const pkg = readJson("npm/package.json");
     const bin = (pkg.bin as Record<string, string>).gale;
 
@@ -126,7 +126,7 @@ describe("platform launcher", () => {
     expect(firstLine).toBe("#!/usr/bin/env node");
   });
 
-  test.failing("the root package.json uses the same launcher", () => {
+  test("the root package.json uses the same launcher", () => {
     const pkg = readJson("package.json");
     const bin = (pkg.bin as Record<string, string>).gale;
 
@@ -137,12 +137,12 @@ describe("platform launcher", () => {
 describe("Windows release binaries", () => {
   const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8");
 
-  test.failing("the release workflow builds x86_64-pc-windows-msvc", () => {
+  test("the release workflow builds x86_64-pc-windows-msvc", () => {
     expect(workflow).toContain("x86_64-pc-windows-msvc");
     expect(workflow).toMatch(/runs-on:.*windows/);
   });
 
-  test.failing("the Windows binary is staged into the npm package", () => {
+  test("the Windows binary is staged into the npm package", () => {
     expect(workflow).toContain("npm/bin/x86_64-pc-windows-msvc/gale.exe");
   });
 });

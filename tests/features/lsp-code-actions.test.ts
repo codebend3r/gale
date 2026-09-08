@@ -51,7 +51,7 @@ describe("LSP code actions", () => {
     expect(diagnostics[0].code).toBe("color-hex-case");
   });
 
-  test.failing("the server advertises code actions", async () => {
+  test("the server advertises code actions", async () => {
     const project = fixableProject();
     client = new LspClient(project.dir);
 
@@ -61,7 +61,7 @@ describe("LSP code actions", () => {
     expect(capabilities.codeActionProvider).toBeTruthy();
   });
 
-  test.failing("a fixable diagnostic yields a quickfix with the edit", async () => {
+  test("a fixable diagnostic yields a quickfix with the edit", async () => {
     const project = fixableProject();
     client = new LspClient(project.dir);
     await client.initialize(project.dir);
@@ -86,7 +86,7 @@ describe("LSP code actions", () => {
     expect(edits[0].range.end).toEqual({ line: 0, character: 15 });
   });
 
-  test.failing("a diagnostic without a fix yields no code action", async () => {
+  test("a diagnostic without a fix yields no code action", async () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
       "a.css": "a {}\n",
@@ -107,7 +107,7 @@ describe("LSP code actions", () => {
     expect(actions).toEqual([]);
   });
 
-  test.failing("code actions track the latest document text", async () => {
+  test("code actions track the latest document text", async () => {
     const project = fixableProject();
     client = new LspClient(project.dir);
     await client.initialize(project.dir);
