@@ -22,8 +22,10 @@
   ],
   "type": "module",
   "main": "npm/index.mjs",
+  "types": "npm/index.d.ts",
   "exports": {
     ".": {
+      "types": "./npm/index.d.ts",
       "import": "./npm/index.mjs",
       "require": "./npm/index.cjs"
     }
