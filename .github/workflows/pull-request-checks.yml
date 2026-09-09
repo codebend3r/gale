@@ -75,6 +75,24 @@ jobs:
         run: npm pack --dry-run
         working-directory: npm
 
+  feature-tests:
+    name: Feature tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run feature tests
+        run: bun test tests/features
+
   vscode-extension:
     name: VS Code extension
     runs-on: ubuntu-latest

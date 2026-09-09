@@ -20,6 +20,13 @@ const __dirname = dirname(__filename);
 // ---------------------------------------------------------------------------
 
 function findBinary() {
+  // 0. An explicit override wins. Test suites and monorepos use this to point
+  //    at a freshly built binary instead of the bundled one.
+  const override = process.env.GALE_BINARY;
+  if (override) {
+    return override;
+  }
+
   // 1. Check the bin/ directory within the npm package
   const localBin = join(__dirname, "bin", "gale");
   if (existsSync(localBin)) {
