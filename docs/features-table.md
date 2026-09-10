@@ -193,7 +193,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Feature | Description | Gale | Stylelint |
 |---------|-------------|:----:|:---------:|
 | Built-in language server | LSP diagnostics from the linter binary itself | ✅ `gale --lsp` | ❌ Third-party wrappers only |
-| VS Code extension | Diagnostics in VS Code | ⚠️ In-repo extension; not on the Marketplace | ✅ Official `stylelint.vscode-stylelint` |
+| VS Code extension | Diagnostics in VS Code | ⚠️ Separate repo, [codebend3r/gale-plugin](https://github.com/codebend3r/gale-plugin); not on the Marketplace | ✅ Official `stylelint.vscode-stylelint` |
 | Neovim / Helix / Zed | Any LSP-capable editor | ✅ Point the editor at `gale --lsp` | ⚠️ Via community language servers |
 | Lint on change and on save | Diagnostics refresh as you type | ✅ | ✅ |
 | Quick-fix code actions | Apply autofixes from the editor | ❌ | ✅ In the official extension |

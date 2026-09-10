@@ -15,10 +15,6 @@ node_modules/
 tests/differential/.clones/
 tests/differential/results/
 
-# VS Code extension build output
-editors/vscode/out/
-editors/vscode/*.vsix
-
 # Editor / OS
 *.swp
 *.swo

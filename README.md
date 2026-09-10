@@ -3,7 +3,7 @@
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
 [![npm version](https://img.shields.io/npm/v/@codebend3r/gale)](https://www.npmjs.com/package/@codebend3r/gale)
-[![CI](https://github.com/LyricalString/gale/actions/workflows/ci.yml/badge.svg)](https://github.com/LyricalString/gale/actions)
+[![CI](https://github.com/codebend3r/gale/actions/workflows/sanity-check.yml/badge.svg)](https://github.com/codebend3r/gale/actions)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **20-100x faster** on real projects.
@@ -98,7 +98,7 @@ The crate is named `gale-lint` on crates.io (since `gale` was taken), but the in
 ### From source
 
 ```bash
-git clone https://github.com/LyricalString/gale.git
+git clone https://github.com/codebend3r/gale.git
 cd gale
 cargo build --release
 # Binary at target/release/gale
@@ -106,7 +106,7 @@ cargo build --release
 
 ### GitHub releases
 
-Download pre-built binaries from [GitHub Releases](https://github.com/LyricalString/gale/releases).
+Download pre-built binaries from [GitHub Releases](https://github.com/codebend3r/gale/releases).
 
 ## What's supported
 
@@ -343,14 +343,15 @@ Works with Neovim, Helix, Zed, and any editor supporting the Language Server Pro
 
 ### VS Code
 
-An extension lives in [`editors/vscode/`](editors/vscode). It is not published to the
-Marketplace — build a `.vsix` locally:
+The extension lives in its own repo, [codebend3r/gale-plugin](https://github.com/codebend3r/gale-plugin).
+It is not published to the Marketplace — build a `.vsix` locally:
 
 ```bash
-cd editors/vscode
-npm install
-npm run compile   # tsc -p ./
-npm run package   # vsce package
+git clone https://github.com/codebend3r/gale-plugin.git
+cd gale-plugin
+bun install
+bun run compile   # tsc -p ./
+bun run package   # vsce package
 ```
 
 ## Development

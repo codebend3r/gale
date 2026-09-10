@@ -93,20 +93,6 @@ jobs:
       - name: Run feature tests
         run: bun test tests/features
 
-  vscode-extension:
-    name: VS Code extension
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install and compile
-        run: |
-          bun install --frozen-lockfile
-          bun run compile
-        working-directory: editors/vscode
-
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest

@@ -5,10 +5,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/johnnybenson/gale"
+    "url": "https://github.com/codebend3r/gale"
   },
-  "homepage": "https://github.com/johnnybenson/gale",
-  "bugs": "https://github.com/johnnybenson/gale/issues",
+  "homepage": "https://github.com/codebend3r/gale",
+  "bugs": "https://github.com/codebend3r/gale/issues",
   "keywords": [
     "css",
     "linter",

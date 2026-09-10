@@ -134,8 +134,6 @@ gale/
           order_properties_order.rs
           ... (250 rule files)
     gale_lsp/             LSP server
-  editors/
-    vscode/               VS Code extension (gale-lint)
   npm/
     package.json          npm package (@codebend3r/gale)
     install.js            Post-install script (downloads platform binary from GitHub releases)
