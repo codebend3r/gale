@@ -360,7 +360,7 @@ bun run package   # vsce package
 
 - Rust 1.85+ (2024 edition)
 - Python 3 (for differential tests)
-- Node.js 16+ (for differential tests and npm packaging)
+- Node.js 20+ (for differential tests and npm packaging; `.nvmrc` pins 26, and CI tests 20, 22, 24 and 26)
 
 ### Build and test
 

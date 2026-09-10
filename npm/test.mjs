@@ -8,7 +8,11 @@
  * Requires a working gale binary (either in npm/bin/ or on PATH).
  */
 
+import { createRequire } from "node:module";
+
 import { lint, formatters, resolveConfig, createPlugin } from "./index.mjs";
+
+const require = createRequire(import.meta.url);
 
 let passed = 0;
 let failed = 0;
@@ -185,11 +189,44 @@ async function testLinterResultShape() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 7: CommonJS entry point bridges to the ESM implementation
+// ---------------------------------------------------------------------------
+
+async function testCommonJsEntry() {
+  console.log("\nTest 7: require('./index.cjs') exposes the same API");
+
+  try {
+    const cjs = require("./index.cjs");
+
+    assert(typeof cjs.lint === "function", "cjs.lint is a function");
+    assert(typeof cjs.resolveConfig === "function", "cjs.resolveConfig is a function");
+    assert(typeof cjs.createPlugin === "function", "cjs.createPlugin is a function");
+    assert(cjs.default === cjs, "cjs.default points back at module.exports");
+
+    const jsonFormatter = await cjs.formatters.json;
+    assert(typeof jsonFormatter === "function", "cjs.formatters.json resolves to a function");
+
+    const result = await cjs.lint({
+      code: "a {}",
+      config: { rules: { "block-no-empty": true } },
+    });
+    assert(Array.isArray(result.results), "cjs.lint returns results");
+    assert(
+      result.results[0]?.warnings[0]?.rule === "block-no-empty",
+      "cjs.lint reports block-no-empty",
+    );
+  } catch (err) {
+    console.error(`  ERROR: ${err.message}`);
+    failed++;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Run all tests
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log("=== @codebend3r/gale programmatic API tests ===");
+  console.log(`=== @codebend3r/gale programmatic API tests (Node ${process.versions.node}) ===`);
 
   await testLintCodeEmptyBlock();
   await testLintCodeWithConfig();
@@ -197,6 +234,7 @@ async function main() {
   await testFormattersJson();
   await testCreatePlugin();
   await testLinterResultShape();
+  await testCommonJsEntry();
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 
