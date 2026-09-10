@@ -99,14 +99,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - uses: oven-sh/setup-bun@v2
 
       - name: Install and compile
         run: |
-          npm install --no-audit --no-fund
-          npm run compile
+          bun install --frozen-lockfile
+          bun run compile
         working-directory: editors/vscode
 
   benchmark:

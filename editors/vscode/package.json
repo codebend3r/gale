@@ -60,7 +60,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "package": "vsce package",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "bun run compile"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

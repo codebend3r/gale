@@ -48,7 +48,7 @@
     "test:rust": "cargo test --workspace",
     "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
     "test:features": "bun test tests/features",
-    "check:vscode": "cd editors/vscode && npm install --no-audit --no-fund && npm run compile",
+    "check:vscode": "cd editors/vscode && bun install --frozen-lockfile && bun run compile",
     "build:release": "cargo build --release",
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all"
