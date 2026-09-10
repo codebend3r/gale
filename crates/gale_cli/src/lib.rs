@@ -160,7 +160,9 @@ const CSS_EXTENSIONS: &[&str] = &["css", "scss", "less", "sass"];
 /// Map a Stylelint `customSyntax` package name onto the parser Gale uses.
 ///
 /// Returns `None` for syntaxes Gale cannot parse (`postcss-html`,
-/// `postcss-markdown`, ...).
+/// `postcss-markdown`, ...).  This is the only place that decides which
+/// `customSyntax` values Gale understands, whether they arrive from the config
+/// file or from `--custom-syntax`.
 fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
     match name.to_ascii_lowercase().as_str() {
         "postcss" => Some(Syntax::Css),
@@ -169,6 +171,35 @@ fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
         "postcss-sass" => Some(Syntax::Sass),
         _ => None,
     }
+}
+
+/// The parser to use for `file_path`, or `None` when the file should be
+/// skipped because the `customSyntax` in play names a syntax Gale cannot parse.
+///
+/// `--custom-syntax` applies to every file and picks the parser directly.  The
+/// config's own `customSyntax` only decides whether a file is skipped —
+/// supported values still parse by file extension.
+fn resolve_syntax(
+    cli_custom_syntax: Option<&str>,
+    config: &GaleConfig,
+    file_path: &str,
+) -> Option<Syntax> {
+    if let Some(name) = cli_custom_syntax {
+        let syntax = syntax_for_custom_syntax(name);
+        if syntax.is_none() {
+            debug!("Skipping {file_path}: unsupported --custom-syntax '{name}'");
+        }
+        return syntax;
+    }
+
+    if let Some(name) = config.custom_syntax_for_file(file_path)
+        && syntax_for_custom_syntax(name).is_none()
+    {
+        debug!("Skipping {file_path}: unsupported customSyntax '{name}'");
+        return None;
+    }
+
+    Some(detect_syntax(file_path))
 }
 
 /// Write a report to `path`, creating parent directories and stripping ANSI
@@ -920,20 +951,7 @@ pub fn run() -> Result<()> {
         debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
     }
 
-    // --custom-syntax names a PostCSS syntax package.  A supported one forces
-    // that parser for every file; an unsupported one skips every file, the
-    // same way an unsupported customSyntax in the config does.
-    let forced_syntax: Option<Syntax> = cli
-        .custom_syntax
-        .as_deref()
-        .and_then(syntax_for_custom_syntax);
-    let skip_all_for_custom_syntax = cli.custom_syntax.is_some() && forced_syntax.is_none();
-    if let Some(name) = &cli.custom_syntax
-        && skip_all_for_custom_syntax
-    {
-        debug!("Skipping every file: unsupported --custom-syntax '{name}'");
-    }
-    let syntax_for = |path: &str| forced_syntax.unwrap_or_else(|| detect_syntax(path));
+    let cli_custom_syntax = cli.custom_syntax.as_deref();
 
     // Every switch below can come from the CLI or from the config file.  A
     // flag on the command line wins; otherwise the config decides, matching
@@ -1144,17 +1162,6 @@ pub fn run() -> Result<()> {
         })
     }
 
-    /// Check whether a file should be skipped due to an unsupported
-    /// `customSyntax` in the config (top-level or override).  Returns `true`
-    /// (and emits a debug log) when the file should be excluded from output.
-    fn should_skip_custom_syntax(config: &GaleConfig, file_path: &str) -> bool {
-        if let Some(syntax_name) = config.unsupported_custom_syntax_for_file(file_path) {
-            debug!("Skipping {file_path}: unsupported customSyntax '{syntax_name}'");
-            return true;
-        }
-        false
-    }
-
     /// Lint a single file using a fully resolved config (with overrides).
     ///
     /// Extracts enabled rules, options, and severities from the config (applying
@@ -1267,12 +1274,18 @@ pub fn run() -> Result<()> {
         std::io::stdin().read_to_string(&mut source)?;
 
         let file_path = &cli.stdin_filename;
-        if skip_all_for_custom_syntax || should_skip_custom_syntax(&config, file_path) {
-            vec![]
-        } else {
-            let syntax = syntax_for(file_path);
-            let result = lint_file(&runner, &source, file_path, syntax, &config, has_overrides);
-            vec![result]
+        match resolve_syntax(cli_custom_syntax, &config, file_path) {
+            Some(syntax) => {
+                vec![lint_file(
+                    &runner,
+                    &source,
+                    file_path,
+                    syntax,
+                    &config,
+                    has_overrides,
+                )]
+            }
+            None => vec![],
         }
     } else {
         // Discover files.  `--ignore-pattern` globs join the config's
@@ -1285,13 +1298,10 @@ pub fn run() -> Result<()> {
             ignore_patterns: &ignore_patterns,
             disable_default_ignores: cli.disable_default_ignores,
         };
-        let mut files = discover_files(&cli.files, &discover_opts);
+        let files = discover_files(&cli.files, &discover_opts);
         debug!("Discovered {} CSS file(s)", files.len());
-        if skip_all_for_custom_syntax {
-            files.clear();
-        }
 
-        if files.is_empty() && !skip_all_for_custom_syntax {
+        if files.is_empty() {
             if !allow_empty_input {
                 // Stylelint raises NoFilesFoundError and exits 1 here; exiting
                 // 0 would let a CI step that lints a mistyped path pass.
@@ -1382,9 +1392,7 @@ pub fn run() -> Result<()> {
                         None
                     };
                     let cfg_for_check = effective_config.unwrap_or(&config);
-                    if should_skip_custom_syntax(cfg_for_check, &file_path) {
-                        return None;
-                    }
+                    let syntax = resolve_syntax(cli_custom_syntax, cfg_for_check, &file_path)?;
 
                     let content_hash = compute_hash(&source, config_hash);
 
@@ -1397,7 +1405,6 @@ pub fn run() -> Result<()> {
                         }
                     }
 
-                    let syntax = syntax_for(&file_path);
                     let result = if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1445,11 +1452,8 @@ pub fn run() -> Result<()> {
                         None
                     };
                     let cfg_for_check = effective_config.unwrap_or(&config);
-                    if should_skip_custom_syntax(cfg_for_check, &file_path) {
-                        return None;
-                    }
+                    let syntax = resolve_syntax(cli_custom_syntax, cfg_for_check, &file_path)?;
 
-                    let syntax = syntax_for(&file_path);
                     if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1510,7 +1514,11 @@ pub fn run() -> Result<()> {
                 continue;
             }
 
-            let syntax = syntax_for(&result.file_path);
+            // These files were linted, so a parser was already chosen for them;
+            // the config's own customSyntax only ever decides skipping.
+            let syntax = cli_custom_syntax
+                .and_then(syntax_for_custom_syntax)
+                .unwrap_or_else(|| detect_syntax(&result.file_path));
             let mut current = result.source.clone();
             let mut file_fixed = 0usize;
 
@@ -1846,6 +1854,49 @@ mod tests {
         assert_eq!(syntax_for_custom_syntax("postcss-sass"), Some(Syntax::Sass));
         assert_eq!(syntax_for_custom_syntax("postcss-html"), None);
         assert_eq!(syntax_for_custom_syntax("postcss-markdown"), None);
+    }
+
+    #[test]
+    fn resolve_syntax_detects_from_the_extension_by_default() {
+        let config = GaleConfig::default();
+        assert_eq!(resolve_syntax(None, &config, "a.css"), Some(Syntax::Css));
+        assert_eq!(resolve_syntax(None, &config, "a.scss"), Some(Syntax::Scss));
+    }
+
+    #[test]
+    fn resolve_syntax_lets_the_cli_flag_force_a_parser() {
+        let config = GaleConfig::default();
+        assert_eq!(
+            resolve_syntax(Some("postcss-scss"), &config, "a.css"),
+            Some(Syntax::Scss)
+        );
+        // An unsupported flag skips the file rather than parsing it.
+        assert_eq!(resolve_syntax(Some("postcss-html"), &config, "a.css"), None);
+    }
+
+    #[test]
+    fn resolve_syntax_skips_files_whose_config_syntax_is_unsupported() {
+        let config = GaleConfig {
+            custom_syntax: Some("postcss-markdown".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_syntax(None, &config, "a.css"), None);
+        // The CLI flag overrides the config's customSyntax entirely.
+        assert_eq!(
+            resolve_syntax(Some("postcss-less"), &config, "a.css"),
+            Some(Syntax::Less)
+        );
+    }
+
+    #[test]
+    fn resolve_syntax_keeps_extension_detection_for_supported_config_syntax() {
+        // A supported config `customSyntax` decides only that the file is not
+        // skipped; the parser still comes from the extension.
+        let config = GaleConfig {
+            custom_syntax: Some("postcss-scss".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_syntax(None, &config, "a.css"), Some(Syntax::Css));
     }
 
     #[test]
