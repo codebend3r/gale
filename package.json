@@ -40,17 +40,17 @@
     "node": ">=16.0.0"
   },
   "scripts": {
-    "system-check": "run-s fmt:check lint test:rust build:release test:api test:features",
+    "build": "bash scripts/build-npm.sh",
+    "build:all": "bash scripts/build-npm.sh --all",
+    "build:release": "cargo build --release",
     "fmt": "cargo fmt --all",
     "fmt:check": "cargo fmt --all --check",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings",
+    "system-check": "run-s fmt:check lint test:rust build:release test:api test:features",
     "test": "run-s test:rust test:api test:features",
-    "test:rust": "cargo test --workspace",
     "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
     "test:features": "bun test tests/features",
-    "build:release": "cargo build --release",
-    "build": "bash scripts/build-npm.sh",
-    "build:all": "bash scripts/build-npm.sh --all"
+    "test:rust": "cargo test --workspace"
   },
   "devDependencies": {
     "npm-run-all2": "^9.0.3"
