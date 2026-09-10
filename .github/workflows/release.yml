@@ -8,10 +8,10 @@ on:
 permissions:
   contents: write
 
-# Each tag is its own ref, so only a re-push of the same tag cancels a run.
+# Never cancel a release mid-publish; a re-pushed tag queues behind the run in flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
