@@ -22,8 +22,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --workspace
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build release
+        # test:api and test:features both run the release binary.
+        run: cargo build --release
+
+      - name: Run the full test suite
+        # Same as `bun run system-check` minus fmt/clippy/build, which have
+        # their own jobs: cargo tests, npm API tests, and bun feature tests.
+        run: bun run test
 
   clippy:
     name: Clippy
@@ -103,24 +114,6 @@ jobs:
       - name: Check the published file list
         run: npm pack --dry-run
         working-directory: npm
-
-  feature-tests:
-    name: Feature tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Build release
-        run: cargo build --release
-
-      - name: Run feature tests
-        run: bun test --parallel=8 tests/features
 
   benchmark:
     name: Benchmark

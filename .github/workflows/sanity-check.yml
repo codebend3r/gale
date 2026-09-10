@@ -39,11 +39,21 @@ jobs:
       - name: 🔍 Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: 🧅 Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: 📦 Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: 🏗️ Build release
+        run: cargo build --release
+
       - name: 🧪 Test
-        run: cargo test --workspace
+        # cargo tests, npm API tests, and bun feature tests.
+        run: bun run test
 
       - name: 🎉 All clear
-        run: echo "✅ ${GITHUB_SHA:0:7} landed on \`main\` clean — fmt, clippy, and the workspace test suite all green." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "✅ ${GITHUB_SHA:0:7} landed on \`main\` clean — fmt, clippy, and the full test suite all green." >> "$GITHUB_STEP_SUMMARY"
 
       - name: 🚨 Something broke
         if: failure()
