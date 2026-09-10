@@ -1,8 +1,6 @@
 /**
  * The npm package: TypeScript declarations, API result shape, and the
  * platform launcher that has to work on Windows.
- *
- * Tiers 2 and 3.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -22,11 +20,7 @@ function readJson(rel: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(REPO_ROOT, rel), "utf8")) as Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
-// Tier 2
-// ---------------------------------------------------------------------------
-
-describe("[tier 2] TypeScript declarations", () => {
+describe("TypeScript declarations", () => {
   const dts = join(NPM_DIR, "index.d.ts");
 
   test.failing("npm/index.d.ts exists", () => {
@@ -63,7 +57,7 @@ describe("[tier 2] TypeScript declarations", () => {
   });
 });
 
-describe("[tier 2] lint() warning shape", () => {
+describe("lint() warning shape", () => {
   test("warnings carry line, column, rule, severity and text", async () => {
     const { lint } = await import("../../npm/index.mjs");
 
@@ -102,11 +96,7 @@ describe("[tier 2] lint() warning shape", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tier 3
-// ---------------------------------------------------------------------------
-
-describe("[tier 3] platform launcher", () => {
+describe("platform launcher", () => {
   test.failing("maps every supported platform to a Rust target", async () => {
     const { resolveTarget } = await import("../../npm/platform.cjs");
 
@@ -144,7 +134,7 @@ describe("[tier 3] platform launcher", () => {
   });
 });
 
-describe("[tier 3] Windows release binaries", () => {
+describe("Windows release binaries", () => {
   const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8");
 
   test.failing("the release workflow builds x86_64-pc-windows-msvc", () => {

@@ -5,8 +5,6 @@
  *   content             a file is stale when its content hash changed
  *
  * A cache hit is observed through the debug log line Gale prints for it.
- *
- * Tier 3.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -29,7 +27,7 @@ function hit(result: { stdout: string; stderr: string }): boolean {
   return /cache hit/i.test(result.stdout + result.stderr);
 }
 
-describe("[tier 3] --cache-strategy", () => {
+describe("--cache-strategy", () => {
   test("a second run with --cache hits the cache", () => {
     const { dir } = project();
 

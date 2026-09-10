@@ -1,7 +1,5 @@
 /**
  * Stylelint CLI flags Gale does not accept yet.
- *
- * Tier 1.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -28,7 +26,7 @@ function sources(result: ReturnType<typeof runGaleJson>): string[] {
     .sort();
 }
 
-describe("[tier 1] --ignore-pattern", () => {
+describe("--ignore-pattern", () => {
   const files = {
     ".stylelintrc.json": config(RULES),
     "a.css": EMPTY_BLOCK,
@@ -76,7 +74,7 @@ describe("[tier 1] --ignore-pattern", () => {
   });
 });
 
-describe("[tier 1] --disable-default-ignores", () => {
+describe("--disable-default-ignores", () => {
   const files = {
     ".stylelintrc.json": config(RULES),
     "a.css": "a { color: red; }\n",
@@ -106,7 +104,7 @@ describe("[tier 1] --disable-default-ignores", () => {
   });
 });
 
-describe("[tier 1] --quiet-deprecation-warnings", () => {
+describe("--quiet-deprecation-warnings", () => {
   test("the flag is accepted", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES),
@@ -120,7 +118,7 @@ describe("[tier 1] --quiet-deprecation-warnings", () => {
   });
 });
 
-describe("[tier 1] --custom-syntax", () => {
+describe("--custom-syntax", () => {
   // Plain CSS parsing ignores the `$c` declaration, so the SCSS rule only fires
   // when the file is parsed as SCSS.
   const files = {
@@ -172,7 +170,7 @@ describe("[tier 1] --custom-syntax", () => {
   });
 });
 
-describe("[tier 1] --output-file", () => {
+describe("--output-file", () => {
   test("writes the report to the given path", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 

@@ -1,8 +1,6 @@
 /**
  * Stylelint lets every CLI switch also be set from the config file. These
  * tests cover the config keys Gale accepts only as CLI flags today.
- *
- * Tier 1.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -19,7 +17,7 @@ import {
 
 afterAll(cleanupProjects);
 
-describe("[tier 1] ignoreDisables config key", () => {
+describe("ignoreDisables config key", () => {
   const source = "/* stylelint-disable block-no-empty */\na {}\n";
 
   test("disable comments apply when the key is absent", () => {
@@ -61,7 +59,7 @@ describe("[tier 1] ignoreDisables config key", () => {
   });
 });
 
-describe("[tier 1] allowEmptyInput config key", () => {
+describe("allowEmptyInput config key", () => {
   test("no matching files is an error by default", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
@@ -89,7 +87,7 @@ describe("[tier 1] allowEmptyInput config key", () => {
   });
 });
 
-describe("[tier 1] quiet config key", () => {
+describe("quiet config key", () => {
   const rules = { "block-no-empty": [true, { severity: "warning" }] };
 
   test("warnings are reported when the key is absent", () => {
@@ -120,7 +118,7 @@ describe("[tier 1] quiet config key", () => {
   });
 });
 
-describe("[tier 1] fix config key", () => {
+describe("fix config key", () => {
   const rules = { "color-hex-case": "lower" };
 
   test("files are left alone when the key is absent", () => {
@@ -155,7 +153,7 @@ describe("[tier 1] fix config key", () => {
   });
 });
 
-describe("[tier 1] cache and cacheLocation config keys", () => {
+describe("cache and cacheLocation config keys", () => {
   test("no cache file is written when the key is absent", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),

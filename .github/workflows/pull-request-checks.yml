@@ -120,7 +120,7 @@ jobs:
         run: cargo build --release
 
       - name: Run feature tests
-        run: bun test tests/features
+        run: bun test --parallel=8 tests/features
 
   benchmark:
     name: Benchmark

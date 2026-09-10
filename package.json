@@ -49,7 +49,7 @@
     "system-check": "run-s fmt:check lint build:release test",
     "test": "run-s test:rust test:api test:features",
     "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
-    "test:features": "bun test tests/features",
+    "test:features": "bun test --parallel=8 tests/features",
     "test:rust": "cargo test --workspace"
   },
   "devDependencies": {

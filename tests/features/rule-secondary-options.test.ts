@@ -2,8 +2,6 @@
  * Secondary options every Stylelint rule accepts: `message`, `url`, and
  * `disableFix`. (`severity` already works; `reportDisables` is in
  * disable-reports.test.ts.)
- *
- * Tier 2.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -12,7 +10,7 @@ import { EMPTY_BLOCK, UPPER_HEX, cleanupProjects, config, makeProject, runGale, 
 
 afterAll(cleanupProjects);
 
-describe("[tier 2] message secondary option", () => {
+describe("message secondary option", () => {
   test("pattern rules already honour a custom message", () => {
     const project = makeProject({
       ".stylelintrc.json": config({
@@ -64,7 +62,7 @@ describe("[tier 2] message secondary option", () => {
   });
 });
 
-describe("[tier 2] url secondary option", () => {
+describe("url secondary option", () => {
   test("no url key is present by default", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
@@ -106,7 +104,7 @@ describe("[tier 2] url secondary option", () => {
   });
 });
 
-describe("[tier 2] disableFix secondary option", () => {
+describe("disableFix secondary option", () => {
   test("--fix rewrites the file without the option", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "color-hex-case": "lower" }),
