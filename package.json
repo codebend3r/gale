@@ -40,9 +40,20 @@
     "node": ">=16.0.0"
   },
   "scripts": {
-    "test": "node npm/test.mjs",
+    "system-check": "run-s fmt:check lint test:rust build:release test:api test:features check:vscode",
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --all --check",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings",
+    "test": "run-s test:rust test:api test:features",
+    "test:rust": "cargo test --workspace",
+    "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
     "test:features": "bun test tests/features",
+    "check:vscode": "cd editors/vscode && npm install --no-audit --no-fund && npm run compile",
+    "build:release": "cargo build --release",
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all"
+  },
+  "devDependencies": {
+    "npm-run-all2": "^9.0.3"
   }
 }
