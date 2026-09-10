@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
 
+# Every push to main gets its own verdict; runs queue rather than cancel.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -22,7 +23,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🦀 Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

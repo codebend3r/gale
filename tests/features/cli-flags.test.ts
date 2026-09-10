@@ -46,7 +46,7 @@ describe("[tier 1] --ignore-pattern", () => {
     ]);
   });
 
-  test.failing("a glob excludes matching files", () => {
+  test("a glob excludes matching files", () => {
     const project = makeProject(files);
 
     const result = runGaleJson(["**/*.css", "--ignore-pattern", "vendor/**"], {
@@ -56,7 +56,7 @@ describe("[tier 1] --ignore-pattern", () => {
     expect(sources(result)).toEqual(["a.css"]);
   });
 
-  test.failing("the flag can be repeated", () => {
+  test("the flag can be repeated", () => {
     const project = makeProject(files);
 
     const result = runGaleJson(
@@ -67,7 +67,7 @@ describe("[tier 1] --ignore-pattern", () => {
     expect(sources(result)).toEqual(["a.css"]);
   });
 
-  test.failing("--ip is the short alias", () => {
+  test("--ip is the short alias", () => {
     const project = makeProject(files);
 
     const result = runGaleJson(["**/*.css", "--ip", "vendor/**"], { cwd: project.dir });
@@ -89,7 +89,7 @@ describe("[tier 1] --disable-default-ignores", () => {
     expect(sources(runGaleJson(["**/*.css"], { cwd: project.dir }))).toEqual(["a.css"]);
   });
 
-  test.failing("the flag lints node_modules too", () => {
+  test("the flag lints node_modules too", () => {
     const project = makeProject(files);
 
     const result = runGaleJson(["**/*.css", "--disable-default-ignores"], { cwd: project.dir });
@@ -97,7 +97,7 @@ describe("[tier 1] --disable-default-ignores", () => {
     expect(sources(result)).toEqual(["a.css", "node_modules/pkg/x.css"]);
   });
 
-  test.failing("--di is the short alias", () => {
+  test("--di is the short alias", () => {
     const project = makeProject(files);
 
     const result = runGaleJson(["**/*.css", "--di"], { cwd: project.dir });
@@ -107,7 +107,7 @@ describe("[tier 1] --disable-default-ignores", () => {
 });
 
 describe("[tier 1] --quiet-deprecation-warnings", () => {
-  test.failing("the flag is accepted", () => {
+  test("the flag is accepted", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES),
       "a.css": "a { color: red; }\n",
@@ -134,7 +134,7 @@ describe("[tier 1] --custom-syntax", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("postcss-scss parses every file as SCSS", () => {
+  test("postcss-scss parses every file as SCSS", () => {
     const project = makeProject(files);
 
     const warnings = runGaleJson(["--custom-syntax", "postcss-scss", "a.css"], {
@@ -144,7 +144,7 @@ describe("[tier 1] --custom-syntax", () => {
     expect(warnings.map((w) => w.rule)).toEqual(["scss/dollar-variable-pattern"]);
   });
 
-  test.failing("postcss-less parses every file as Less", () => {
+  test("postcss-less parses every file as Less", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
       "a.css": ".mixin() { color: red; }\n.a { .mixin(); }\nb {}\n",
@@ -157,7 +157,7 @@ describe("[tier 1] --custom-syntax", () => {
     expect(warnings.map((w) => w.rule)).toEqual(["block-no-empty"]);
   });
 
-  test.failing("an unsupported syntax skips every file instead of failing", () => {
+  test("an unsupported syntax skips every file instead of failing", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES),
       "a.css": EMPTY_BLOCK,
@@ -173,7 +173,7 @@ describe("[tier 1] --custom-syntax", () => {
 });
 
 describe("[tier 1] --output-file", () => {
-  test.failing("writes the report to the given path", () => {
+  test("writes the report to the given path", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
     runGale(["a.css", "--output-file", "report.txt"], { cwd: project.dir });
@@ -182,7 +182,7 @@ describe("[tier 1] --output-file", () => {
     expect(project.read("report.txt")).toContain("block-no-empty");
   });
 
-  test.failing("creates missing parent directories", () => {
+  test("creates missing parent directories", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
     runGale(["a.css", "--output-file", "out/nested/report.txt"], { cwd: project.dir });
@@ -190,15 +190,19 @@ describe("[tier 1] --output-file", () => {
     expect(project.read("out/nested/report.txt")).toContain("block-no-empty");
   });
 
-  test.failing("strips ANSI colour codes from the file", () => {
+  test("strips ANSI colour codes from the file", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
-    runGale(["a.css", "--color", "--output-file", "report.txt"], { cwd: project.dir });
+    const result = runGale(["a.css", "--output-file", "report.txt"], {
+      cwd: project.dir,
+      env: { FORCE_COLOR: "1" },
+    });
 
+    expect(hasAnsi(result.stdout)).toBe(true);
     expect(hasAnsi(project.read("report.txt"))).toBe(false);
   });
 
-  test.failing("still prints the report to the terminal", () => {
+  test("still prints the report to the terminal", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
     const result = runGale(["a.css", "--output-file", "report.txt"], { cwd: project.dir });
@@ -206,7 +210,7 @@ describe("[tier 1] --output-file", () => {
     expect(result.stdout).toContain("block-no-empty");
   });
 
-  test.failing("works with the json formatter", () => {
+  test("works with the json formatter", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
     runGale(["a.css", "--formatter", "json", "--output-file", "report.json"], {
@@ -217,7 +221,7 @@ describe("[tier 1] --output-file", () => {
     expect(parsed[0].warnings).toHaveLength(1);
   });
 
-  test.failing("-o is the short alias", () => {
+  test("-o is the short alias", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": EMPTY_BLOCK });
 
     runGale(["a.css", "-o", "report.txt"], { cwd: project.dir });

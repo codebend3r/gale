@@ -22,7 +22,7 @@ Supported platforms: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
 
 ## Prerequisites
 
-- npm account with publish access to the `@lyricalstring` scope
+- npm account with publish access to the `@codebend3r` scope
 - Precompiled binaries for every supported platform
 
 ## Release process

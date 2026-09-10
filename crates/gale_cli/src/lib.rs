@@ -12,9 +12,9 @@ use rayon::prelude::*;
 use tracing::debug;
 
 use gale_config::{ConfigResolver, GaleConfig};
-use gale_css_parser::detect_syntax;
+use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
-use gale_formatter::create_formatter;
+use gale_formatter::{create_formatter, strip_ansi};
 use gale_linter::{LintRunner, RuleRegistry};
 
 use crate::cache::{LintCache, compute_config_hash, compute_hash, resolve_cache_path};
@@ -98,6 +98,26 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     ignore_path: Option<PathBuf>,
 
+    /// Glob pattern of files to ignore, on top of the ignore files (repeatable)
+    #[arg(long, visible_alias = "ip", value_name = "PATTERN", action = clap::ArgAction::Append)]
+    ignore_pattern: Vec<String>,
+
+    /// Lint node_modules too instead of always skipping it
+    #[arg(long, visible_alias = "di")]
+    disable_default_ignores: bool,
+
+    /// Accepted for Stylelint compatibility; Gale emits no deprecation warnings
+    #[arg(long)]
+    quiet_deprecation_warnings: bool,
+
+    /// Parse every file with this syntax: postcss, postcss-scss, postcss-less or postcss-sass
+    #[arg(long, value_name = "SYNTAX")]
+    custom_syntax: Option<String>,
+
+    /// Write the report to this file as well as printing it
+    #[arg(short = 'o', long, value_name = "PATH")]
+    output_file: Option<PathBuf>,
+
     /// Disable all ignore file processing (gitignore, .galeignore, custom)
     #[arg(long)]
     no_ignore: bool,
@@ -137,6 +157,62 @@ pub struct Cli {
 
 const CSS_EXTENSIONS: &[&str] = &["css", "scss", "less", "sass"];
 
+/// Map a Stylelint `customSyntax` package name onto the parser Gale uses.
+///
+/// Returns `None` for syntaxes Gale cannot parse (`postcss-html`,
+/// `postcss-markdown`, ...).  This is the only place that decides which
+/// `customSyntax` values Gale understands, whether they arrive from the config
+/// file or from `--custom-syntax`.
+fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
+    match name.to_ascii_lowercase().as_str() {
+        "postcss" => Some(Syntax::Css),
+        "postcss-scss" => Some(Syntax::Scss),
+        "postcss-less" => Some(Syntax::Less),
+        "postcss-sass" => Some(Syntax::Sass),
+        _ => None,
+    }
+}
+
+/// The parser to use for `file_path`, or `None` when the file should be
+/// skipped because the `customSyntax` in play names a syntax Gale cannot parse.
+///
+/// `--custom-syntax` applies to every file and picks the parser directly.  The
+/// config's own `customSyntax` only decides whether a file is skipped —
+/// supported values still parse by file extension.
+fn resolve_syntax(
+    cli_custom_syntax: Option<&str>,
+    config: &GaleConfig,
+    file_path: &str,
+) -> Option<Syntax> {
+    if let Some(name) = cli_custom_syntax {
+        let syntax = syntax_for_custom_syntax(name);
+        if syntax.is_none() {
+            debug!("Skipping {file_path}: unsupported --custom-syntax '{name}'");
+        }
+        return syntax;
+    }
+
+    if let Some(name) = config.custom_syntax_for_file(file_path)
+        && syntax_for_custom_syntax(name).is_none()
+    {
+        debug!("Skipping {file_path}: unsupported customSyntax '{name}'");
+        return None;
+    }
+
+    Some(detect_syntax(file_path))
+}
+
+/// Write a report to `path`, creating parent directories and stripping ANSI
+/// escapes the way Stylelint's `--output-file` does.
+fn write_output_file(path: &Path, report: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, strip_ansi(report))
+}
+
 fn is_css_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -151,6 +227,8 @@ struct DiscoverOptions<'a> {
     no_ignore: bool,
     ignore_path: Option<&'a Path>,
     ignore_patterns: &'a [String],
+    /// Stylelint's `--disable-default-ignores`: walk into `node_modules`.
+    disable_default_ignores: bool,
 }
 
 /// Build an `ignore::gitignore::Gitignore` matcher from `.stylelintignore`,
@@ -508,10 +586,13 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
                     );
                 }
 
-                // Always exclude node_modules (Stylelint default behavior).
+                // Exclude node_modules unless asked not to (Stylelint's
+                // default ignore, lifted by --disable-default-ignores).
                 {
                     let mut overrides = ignore::overrides::OverrideBuilder::new(&walk_root);
-                    let _ = overrides.add("!**/node_modules/**");
+                    if !opts.disable_default_ignores {
+                        let _ = overrides.add("!**/node_modules/**");
+                    }
                     for pat in opts.ignore_patterns {
                         if let Err(err) = overrides.add(&format!("!{pat}")) {
                             eprintln!("Warning: invalid ignore pattern '{pat}': {err}");
@@ -655,10 +736,13 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
             }
 
             // Apply ignore_patterns from config as glob overrides.
-            // Always exclude node_modules (Stylelint default behavior).
+            // Exclude node_modules unless asked not to (Stylelint's default
+            // ignore, lifted by --disable-default-ignores).
             {
                 let mut overrides = ignore::overrides::OverrideBuilder::new(path);
-                let _ = overrides.add("!**/node_modules/**");
+                if !opts.disable_default_ignores {
+                    let _ = overrides.add("!**/node_modules/**");
+                }
                 for pat in opts.ignore_patterns {
                     // Negate the pattern so matching files are excluded.
                     if let Err(err) = overrides.add(&format!("!{pat}")) {
@@ -862,10 +946,34 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Gale never emits deprecation warnings, so the flag only needs accepting.
+    if cli.quiet_deprecation_warnings {
+        debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
+    }
+
+    let cli_custom_syntax = cli.custom_syntax.as_deref();
+
+    // Every switch below can come from the CLI or from the config file.  A
+    // flag on the command line wins; otherwise the config decides, matching
+    // Stylelint where unspecified CLI flags fall back to config properties.
+    let quiet = cli.quiet || config.quiet;
+    let use_cache = cli.cache || config.cache;
+    let allow_empty_input = cli.allow_empty_input || config.allow_empty_input;
+    let cache_location: Option<PathBuf> = cli
+        .cache_location
+        .clone()
+        .or_else(|| config.cache_location.clone());
+    let fix_mode: Option<String> = cli.fix.clone().or_else(|| {
+        config.fix.map(|mode| match mode {
+            gale_config::FixMode::Strict => "strict".to_string(),
+            gale_config::FixMode::Lax => "lax".to_string(),
+        })
+    });
+
     // Set up caching if --cache is enabled.
-    let cache_path = resolve_cache_path(cli.cache_location.as_deref());
+    let cache_path = resolve_cache_path(cache_location.as_deref());
     let config_hash = compute_config_hash(&config.rules);
-    let mut lint_cache = if cli.cache {
+    let mut lint_cache = if use_cache {
         debug!("Loading cache from {}", cache_path.display());
         LintCache::load(&cache_path)
     } else {
@@ -944,7 +1052,16 @@ pub fn run() -> Result<()> {
     runner.set_report_needless_disables(
         config.report_needless_disables || cli.report_needless_disables,
     );
-    runner.set_ignore_disables(cli.ignore_disables);
+    runner.set_report_invalid_scope_disables(
+        config.report_invalid_scope_disables || cli.report_invalid_scope_disables,
+    );
+    runner.set_report_descriptionless_disables(
+        config.report_descriptionless_disables || cli.report_descriptionless_disables,
+    );
+    runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
+    // Plugin rules the config names but Gale does not implement still count
+    // as configured for reportInvalidScopeDisables.
+    runner.set_configured_rules(config.rules.keys().cloned().collect());
     runner.set_default_severity(config.default_severity.map(|s| match s {
         gale_config::Severity::Error => gale_diagnostics::Severity::Error,
         gale_config::Severity::Warning => gale_diagnostics::Severity::Warning,
@@ -1043,17 +1160,6 @@ pub fn run() -> Result<()> {
             rule_severities,
             has_overrides,
         })
-    }
-
-    /// Check whether a file should be skipped due to an unsupported
-    /// `customSyntax` in the config (top-level or override).  Returns `true`
-    /// (and emits a debug log) when the file should be excluded from output.
-    fn should_skip_custom_syntax(config: &GaleConfig, file_path: &str) -> bool {
-        if let Some(syntax_name) = config.unsupported_custom_syntax_for_file(file_path) {
-            debug!("Skipping {file_path}: unsupported customSyntax '{syntax_name}'");
-            return true;
-        }
-        false
     }
 
     /// Lint a single file using a fully resolved config (with overrides).
@@ -1168,25 +1274,35 @@ pub fn run() -> Result<()> {
         std::io::stdin().read_to_string(&mut source)?;
 
         let file_path = &cli.stdin_filename;
-        if should_skip_custom_syntax(&config, file_path) {
-            vec![]
-        } else {
-            let syntax = detect_syntax(file_path);
-            let result = lint_file(&runner, &source, file_path, syntax, &config, has_overrides);
-            vec![result]
+        match resolve_syntax(cli_custom_syntax, &config, file_path) {
+            Some(syntax) => {
+                vec![lint_file(
+                    &runner,
+                    &source,
+                    file_path,
+                    syntax,
+                    &config,
+                    has_overrides,
+                )]
+            }
+            None => vec![],
         }
     } else {
-        // Discover files.
+        // Discover files.  `--ignore-pattern` globs join the config's
+        // ignoreFiles so both exclude matches everywhere.
+        let mut ignore_patterns = config.ignore_patterns.clone();
+        ignore_patterns.extend(cli.ignore_pattern.iter().cloned());
         let discover_opts = DiscoverOptions {
             no_ignore: cli.no_ignore,
             ignore_path: cli.ignore_path.as_deref(),
-            ignore_patterns: &config.ignore_patterns,
+            ignore_patterns: &ignore_patterns,
+            disable_default_ignores: cli.disable_default_ignores,
         };
         let files = discover_files(&cli.files, &discover_opts);
         debug!("Discovered {} CSS file(s)", files.len());
 
         if files.is_empty() {
-            if !cli.allow_empty_input {
+            if !allow_empty_input {
                 // Stylelint raises NoFilesFoundError and exits 1 here; exiting
                 // 0 would let a CI step that lints a mistyped path pass.
                 let patterns = cli
@@ -1253,7 +1369,7 @@ pub fn run() -> Result<()> {
                 None
             };
 
-        if cli.cache {
+        if use_cache {
             // With caching: read files, check cache, skip clean ones.
             let cache_mutex = Mutex::new(&mut lint_cache);
             let results: Vec<LintResult> = files
@@ -1276,9 +1392,7 @@ pub fn run() -> Result<()> {
                         None
                     };
                     let cfg_for_check = effective_config.unwrap_or(&config);
-                    if should_skip_custom_syntax(cfg_for_check, &file_path) {
-                        return None;
-                    }
+                    let syntax = resolve_syntax(cli_custom_syntax, cfg_for_check, &file_path)?;
 
                     let content_hash = compute_hash(&source, config_hash);
 
@@ -1291,7 +1405,6 @@ pub fn run() -> Result<()> {
                         }
                     }
 
-                    let syntax = detect_syntax(&file_path);
                     let result = if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1339,11 +1452,8 @@ pub fn run() -> Result<()> {
                         None
                     };
                     let cfg_for_check = effective_config.unwrap_or(&config);
-                    if should_skip_custom_syntax(cfg_for_check, &file_path) {
-                        return None;
-                    }
+                    let syntax = resolve_syntax(cli_custom_syntax, cfg_for_check, &file_path)?;
 
-                    let syntax = detect_syntax(&file_path);
                     if let Some(ref dp) = dir_params {
                         let abs = if file.is_absolute() {
                             file.clone()
@@ -1381,7 +1491,7 @@ pub fn run() -> Result<()> {
     };
 
     // Apply fixes when --fix is set.
-    if let Some(fix_mode) = &cli.fix {
+    if let Some(fix_mode) = &fix_mode {
         let is_strict = fix_mode != "lax";
         let mut total_fixed = 0usize;
 
@@ -1404,7 +1514,11 @@ pub fn run() -> Result<()> {
                 continue;
             }
 
-            let syntax = detect_syntax(&result.file_path);
+            // These files were linted, so a parser was already chosen for them;
+            // the config's own customSyntax only ever decides skipping.
+            let syntax = cli_custom_syntax
+                .and_then(syntax_for_custom_syntax)
+                .unwrap_or_else(|| detect_syntax(&result.file_path));
             let mut current = result.source.clone();
             let mut file_fixed = 0usize;
 
@@ -1447,14 +1561,14 @@ pub fn run() -> Result<()> {
     }
 
     // Filter to errors-only when --quiet is set.
-    if cli.quiet {
+    if quiet {
         for result in &mut results {
             result.diagnostics.retain(|d| d.severity == Severity::Error);
         }
     }
 
     // Save cache if --cache is enabled.
-    if cli.cache {
+    if use_cache {
         debug!("Saving cache to {}", cache_path.display());
         lint_cache.save(&cache_path);
     }
@@ -1468,6 +1582,11 @@ pub fn run() -> Result<()> {
     }
     if !output.is_empty() {
         print!("{output}");
+        if let Some(path) = &cli.output_file
+            && let Err(err) = write_output_file(path, &output)
+        {
+            eprintln!("Error writing report to {}: {err}", path.display());
+        }
     }
 
     // Summarise counts.
@@ -1559,6 +1678,7 @@ mod tests {
             no_ignore: true,
             ignore_path: None,
             ignore_patterns: &[],
+            disable_default_ignores: false,
         }
     }
 
@@ -1676,6 +1796,115 @@ mod tests {
 
         // a.css, b.scss, sub/d.css (not sub/e.less)
         assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn node_modules_is_walked_only_with_disable_default_ignores() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.css"), "a {}").unwrap();
+        let nm = tmp.path().join("node_modules").join("pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("x.css"), "a {}").unwrap();
+        let pattern = format!("{}/**/*.css", tmp.path().display());
+
+        let default = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                ..default_opts()
+            },
+        );
+        assert_eq!(default.len(), 1);
+
+        let lifted = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                disable_default_ignores: true,
+                ..default_opts()
+            },
+        );
+        assert_eq!(lifted.len(), 2);
+    }
+
+    #[test]
+    fn ignore_patterns_exclude_matching_files_from_a_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        create_test_tree(tmp.path());
+        let pattern = format!("{}/**/*.css", tmp.path().display());
+        let patterns = vec!["**/sub/**".to_string()];
+
+        let files = discover_files(
+            std::slice::from_ref(&pattern),
+            &DiscoverOptions {
+                no_ignore: false,
+                ignore_patterns: &patterns,
+                ..default_opts()
+            },
+        );
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.css"));
+    }
+
+    #[test]
+    fn custom_syntax_names_map_to_parsers() {
+        assert_eq!(syntax_for_custom_syntax("postcss"), Some(Syntax::Css));
+        assert_eq!(syntax_for_custom_syntax("postcss-scss"), Some(Syntax::Scss));
+        assert_eq!(syntax_for_custom_syntax("PostCSS-Less"), Some(Syntax::Less));
+        assert_eq!(syntax_for_custom_syntax("postcss-sass"), Some(Syntax::Sass));
+        assert_eq!(syntax_for_custom_syntax("postcss-html"), None);
+        assert_eq!(syntax_for_custom_syntax("postcss-markdown"), None);
+    }
+
+    #[test]
+    fn resolve_syntax_detects_from_the_extension_by_default() {
+        let config = GaleConfig::default();
+        assert_eq!(resolve_syntax(None, &config, "a.css"), Some(Syntax::Css));
+        assert_eq!(resolve_syntax(None, &config, "a.scss"), Some(Syntax::Scss));
+    }
+
+    #[test]
+    fn resolve_syntax_lets_the_cli_flag_force_a_parser() {
+        let config = GaleConfig::default();
+        assert_eq!(
+            resolve_syntax(Some("postcss-scss"), &config, "a.css"),
+            Some(Syntax::Scss)
+        );
+        // An unsupported flag skips the file rather than parsing it.
+        assert_eq!(resolve_syntax(Some("postcss-html"), &config, "a.css"), None);
+    }
+
+    #[test]
+    fn resolve_syntax_skips_files_whose_config_syntax_is_unsupported() {
+        let config = GaleConfig {
+            custom_syntax: Some("postcss-markdown".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_syntax(None, &config, "a.css"), None);
+        // The CLI flag overrides the config's customSyntax entirely.
+        assert_eq!(
+            resolve_syntax(Some("postcss-less"), &config, "a.css"),
+            Some(Syntax::Less)
+        );
+    }
+
+    #[test]
+    fn resolve_syntax_keeps_extension_detection_for_supported_config_syntax() {
+        // A supported config `customSyntax` decides only that the file is not
+        // skipped; the parser still comes from the extension.
+        let config = GaleConfig {
+            custom_syntax: Some("postcss-scss".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_syntax(None, &config, "a.css"), Some(Syntax::Css));
+    }
+
+    #[test]
+    fn output_file_is_written_without_ansi_into_new_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("out").join("nested").join("report.txt");
+        write_output_file(&path, "\x1b[31mred\x1b[39m plain\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "red plain\n");
     }
 
     #[test]

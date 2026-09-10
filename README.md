@@ -3,7 +3,7 @@
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
 [![npm version](https://img.shields.io/npm/v/@codebend3r/gale)](https://www.npmjs.com/package/@codebend3r/gale)
-[![CI](https://github.com/LyricalString/gale/actions/workflows/ci.yml/badge.svg)](https://github.com/LyricalString/gale/actions)
+[![CI](https://github.com/codebend3r/gale/actions/workflows/sanity-check.yml/badge.svg)](https://github.com/codebend3r/gale/actions)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **20-100x faster** on real projects.
@@ -98,7 +98,7 @@ The crate is named `gale-lint` on crates.io (since `gale` was taken), but the in
 ### From source
 
 ```bash
-git clone https://github.com/LyricalString/gale.git
+git clone https://github.com/codebend3r/gale.git
 cd gale
 cargo build --release
 # Binary at target/release/gale
@@ -106,7 +106,7 @@ cargo build --release
 
 ### GitHub releases
 
-Download pre-built binaries from [GitHub Releases](https://github.com/LyricalString/gale/releases).
+Download pre-built binaries from [GitHub Releases](https://github.com/codebend3r/gale/releases).
 
 ## What's supported
 
@@ -249,6 +249,23 @@ npx gale --init
 Stylelint's per-rule `{ "severity": "warning" }` secondary option is honored in
 every array form, as is the top-level `defaultSeverity` field.
 
+### Config-file switches
+
+Every switch below can be set in the config file instead of on the command
+line, exactly as in Stylelint. A flag on the command line always wins.
+
+| Config key | Equivalent flag |
+|------------|-----------------|
+| `"ignoreDisables": true` | `--ignore-disables` |
+| `"reportNeedlessDisables": true` | `--report-needless-disables` |
+| `"reportInvalidScopeDisables": true` | `--report-invalid-scope-disables` |
+| `"reportDescriptionlessDisables": true` | `--report-descriptionless-disables` |
+| `"allowEmptyInput": true` | `--allow-empty-input` |
+| `"quiet": true` | `--quiet` |
+| `"fix": true` or `"strict"` / `"lax"` | `--fix` / `--fix=lax` |
+| `"cache": true` | `--cache` |
+| `"cacheLocation": "path"` | `--cache-location path` |
+
 ### Built-in presets
 
 | Preset | Description |
@@ -295,11 +312,16 @@ gale [OPTIONS] [FILES]...
 | `--stdin-filename <name>` | Virtual filename for stdin (default: `stdin.css`) |
 | `--allow-empty-input` | Don't error when no files match |
 | `--ignore-path <file>` | Custom ignore file (gitignore syntax) |
+| `--ignore-pattern <glob>`, `--ip` | Extra ignore glob, on top of the ignore files (repeatable) |
+| `--disable-default-ignores`, `--di` | Lint `node_modules` too instead of always skipping it |
 | `--no-ignore` | Disable all ignore file processing |
 | `--ignore-disables` | Ignore all `stylelint-disable` comments |
 | `--report-needless-disables` | Report disable comments that suppress nothing |
 | `--report-invalid-scope-disables` | Report disable comments for rules not being linted |
 | `--report-descriptionless-disables` | Report disable comments without a description |
+| `--custom-syntax <name>` | Parse every file as `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`; any other syntax skips every file |
+| `-o, --output-file <path>` | Write the report to a file (colour stripped) as well as printing it |
+| `--quiet-deprecation-warnings` | Accepted for compatibility; Gale emits no deprecation warnings |
 | `--print-config <file>` | Print resolved config as JSON |
 | `--init` | Generate starter config |
 | `--lsp` | Start LSP server |
@@ -321,14 +343,15 @@ Works with Neovim, Helix, Zed, and any editor supporting the Language Server Pro
 
 ### VS Code
 
-An extension lives in [`editors/vscode/`](editors/vscode). It is not published to the
-Marketplace — build a `.vsix` locally:
+The extension lives in its own repo, [codebend3r/gale-plugin](https://github.com/codebend3r/gale-plugin).
+It is not published to the Marketplace — build a `.vsix` locally:
 
 ```bash
-cd editors/vscode
-npm install
-npm run compile   # tsc -p ./
-npm run package   # vsce package
+git clone https://github.com/codebend3r/gale-plugin.git
+cd gale-plugin
+bun install
+bun run compile   # tsc -p ./
+bun run package   # vsce package
 ```
 
 ## Development
@@ -337,7 +360,7 @@ npm run package   # vsce package
 
 - Rust 1.85+ (2024 edition)
 - Python 3 (for differential tests)
-- Node.js 16+ (for differential tests and npm packaging)
+- Node.js 20+ (for differential tests and npm packaging; `.nvmrc` pins 26, and CI tests 20, 22, 24 and 26)
 
 ### Build and test
 

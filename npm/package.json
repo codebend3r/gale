@@ -5,10 +5,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/LyricalString/gale"
+    "url": "https://github.com/codebend3r/gale"
   },
-  "homepage": "https://github.com/LyricalString/gale",
-  "bugs": "https://github.com/LyricalString/gale/issues",
+  "homepage": "https://github.com/codebend3r/gale",
+  "bugs": "https://github.com/codebend3r/gale/issues",
   "keywords": [
     "css",
     "linter",
@@ -39,7 +39,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "test": "node test.mjs"

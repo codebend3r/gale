@@ -14,7 +14,7 @@ members = [
 version = "0.1.5"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/LyricalString/gale"
+repository = "https://github.com/codebend3r/gale"
 description = "An extremely fast CSS linter, written in Rust"
 
 [workspace.dependencies]

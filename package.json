@@ -5,10 +5,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/johnnybenson/gale"
+    "url": "https://github.com/codebend3r/gale"
   },
-  "homepage": "https://github.com/johnnybenson/gale",
-  "bugs": "https://github.com/johnnybenson/gale/issues",
+  "homepage": "https://github.com/codebend3r/gale",
+  "bugs": "https://github.com/codebend3r/gale/issues",
   "keywords": [
     "css",
     "linter",
@@ -37,12 +37,22 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "node npm/test.mjs",
-    "test:features": "bun test tests/features",
     "build": "bash scripts/build-npm.sh",
-    "build:all": "bash scripts/build-npm.sh --all"
+    "build:all": "bash scripts/build-npm.sh --all",
+    "build:release": "cargo build --release",
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --all --check",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings",
+    "system-check": "run-s fmt:check lint build:release test",
+    "test": "run-s test:rust test:api test:features",
+    "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
+    "test:features": "bun test tests/features",
+    "test:rust": "cargo test --workspace"
+  },
+  "devDependencies": {
+    "npm-run-all2": "9.0.3"
   }
 }

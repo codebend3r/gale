@@ -33,6 +33,12 @@ cargo test -p gale_linter block_no_empty  # specific test
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
 
+# Every linter check CI runs, in one command (needs bun; run `bun install` once)
+bun run system-check
+# ...or any single step: fmt:check, lint, test:rust, build:release,
+# test:api, test:features
+bun run lint
+
 # Run Gale
 cargo run -- "src/**/*.css"          # lint
 cargo run -- --fix "src/**/*.css"    # autofix
@@ -128,8 +134,6 @@ gale/
           order_properties_order.rs
           ... (250 rule files)
     gale_lsp/             LSP server
-  editors/
-    vscode/               VS Code extension (gale-lint)
   npm/
     package.json          npm package (@codebend3r/gale)
     install.js            Post-install script (downloads platform binary from GitHub releases)

@@ -27,4 +27,4 @@ console.log(result.errored);
 console.log(result.results);
 ```
 
-See the full documentation at [github.com/LyricalString/gale](https://github.com/LyricalString/gale).
+See the full documentation at [github.com/codebend3r/gale](https://github.com/codebend3r/gale).

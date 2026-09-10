@@ -142,7 +142,7 @@ def main():
     print("### How to reproduce")
     print()
     print("```bash")
-    print("git clone https://github.com/user/gale && cd gale")
+    print("git clone https://github.com/codebend3r/gale && cd gale")
     print("cargo build --release")
     print("python3 tests/differential/run.py bootstrap --benchmark")
     print("```")

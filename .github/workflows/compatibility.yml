@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# A manual dispatch or the next schedule tick supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-repos:
     runs-on: ubuntu-latest
@@ -37,13 +42,13 @@ jobs:
             stars: "12K"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -54,9 +59,9 @@ jobs:
       - name: Build Gale
         run: cargo build --release
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version-file: .nvmrc
 
       - name: Setup pnpm
         run: npm install -g pnpm corepack && corepack enable
@@ -80,7 +85,7 @@ jobs:
           echo "fn=$FN" >> $GITHUB_OUTPUT
 
       - name: Upload result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: result-${{ matrix.repo.name }}
           path: result.txt
@@ -89,10 +94,10 @@ jobs:
     needs: test-repos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: results
 

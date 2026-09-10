@@ -3,6 +3,11 @@ name: 🧪 Pull request checks
 on:
   pull_request:
 
+# A new push to the same PR supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -11,7 +16,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -24,7 +29,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,7 +44,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,25 +53,49 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-  npm-package:
-    name: npm package
+  build-binary:
+    name: Build binary for the npm package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Build gale
         run: cargo build --release
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release/gale
+          if-no-files-found: error
+
+  npm-package:
+    name: npm package (Node ${{ matrix.node }})
+    needs: build-binary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every supported Node major: the oldest we accept via engines.node
+        # through the version pinned in .nvmrc.
+        node: [20, 22, 24, 26]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: artifact
+
       - name: Stage binary for the current platform
-        run: install -Dm755 target/release/gale npm/bin/x86_64-unknown-linux-gnu/gale
+        run: install -Dm755 artifact/gale npm/bin/x86_64-unknown-linux-gnu/gale
 
       - name: Run programmatic API smoke tests
         run: node npm/test.mjs
@@ -79,7 +108,7 @@ jobs:
     name: Feature tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -93,27 +122,11 @@ jobs:
       - name: Run feature tests
         run: bun test tests/features
 
-  vscode-extension:
-    name: VS Code extension
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install and compile
-        run: |
-          npm install --no-audit --no-fund
-          npm run compile
-        working-directory: editors/vscode
-
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -129,22 +129,14 @@ impl ResolvedOverride {
     }
 }
 
-/// Returns `true` when the given `customSyntax` value is one of the syntaxes
-/// that Gale can handle natively.
+/// How autofix behaves when it is switched on from the config file.
 ///
-/// Supported values (case-insensitive):
-/// - `postcss-scss` / `postcss-sass` → SCSS
-/// - `postcss-less` → Less
-/// - `postcss` → CSS (default PostCSS parser)
-///
-/// Any other value (e.g. `postcss-markdown`, `postcss-html`, `sugarss`)
-/// indicates a syntax that Gale cannot parse and the file should be skipped.
-pub fn is_supported_custom_syntax(syntax_name: &str) -> bool {
-    let lower = syntax_name.to_lowercase();
-    matches!(
-        lower.as_str(),
-        "postcss-scss" | "postcss-sass" | "postcss-less" | "postcss"
-    )
+/// Mirrors the `--fix` flag: `Strict` skips files with parse errors, `Lax`
+/// fixes them anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixMode {
+    Strict,
+    Lax,
 }
 
 /// The fully-resolved configuration used by the linter at runtime.
@@ -169,6 +161,26 @@ pub struct GaleConfig {
     /// Top-level `customSyntax` value from the config file.
     /// When set to an unsupported syntax, all files should be skipped.
     pub custom_syntax: Option<String>,
+    /// Stylelint's `ignoreDisables`: report problems even inside
+    /// `stylelint-disable` ranges.
+    pub ignore_disables: bool,
+    /// Stylelint's `reportInvalidScopeDisables`: report disable comments that
+    /// name a rule which is not configured.
+    pub report_invalid_scope_disables: bool,
+    /// Stylelint's `reportDescriptionlessDisables`: report disable comments
+    /// that carry no `-- description`.
+    pub report_descriptionless_disables: bool,
+    /// Stylelint's `allowEmptyInput`: succeed when no files match.
+    pub allow_empty_input: bool,
+    /// Stylelint's `quiet`: only report error-severity problems.
+    pub quiet: bool,
+    /// Stylelint's `fix`: autofix without passing `--fix`.  `None` leaves
+    /// fixing off unless the CLI asks for it.
+    pub fix: Option<FixMode>,
+    /// Stylelint's `cache`: skip files that were clean on the previous run.
+    pub cache: bool,
+    /// Stylelint's `cacheLocation`, relative to the working directory.
+    pub cache_location: Option<PathBuf>,
 }
 
 impl GaleConfig {
@@ -258,18 +270,13 @@ impl GaleConfig {
         false
     }
 
-    /// Returns `Some(syntax_name)` when the file should be skipped because it
-    /// matches an override (or top-level config) that specifies an unsupported
-    /// `customSyntax`.  Returns `None` when the file should be linted normally.
+    /// The `customSyntax` that applies to `file_path`, if the config names one.
     ///
-    /// The check considers:
-    /// 1. The top-level `customSyntax` (applies to all files).
-    /// 2. Each override's `customSyntax` — when a file matches that override's
-    ///    glob patterns, the override's syntax takes precedence.
-    ///
-    /// A matching override with a **supported** syntax (e.g. `postcss-scss`)
-    /// does NOT cause a skip — the file is linted with the appropriate parser.
-    pub fn unsupported_custom_syntax_for_file(&self, file_path: &str) -> Option<String> {
+    /// The first override whose globs match the file wins; otherwise the
+    /// top-level `customSyntax` applies.  Whether Gale can actually parse the
+    /// named syntax is the caller's decision, since the parsers live outside
+    /// this crate.
+    pub fn custom_syntax_for_file(&self, file_path: &str) -> Option<&str> {
         // Check overrides first — they take precedence over top-level.
         if !self.overrides.is_empty() {
             let relative_path: std::borrow::Cow<'_, str> =
@@ -290,24 +297,12 @@ impl GaleConfig {
             for ov in &self.overrides {
                 let matches = ov.matches(&relative_path) || ov.matches(file_path);
                 if matches && let Some(ref syntax_name) = ov.custom_syntax {
-                    if !is_supported_custom_syntax(syntax_name) {
-                        return Some(syntax_name.clone());
-                    }
-                    // Supported custom syntax — don't skip, and this
-                    // override takes precedence over the top-level value.
-                    return None;
+                    return Some(syntax_name);
                 }
             }
         }
 
-        // Fall back to top-level customSyntax.
-        if let Some(ref syntax_name) = self.custom_syntax
-            && !is_supported_custom_syntax(syntax_name)
-        {
-            return Some(syntax_name.clone());
-        }
-
-        None
+        self.custom_syntax.as_deref()
     }
 }
 
@@ -323,6 +318,14 @@ impl Default for GaleConfig {
             report_needless_disables: false,
             default_severity: None,
             custom_syntax: None,
+            ignore_disables: false,
+            report_invalid_scope_disables: false,
+            report_descriptionless_disables: false,
+            allow_empty_input: false,
+            quiet: false,
+            fix: None,
+            cache: false,
+            cache_location: None,
         }
     }
 }
@@ -385,6 +388,31 @@ pub struct ConfigFile {
     /// unsupported value, all files are skipped gracefully.
     #[serde(default)]
     pub custom_syntax: Option<serde_json::Value>,
+    /// Stylelint's `ignoreDisables` option.
+    #[serde(default)]
+    pub ignore_disables: Option<bool>,
+    /// Stylelint's `reportInvalidScopeDisables` option (`true`, `false`, or
+    /// `[bool, { except, severity }]`).
+    #[serde(default)]
+    pub report_invalid_scope_disables: Option<serde_json::Value>,
+    /// Stylelint's `reportDescriptionlessDisables` option (same shapes).
+    #[serde(default)]
+    pub report_descriptionless_disables: Option<serde_json::Value>,
+    /// Stylelint's `allowEmptyInput` option.
+    #[serde(default)]
+    pub allow_empty_input: Option<bool>,
+    /// Stylelint's `quiet` option.
+    #[serde(default)]
+    pub quiet: Option<bool>,
+    /// Stylelint's `fix` option: `true`, `false`, `"strict"` or `"lax"`.
+    #[serde(default)]
+    pub fix: Option<serde_json::Value>,
+    /// Stylelint's `cache` option.
+    #[serde(default)]
+    pub cache: Option<bool>,
+    /// Stylelint's `cacheLocation` option.
+    #[serde(default)]
+    pub cache_location: Option<String>,
 }
 
 /// A single override entry as it appears in the config file.
@@ -3960,18 +3988,14 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         .map(extract_plugin_names)
         .unwrap_or_default();
 
-    // 5. Parse reportNeedlessDisables — accepts `true`, `false`, or an array
-    //    (Stylelint also supports per-rule arrays, but we only support the
-    //    boolean form for now).
-    let report_needless_disables = raw
-        .report_needless_disables
-        .as_ref()
-        .map(|v| match v {
-            serde_json::Value::Bool(b) => *b,
-            // Treat any non-false value (e.g. an array of rules) as enabled.
-            _ => true,
-        })
-        .unwrap_or(false);
+    // 5. Parse the disable-report switches.  Each accepts `true`, `false`, or
+    //    Stylelint's `[bool, { except, severity }]` array form, of which only
+    //    the leading boolean is honoured.
+    let report_needless_disables = disable_report_enabled(raw.report_needless_disables.as_ref());
+    let report_invalid_scope_disables =
+        disable_report_enabled(raw.report_invalid_scope_disables.as_ref());
+    let report_descriptionless_disables =
+        disable_report_enabled(raw.report_descriptionless_disables.as_ref());
 
     // 6. Parse defaultSeverity.
     let default_severity = raw.default_severity.as_deref().and_then(|s| match s {
@@ -3986,6 +4010,10 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         .as_ref()
         .and_then(|v| v.as_str().map(String::from));
 
+    // 8. The CLI-equivalent switches.
+    let fix = raw.fix.as_ref().and_then(fix_mode_from_value);
+    let cache_location = raw.cache_location.as_deref().map(PathBuf::from);
+
     GaleConfig {
         rules,
         ignore_patterns,
@@ -3996,6 +4024,47 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
         report_needless_disables,
         default_severity,
         custom_syntax,
+        ignore_disables: raw.ignore_disables.unwrap_or(false),
+        report_invalid_scope_disables,
+        report_descriptionless_disables,
+        allow_empty_input: raw.allow_empty_input.unwrap_or(false),
+        quiet: raw.quiet.unwrap_or(false),
+        fix,
+        cache: raw.cache.unwrap_or(false),
+        cache_location,
+    }
+}
+
+/// Interpret one of Stylelint's `report*Disables` settings.
+///
+/// `true` / `false` are the common forms.  The array form
+/// `[bool, { except, severity }]` is read for its leading boolean; any other
+/// truthy value enables the report.
+fn disable_report_enabled(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Array(items)) => {
+            items.first().and_then(|v| v.as_bool()).unwrap_or(true)
+        }
+        Some(serde_json::Value::Null) => false,
+        Some(_) => true,
+    }
+}
+
+/// Interpret Stylelint's `fix` config value.
+///
+/// `true` and `"strict"` enable strict fixing, `"lax"` enables lax fixing,
+/// and anything else leaves fixing off.
+fn fix_mode_from_value(value: &serde_json::Value) -> Option<FixMode> {
+    match value {
+        serde_json::Value::Bool(true) => Some(FixMode::Strict),
+        serde_json::Value::String(s) => match s.to_lowercase().as_str() {
+            "strict" => Some(FixMode::Strict),
+            "lax" => Some(FixMode::Lax),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -5697,25 +5766,7 @@ overrides:
     // -----------------------------------------------------------------------
 
     #[test]
-    fn is_supported_custom_syntax_known_values() {
-        assert!(is_supported_custom_syntax("postcss-scss"));
-        assert!(is_supported_custom_syntax("postcss-sass"));
-        assert!(is_supported_custom_syntax("postcss-less"));
-        assert!(is_supported_custom_syntax("postcss"));
-        // Case-insensitive.
-        assert!(is_supported_custom_syntax("PostCSS-SCSS"));
-    }
-
-    #[test]
-    fn is_supported_custom_syntax_unknown_values() {
-        assert!(!is_supported_custom_syntax("postcss-markdown"));
-        assert!(!is_supported_custom_syntax("postcss-html"));
-        assert!(!is_supported_custom_syntax("sugarss"));
-        assert!(!is_supported_custom_syntax("postcss-jsx"));
-    }
-
-    #[test]
-    fn skip_file_with_unsupported_override_custom_syntax() {
+    fn custom_syntax_for_file_reads_a_matching_override() {
         let config = GaleConfig {
             overrides: vec![ResolvedOverride::new(
                 vec!["**/*.md".to_string()],
@@ -5725,47 +5776,33 @@ overrides:
             )],
             ..Default::default()
         };
-        // A .md file matching the override should be skipped.
-        let result = config.unsupported_custom_syntax_for_file("docs/readme.md");
-        assert_eq!(result, Some("postcss-markdown".to_string()));
+        assert_eq!(
+            config.custom_syntax_for_file("docs/readme.md"),
+            Some("postcss-markdown")
+        );
+        // A file the override's globs don't match has no customSyntax.
+        assert_eq!(config.custom_syntax_for_file("src/main.scss"), None);
     }
 
     #[test]
-    fn no_skip_for_supported_override_custom_syntax() {
-        let config = GaleConfig {
-            overrides: vec![ResolvedOverride::new(
-                vec!["**/*.scss".to_string()],
-                vec![],
-                HashMap::new(),
-                Some("postcss-scss".to_string()),
-            )],
-            ..Default::default()
-        };
-        // A .scss file matching an override with supported syntax should NOT be skipped.
-        let result = config.unsupported_custom_syntax_for_file("src/main.scss");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn no_skip_for_file_without_custom_syntax() {
+    fn custom_syntax_for_file_is_none_without_config() {
         let config = GaleConfig {
             rules: HashMap::new(),
             ..Default::default()
         };
-        // Normal files without any customSyntax should not be skipped.
-        let result = config.unsupported_custom_syntax_for_file("src/styles.css");
-        assert_eq!(result, None);
+        assert_eq!(config.custom_syntax_for_file("src/styles.css"), None);
     }
 
     #[test]
-    fn skip_file_with_unsupported_top_level_custom_syntax() {
+    fn custom_syntax_for_file_falls_back_to_the_top_level() {
         let config = GaleConfig {
             custom_syntax: Some("postcss-html".to_string()),
             ..Default::default()
         };
-        // All files should be skipped when top-level customSyntax is unsupported.
-        let result = config.unsupported_custom_syntax_for_file("src/styles.css");
-        assert_eq!(result, Some("postcss-html".to_string()));
+        assert_eq!(
+            config.custom_syntax_for_file("src/styles.css"),
+            Some("postcss-html")
+        );
     }
 
     #[test]
@@ -5780,16 +5817,14 @@ overrides:
             )],
             ..Default::default()
         };
-        // The override's supported syntax takes precedence — file is NOT skipped.
         assert_eq!(
-            config.unsupported_custom_syntax_for_file("src/main.scss"),
-            None
+            config.custom_syntax_for_file("src/main.scss"),
+            Some("postcss-scss")
         );
-        // A CSS file doesn't match the override, so the unsupported top-level
-        // syntax applies — file IS skipped.
+        // A CSS file doesn't match the override, so the top-level value applies.
         assert_eq!(
-            config.unsupported_custom_syntax_for_file("src/main.css"),
-            Some("postcss-markdown".to_string())
+            config.custom_syntax_for_file("src/main.css"),
+            Some("postcss-markdown")
         );
     }
 
@@ -5821,5 +5856,97 @@ overrides:
             raw.custom_syntax,
             Some(serde_json::Value::String("postcss-scss".to_string()))
         );
+    }
+
+    // -- CLI-equivalent config keys --------------------------------------
+
+    fn resolve_json(json: &str) -> GaleConfig {
+        let raw: ConfigFile = serde_json::from_str(json).unwrap();
+        resolve_raw(raw, Path::new("."))
+    }
+
+    #[test]
+    fn cli_equivalent_keys_default_to_off() {
+        let cfg = resolve_json(r#"{ "rules": {} }"#);
+        assert!(!cfg.ignore_disables);
+        assert!(!cfg.report_invalid_scope_disables);
+        assert!(!cfg.report_descriptionless_disables);
+        assert!(!cfg.allow_empty_input);
+        assert!(!cfg.quiet);
+        assert_eq!(cfg.fix, None);
+        assert!(!cfg.cache);
+        assert_eq!(cfg.cache_location, None);
+    }
+
+    #[test]
+    fn cli_equivalent_boolean_keys_are_read() {
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "ignoreDisables": true,
+                "allowEmptyInput": true,
+                "quiet": true,
+                "cache": true,
+                "cacheLocation": "tmp/lint.cache"
+            }"#,
+        );
+        assert!(cfg.ignore_disables);
+        assert!(cfg.allow_empty_input);
+        assert!(cfg.quiet);
+        assert!(cfg.cache);
+        assert_eq!(cfg.cache_location, Some(PathBuf::from("tmp/lint.cache")));
+    }
+
+    #[test]
+    fn disable_report_keys_accept_bool_and_array_forms() {
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "reportInvalidScopeDisables": true,
+                "reportDescriptionlessDisables": [true, { "except": ["a"] }]
+            }"#,
+        );
+        assert!(cfg.report_invalid_scope_disables);
+        assert!(cfg.report_descriptionless_disables);
+
+        let cfg = resolve_json(
+            r#"{
+                "rules": {},
+                "reportInvalidScopeDisables": false,
+                "reportDescriptionlessDisables": [false, { "except": ["a"] }],
+                "reportNeedlessDisables": null
+            }"#,
+        );
+        assert!(!cfg.report_invalid_scope_disables);
+        assert!(!cfg.report_descriptionless_disables);
+        assert!(!cfg.report_needless_disables);
+    }
+
+    #[test]
+    fn fix_key_maps_to_fix_mode() {
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": true }"#).fix,
+            Some(FixMode::Strict)
+        );
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": "strict" }"#).fix,
+            Some(FixMode::Strict)
+        );
+        assert_eq!(
+            resolve_json(r#"{ "rules": {}, "fix": "lax" }"#).fix,
+            Some(FixMode::Lax)
+        );
+        assert_eq!(resolve_json(r#"{ "rules": {}, "fix": false }"#).fix, None);
+        assert_eq!(resolve_json(r#"{ "rules": {}, "fix": "bogus" }"#).fix, None);
+    }
+
+    #[test]
+    fn cli_equivalent_keys_parse_from_yaml() {
+        let yaml = "rules: {}\nignoreDisables: true\nquiet: true\nfix: lax\n";
+        let raw: ConfigFile = serde_yaml::from_str(yaml).unwrap();
+        let cfg = resolve_raw(raw, Path::new("."));
+        assert!(cfg.ignore_disables);
+        assert!(cfg.quiet);
+        assert_eq!(cfg.fix, Some(FixMode::Lax));
     }
 }

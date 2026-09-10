@@ -196,6 +196,26 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Whether this diagnostic is about a `stylelint-disable` comment rather
+    /// than a rule violation.
+    ///
+    /// Stylelint emits these (`--report-needless-disables` and friends, plus
+    /// the per-rule `reportDisables`) through a separate path whose warning
+    /// text does not carry the ` (rule-name)` suffix ordinary warnings get.
+    pub fn is_comment_problem(&self) -> bool {
+        self.rule_name.starts_with("--report-") || self.rule_name == "reportDisables"
+    }
+
+    /// The warning text Stylelint's formatters print: the message with the
+    /// rule name appended, except for comment problems.
+    pub fn stylelint_text(&self) -> String {
+        if self.is_comment_problem() {
+            self.message.clone()
+        } else {
+            format!("{} ({})", self.message, self.rule_name)
+        }
+    }
+
     /// Start building a diagnostic for the given rule.
     pub fn new(rule_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -433,5 +453,27 @@ mod tests {
         let (fixed, count) = apply_fixes(source, &diags);
         assert_eq!(fixed, source);
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn stylelint_text_appends_rule_name_except_for_comment_problems() {
+        let plain = Diagnostic::new("block-no-empty", "Unexpected empty block");
+        assert_eq!(
+            plain.stylelint_text(),
+            "Unexpected empty block (block-no-empty)"
+        );
+        assert!(!plain.is_comment_problem());
+
+        for rule in [
+            "--report-needless-disables",
+            "--report-invalid-scope-disables",
+            "--report-descriptionless-disables",
+            "--report-unscoped-disables",
+            "reportDisables",
+        ] {
+            let d = Diagnostic::new(rule, "About a comment");
+            assert!(d.is_comment_problem(), "{rule}");
+            assert_eq!(d.stylelint_text(), "About a comment", "{rule}");
+        }
     }
 }

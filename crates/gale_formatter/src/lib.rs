@@ -153,9 +153,10 @@ impl Formatter for JsonFormatter {
                     .map(|diag| {
                         let (line, column) = line_index.offset_to_location(diag.span.offset);
                         let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
-                        // Stylelint appends " (rule-name)" to every message text.
-                        // We must replicate this for byte-for-byte identical JSON output.
-                        let text = format!("{} ({})", diag.message, diag.rule_name);
+                        // Stylelint appends " (rule-name)" to every rule
+                        // warning, but not to reports about disable comments.
+                        // Replicate both for byte-for-byte identical output.
+                        let text = diag.stylelint_text();
                         JsonWarning {
                             line,
                             column,
@@ -208,8 +209,12 @@ impl Formatter for CompactFormatter {
             for diag in &result.diagnostics {
                 let (line, col) = line_index.offset_to_location(diag.span.offset);
                 output.push_str(&format!(
-                    "{}: line {}, col {}, {} - {} ({})\n",
-                    result.file_path, line, col, diag.severity, diag.message, diag.rule_name,
+                    "{}: line {}, col {}, {} - {}\n",
+                    result.file_path,
+                    line,
+                    col,
+                    diag.severity,
+                    diag.stylelint_text(),
                 ));
             }
         }
@@ -242,8 +247,12 @@ impl Formatter for UnixFormatter {
             for diag in &result.diagnostics {
                 let (line, col) = line_index.offset_to_location(diag.span.offset);
                 output.push_str(&format!(
-                    "{}:{}:{}: {} ({}) [{}]\n",
-                    result.file_path, line, col, diag.message, diag.rule_name, diag.severity,
+                    "{}:{}:{}: {} [{}]\n",
+                    result.file_path,
+                    line,
+                    col,
+                    diag.stylelint_text(),
+                    diag.severity,
                 ));
                 total += 1;
             }
@@ -355,6 +364,42 @@ impl Formatter for VerboseFormatter {
 }
 
 // ---------------------------------------------------------------------------
+// ANSI stripping
+// ---------------------------------------------------------------------------
+
+/// Remove ANSI escape sequences (colours, styles, cursor moves) from `input`.
+///
+/// Used when a coloured report is written to a file, where Stylelint strips
+/// the escapes too.
+pub fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI sequence: ESC [ <params> <final byte in 0x40..=0x7e>
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            // Two-character escapes such as ESC ( B.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -459,6 +504,60 @@ mod tests {
         assert!(output.contains(
             "src/app.css: line 2, col 1, warning - Unexpected empty block (block-no-empty)"
         ));
+    }
+
+    fn comment_problem_results() -> Vec<LintResult> {
+        let source = "/* stylelint-disable x */\na {}\n";
+        let diag = Diagnostic::new("--report-needless-disables", "Needless disable for \"x\"")
+            .severity(Severity::Error)
+            .span(Span::new(0, 0));
+        vec![LintResult::new("src/app.css", source, vec![diag])]
+    }
+
+    #[test]
+    fn comment_problems_have_no_rule_suffix_in_json() {
+        let output = JsonFormatter.format(&comment_problem_results());
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            parsed[0]["warnings"][0]["text"],
+            "Needless disable for \"x\""
+        );
+        assert_eq!(
+            parsed[0]["warnings"][0]["rule"],
+            "--report-needless-disables"
+        );
+    }
+
+    #[test]
+    fn comment_problems_have_no_rule_suffix_in_compact_and_unix() {
+        let compact = CompactFormatter.format(&comment_problem_results());
+        assert!(
+            compact.contains("error - Needless disable for \"x\"\n"),
+            "{compact}"
+        );
+        let unix = UnixFormatter.format(&comment_problem_results());
+        assert!(
+            unix.contains(": Needless disable for \"x\" [error]"),
+            "{unix}"
+        );
+    }
+
+    #[test]
+    fn strip_ansi_removes_colour_codes_and_keeps_text() {
+        let coloured =
+            "\x1b[4msrc/app.css\x1b[0m\n  \x1b[31m\u{2716}\x1b[39m  plain \x1b[1mbold\x1b[22m";
+        assert_eq!(strip_ansi(coloured), "src/app.css\n  \u{2716}  plain bold");
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn text_formatter_output_strips_clean() {
+        let coloured = TextFormatter.format(&sample_results());
+        let plain = strip_ansi(&coloured);
+        assert!(!plain.contains('\x1b'));
+        assert!(plain.contains("src/app.css\n"));
+        assert!(plain.contains("Unexpected empty block  block-no-empty"));
     }
 
     #[test]

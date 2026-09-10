@@ -27,7 +27,7 @@ describe("[tier 1] --report-needless-disables text", () => {
   const rules = { "block-no-empty": true, "material/no-prefixes": true };
   const source = "/* stylelint-disable material/no-prefixes */\na { color: red; }\n";
 
-  test.failing("matches Stylelint's comment-problem wording exactly", () => {
+  test("matches Stylelint's comment-problem wording exactly", () => {
     const project = makeProject({ ".stylelintrc.json": config(rules), "a.css": source });
 
     const warnings = runGaleJson(["--report-needless-disables", "a.css"], {
@@ -62,7 +62,7 @@ describe("[tier 1] reportInvalidScopeDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("the CLI flag reports a disable for a rule that is not configured", () => {
+  test("the CLI flag reports a disable for a rule that is not configured", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": source });
 
     const warnings = runGaleJson(["--report-invalid-scope-disables", "a.css"], {
@@ -72,7 +72,7 @@ describe("[tier 1] reportInvalidScopeDisables", () => {
     expect(warnings).toEqual([expected]);
   });
 
-  test.failing("the config key reports a disable for a rule that is not configured", () => {
+  test("the config key reports a disable for a rule that is not configured", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportInvalidScopeDisables: true }),
       "a.css": source,
@@ -99,7 +99,7 @@ describe("[tier 1] reportInvalidScopeDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("disable-next-line comments are checked too", () => {
+  test("disable-next-line comments are checked too", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportInvalidScopeDisables: true }),
       "a.css": "/* stylelint-disable-next-line color-named */\na { color: red; }\n",
@@ -126,7 +126,7 @@ describe("[tier 1] reportDescriptionlessDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("the CLI flag reports a disable with no description", () => {
+  test("the CLI flag reports a disable with no description", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": undescribed });
 
     const warnings = runGaleJson(["--report-descriptionless-disables", "a.css"], {
@@ -136,7 +136,7 @@ describe("[tier 1] reportDescriptionlessDisables", () => {
     expect(warnings).toEqual([expected]);
   });
 
-  test.failing("the config key reports a disable with no description", () => {
+  test("the config key reports a disable with no description", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportDescriptionlessDisables: true }),
       "a.css": undescribed,
@@ -154,7 +154,7 @@ describe("[tier 1] reportDescriptionlessDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing('an unscoped disable is reported as "all"', () => {
+  test('an unscoped disable is reported as "all"', () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportDescriptionlessDisables: true }),
       "a.css": "/* stylelint-disable */\na {}\n",
@@ -168,7 +168,7 @@ describe("[tier 1] reportDescriptionlessDisables", () => {
     ]);
   });
 
-  test.failing("disable-next-line comments are checked too", () => {
+  test("disable-next-line comments are checked too", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportDescriptionlessDisables: true }),
       "a.css": "/* stylelint-disable-next-line block-no-empty */\na {}\n",
