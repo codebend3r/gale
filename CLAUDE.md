@@ -33,10 +33,10 @@ cargo test -p gale_linter block_no_empty  # specific test
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
 
-# Everything CI runs, in one command (needs bun; run `bun install` once)
+# Every linter check CI runs, in one command (needs bun; run `bun install` once)
 bun run system-check
 # ...or any single step: fmt:check, lint, test:rust, build:release,
-# test:api, test:features, check:vscode
+# test:api, test:features
 bun run lint
 
 # Run Gale

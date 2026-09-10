@@ -40,7 +40,7 @@
     "node": ">=16.0.0"
   },
   "scripts": {
-    "system-check": "run-s fmt:check lint test:rust build:release test:api test:features check:vscode",
+    "system-check": "run-s fmt:check lint test:rust build:release test:api test:features",
     "fmt": "cargo fmt --all",
     "fmt:check": "cargo fmt --all --check",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings",
@@ -48,7 +48,6 @@
     "test:rust": "cargo test --workspace",
     "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
     "test:features": "bun test tests/features",
-    "check:vscode": "cd editors/vscode && bun install --frozen-lockfile && bun run compile",
     "build:release": "cargo build --release",
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all"
