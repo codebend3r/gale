@@ -53,6 +53,6 @@
     "test:rust": "cargo test --workspace"
   },
   "devDependencies": {
-    "npm-run-all2": "^9.0.3"
+    "npm-run-all2": "9.0.3"
   }
 }

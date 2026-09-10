@@ -5,7 +5,7 @@
     "": {
       "name": "@codebend3r/gale",
       "devDependencies": {
-        "npm-run-all2": "^9.0.3",
+        "npm-run-all2": "9.0.3",
       },
     },
   },
