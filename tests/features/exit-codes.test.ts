@@ -6,8 +6,6 @@
  *   2  lint problems, or --max-warnings exceeded
  *   64 invalid usage
  *   78 invalid configuration
- *
- * Tier 2.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -16,7 +14,7 @@ import { EMPTY_BLOCK, cleanupProjects, config, makeProject, runGale } from "./he
 
 afterAll(cleanupProjects);
 
-describe("[tier 2] exit codes", () => {
+describe("exit codes", () => {
   test("0 when the file is clean", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),

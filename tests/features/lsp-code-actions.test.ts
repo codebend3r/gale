@@ -1,7 +1,5 @@
 /**
  * Quick-fix code actions from the language server.
- *
- * Tier 3.
  */
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
@@ -38,7 +36,7 @@ function fixableProject() {
   });
 }
 
-describe("[tier 3] LSP code actions", () => {
+describe("LSP code actions", () => {
   test("the server publishes diagnostics for an opened document", async () => {
     const project = fixableProject();
     client = new LspClient(project.dir);

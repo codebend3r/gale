@@ -15,8 +15,7 @@ Set `GALE_BIN=/path/to/gale` to test a different binary.
 
 ## Conventions
 
-- One file per feature area. A `describe` block names the tier the feature
-  belongs to, matching the tiers in the feature table.
+- One file per feature area.
 - A test written as `test.failing(...)` documents behaviour Gale does not have
   yet. It passes while the feature is missing and fails as soon as the feature
   lands, at which point the marker is removed. This keeps the suite green

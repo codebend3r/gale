@@ -5,8 +5,6 @@
  * Stylelint emits these through `reportCommentProblem`, which does not append
  * the ` (rule-name)` suffix that ordinary rule warnings carry. The expected
  * texts below are exact.
- *
- * Tiers 1, 2 and 3.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -17,11 +15,7 @@ afterAll(cleanupProjects);
 
 const RULES = { "block-no-empty": true };
 
-// ---------------------------------------------------------------------------
-// Tier 1
-// ---------------------------------------------------------------------------
-
-describe("[tier 1] --report-needless-disables text", () => {
+describe("--report-needless-disables text", () => {
   // `material/no-prefixes` is a registered no-op, so a disable for it is the
   // one case Gale can prove needless.
   const rules = { "block-no-empty": true, "material/no-prefixes": true };
@@ -46,7 +40,7 @@ describe("[tier 1] --report-needless-disables text", () => {
   });
 });
 
-describe("[tier 1] reportInvalidScopeDisables", () => {
+describe("reportInvalidScopeDisables", () => {
   const source = "/* stylelint-disable color-named */\na { color: red; }\n";
   const expected = expect.objectContaining({
     rule: "--report-invalid-scope-disables",
@@ -109,7 +103,7 @@ describe("[tier 1] reportInvalidScopeDisables", () => {
   });
 });
 
-describe("[tier 1] reportDescriptionlessDisables", () => {
+describe("reportDescriptionlessDisables", () => {
   const undescribed = "/* stylelint-disable block-no-empty */\na {}\n";
   const described = "/* stylelint-disable block-no-empty -- legacy markup */\na {}\n";
   const expected = expect.objectContaining({
@@ -178,11 +172,7 @@ describe("[tier 1] reportDescriptionlessDisables", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tier 2
-// ---------------------------------------------------------------------------
-
-describe("[tier 2] reportUnscopedDisables", () => {
+describe("reportUnscopedDisables", () => {
   const unscoped = "/* stylelint-disable */\na {}\n";
   const expected = expect.objectContaining({
     rule: "--report-unscoped-disables",
@@ -238,11 +228,7 @@ describe("[tier 2] reportUnscopedDisables", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tier 3
-// ---------------------------------------------------------------------------
-
-describe("[tier 3] reportDisables secondary option", () => {
+describe("reportDisables secondary option", () => {
   const rules = { "block-no-empty": [true, { reportDisables: true }] };
   const expected = expect.objectContaining({
     rule: "reportDisables",

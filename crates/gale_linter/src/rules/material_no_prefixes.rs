@@ -18,45 +18,45 @@ use crate::rule::{Rule, RuleContext};
 pub struct MaterialNoPrefixes;
 
 impl Rule for MaterialNoPrefixes {
-    fn name(&self) -> &'static str {
-        "material/no-prefixes"
-    }
+  fn name(&self) -> &'static str {
+    "material/no-prefixes"
+  }
 
-    fn description(&self) -> &'static str {
-        "Disallow vendor prefixes in Angular Material components (stub — always passes)"
-    }
+  fn description(&self) -> &'static str {
+    "Disallow vendor prefixes in Angular Material components (stub — always passes)"
+  }
 
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
+  fn default_severity(&self) -> Severity {
+    Severity::Warning
+  }
 
-    fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-        vec![]
-    }
+  fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
+    vec![]
+  }
 
-    fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
-        vec![]
-    }
+  fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+    vec![]
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use gale_css_parser::Syntax;
+  use super::*;
+  use gale_css_parser::Syntax;
 
-    fn ctx() -> RuleContext<'static> {
-        RuleContext {
-            file_path: "test.css",
-            source: "",
-            syntax: Syntax::Css,
-            options: None,
-        }
+  fn ctx() -> RuleContext<'static> {
+    RuleContext {
+      file_path: "test.css",
+      source: "",
+      syntax: Syntax::Css,
+      options: None,
     }
+  }
 
-    #[test]
-    fn test_always_passes() {
-        let rule = MaterialNoPrefixes;
-        assert_eq!(rule.name(), "material/no-prefixes");
-        assert!(rule.check_root(&[], &ctx()).is_empty());
-    }
+  #[test]
+  fn test_always_passes() {
+    let rule = MaterialNoPrefixes;
+    assert_eq!(rule.name(), "material/no-prefixes");
+    assert!(rule.check_root(&[], &ctx()).is_empty());
+  }
 }

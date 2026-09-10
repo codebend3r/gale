@@ -7,8 +7,6 @@
  *
  * Every test here pipes stdout, so the TTY branch is always false and the
  * remaining inputs are controlled one at a time.
- *
- * Tier 2.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -24,7 +22,7 @@ function project() {
   });
 }
 
-describe("[tier 2] colour detection", () => {
+describe("colour detection", () => {
   test.failing("piped output has no colour by default", () => {
     const result = runGale(["a.css"], { cwd: project().dir });
 
