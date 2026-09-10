@@ -7,9 +7,10 @@ on:
 permissions:
   contents: read
 
+# The newest push to main is the one worth checking; drop the older run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always

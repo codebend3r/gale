@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# A manual dispatch or the next schedule tick supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-repos:
     runs-on: ubuntu-latest

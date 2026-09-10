@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# Each tag is its own ref, so only a re-push of the same tag cancels a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
