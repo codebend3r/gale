@@ -8,15 +8,15 @@ use crate::rule::Rule;
 pub struct ScssDeclarationNestedPropertiesNoDividedGroups;
 
 impl Rule for ScssDeclarationNestedPropertiesNoDividedGroups {
-    fn name(&self) -> &'static str {
-        "scss/declaration-nested-properties-no-divided-groups"
-    }
+  fn name(&self) -> &'static str {
+    "scss/declaration-nested-properties-no-divided-groups"
+  }
 
-    fn description(&self) -> &'static str {
-        "Disallow divided groups in nested property declarations"
-    }
+  fn description(&self) -> &'static str {
+    "Disallow divided groups in nested property declarations"
+  }
 
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
+  fn default_severity(&self) -> Severity {
+    Severity::Warning
+  }
 }

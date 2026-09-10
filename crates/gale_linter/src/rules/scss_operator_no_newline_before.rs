@@ -8,15 +8,15 @@ use crate::rule::Rule;
 pub struct ScssOperatorNoNewlineBefore;
 
 impl Rule for ScssOperatorNoNewlineBefore {
-    fn name(&self) -> &'static str {
-        "scss/operator-no-newline-before"
-    }
+  fn name(&self) -> &'static str {
+    "scss/operator-no-newline-before"
+  }
 
-    fn description(&self) -> &'static str {
-        "Disallow newlines before Sass operators"
-    }
+  fn description(&self) -> &'static str {
+    "Disallow newlines before Sass operators"
+  }
 
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
+  fn default_severity(&self) -> Severity {
+    Severity::Warning
+  }
 }

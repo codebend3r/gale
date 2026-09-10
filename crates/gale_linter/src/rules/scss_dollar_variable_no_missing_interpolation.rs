@@ -9,15 +9,15 @@ use crate::rule::Rule;
 pub struct ScssDollarVariableNoMissingInterpolation;
 
 impl Rule for ScssDollarVariableNoMissingInterpolation {
-    fn name(&self) -> &'static str {
-        "scss/dollar-variable-no-missing-interpolation"
-    }
+  fn name(&self) -> &'static str {
+    "scss/dollar-variable-no-missing-interpolation"
+  }
 
-    fn description(&self) -> &'static str {
-        "Disallow $variables without #{} interpolation in strings"
-    }
+  fn description(&self) -> &'static str {
+    "Disallow $variables without #{} interpolation in strings"
+  }
 
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
+  fn default_severity(&self) -> Severity {
+    Severity::Warning
+  }
 }
