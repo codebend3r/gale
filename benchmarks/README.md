@@ -91,7 +91,7 @@ Results are saved to `benchmarks/results.md` and printed to stdout. Example:
 
 ## Other benchmarks
 
-The `run-benchmark.sh` script in this directory runs a simpler single-file benchmark using a downloaded Bootstrap CSS file (and a 20x-duplicated variant). Use `benchmark.sh` for the full reproducible comparison.
+The `benchmark-quick.sh` script in this directory runs a simpler single-file benchmark using a downloaded Bootstrap CSS file (and a 20x-duplicated variant). Use `benchmark.sh` for the full reproducible comparison.
 
 ## FAQ
 

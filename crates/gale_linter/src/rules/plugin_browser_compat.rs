@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
@@ -170,14 +170,15 @@ enum VersionAdded {
   Version(String),
 }
 
-/// Global cache: MDN data keyed by node_modules path.
-static MDN_CACHE: OnceLock<std::sync::Mutex<HashMap<String, CompatData>>> = OnceLock::new();
+/// Global cache: MDN data keyed by node_modules path. Entries are shared via
+/// `Arc` so each file borrows the table instead of deep-cloning it.
+static MDN_CACHE: OnceLock<std::sync::Mutex<HashMap<String, Arc<CompatData>>>> = OnceLock::new();
 
-fn mdn_cache() -> &'static std::sync::Mutex<HashMap<String, CompatData>> {
+fn mdn_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<CompatData>>> {
   MDN_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-fn load_mdn_compat_data(node_modules: &Path) -> CompatData {
+fn load_mdn_compat_data(node_modules: &Path) -> Arc<CompatData> {
   let data_path = node_modules
     .join("@mdn")
     .join("browser-compat-data")
@@ -185,26 +186,26 @@ fn load_mdn_compat_data(node_modules: &Path) -> CompatData {
 
   let key = data_path.to_string_lossy().to_string();
 
-  {
-    let cache = mdn_cache().lock().unwrap();
-    if let Some(cached) = cache.get(&key) {
-      return cached.clone();
-    }
+  // Hold the lock for the whole load: files are linted in parallel, and
+  // without this every worker would parse data.json on the first miss.
+  let mut cache = mdn_cache().lock().unwrap();
+  if let Some(cached) = cache.get(&key) {
+    return Arc::clone(cached);
   }
 
   let contents = match std::fs::read_to_string(&data_path) {
     Ok(c) => c,
-    Err(_) => return CompatData::new(),
+    Err(_) => return Arc::new(CompatData::new()),
   };
 
   let parsed: serde_json::Value = match serde_json::from_str(&contents) {
     Ok(v) => v,
-    Err(_) => return CompatData::new(),
+    Err(_) => return Arc::new(CompatData::new()),
   };
 
   let css = match parsed.get("css") {
     Some(c) => c,
-    None => return CompatData::new(),
+    None => return Arc::new(CompatData::new()),
   };
 
   let mut data = CompatData::new();
@@ -227,11 +228,8 @@ fn load_mdn_compat_data(node_modules: &Path) -> CompatData {
     }
   }
 
-  {
-    let mut cache = mdn_cache().lock().unwrap();
-    cache.insert(key, data.clone());
-  }
-
+  let data = Arc::new(data);
+  cache.insert(key, Arc::clone(&data));
   data
 }
 
@@ -412,13 +410,19 @@ fn resolve_browserslist(queries: &[String], file_path: &Path) -> Option<Vec<Brow
   }
 
   let query = queries.join(", ");
-  let cache_key = format!("{}|{}", work_dir.display(), query);
+  // With an explicit query the answer depends only on which browserslist
+  // (and caniuse-lite) binary runs, not on the file's directory, so key the
+  // cache by the resolved binary. Keying by directory spawned one node
+  // process per subdirectory in large repos.
+  let bin_key = find_browserslist_bin(&work_dir)
+    .map(|p| p.display().to_string())
+    .unwrap_or_else(|| "npx".to_string());
+  let cache_key = format!("{}|{}", bin_key, query);
 
-  {
-    let cache = browserslist_cache().lock().unwrap();
-    if let Some(cached) = cache.get(&cache_key) {
-      return Some(cached.clone());
-    }
+  // Held across the subprocess call so parallel workers don't all spawn it.
+  let mut cache = browserslist_cache().lock().unwrap();
+  if let Some(cached) = cache.get(&cache_key) {
+    return Some(cached.clone());
   }
 
   let output = run_browserslist(Some(&query), &work_dir)?;
@@ -490,11 +494,7 @@ fn resolve_browserslist(queries: &[String], file_path: &Path) -> Option<Vec<Brow
     }
   }
 
-  {
-    let mut cache = browserslist_cache().lock().unwrap();
-    cache.insert(cache_key, deduped.clone());
-  }
-
+  cache.insert(cache_key, deduped.clone());
   Some(deduped)
 }
 
@@ -528,11 +528,10 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
 
   let cache_key = format!("{}|__default__", project_root.display());
 
-  {
-    let cache = browserslist_cache().lock().unwrap();
-    if let Some(cached) = cache.get(&cache_key) {
-      return Some(cached.clone());
-    }
+  // Held across the subprocess call so parallel workers don't all spawn it.
+  let mut cache = browserslist_cache().lock().unwrap();
+  if let Some(cached) = cache.get(&cache_key) {
+    return Some(cached.clone());
   }
 
   let output = run_browserslist(None, &project_root)?;
@@ -596,11 +595,7 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
     }
   }
 
-  {
-    let mut cache = browserslist_cache().lock().unwrap();
-    cache.insert(cache_key, deduped.clone());
-  }
-
+  cache.insert(cache_key, deduped.clone());
   Some(deduped)
 }
 

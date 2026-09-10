@@ -26,6 +26,12 @@ if [ ! -x "$STYLELINT_BIN" ]; then
     (cd "$STYLELINT_DIR" && bun init -y 2>/dev/null && bun add stylelint stylelint-config-recommended)
 fi
 
+# Expose the local node_modules to the fixtures dir so both Gale and Stylelint
+# resolve "extends": "stylelint-config-recommended" the same way
+if [ ! -e "$FIXTURES_DIR/node_modules" ]; then
+    ln -s "$STYLELINT_DIR/node_modules" "$FIXTURES_DIR/node_modules"
+fi
+
 echo ""
 echo "============================================"
 echo "  GALE vs STYLELINT BENCHMARK"
@@ -56,11 +62,11 @@ if ! command -v hyperfine &>/dev/null; then
 
     if [ -x "$STYLELINT_BIN" ]; then
         echo "--- Stylelint (bootstrap.css) ---"
-        time "$STYLELINT_BIN" "$BOOTSTRAP_FILE" --quiet 2>/dev/null || true
+        time "$STYLELINT_BIN" "$BOOTSTRAP_FILE" --quiet || true
         echo ""
 
         echo "--- Stylelint (bootstrap-20x.css) ---"
-        time "$STYLELINT_BIN" "$BENCHMARK_FILE" --quiet 2>/dev/null || true
+        time "$STYLELINT_BIN" "$BENCHMARK_FILE" --quiet || true
     else
         echo "stylelint not found. Local installation failed."
     fi
@@ -71,7 +77,7 @@ fi
 echo "--- bootstrap.css ($(wc -l < "$BOOTSTRAP_FILE" | tr -d ' ') lines) ---"
 echo ""
 
-HYPERFINE_ARGS=(--warmup 3 --min-runs 10)
+HYPERFINE_ARGS=(--warmup 3 --min-runs 10 -i)
 HYPERFINE_ARGS+=(-n "Gale" "$GALE_BIN $BOOTSTRAP_FILE --quiet")
 
 if [ -x "$STYLELINT_BIN" ]; then
@@ -84,7 +90,7 @@ echo ""
 echo "--- bootstrap-20x.css ($(wc -l < "$BENCHMARK_FILE" | tr -d ' ') lines) ---"
 echo ""
 
-HYPERFINE_ARGS_20X=(--warmup 3 --min-runs 10)
+HYPERFINE_ARGS_20X=(--warmup 3 --min-runs 10 -i)
 HYPERFINE_ARGS_20X+=(-n "Gale" "$GALE_BIN $BENCHMARK_FILE --quiet")
 
 if [ -x "$STYLELINT_BIN" ]; then

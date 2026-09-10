@@ -409,11 +409,11 @@ The test corpus includes Bootstrap, Gutenberg, Carbon, Angular Components, wp-ca
 
 ```bash
 bash benchmarks/benchmark.sh         # Full benchmark suite
-bash benchmarks/run-benchmark.sh     # Quick benchmark (Bootstrap CSS, 1x and 20x)
+bash benchmarks/benchmark-quick.sh   # Quick benchmark (Bootstrap CSS, 1x and 20x)
 ```
 
 Both scripts download fixtures on first run and install a local Stylelint with
-`bun`. `run-benchmark.sh` uses `hyperfine` when available and falls back to
+`bun`. `benchmark-quick.sh` uses `hyperfine` when available and falls back to
 `time` otherwise.
 
 ### npm package smoke tests

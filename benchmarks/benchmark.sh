@@ -8,7 +8,7 @@
 # and produces a markdown results table.
 #
 # Usage:
-#   ./benchmarks/benchmark.sh              # Full benchmark (all 16 repos)
+#   ./benchmarks/benchmark.sh              # Full benchmark (all 21 repos)
 #   ./benchmarks/benchmark.sh bootstrap    # Single repo
 #   ./benchmarks/benchmark.sh --help       # Show help
 #
@@ -36,7 +36,18 @@ GALE_BIN="$PROJECT_DIR/target/release/gale"
 WARMUP=3
 MIN_RUNS=10
 
-# Test repositories: name|repo|branch|glob_pattern|search_dir
+# bun's global bin dir holds the corepack shims (yarn/pnpm) that Yarn Berry and
+# pnpm repos need, and it is frequently not on PATH.
+if command -v bun &>/dev/null; then
+  BUN_GLOBAL_BIN="$(bun pm bin -g 2>/dev/null || true)"
+  if [ -n "$BUN_GLOBAL_BIN" ] && [ -d "$BUN_GLOBAL_BIN" ]; then
+    export PATH="$BUN_GLOBAL_BIN:$PATH"
+  fi
+fi
+
+# Test repositories: name|repo|branch|glob_pattern|search_dir[|cwd]
+# cwd (optional) is the directory both linters run from, for monorepos whose
+# package.json and Stylelint config live below the clone root.
 REPOS=(
   "bootstrap|twbs/bootstrap|main|scss/**/*.scss|scss"
   "carbon|carbon-design-system/carbon|main|packages/**/*.scss|packages"
@@ -49,14 +60,13 @@ REPOS=(
   "primer-css|primer/css|main|src/**/*.scss|src"
   "spectrum-css|adobe/spectrum-css|main|components/**/*.css|components"
   "angular-components|angular/components|main|src/**/*.scss|src"
-  "elastic-eui|elastic/eui|main|packages/**/*.scss|packages"
   "docusaurus|facebook/docusaurus|main|packages/**/*.css|packages"
   "discourse|discourse/discourse|main|app/assets/stylesheets/**/*.scss|app/assets/stylesheets"
   "wp-calypso|Automattic/wp-calypso|trunk|client/**/*.scss|client"
-  "mattermost|mattermost/mattermost|master|webapp/**/*.scss|webapp"
+  "mattermost|mattermost/mattermost|master|**/*.{css,scss}|webapp/channels|webapp/channels"
   "mastodon|mastodon/mastodon|main|app/javascript/styles/**/*.scss|app/javascript/styles"
   "jupyterlab|jupyterlab/jupyterlab|main|packages/**/*.css|packages"
-  "joomla|joomla-framework/joomla-cms|5.2-dev|media/**/*.css|media"
+  "joomla|joomla/joomla-cms|5.4-dev|build/media_source/**/*.{css,scss}|build"
   "slds|salesforce-ux/design-system|main|ui/**/*.scss|ui"
   "rsuite|rsuite/rsuite|main|src/**/*.scss|src"
   "fundamental-styles|SAP/fundamental-styles|main|src/**/*.scss packages/**/*.scss|src"
@@ -78,22 +88,45 @@ success() { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
 warn()    { echo -e "${YELLOW}warning:${NC} $*"; }
 error()   { echo -e "${RED}error:${NC} $*"; exit 1; }
 
-# Detect package manager: prefer bun, fall back to npm
+# Honour the repo's own lockfile (same logic as tests/differential/run.py).
+# bun's lockfile migration rejects some pnpm workspaces (freeCodeCamp) and
+# fails integrity checks on some npm lockfiles (Mattermost), so bun is only
+# the default when no lockfile says otherwise.
 detect_pm() {
   local dir="$1"
-  if command -v bun &>/dev/null; then
-    echo "bun"
-  elif [ -f "$dir/pnpm-lock.yaml" ] && command -v pnpm &>/dev/null; then
+  if [ -f "$dir/pnpm-lock.yaml" ] && command -v pnpm &>/dev/null; then
     echo "pnpm"
   elif [ -f "$dir/yarn.lock" ] && command -v yarn &>/dev/null; then
     echo "yarn"
+  elif [ -f "$dir/package-lock.json" ] && command -v npm &>/dev/null; then
+    echo "npm"
+  elif command -v bun &>/dev/null; then
+    echo "bun"
   else
     echo "npm"
   fi
 }
 
+# Walk up from $1 (stopping at $2) to the nearest directory containing $3.
+find_up() {
+  local dir="$1" stop="$2" target="$3"
+  while :; do
+    if [ -e "$dir/$target" ]; then
+      echo "$dir"
+      return 0
+    fi
+    [ "$dir" = "$stop" ] && return 1
+    dir="$(dirname "$dir")"
+  done
+}
+
 install_deps() {
-  local dir="$1"
+  local dir="$1" clone_dir="$2"
+  # Monorepos: install from the nearest package.json at or above the work dir.
+  dir="$(find_up "$dir" "$clone_dir" package.json)" || {
+    warn "No package.json found at or above $1"
+    return 1
+  }
   if [ -d "$dir/node_modules" ]; then
     echo "    node_modules already present, skipping install"
     return 0
@@ -103,19 +136,30 @@ install_deps() {
   pm=$(detect_pm "$dir")
   echo "    Installing dependencies with $pm..."
 
+  # Yarn Berry defaults to PnP, which leaves no node_modules/.bin/stylelint.
+  if [ "$pm" = "yarn" ] && [ -f "$dir/.yarnrc.yml" ] && ! grep -q nodeLinker "$dir/.yarnrc.yml"; then
+    printf '\nnodeLinker: node-modules\n' >> "$dir/.yarnrc.yml"
+  fi
+
+  local status=0
   case "$pm" in
-    bun)   (cd "$dir" && bun install --ignore-scripts 2>&1 | tail -1) ;;
-    pnpm)  (cd "$dir" && pnpm install --ignore-scripts --no-frozen-lockfile 2>&1 | tail -1) ;;
-    yarn)  (cd "$dir" && yarn install --mode skip-build 2>&1 | tail -1) ;;
-    npm)   (cd "$dir" && npm install --ignore-scripts 2>&1 | tail -1) ;;
+    bun)   (cd "$dir" && bun install --ignore-scripts 2>&1 | tail -1) || status=$? ;;
+    pnpm)  (cd "$dir" && pnpm install --ignore-scripts --no-frozen-lockfile 2>&1 | tail -1) || status=$? ;;
+    yarn)  (cd "$dir" && yarn install --mode skip-build 2>&1 | tail -1) || status=$? ;;
+    npm)   (cd "$dir" && npm install --ignore-scripts 2>&1 | tail -1) || status=$? ;;
   esac
+
+  if [ "$status" -ne 0 ]; then
+    warn "$pm install failed in $dir (exit $status)"
+    return 1
+  fi
 }
 
 count_files() {
   local dir="$1"
   local search_dir="$2"
   # Use find to count matching files (portable)
-  find "$dir/$search_dir" -not -path "*/node_modules/*" -not -path "*/.git/*" \( -name "*.scss" -o -name "*.css" -o -name "*.less" \) 2>/dev/null | wc -l | tr -d ' '
+  { find "$dir/$search_dir" -not -path "*/node_modules/*" -not -path "*/.git/*" \( -name "*.scss" -o -name "*.css" -o -name "*.less" \) 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 
 # ---------------------------------------------------------------------------
@@ -193,7 +237,10 @@ clone_repo() {
   fi
 
   echo "    [clone] $repo @ $branch"
-  git clone --depth 1 --branch "$branch" "https://github.com/$repo.git" "$dest" 2>&1 | tail -1
+  if ! git clone --depth 1 --branch "$branch" "https://github.com/$repo.git" "$dest" 2>&1 | tail -1; then
+    rm -rf "$dest"
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -201,25 +248,34 @@ clone_repo() {
 # ---------------------------------------------------------------------------
 
 run_benchmark_for_repo() {
-  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5"
+  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5" cwd="${6:-}"
   local clone_dir="$CLONES_DIR/$name"
-  local stylelint_bin="$clone_dir/node_modules/.bin/stylelint"
+  local work_dir="$clone_dir${cwd:+/$cwd}"
   local hyperfine_json="$SCRIPT_DIR/.hyperfine-${name}.json"
 
   info "Benchmarking: $name"
 
   # Clone
-  clone_repo "$name" "$repo" "$branch"
-
-  # Install deps
-  install_deps "$clone_dir"
-
-  # Check stylelint is available
-  if [ ! -f "$stylelint_bin" ]; then
-    warn "Stylelint not found in $name's node_modules. Skipping."
+  if ! clone_repo "$name" "$repo" "$branch"; then
+    warn "Could not clone $repo @ $branch. Skipping."
     echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
   fi
+
+  # Install deps
+  if ! install_deps "$work_dir" "$clone_dir"; then
+    warn "Could not install $name's dependencies. Skipping."
+    echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    return 0
+  fi
+
+  # Check stylelint is available (workspaces hoist it above the work dir)
+  local stylelint_bin
+  stylelint_bin="$(find_up "$work_dir" "$clone_dir" node_modules/.bin/stylelint)/node_modules/.bin/stylelint" || {
+    warn "Stylelint not found in $name's node_modules. Skipping."
+    echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    return 0
+  }
 
   # Count files
   local file_count
@@ -230,8 +286,8 @@ run_benchmark_for_repo() {
   info "Validating both linters produce output..."
 
   local stylelint_check gale_check
-  stylelint_check=$(cd "$clone_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>&1 || true)
-  gale_check=$(cd "$clone_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>&1 || true)
+  stylelint_check=$(cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>&1 || true)
+  gale_check=$(cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>&1 || true)
 
   if [ -z "$stylelint_check" ]; then
     warn "Stylelint produced no output for $name. Skipping this repo."
@@ -255,9 +311,9 @@ run_benchmark_for_repo() {
     --min-runs "$MIN_RUNS" \
     --export-json "$hyperfine_json" \
     --command-name "stylelint" \
-    "cd $clone_dir && $stylelint_bin '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true" \
+    "cd $work_dir && $stylelint_bin '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true" \
     --command-name "gale" \
-    "cd $clone_dir && $GALE_BIN '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true"
+    "cd $work_dir && $GALE_BIN '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true"
 
   # Parse results from JSON
   local stylelint_mean gale_mean speedup
@@ -295,39 +351,55 @@ for r in data['results']:
 # ---------------------------------------------------------------------------
 
 run_parity_test() {
-  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5"
+  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5" cwd="${6:-}"
   local clone_dir="$CLONES_DIR/$name"
-  local stylelint_bin="$clone_dir/node_modules/.bin/stylelint"
+  local work_dir="$clone_dir${cwd:+/$cwd}"
 
-  if [ ! -f "$stylelint_bin" ]; then
+  local stylelint_bin
+  stylelint_bin="$(find_up "$work_dir" "$clone_dir" node_modules/.bin/stylelint)/node_modules/.bin/stylelint" || {
     echo "$name|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.parity-results.txt"
     return 0
-  fi
+  }
 
   info "Parity test: $name"
 
   # Run both linters with JSON output, save to temp files to avoid
   # shell quoting issues with embedded JSON
+  # Stylelint 16+ prints its report to stderr, so keep both streams.
   local stylelint_tmp="$SCRIPT_DIR/.parity-stylelint-${name}.json"
+  local stylelint_err="$SCRIPT_DIR/.parity-stylelint-${name}.stderr"
   local gale_tmp="$SCRIPT_DIR/.parity-gale-${name}.json"
+  local gale_err="$SCRIPT_DIR/.parity-gale-${name}.stderr"
 
-  (cd "$clone_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>/dev/null || true) > "$stylelint_tmp"
-  (cd "$clone_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>/dev/null || true) > "$gale_tmp"
+  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>"$stylelint_err" || true) > "$stylelint_tmp"
+  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>"$gale_err" || true) > "$gale_tmp"
 
   # Compare using Python for robust JSON diffing
   local parity_result
-  parity_result=$(python3 - "$stylelint_tmp" "$gale_tmp" <<'PYEOF'
+  parity_result=$(python3 - "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err" <<'PYEOF'
 import json, sys
 
-def parse_warnings(path):
+def read_report(stdout_path, stderr_path):
+    """Return the JSON report text, whichever stream it was written to."""
+    for path in (stdout_path, stderr_path):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except FileNotFoundError:
+            continue
+        start = text.find("[")
+        if start != -1 and text[start:].lstrip().startswith(("[{", "[]")):
+            return text[start:].strip()
+    return ""
+
+def parse_warnings(stdout_path, stderr_path):
     """Extract (file, line, column, rule) tuples from linter JSON output."""
+    text = read_report(stdout_path, stderr_path)
+    if not text:
+        return set()
     try:
-        with open(path) as f:
-            text = f.read().strip()
-        if not text:
-            return set()
         data = json.loads(text)
-    except (json.JSONDecodeError, FileNotFoundError):
+    except json.JSONDecodeError:
         return set()
     warnings = set()
     for entry in data:
@@ -339,8 +411,8 @@ def parse_warnings(path):
             warnings.add((source, line, col, rule))
     return warnings
 
-stylelint_w = parse_warnings(sys.argv[1])
-gale_w = parse_warnings(sys.argv[2])
+stylelint_w = parse_warnings(sys.argv[1], sys.argv[2])
+gale_w = parse_warnings(sys.argv[3], sys.argv[4])
 
 # Only compare rules that Gale implements (all 161 from ALL_RULE_NAMES)
 gale_rules = {
@@ -541,7 +613,7 @@ usage() {
   echo ""
   echo "Repos:    bootstrap, carbon, freecodecamp, grafana, govuk-frontend,"
   echo "          gutenberg, material-ui, patternfly, primer-css,"
-  echo "          spectrum-css, angular-components, elastic-eui, docusaurus,"
+  echo "          spectrum-css, angular-components, docusaurus,"
   echo "          discourse, wp-calypso, mattermost (default: all)"
   echo ""
   echo "Options:"
@@ -624,16 +696,16 @@ main() {
 
   # Run benchmarks
   for entry in "${repos_to_run[@]}"; do
-    IFS='|' read -r name repo branch glob_pattern search_dir <<< "$entry"
-    run_benchmark_for_repo "$name" "$repo" "$branch" "$glob_pattern" "$search_dir"
+    IFS='|' read -r name repo branch glob_pattern search_dir cwd <<< "$entry"
+    run_benchmark_for_repo "$name" "$repo" "$branch" "$glob_pattern" "$search_dir" "$cwd"
     echo ""
   done
 
   # Run parity tests
   if [ "$skip_parity" -eq 0 ]; then
     for entry in "${repos_to_run[@]}"; do
-      IFS='|' read -r name repo branch glob_pattern search_dir <<< "$entry"
-      run_parity_test "$name" "$repo" "$branch" "$glob_pattern" "$search_dir"
+      IFS='|' read -r name repo branch glob_pattern search_dir cwd <<< "$entry"
+      run_parity_test "$name" "$repo" "$branch" "$glob_pattern" "$search_dir" "$cwd"
       echo ""
     done
   fi

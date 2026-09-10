@@ -34,13 +34,19 @@ impl Rule for ScssOperatorNoNewlineAfter {
     let source = ctx.source;
     let mut diags = Vec::new();
     let mut byte_offset: usize = 0;
+    let mut in_block_comment = false;
 
     for raw_line in source.split('\n') {
       // Strip \r for Windows line endings.
       let line = raw_line.trim_end_matches('\r');
 
+      // Blank out `/* ... */` comment text (which may span lines) so an
+      // operator inside prose is never reported. Masking with spaces keeps
+      // byte offsets identical to the original line.
+      let masked = mask_block_comments(line, &mut in_block_comment);
+
       // Strip trailing // comment.
-      let content = strip_line_comment(line);
+      let content = strip_line_comment(&masked);
 
       // Strip trailing whitespace from the effective content.
       let content_trimmed = content.trim_end();
@@ -75,6 +81,38 @@ impl Rule for ScssOperatorNoNewlineAfter {
 
     diags
   }
+}
+
+/// Replace every byte inside a `/* ... */` comment with a space, carrying the
+/// open/closed state across lines. Length and byte offsets are preserved.
+fn mask_block_comments(line: &str, in_block: &mut bool) -> String {
+  let bytes = line.as_bytes();
+  let mut out = bytes.to_vec();
+  let mut i = 0;
+  while i < bytes.len() {
+    if *in_block {
+      if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+        out[i] = b' ';
+        out[i + 1] = b' ';
+        *in_block = false;
+        i += 2;
+      } else {
+        if !bytes[i].is_ascii_whitespace() {
+          out[i] = b' ';
+        }
+        i += 1;
+      }
+    } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      out[i] = b' ';
+      out[i + 1] = b' ';
+      *in_block = true;
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  // Only ASCII bytes were replaced, so this is still valid UTF-8.
+  String::from_utf8(out).unwrap_or_else(|_| line.to_string())
 }
 
 /// Strip a `//` line comment from the end of a line.
@@ -169,6 +207,22 @@ mod tests {
     };
     let d = ScssOperatorNoNewlineAfter.check_root(&[], &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn ignores_operators_inside_block_comments() {
+    let rule = ScssOperatorNoNewlineAfter;
+    let ctx = scss_ctx(
+      "/* two-line options (title +\n * description) render in a popover */\n.a { width: 1px + 2px; }\n",
+    );
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn reports_operator_after_block_comment_on_same_line() {
+    let rule = ScssOperatorNoNewlineAfter;
+    let ctx = scss_ctx(".a { width: /* c */ 1px +\n 2px; }\n");
+    assert_eq!(rule.check_root(&[], &ctx).len(), 1);
   }
 
   #[test]

@@ -1,20 +1,22 @@
 # Benchmark Results
 
-> Generated on 2026-03-22 17:08 UTC
-> System: Darwin arm64 | 25.3.0
-> Node: v22.21.1 | Rust: 1.90.0
+> Generated on 2026-09-10 15:57 UTC
+> System: Darwin arm64 | 25.6.0
+> Node: v26.5.0 | Rust: 1.98.0
 
 ## Performance
 
 | Repository | Files | Stylelint | Gale | Speedup |
 |------------|------:|----------:|-----:|--------:|
-| carbon | 1116 | 9.071s | 0.096s | 94.5x |
+| joomla | 169 | 1.914s | 0.045s | 42.5x |
+| mattermost | 564 | 6.228s | 0.116s | 53.7x |
 
 ## Parity (Correctness)
 
 | Repository | Files Tested | False Positives | False Negatives |
 |------------|-------------:|----------------:|----------------:|
-| carbon | 141 | 1382 | 0 |
+| joomla | 0 | 0 | 0 |
+| mattermost | 1 | 1 | 0 |
 
 ---
 

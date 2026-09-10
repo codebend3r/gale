@@ -50,7 +50,7 @@ GALE_LOG=debug cargo run -- src/                # tracing output
 
 # Benchmarks
 bash benchmarks/benchmark.sh
-bash benchmarks/run-benchmark.sh
+bash benchmarks/benchmark-quick.sh
 
 # Differential testing against Stylelint
 python tests/differential/run.py                    # all repos
@@ -141,7 +141,7 @@ gale/
     README.md             npm page README
   benchmarks/
     benchmark.sh          Full benchmark suite
-    run-benchmark.sh      Quick benchmark (uses hyperfine)
+    benchmark-quick.sh    Quick benchmark (uses hyperfine)
     generate-benchmark.sh Generate test fixtures
     results.md            Latest benchmark results
   tests/
