@@ -46,11 +46,11 @@
     "fmt": "cargo fmt --all",
     "fmt:check": "cargo fmt --all --check",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings",
-    "system-check": "run-s fmt:check lint build:release test",
+    "system-check": "run-s -l fmt:check lint build:release build test",
     "test": "run-s test:rust test:api test:features",
     "test:api": "GALE_BINARY=target/release/gale node npm/test.mjs",
     "test:features": "bun test --parallel=8 tests/features",
-    "test:rust": "cargo test --workspace"
+    "test:rust": "cargo test -q --workspace --lib --bins --tests"
   },
   "devDependencies": {
     "npm-run-all2": "9.0.3"

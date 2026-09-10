@@ -16,14 +16,37 @@ const require = createRequire(import.meta.url);
 
 let passed = 0;
 let failed = 0;
+let current = "";
+
+// Dots reporter: one "." per passing assertion, "F" per failure. Failure
+// details are printed on their own line so the dots stay readable.
+function section(name) {
+  current = name;
+}
+
+function fail(message) {
+  process.stdout.write("F");
+  console.error(`\n  FAIL [${current}] ${message}`);
+  failed++;
+}
 
 function assert(condition, message) {
   if (condition) {
-    console.log(`  PASS: ${message}`);
+    process.stdout.write(".");
     passed++;
   } else {
-    console.error(`  FAIL: ${message}`);
-    failed++;
+    fail(message);
+  }
+}
+
+// Runs fn with console.warn muted, for APIs that warn by design.
+function quietly(fn) {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    return fn();
+  } finally {
+    console.warn = warn;
   }
 }
 
@@ -32,7 +55,7 @@ function assert(condition, message) {
 // ---------------------------------------------------------------------------
 
 async function testLintCodeEmptyBlock() {
-  console.log("\nTest 1: lint({ code: 'a {}' })");
+  section("Test 1: lint({ code: 'a {}' })");
 
   try {
     const result = await lint({ code: "a {}" });
@@ -54,8 +77,7 @@ async function testLintCodeEmptyBlock() {
       assert(typeof first.ignored === "boolean", "first result has ignored boolean");
     }
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -64,7 +86,7 @@ async function testLintCodeEmptyBlock() {
 // ---------------------------------------------------------------------------
 
 async function testLintCodeWithConfig() {
-  console.log("\nTest 2: lint({ code: 'a { color: pink; }', config: { rules: { 'color-named': 'never' } } })");
+  section("Test 2: lint({ code: 'a { color: pink; }', config: { rules: { 'color-named': 'never' } } })");
 
   try {
     const result = await lint({
@@ -90,13 +112,10 @@ async function testLintCodeWithConfig() {
           w.rule === "color-named",
           `warning rule is "color-named" (got "${w.rule}")`,
         );
-      } else {
-        console.log("  INFO: No warnings returned (gale may not flag this without config).");
       }
     }
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -105,7 +124,7 @@ async function testLintCodeWithConfig() {
 // ---------------------------------------------------------------------------
 
 async function testResolveConfig() {
-  console.log("\nTest 3: resolveConfig('test.css')");
+  section("Test 3: resolveConfig('test.css')");
 
   try {
     const config = await resolveConfig("test.css");
@@ -115,8 +134,7 @@ async function testResolveConfig() {
       "resolveConfig returns object or undefined",
     );
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -125,7 +143,7 @@ async function testResolveConfig() {
 // ---------------------------------------------------------------------------
 
 async function testFormattersJson() {
-  console.log("\nTest 4: formatters.json resolves to a function");
+  section("Test 4: formatters.json resolves to a function");
 
   try {
     const jsonFormatter = await formatters.json;
@@ -148,8 +166,7 @@ async function testFormattersJson() {
     const parsed = JSON.parse(output);
     assert(Array.isArray(parsed), "JSON formatter output is parseable as array");
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -158,9 +175,9 @@ async function testFormattersJson() {
 // ---------------------------------------------------------------------------
 
 async function testCreatePlugin() {
-  console.log("\nTest 5: createPlugin returns stub");
+  section("Test 5: createPlugin returns stub");
 
-  const plugin = createPlugin("my-rule", () => {});
+  const plugin = quietly(() => createPlugin("my-rule", () => {}));
   assert(plugin.ruleName === "my-rule", 'plugin.ruleName is "my-rule"');
   assert(typeof plugin.rule === "function", "plugin.rule is a function");
 }
@@ -170,7 +187,7 @@ async function testCreatePlugin() {
 // ---------------------------------------------------------------------------
 
 async function testLinterResultShape() {
-  console.log("\nTest 6: LinterResult has correct shape");
+  section("Test 6: LinterResult has correct shape");
 
   try {
     const result = await lint({ code: "a { color: red; }" });
@@ -183,8 +200,7 @@ async function testLinterResultShape() {
     assert("maxWarningsExceeded" in result, "result has maxWarningsExceeded key");
     assert("code" in result, "result has code key");
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -193,7 +209,7 @@ async function testLinterResultShape() {
 // ---------------------------------------------------------------------------
 
 async function testCommonJsEntry() {
-  console.log("\nTest 7: require('./index.cjs') exposes the same API");
+  section("Test 7: require('./index.cjs') exposes the same API");
 
   try {
     const cjs = require("./index.cjs");
@@ -216,8 +232,7 @@ async function testCommonJsEntry() {
       "cjs.lint reports block-no-empty",
     );
   } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    failed++;
+    fail(`ERROR: ${err.message}`);
   }
 }
 
@@ -226,8 +241,6 @@ async function testCommonJsEntry() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log(`=== @codebend3r/gale programmatic API tests (Node ${process.versions.node}) ===`);
-
   await testLintCodeEmptyBlock();
   await testLintCodeWithConfig();
   await testResolveConfig();
@@ -236,7 +249,7 @@ async function main() {
   await testLinterResultShape();
   await testCommonJsEntry();
 
-  console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+  console.log(`\n${passed} passed, ${failed} failed (Node ${process.versions.node})`);
 
   if (failed > 0) {
     process.exit(1);
