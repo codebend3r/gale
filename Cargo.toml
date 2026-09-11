@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/codebend3r/gale"
@@ -55,13 +55,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # means `cargo publish` builds the released binary against the last *published*
 # member crates rather than this source tree — shipping stale rules under a new
 # version number.  `cargo xtask`-free reminder: bump all of these together.
-gale_css_parser = { path = "crates/gale_css_parser", version = "0.1.5" }
-gale_linter = { path = "crates/gale_linter", version = "0.1.5" }
-gale_config = { path = "crates/gale_config", version = "0.1.5" }
-gale_cli = { path = "crates/gale_cli", version = "0.1.5" }
-gale_formatter = { path = "crates/gale_formatter", version = "0.1.5" }
-gale_diagnostics = { path = "crates/gale_diagnostics", version = "0.1.5" }
-gale_lsp = { path = "crates/gale_lsp", version = "0.1.5" }
+gale_css_parser = { path = "crates/gale_css_parser", version = "0.2.1" }
+gale_linter = { path = "crates/gale_linter", version = "0.2.1" }
+gale_config = { path = "crates/gale_config", version = "0.2.1" }
+gale_cli = { path = "crates/gale_cli", version = "0.2.1" }
+gale_formatter = { path = "crates/gale_formatter", version = "0.2.1" }
+gale_diagnostics = { path = "crates/gale_diagnostics", version = "0.2.1" }
+gale_lsp = { path = "crates/gale_lsp", version = "0.2.1" }
 
 [package]
 name = "gale-lint"
