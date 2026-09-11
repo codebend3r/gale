@@ -8,7 +8,7 @@ Gale is a **perfect substitute for [Stylelint](https://stylelint.io/)**, written
 
 The bar: `bunx gale 'src/**/*.scss'` must produce **byte-for-byte identical warnings** to `bunx stylelint 'src/**/*.scss'`. Same rules, same config, same warnings, same severity, same line/column. If Stylelint says it, Gale says it. If Stylelint doesn't say it, Gale doesn't say it. Zero false positives, zero false negatives.
 
-**Current state (v0.1.5):**
+**Current state (v0.2.1):**
 - 270+ built-in rules (146 core, 44 SCSS, 64 stylistic, 3 order, 4 plugin meta-rules)
 - Targets **Stylelint v17** semantics
 - Differential tested against 22 real-world repos with ZERO rule filters
@@ -112,7 +112,7 @@ CLI args
 
 ```
 gale/
-  Cargo.toml              Workspace root (version 0.1.1, Rust 2024 edition)
+  Cargo.toml              Workspace root (version 0.2.1, Rust 2024 edition)
   src/main.rs             Binary entrypoint (delegates to gale_cli::run)
   crates/
     gale_cli/             CLI, file discovery, orchestration, caching

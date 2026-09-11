@@ -435,7 +435,7 @@ Releases are automated via GitHub Actions when you push a version tag:
 # 1. Update the version in Cargo.toml (workspace.package.version)
 # 2. Commit the version bump
 # 3. Tag and push
-git tag v0.2.0
+git tag v0.2.1
 git push && git push --tags
 ```
 
@@ -457,7 +457,7 @@ The [release workflow](.github/workflows/release.yml) will:
 ./scripts/build-npm.sh --all
 
 # Set npm package version before building
-./scripts/build-npm.sh --version 0.2.0
+./scripts/build-npm.sh --version 0.2.1
 ```
 
 ## Architecture

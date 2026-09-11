@@ -29,12 +29,12 @@ Supported platforms: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
 
 ### Option A: Automated (GitHub Actions)
 
-Push a git tag matching `v*` (e.g. `v0.2.0`) to trigger the release workflow:
+Push a git tag matching `v*` (e.g. `v0.2.1`) to trigger the release workflow:
 
 ```bash
 # 1. Update workspace.package.version in Cargo.toml
 # 2. Commit the version bump
-git tag v0.2.0
+git tag v0.2.1
 git push && git push --tags
 ```
 
@@ -53,7 +53,7 @@ The workflow will:
 ./scripts/build-npm.sh
 
 # 2. Set the version
-./scripts/build-npm.sh --version 0.2.0
+./scripts/build-npm.sh --version 0.2.1
 
 # 3. Publish
 cd npm && npm publish --access public
