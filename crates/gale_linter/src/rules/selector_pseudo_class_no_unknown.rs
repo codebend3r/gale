@@ -354,7 +354,7 @@ fn scan_source_for_unparsed_pseudo_classes(
 ) -> Vec<PseudoClassEntry> {
   let mut covered_ranges: Vec<(usize, usize)> = Vec::new();
   collect_node_ranges(nodes, &mut covered_ranges);
-  covered_ranges.sort_by_key(|r| r.0);
+  let covered_ranges = merge_ranges(covered_ranges);
 
   let mut results = Vec::new();
   let bytes = source.as_bytes();
@@ -362,13 +362,8 @@ fn scan_source_for_unparsed_pseudo_classes(
   let mut i = 0;
 
   while i < len {
-    if is_in_covered_range(i, &covered_ranges) {
-      for &(start, end) in &covered_ranges {
-        if i >= start && i < end {
-          i = end;
-          break;
-        }
-      }
+    if let Some(end) = covered_range_end(i, &covered_ranges) {
+      i = end;
       continue;
     }
 
@@ -552,10 +547,32 @@ fn collect_style_children(
   }
 }
 
+/// Sort ranges and merge any that overlap or nest (a rule's span contains
+/// its declarations' spans) into disjoint intervals, so lookups can binary
+/// search instead of scanning every node range for every byte.
+fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+  ranges.sort_unstable();
+  let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+  for (start, end) in ranges {
+    match merged.last_mut() {
+      Some(last) if start <= last.1 => last.1 = last.1.max(end),
+      _ => merged.push((start, end)),
+    }
+  }
+  merged
+}
+
+/// If `offset` falls inside one of the merged ranges, return that range's end.
+fn covered_range_end(offset: usize, ranges: &[(usize, usize)]) -> Option<usize> {
+  let idx = ranges.partition_point(|&(start, _)| start <= offset);
+  match idx.checked_sub(1) {
+    Some(i) if offset < ranges[i].1 => Some(ranges[i].1),
+    _ => None,
+  }
+}
+
 fn is_in_covered_range(offset: usize, ranges: &[(usize, usize)]) -> bool {
-  ranges
-    .iter()
-    .any(|&(start, end)| offset >= start && offset < end)
+  covered_range_end(offset, ranges).is_some()
 }
 
 /// Parse `ignorePseudoClasses` from the secondary options.

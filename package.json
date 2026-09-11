@@ -43,6 +43,8 @@
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all",
     "build:release": "cargo build --release",
+    "benchmark": "bash benchmarks/benchmark.sh",
+    "benchmark:quick": "bash benchmarks/benchmark-quick.sh",
     "fmt": "cargo fmt --all",
     "fmt:check": "cargo fmt --all --check",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings",

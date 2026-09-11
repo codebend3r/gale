@@ -468,17 +468,20 @@ fn find_unspaced_operators(
   results
 }
 
-/// Check if offset is inside a CSS comment in the source.
-fn is_in_comment(source: &str, offset: usize) -> bool {
-  for m in COMMENT_RE.find_iter(source) {
-    if offset >= m.start() && offset < m.end() {
-      return true;
-    }
-    if m.start() > offset {
-      break;
-    }
-  }
-  false
+/// Byte ranges of every `/* ... */` comment in the source, sorted by start.
+/// Computed once per file so each lookup is a binary search rather than a
+/// rescan of the whole source (which was quadratic on large files).
+fn comment_ranges(source: &str) -> Vec<(usize, usize)> {
+  COMMENT_RE
+    .find_iter(source)
+    .map(|m| (m.start(), m.end()))
+    .collect()
+}
+
+/// Check if offset is inside one of the (sorted, non-overlapping) comment ranges.
+fn is_in_comment(ranges: &[(usize, usize)], offset: usize) -> bool {
+  let idx = ranges.partition_point(|&(start, _)| start <= offset);
+  idx > 0 && offset < ranges[idx - 1].1
 }
 
 impl Rule for FunctionCalcNoUnspacedOperator {
@@ -498,6 +501,7 @@ impl Rule for FunctionCalcNoUnspacedOperator {
     let source = context.source;
     let is_scss = matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass);
     let mut diagnostics = Vec::new();
+    let comments = comment_ranges(source);
 
     // Find all top-level math function calls in the source
     for m in MATH_FUNC_START.find_iter(source) {
@@ -510,7 +514,7 @@ impl Rule for FunctionCalcNoUnspacedOperator {
       }
 
       // Skip if inside a comment
-      if is_in_comment(source, m.start()) {
+      if is_in_comment(&comments, m.start()) {
         continue;
       }
 

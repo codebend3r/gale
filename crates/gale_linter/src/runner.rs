@@ -950,7 +950,14 @@ impl LintRunner {
           .get(rule.name())
           .or_else(|| self.rule_options.get(rule.name())),
       };
+      let tr = Instant::now();
       let mut results = rule.check_root(&parse_result.nodes, &context);
+      if debug {
+        let elapsed = tr.elapsed().as_secs_f64();
+        if elapsed > 0.001 {
+          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
+        }
+      }
       diagnostics.append(&mut results);
     }
     if debug {

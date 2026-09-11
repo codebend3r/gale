@@ -128,7 +128,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - name: Install hyperfine
-        # Without it run-benchmark.sh silently degrades to `time`, whose output
+        # Without it benchmark-quick.sh silently degrades to `time`, whose output
         # is too noisy on shared runners to be worth reading.
         run: |
           sudo apt-get update
@@ -138,4 +138,4 @@ jobs:
         run: cargo build --release
 
       - name: Run benchmark
-        run: bash benchmarks/run-benchmark.sh
+        run: bash benchmarks/benchmark-quick.sh

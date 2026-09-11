@@ -84,14 +84,14 @@ Results are saved to `benchmarks/results.md` and printed to stdout. Example:
 
 1. Builds Gale in release mode (`cargo build --release`)
 2. Shallow-clones each test repository (idempotent -- skips if already present)
-3. Installs npm dependencies (prefers `bun`, falls back to `npm`)
+3. Installs dependencies with `bun` (pnpm / Yarn Berry repos use their own tool so the pinned Stylelint version is honoured; `npm` only if bun cannot read the lockfile)
 4. Runs `hyperfine` comparing `stylelint` (from repo's `node_modules`) vs `gale` (release binary)
 5. Runs both linters with `--formatter json` and diffs the output for correctness
 6. Generates a markdown results table
 
 ## Other benchmarks
 
-The `run-benchmark.sh` script in this directory runs a simpler single-file benchmark using a downloaded Bootstrap CSS file (and a 20x-duplicated variant). Use `benchmark.sh` for the full reproducible comparison.
+The `benchmark-quick.sh` script in this directory runs a simpler single-file benchmark using a downloaded Bootstrap CSS file (and a 20x-duplicated variant). Use `benchmark.sh` for the full reproducible comparison.
 
 ## FAQ
 
