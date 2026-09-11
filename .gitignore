@@ -20,7 +20,7 @@ tests/differential/results/
 *.swo
 .DS_Store
 dist/
-.claude/
+.claude/*
 !.claude/skills/
 !.claude/skills/**
 __pycache__/
