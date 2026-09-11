@@ -36,6 +36,12 @@ GALE_BIN="$PROJECT_DIR/target/release/gale"
 WARMUP=3
 MIN_RUNS=10
 
+# The yarn/pnpm shims are corepack. When a repo pins a package manager version
+# corepack has not cached yet, it asks "Do you want to continue? [Y/n]" on
+# stdin. The install output is piped through tail, so that prompt is invisible
+# and the run hangs forever. Never prompt; just download.
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
 # bun's global bin dir holds the corepack shims (yarn/pnpm) that Yarn Berry and
 # pnpm repos need, and it is frequently not on PATH.
 if command -v bun &>/dev/null; then
@@ -69,7 +75,7 @@ REPOS=(
   "joomla|joomla/joomla-cms|5.4-dev|build/media_source/**/*.{css,scss}|build"
   "slds|salesforce-ux/design-system|main|ui/**/*.scss|ui"
   "rsuite|rsuite/rsuite|main|src/**/*.scss|src"
-  "fundamental-styles|SAP/fundamental-styles|main|src/**/*.scss packages/**/*.scss|src"
+  "fundamental-styles|SAP/fundamental-styles|main|packages/**/*.scss|packages"
 )
 
 # ---------------------------------------------------------------------------
@@ -88,22 +94,19 @@ success() { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
 warn()    { echo -e "${YELLOW}warning:${NC} $*"; }
 error()   { echo -e "${RED}error:${NC} $*"; exit 1; }
 
-# Honour the repo's own lockfile (same logic as tests/differential/run.py).
-# bun's lockfile migration rejects some pnpm workspaces (freeCodeCamp) and
-# fails integrity checks on some npm lockfiles (Mattermost), so bun is only
-# the default when no lockfile says otherwise.
+# Pick the installer. bun is the project's package manager, so use it wherever
+# it can honour the repo's own lockfile: bun.lock, package-lock.json (bun
+# migrates it), and Yarn v1 lockfiles. pnpm and Yarn Berry lockfiles are not
+# migratable, and bun would silently resolve fresh and drift from the pinned
+# stylelint version, so those repos use their own tool.
 detect_pm() {
   local dir="$1"
-  if [ -f "$dir/pnpm-lock.yaml" ] && command -v pnpm &>/dev/null; then
+  if [ -f "$dir/pnpm-lock.yaml" ]; then
     echo "pnpm"
-  elif [ -f "$dir/yarn.lock" ] && command -v yarn &>/dev/null; then
+  elif [ -f "$dir/yarn.lock" ] && grep -q '^__metadata:' "$dir/yarn.lock"; then
     echo "yarn"
-  elif [ -f "$dir/package-lock.json" ] && command -v npm &>/dev/null; then
-    echo "npm"
-  elif command -v bun &>/dev/null; then
-    echo "bun"
   else
-    echo "npm"
+    echo "bun"
   fi
 }
 
@@ -146,8 +149,18 @@ install_deps() {
     bun)   (cd "$dir" && bun install --ignore-scripts 2>&1 | tail -1) || status=$? ;;
     pnpm)  (cd "$dir" && pnpm install --ignore-scripts --no-frozen-lockfile 2>&1 | tail -1) || status=$? ;;
     yarn)  (cd "$dir" && yarn install --mode skip-build 2>&1 | tail -1) || status=$? ;;
-    npm)   (cd "$dir" && npm install --ignore-scripts 2>&1 | tail -1) || status=$? ;;
   esac
+
+  # Some npm lockfiles fail bun's integrity check (Mattermost, whose lockfile
+  # sits at the workspace root above the install dir). npm is the only tool
+  # that can honour those, so fall back to it rather than skip the repo.
+  if [ "$status" -ne 0 ] && [ "$pm" = "bun" ] && command -v npm &>/dev/null; then
+    warn "bun install failed in $dir (exit $status); retrying with npm"
+    rm -rf "$dir/node_modules"
+    status=0
+    (cd "$dir" && npm install --ignore-scripts 2>&1 | tail -1) || status=$?
+    pm=npm
+  fi
 
   if [ "$status" -ne 0 ]; then
     warn "$pm install failed in $dir (exit $status)"
@@ -376,8 +389,12 @@ run_parity_test() {
 
   # Compare using Python for robust JSON diffing
   local parity_result
-  parity_result=$(python3 - "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err" <<'PYEOF'
-import json, sys
+  parity_result=$(python3 - "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err" "$work_dir" <<'PYEOF'
+import json, os, sys
+
+# Stylelint reports absolute source paths and Gale reports paths relative to
+# the working directory; compare both relative to it or nothing ever matches.
+WORK_DIR = sys.argv[5]
 
 def read_report(stdout_path, stderr_path):
     """Return the JSON report text, whichever stream it was written to."""
@@ -404,6 +421,8 @@ def parse_warnings(stdout_path, stderr_path):
     warnings = set()
     for entry in data:
         source = entry.get("source", "")
+        if os.path.isabs(source):
+            source = os.path.relpath(source, WORK_DIR)
         for w in entry.get("warnings", []):
             rule = w.get("rule", "")
             line = w.get("line", 0)
