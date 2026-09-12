@@ -31,13 +31,14 @@
     }
   },
   "bin": {
-    "gale": "bin/gale"
+    "gale": "bin/gale.cjs"
   },
   "files": [
     "bin/",
     "index.cjs",
     "index.d.ts",
     "index.mjs",
+    "platform.cjs",
     "test.mjs",
     "README.md"
   ],

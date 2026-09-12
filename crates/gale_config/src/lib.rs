@@ -184,6 +184,9 @@ pub struct GaleConfig {
   pub cache: bool,
   /// Stylelint's `cacheLocation`, relative to the working directory.
   pub cache_location: Option<PathBuf>,
+  /// Stylelint's `cacheStrategy`: `"metadata"` or `"content"`.  Validated
+  /// by the CLI, which owns the cache.
+  pub cache_strategy: Option<String>,
 }
 
 impl GaleConfig {
@@ -327,6 +330,7 @@ impl Default for GaleConfig {
       fix: None,
       cache: false,
       cache_location: None,
+      cache_strategy: None,
     }
   }
 }
@@ -417,6 +421,9 @@ pub struct ConfigFile {
   /// Stylelint's `cacheLocation` option.
   #[serde(default)]
   pub cache_location: Option<String>,
+  /// Stylelint's `cacheStrategy` option.
+  #[serde(default)]
+  pub cache_strategy: Option<String>,
 }
 
 /// A single override entry as it appears in the config file.
@@ -4014,6 +4021,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     fix,
     cache: raw.cache.unwrap_or(false),
     cache_location,
+    cache_strategy: raw.cache_strategy,
   }
 }
 
@@ -5859,6 +5867,7 @@ overrides:
     assert_eq!(cfg.fix, None);
     assert!(!cfg.cache);
     assert_eq!(cfg.cache_location, None);
+    assert_eq!(cfg.cache_strategy, None);
   }
 
   #[test]
@@ -5870,7 +5879,8 @@ overrides:
                 "allowEmptyInput": true,
                 "quiet": true,
                 "cache": true,
-                "cacheLocation": "tmp/lint.cache"
+                "cacheLocation": "tmp/lint.cache",
+                "cacheStrategy": "content"
             }"#,
     );
     assert!(cfg.ignore_disables);
@@ -5878,6 +5888,7 @@ overrides:
     assert!(cfg.quiet);
     assert!(cfg.cache);
     assert_eq!(cfg.cache_location, Some(PathBuf::from("tmp/lint.cache")));
+    assert_eq!(cfg.cache_strategy.as_deref(), Some("content"));
   }
 
   #[test]

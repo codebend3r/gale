@@ -17,7 +17,9 @@ use gale_diagnostics::{LintResult, Severity, apply_fixes};
 use gale_formatter::{create_formatter_with_color, strip_ansi};
 use gale_linter::{LintRunner, RuleRegistry};
 
-use crate::cache::{LintCache, compute_config_hash, compute_hash, resolve_cache_path};
+use crate::cache::{
+  CacheStrategy, LintCache, compute_config_hash, compute_fingerprint, resolve_cache_path,
+};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -137,6 +139,10 @@ pub struct Cli {
   /// Override the cache file location (default: .gale_cache in the current directory)
   #[arg(long, value_name = "PATH")]
   cache_location: Option<PathBuf>,
+
+  /// How the cache detects changed files: metadata (default) or content
+  #[arg(long, value_name = "STRATEGY")]
+  cache_strategy: Option<String>,
 
   /// Don't error when no files match the glob pattern
   #[arg(long)]
@@ -1043,14 +1049,30 @@ pub fn run() -> Result<()> {
     })
   });
 
+  // The cache strategy defaults to metadata, as in Stylelint, and an
+  // unknown value is a fatal error there too.
+  let cache_strategy = match cli
+    .cache_strategy
+    .as_deref()
+    .or(config.cache_strategy.as_deref())
+  {
+    None => CacheStrategy::default(),
+    Some(name) => CacheStrategy::parse(name).unwrap_or_else(|| {
+      eprintln!(
+        "\"{name}\" cache strategy is unsupported. Specify either \"metadata\" or \"content\""
+      );
+      process::exit(1);
+    }),
+  };
+
   // Set up caching if --cache is enabled.
   let cache_path = resolve_cache_path(cache_location.as_deref());
   let config_hash = compute_config_hash(&config.rules);
   let mut lint_cache = if use_cache {
     debug!("Loading cache from {}", cache_path.display());
-    LintCache::load(&cache_path)
+    LintCache::load(&cache_path, cache_strategy)
   } else {
-    LintCache::default()
+    LintCache::new(cache_strategy)
   };
 
   // Extract per-rule options from the config, keyed by canonical rule name.
@@ -1461,7 +1483,7 @@ pub fn run() -> Result<()> {
           let cfg_for_check = effective_config.unwrap_or(&config);
           let syntax = resolve_syntax(cli_custom_syntax, cfg_for_check, &file_path)?;
 
-          let content_hash = compute_hash(&source, config_hash);
+          let content_hash = compute_fingerprint(file, &source, cache_strategy, config_hash);
 
           // Check cache: skip only files that were clean (0 diagnostics).
           {

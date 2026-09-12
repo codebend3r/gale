@@ -49,7 +49,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Custom `message` secondary option | Override the warning text for a rule | ✅ String form on every rule | ✅ String or function on every rule |
 | `url` secondary option | Attach a docs URL to a rule's warnings | ✅ Emitted as the JSON warning's `url` | ✅ |
 | `disableFix` secondary option | Keep a rule enabled but turn off its autofix | ✅ | ✅ |
-| `reportDisables` secondary option | Forbid disabling a rule inline | ❌ | ✅ |
+| `reportDisables` secondary option | Forbid disabling a rule inline | ✅ | ✅ |
 | Warning message wording | Exact v17 message text | ⚠️ Positions and rule IDs match; some strings still use v15/v16 phrasing | ✅ |
 | Rule deprecation warnings | Report use of deprecated rules | ❌ Always empty in output | ✅ `deprecations` |
 | Invalid option warnings | Report malformed rule options | ❌ Always empty in output | ✅ `invalidOptionWarnings` |
@@ -128,7 +128,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `--max-warnings` | Fail when warnings exceed a threshold | ✅ | ✅ |
 | `--cache` | Skip unchanged files on repeat runs | ✅ | ✅ |
 | `--cache-location` | Where the cache file lives | ✅ | ✅ |
-| `--cache-strategy` | Choose `metadata` or `content` invalidation | ❌ Content hashing only | ✅ |
+| `--cache-strategy` | Choose `metadata` (default) or `content` invalidation | ✅ Also the `cacheStrategy` config key | ✅ |
 | `--allow-empty-input` | Exit 0 when no files match | ✅ | ✅ |
 | `--output-file` / `-o` | Write the report to a file, colour stripped | ✅ | ✅ |
 | `--color` / `--no-color` | Force or suppress ANSI colour | ✅ Same rule as picocolors: `NO_COLOR`, `FORCE_COLOR`, `CI`, TTY | ✅ |
@@ -196,7 +196,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | VS Code extension | Diagnostics in VS Code | ⚠️ Separate repo, [codebend3r/gale-plugin](https://github.com/codebend3r/gale-plugin); not on the Marketplace | ✅ Official `stylelint.vscode-stylelint` |
 | Neovim / Helix / Zed | Any LSP-capable editor | ✅ Point the editor at `gale --lsp` | ⚠️ Via community language servers |
 | Lint on change and on save | Diagnostics refresh as you type | ✅ | ✅ |
-| Quick-fix code actions | Apply autofixes from the editor | ❌ | ✅ In the official extension |
+| Quick-fix code actions | Apply autofixes from the editor | ✅ Every fixable diagnostic offers a quick fix | ✅ In the official extension |
 
 ## Distribution and platforms
 
@@ -207,9 +207,9 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Prebuilt binaries on GitHub Releases | Download and run without a package manager | ✅ | ❌ |
 | macOS (arm64, x64) | Runs natively | ✅ | ✅ |
 | Linux (x64, arm64) | Runs natively | ✅ | ✅ |
-| Windows | Runs natively | ⚠️ Build from source with Cargo; no prebuilt binary | ✅ |
+| Windows | Runs natively | ✅ x64 prebuilt binary; arm64 from source | ✅ |
 | No Node.js runtime required | Run without Node installed | ✅ | ❌ |
-| Zero-dependency install | No `postinstall` script, no downloads at install time | ✅ | ❌ Pulls the PostCSS dependency tree |
+| Zero-dependency install | No `postinstall` script, no downloads at install time | ✅ A Node launcher picks the bundled binary | ❌ Pulls the PostCSS dependency tree |
 
 ## Performance
 

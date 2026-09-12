@@ -31,7 +31,7 @@
     }
   },
   "bin": {
-    "gale": "npm/bin/gale"
+    "gale": "npm/bin/gale.cjs"
   },
   "files": [
     "npm/",
