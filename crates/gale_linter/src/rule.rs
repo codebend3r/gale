@@ -44,12 +44,19 @@ impl<'a> RuleContext<'a> {
   /// e.g. from preset configs that store `{"ignore": [...]}` without a
   /// primary option wrapper).
   pub fn secondary_options(&self) -> Option<&'a serde_json::Value> {
-    let value = self.options?;
-    match value {
-      serde_json::Value::Array(arr) => arr.get(1),
-      serde_json::Value::Object(_) => Some(value),
-      _ => None,
-    }
+    secondary_options_of(self.options?)
+  }
+}
+
+/// The secondary options object inside a Stylelint-format rule setting.
+///
+/// Array form `[primary, secondary]` yields the second element; a bare object
+/// (as preset configs store `{"ignore": [...]}`) is returned as-is.
+pub fn secondary_options_of(value: &serde_json::Value) -> Option<&serde_json::Value> {
+  match value {
+    serde_json::Value::Array(arr) => arr.get(1),
+    serde_json::Value::Object(_) => Some(value),
+    _ => None,
   }
 }
 

@@ -23,20 +23,20 @@ function project() {
 }
 
 describe("colour detection", () => {
-  test.failing("piped output has no colour by default", () => {
+  test("piped output has no colour by default", () => {
     const result = runGale(["a.css"], { cwd: project().dir });
 
     expect(result.stdout).toContain("block-no-empty");
     expect(hasAnsi(result.stdout)).toBe(false);
   });
 
-  test.failing("--color forces colour on", () => {
+  test("--color forces colour on", () => {
     const result = runGale(["--color", "a.css"], { cwd: project().dir });
 
     expect(hasAnsi(result.stdout)).toBe(true);
   });
 
-  test.failing("--no-color forces colour off", () => {
+  test("--no-color forces colour off", () => {
     const result = runGale(["--no-color", "a.css"], { cwd: project().dir });
 
     expect(result.stdout).toContain("block-no-empty");
@@ -55,14 +55,14 @@ describe("colour detection", () => {
     expect(hasAnsi(result.stdout)).toBe(true);
   });
 
-  test.failing("NO_COLOR turns colour off", () => {
+  test("NO_COLOR turns colour off", () => {
     const result = runGale(["a.css"], { cwd: project().dir, env: { NO_COLOR: "1" } });
 
     expect(result.stdout).toContain("block-no-empty");
     expect(hasAnsi(result.stdout)).toBe(false);
   });
 
-  test.failing("NO_COLOR beats FORCE_COLOR", () => {
+  test("NO_COLOR beats FORCE_COLOR", () => {
     const result = runGale(["a.css"], {
       cwd: project().dir,
       env: { NO_COLOR: "1", FORCE_COLOR: "1" },
@@ -72,7 +72,7 @@ describe("colour detection", () => {
     expect(hasAnsi(result.stdout)).toBe(false);
   });
 
-  test.failing("--no-color beats FORCE_COLOR", () => {
+  test("--no-color beats FORCE_COLOR", () => {
     const result = runGale(["--no-color", "a.css"], {
       cwd: project().dir,
       env: { FORCE_COLOR: "1" },
@@ -82,7 +82,7 @@ describe("colour detection", () => {
     expect(hasAnsi(result.stdout)).toBe(false);
   });
 
-  test.failing("the verbose formatter follows the same rule", () => {
+  test("the verbose formatter follows the same rule", () => {
     const dir = project().dir;
 
     expect(hasAnsi(runGale(["--formatter", "verbose", "a.css"], { cwd: dir }).stdout)).toBe(false);
@@ -101,7 +101,7 @@ describe("colour detection", () => {
     expect(() => JSON.parse(result.stdout)).not.toThrow();
   });
 
-  test.failing("the json formatter ignores --color", () => {
+  test("the json formatter ignores --color", () => {
     const result = runGale(["--formatter", "json", "--color", "a.css"], { cwd: project().dir });
 
     expect(hasAnsi(result.stdout)).toBe(false);

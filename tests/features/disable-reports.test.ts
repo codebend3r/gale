@@ -188,7 +188,7 @@ describe("reportUnscopedDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("the CLI flag reports a disable that names no rule", () => {
+  test("the CLI flag reports a disable that names no rule", () => {
     const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": unscoped });
 
     const warnings = runGaleJson(["--report-unscoped-disables", "a.css"], {
@@ -198,7 +198,7 @@ describe("reportUnscopedDisables", () => {
     expect(warnings).toEqual([expected]);
   });
 
-  test.failing("the config key reports a disable that names no rule", () => {
+  test("the config key reports a disable that names no rule", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES, { reportUnscopedDisables: true }),
       "a.css": unscoped,
@@ -216,7 +216,7 @@ describe("reportUnscopedDisables", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 
-  test.failing("the flag is accepted and does nothing when no comments are present", () => {
+  test("the flag is accepted and does nothing when no comments are present", () => {
     const project = makeProject({
       ".stylelintrc.json": config(RULES),
       "a.css": "a { color: red; }\n",

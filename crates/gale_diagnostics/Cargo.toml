@@ -10,3 +10,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 miette = { workspace = true }
 owo-colors = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

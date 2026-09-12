@@ -129,9 +129,14 @@ function parseJsonOutput(jsonString) {
     warnings: (entry.warnings || []).map((w) => ({
       line: w.line,
       column: w.column,
+      endLine: w.endLine,
+      endColumn: w.endColumn,
       rule: w.rule,
       severity: w.severity || "warning",
       text: w.text,
+      // Only present when the rule's `url` secondary option is set, as in
+      // Stylelint, where an undefined url is dropped by JSON.stringify.
+      ...(w.url !== undefined ? { url: w.url } : {}),
     })),
     deprecations: [],
     invalidOptionWarnings: [],

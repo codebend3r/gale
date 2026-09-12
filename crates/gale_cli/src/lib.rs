@@ -14,7 +14,7 @@ use tracing::debug;
 use gale_config::{ConfigResolver, GaleConfig};
 use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
-use gale_formatter::{create_formatter, strip_ansi};
+use gale_formatter::{create_formatter_with_color, strip_ansi};
 use gale_linter::{LintRunner, RuleRegistry};
 
 use crate::cache::{LintCache, compute_config_hash, compute_hash, resolve_cache_path};
@@ -94,6 +94,14 @@ pub struct Cli {
   #[arg(short, long)]
   quiet: bool,
 
+  /// Force colour on in the text and verbose formatters
+  #[arg(long, overrides_with = "no_color")]
+  color: bool,
+
+  /// Force colour off in the text and verbose formatters
+  #[arg(long, overrides_with = "color")]
+  no_color: bool,
+
   /// Path to a custom ignore file (uses gitignore syntax)
   #[arg(long, value_name = "FILE")]
   ignore_path: Option<PathBuf>,
@@ -149,7 +157,25 @@ pub struct Cli {
   /// Report `/* stylelint-disable */` comments without a description
   #[arg(long)]
   report_descriptionless_disables: bool,
+
+  /// Report `/* stylelint-disable */` comments that name no rule
+  #[arg(long)]
+  report_unscoped_disables: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------------
+
+// Stylelint's exit codes, which CI scripts key off.  A fatal error such as
+// no files matching the patterns exits 1, as in Stylelint.
+
+/// Lint problems were found, or `--max-warnings` was exceeded.
+const EXIT_LINT_PROBLEM: i32 = 2;
+/// The command line could not be understood.
+const EXIT_INVALID_USAGE: i32 = 64;
+/// The configuration file could not be loaded.
+const EXIT_INVALID_CONFIG: i32 = 78;
 
 // ---------------------------------------------------------------------------
 // Supported file extensions
@@ -200,6 +226,33 @@ fn resolve_syntax(
   }
 
   Some(detect_syntax(file_path))
+}
+
+/// Decide whether the human-readable formatters colour their output.
+///
+/// This is picocolors' rule, which Stylelint relies on:
+///
+/// ```text
+/// colour = !(NO_COLOR || --no-color)
+///       && (FORCE_COLOR || --color || CI || (stdout is a TTY && TERM != dumb))
+/// ```
+///
+/// An environment variable counts as set only when it is non-empty, matching
+/// JavaScript truthiness.
+fn color_enabled(
+  force_on: bool,
+  force_off: bool,
+  stdout_is_tty: bool,
+  env: impl Fn(&str) -> Option<String>,
+) -> bool {
+  let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
+  if force_off || set("NO_COLOR") {
+    return false;
+  }
+  if force_on || set("FORCE_COLOR") || set("CI") {
+    return true;
+  }
+  stdout_is_tty && env("TERM").as_deref() != Some("dumb")
 }
 
 /// Write a report to `path`, creating parent directories and stripping ANSI
@@ -814,7 +867,18 @@ fn generate_init_config() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> Result<()> {
-  let cli = Cli::parse();
+  let cli = match Cli::try_parse() {
+    Ok(cli) => cli,
+    Err(err) => {
+      // --help and --version are not errors.  Anything else is a usage
+      // error, which Stylelint reports with exit code 64.
+      if err.use_stderr() {
+        let _ = err.print();
+        process::exit(EXIT_INVALID_USAGE);
+      }
+      err.exit();
+    }
+  };
 
   // Initialise tracing (controlled via GALE_LOG env var).
   tracing_subscriber::fmt()
@@ -848,17 +912,24 @@ pub fn run() -> Result<()> {
   // is linted with the closest config in the directory hierarchy).
   let use_per_file_config = cli.config.is_none();
 
+  // A config that exists but cannot be loaded is a configuration error
+  // (exit 78), not something to paper over with defaults.
+  let load_or_exit = |path: &Path| -> GaleConfig {
+    match gale_config::load_config(path) {
+      Ok(cfg) => cfg,
+      Err(err) => {
+        eprintln!("Error: failed to load config {}: {err}", path.display());
+        process::exit(EXIT_INVALID_CONFIG);
+      }
+    }
+  };
   let (config, has_config_file) = if let Some(ref cfg_path) = cli.config {
     debug!("Using config file: {}", cfg_path.display());
-    let cfg = gale_config::load_config(cfg_path).unwrap_or_else(|err| {
-      eprintln!("Warning: failed to load config: {err}");
-      GaleConfig::default()
-    });
-    (cfg, true)
+    (load_or_exit(cfg_path), true)
   } else {
     let cwd = std::env::current_dir().unwrap_or_default();
-    match gale_config::resolve_config(&cwd) {
-      Some(cfg) => (cfg, true),
+    match gale_config::find_config(&cwd) {
+      Some(path) => (load_or_exit(&path), true),
       None => (GaleConfig::default(), false),
     }
   };
@@ -1055,6 +1126,8 @@ pub fn run() -> Result<()> {
   runner.set_report_descriptionless_disables(
     config.report_descriptionless_disables || cli.report_descriptionless_disables,
   );
+  runner
+    .set_report_unscoped_disables(config.report_unscoped_disables || cli.report_unscoped_disables);
   runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
   // Plugin rules the config names but Gale does not implement still count
   // as configured for reportInvalidScopeDisables.
@@ -1569,7 +1642,13 @@ pub fn run() -> Result<()> {
 
   // Format & print.
   let t_fmt = std::time::Instant::now();
-  let formatter = create_formatter(&cli.formatter);
+  let color = color_enabled(
+    cli.color,
+    cli.no_color,
+    std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    |name| std::env::var(name).ok(),
+  );
+  let formatter = create_formatter_with_color(&cli.formatter, color);
   let output = gale_formatter::Formatter::format(&*formatter, &results);
   if std::env::var("GALE_DEBUG_PERF").as_deref() == Ok("1") {
     eprintln!("[perf] format: {:.3}s", t_fmt.elapsed().as_secs_f64());
@@ -1598,12 +1677,12 @@ pub fn run() -> Result<()> {
     && total_warnings > max
   {
     eprintln!("Found {total_warnings} warning(s) (max allowed: {max})");
-    process::exit(1);
+    process::exit(EXIT_LINT_PROBLEM);
   }
 
-  // Exit with code 1 if there were any errors.
+  // Lint problems exit 2, as in Stylelint.
   if total_errors > 0 {
-    process::exit(1);
+    process::exit(EXIT_LINT_PROBLEM);
   }
 
   Ok(())
@@ -1837,6 +1916,62 @@ mod tests {
     );
     assert_eq!(files.len(), 1);
     assert!(files[0].ends_with("a.css"));
+  }
+
+  #[test]
+  fn colour_follows_picocolors_rules() {
+    let none = |_: &str| None;
+    let with = |vars: &'static [(&'static str, &'static str)]| {
+      move |name: &str| {
+        vars
+          .iter()
+          .find(|(k, _)| *k == name)
+          .map(|(_, v)| v.to_string())
+      }
+    };
+
+    // Piped output with no hints: off.  A terminal: on.
+    assert!(!color_enabled(false, false, false, none));
+    assert!(color_enabled(false, false, true, none));
+    assert!(!color_enabled(
+      false,
+      false,
+      true,
+      with(&[("TERM", "dumb")])
+    ));
+
+    // Flags and FORCE_COLOR / CI turn it on when piped.
+    assert!(color_enabled(true, false, false, none));
+    assert!(color_enabled(
+      false,
+      false,
+      false,
+      with(&[("FORCE_COLOR", "1")])
+    ));
+    assert!(color_enabled(false, false, false, with(&[("CI", "true")])));
+
+    // NO_COLOR and --no-color win over everything.
+    assert!(!color_enabled(
+      false,
+      true,
+      true,
+      with(&[("FORCE_COLOR", "1")])
+    ));
+    assert!(!color_enabled(
+      true,
+      false,
+      true,
+      with(&[("NO_COLOR", "1")])
+    ));
+
+    // Empty variables do not count as set.
+    assert!(color_enabled(false, false, true, with(&[("NO_COLOR", "")])));
+    assert!(!color_enabled(
+      false,
+      false,
+      false,
+      with(&[("FORCE_COLOR", "")])
+    ));
   }
 
   #[test]

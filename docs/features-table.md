@@ -46,9 +46,9 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `prettier/prettier` | Report Prettier formatting diffs as lint warnings | ❌ Intentional: run Prettier separately | ✅ Via plugin |
 | Rule severity per rule | `"error"` / `"warning"` and the `{ severity }` secondary option | ✅ | ✅ |
 | `defaultSeverity` | Config-wide default when a rule does not set one | ✅ | ✅ |
-| Custom `message` secondary option | Override the warning text for a rule | ⚠️ Honored by pattern rules only (`custom-property-pattern`, `keyframes-name-pattern`, `scss/dollar-variable-pattern`, ...) | ✅ String or function on every rule |
-| `url` secondary option | Attach a docs URL to a rule's warnings | ❌ | ✅ |
-| `disableFix` secondary option | Keep a rule enabled but turn off its autofix | ❌ | ✅ |
+| Custom `message` secondary option | Override the warning text for a rule | ✅ String form on every rule | ✅ String or function on every rule |
+| `url` secondary option | Attach a docs URL to a rule's warnings | ✅ Emitted as the JSON warning's `url` | ✅ |
+| `disableFix` secondary option | Keep a rule enabled but turn off its autofix | ✅ | ✅ |
 | `reportDisables` secondary option | Forbid disabling a rule inline | ❌ | ✅ |
 | Warning message wording | Exact v17 message text | ⚠️ Positions and rule IDs match; some strings still use v15/v16 phrasing | ✅ |
 | Rule deprecation warnings | Report use of deprecated rules | ❌ Always empty in output | ✅ `deprecations` |
@@ -83,7 +83,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `ignoreDisables` config key | Ignore disable comments from config | ✅ | ✅ |
 | `reportInvalidScopeDisables` config key | Enable from config | ✅ | ✅ |
 | `reportDescriptionlessDisables` config key | Enable from config | ✅ | ✅ |
-| `reportUnscopedDisables` | Report disable comments that name no rule | ❌ | ✅ |
+| `reportUnscopedDisables` config key | Report disable comments that name no rule | ✅ | ✅ |
 | `allowEmptyInput` / `cache` / `cacheLocation` / `fix` / `quiet` config keys | Set CLI behaviour from config | ✅ A CLI flag still wins | ✅ |
 | `languageOptions` | Extend known at-rules, properties, types, and CSS-wide keywords | ❌ | ✅ |
 | `computeEditInfo` | Include fix edit ranges in warnings | ❌ | ✅ |
@@ -105,7 +105,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `--report-needless-disables` | Report comments that suppress nothing | ✅ | ✅ |
 | `--report-invalid-scope-disables` | Report comments for rules not being linted | ✅ | ✅ |
 | `--report-descriptionless-disables` | Report comments with no description | ✅ | ✅ |
-| `--report-unscoped-disables` | Report comments that disable all rules | ❌ | ✅ |
+| `--report-unscoped-disables` | Report comments that disable all rules | ✅ | ✅ |
 
 ## Command line
 
@@ -131,16 +131,16 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `--cache-strategy` | Choose `metadata` or `content` invalidation | ❌ Content hashing only | ✅ |
 | `--allow-empty-input` | Exit 0 when no files match | ✅ | ✅ |
 | `--output-file` / `-o` | Write the report to a file, colour stripped | ✅ | ✅ |
-| `--color` / `--no-color` | Force or suppress ANSI colour | ❌ | ✅ |
+| `--color` / `--no-color` | Force or suppress ANSI colour | ✅ Same rule as picocolors: `NO_COLOR`, `FORCE_COLOR`, `CI`, TTY | ✅ |
 | `--print-config` | Print the resolved config for a file | ✅ | ✅ |
 | `--validate` / `--no-validate` | Toggle option validation | ❌ | ✅ |
 | `--init` | Generate a starter config | ✅ | ❌ |
 | `--lsp` | Start the language server | ✅ | ❌ |
 | `--version` / `--help` | Standard CLI help | ✅ | ✅ |
-| Exit code `1` on errors | Non-zero when error-severity problems are found | ✅ | ✅ |
-| Exit code `1` when `--max-warnings` is exceeded | Threshold failure | ✅ | ✅ |
-| Exit code `1` when no files match | Empty input is an error unless allowed | ✅ | ✅ |
-| Exit code `2` for usage errors, `78` for config errors | Stylelint's dedicated failure codes | ❌ Always `1` | ✅ |
+| Exit code `2` on lint problems | Error-severity problems or an exceeded `--max-warnings` | ✅ | ✅ |
+| Exit code `1` when no files match | Empty input is a fatal error unless allowed | ✅ | ✅ |
+| Exit code `64` for usage errors | Unknown flag, unknown formatter | ✅ | ✅ |
+| Exit code `78` for config errors | A config file that cannot be loaded | ✅ | ✅ Also invalid rule options |
 
 ## Output formatters
 
@@ -186,7 +186,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `utils` (`report`, `ruleMessages`, `validateOptions`, `checkAgainstRule`) | Helpers for plugin authors | ❌ | ✅ |
 | `rules` | Access built-in rule implementations | ❌ | ✅ |
 | ESM and CommonJS entry points | `import` and `require` both work | ✅ | ✅ |
-| TypeScript types | Type declarations shipped with the package | ❌ | ✅ |
+| TypeScript types | Type declarations shipped with the package | ✅ `index.d.ts` | ✅ |
 
 ## Editor integration
 

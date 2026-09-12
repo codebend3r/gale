@@ -5,7 +5,7 @@ use gale_css_parser::{CssNode, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::registry::RuleRegistry;
-use crate::rule::RuleContext;
+use crate::rule::{RuleContext, secondary_options_of};
 
 // ---------------------------------------------------------------------------
 // Inline disable-comment support
@@ -355,6 +355,7 @@ struct DisableReports {
   needless: bool,
   invalid_scope: bool,
   descriptionless: bool,
+  unscoped: bool,
   severity: Severity,
 }
 
@@ -420,6 +421,10 @@ fn filter_disabled_and_report(
 
   if reports.descriptionless {
     report_descriptionless_disables(diagnostics, ranges, reports.severity, file_path);
+  }
+
+  if reports.unscoped {
+    report_unscoped_disables(diagnostics, ranges, reports.severity, file_path);
   }
 
   if !reports.needless {
@@ -551,6 +556,31 @@ fn report_invalid_scope_disables(
   }
 }
 
+/// Stylelint's `reportUnscopedDisables`: a disable comment that names no
+/// rule.  Reported once per comment.
+fn report_unscoped_disables(
+  diagnostics: &mut Vec<Diagnostic>,
+  ranges: &[DisabledRange],
+  severity: Severity,
+  file_path: &str,
+) {
+  let mut reported: HashSet<usize> = HashSet::new();
+  for range in ranges {
+    if range.rule.is_some() || !reported.insert(range.comment_start) {
+      continue;
+    }
+    diagnostics.push(
+      Diagnostic::new(
+        "--report-unscoped-disables",
+        "Configuration comment must be scoped",
+      )
+      .severity(severity)
+      .span(Span::new(range.comment_start, 0))
+      .file_path(file_path),
+    );
+  }
+}
+
 /// Stylelint's `reportDescriptionlessDisables`: a disable comment with no
 /// `-- description`.  Reported once per comment, naming its first rule (or
 /// `all` for a blanket disable).
@@ -594,6 +624,27 @@ fn is_noop_stub_rule(name: &str) -> bool {
   matches!(name, "material/no-prefixes")
 }
 
+/// Apply the secondary options every Stylelint rule accepts, whatever the
+/// rule itself does with its options:
+///
+/// - `message` replaces the warning text,
+/// - `url` attaches a documentation link to the warning,
+/// - `disableFix: true` keeps the report but drops its autofix.
+fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::Value>) {
+  let Some(secondary) = options.and_then(secondary_options_of) else {
+    return;
+  };
+  if let Some(message) = secondary.get("message").and_then(|v| v.as_str()) {
+    diag.message = message.to_string();
+  }
+  if let Some(url) = secondary.get("url").and_then(|v| v.as_str()) {
+    diag.url = Some(url.to_string());
+  }
+  if secondary.get("disableFix").and_then(|v| v.as_bool()) == Some(true) {
+    diag.fix = None;
+  }
+}
+
 /// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
 fn perf_enabled() -> bool {
   std::env::var("GALE_DEBUG_PERF")
@@ -621,6 +672,8 @@ pub struct LintRunner {
   report_invalid_scope_disables: bool,
   /// Stylelint's `reportDescriptionlessDisables`.
   report_descriptionless_disables: bool,
+  /// Stylelint's `reportUnscopedDisables`.
+  report_unscoped_disables: bool,
   /// Rule names from the config (including plugin rules Gale doesn't
   /// implement).  Used to suppress false needless-disable reports for
   /// rules that are configured but not in Gale's registry.
@@ -642,6 +695,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -662,6 +716,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -683,6 +738,7 @@ impl LintRunner {
       ignore_disables: false,
       report_invalid_scope_disables: false,
       report_descriptionless_disables: false,
+      report_unscoped_disables: false,
       configured_rules: Vec::new(),
       default_severity: None,
     }
@@ -711,6 +767,12 @@ impl LintRunner {
     self.report_descriptionless_disables = enabled;
   }
 
+  /// Enable or disable `reportUnscopedDisables` — report disable comments
+  /// that name no rule.
+  pub fn set_report_unscoped_disables(&mut self, enabled: bool) {
+    self.report_unscoped_disables = enabled;
+  }
+
   /// The disable-comment reports this runner emits, at the severity
   /// Stylelint would use (`defaultSeverity`, falling back to error).
   fn disable_reports(&self) -> DisableReports {
@@ -718,6 +780,7 @@ impl LintRunner {
       needless: self.report_needless_disables,
       invalid_scope: self.report_invalid_scope_disables,
       descriptionless: self.report_descriptionless_disables,
+      unscoped: self.report_unscoped_disables,
       severity: self.default_severity.unwrap_or(Severity::Error),
     }
   }
@@ -728,6 +791,7 @@ impl LintRunner {
       || self.report_needless_disables
       || self.report_invalid_scope_disables
       || self.report_descriptionless_disables
+      || self.report_unscoped_disables
   }
 
   /// Whether a rule name counts as configured for `reportInvalidScopeDisables`.
@@ -849,6 +913,7 @@ impl LintRunner {
       if diag.file_path.is_empty() {
         diag.file_path = file_path.to_string();
       }
+      apply_secondary_options(diag, self.rule_options.get(&diag.rule_name));
       // Apply config-specified severity overrides.
       if let Some(&sev) = self.rule_severities.get(&diag.rule_name) {
         diag.severity = sev;
@@ -1013,6 +1078,12 @@ impl LintRunner {
       if diag.file_path.is_empty() {
         diag.file_path = file_path.to_string();
       }
+      apply_secondary_options(
+        diag,
+        rule_options
+          .get(&diag.rule_name)
+          .or_else(|| self.rule_options.get(&diag.rule_name)),
+      );
       // Apply config-specified severity overrides BEFORE relabeling,
       // because severities are keyed by canonical rule name.
       if let Some(&sev) = rule_severities
@@ -1293,6 +1364,78 @@ mod tests {
     // violations, that is also acceptable — but the code path is correct.)
   }
 
+  // -- Secondary options every rule accepts --
+
+  fn runner_with_options(rule: &str, options: serde_json::Value) -> LintRunner {
+    let mut opts = HashMap::new();
+    opts.insert(rule.to_string(), options);
+    LintRunner::with_options(RuleRegistry::default(), vec![rule.to_string()], opts)
+  }
+
+  #[test]
+  fn message_option_replaces_the_warning_text() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "message": "No empty blocks please" }]),
+    );
+    let result = runner.lint_source("a {}", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].message, "No empty blocks please");
+    assert_eq!(result.diagnostics[0].rule_name, "block-no-empty");
+  }
+
+  #[test]
+  fn url_option_is_attached_to_every_warning_of_the_rule() {
+    let runner = runner_with_options(
+      "block-no-empty",
+      serde_json::json!([true, { "url": "https://example.com/empty" }]),
+    );
+    let result = runner.lint_source("a {}\nb {}", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 2);
+    for d in &result.diagnostics {
+      assert_eq!(d.url.as_deref(), Some("https://example.com/empty"));
+    }
+  }
+
+  #[test]
+  fn disable_fix_option_keeps_the_report_but_drops_the_fix() {
+    let fixable = runner_with_options("color-hex-case", serde_json::json!(["lower"]));
+    let with_fix = fixable.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    assert!(
+      with_fix.diagnostics[0].fix.is_some(),
+      "precondition: rule is fixable"
+    );
+
+    let runner = runner_with_options(
+      "color-hex-case",
+      serde_json::json!(["lower", { "disableFix": true }]),
+    );
+    let result = runner.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(result.diagnostics[0].fix.is_none());
+  }
+
+  #[test]
+  fn secondary_options_apply_through_per_file_rule_sets() {
+    let runner = LintRunner::new(RuleRegistry::default(), vec![]);
+    let enabled = vec!["block-no-empty".to_string()];
+    let mut opts = HashMap::new();
+    opts.insert(
+      "block-no-empty".to_string(),
+      serde_json::json!([true, { "message": "Custom", "url": "https://x.y" }]),
+    );
+    let result = runner.lint_source_with_rules(
+      "a {}",
+      "test.css",
+      Syntax::Css,
+      &enabled,
+      &opts,
+      &HashMap::new(),
+    );
+    assert_eq!(result.diagnostics[0].message, "Custom");
+    assert_eq!(result.diagnostics[0].url.as_deref(), Some("https://x.y"));
+  }
+
   // -- Disable-comment reports --
 
   fn runner_for(rules: &[&str]) -> LintRunner {
@@ -1403,6 +1546,34 @@ mod tests {
       result.diagnostics[0].rule_name,
       "--report-descriptionless-disables"
     );
+  }
+
+  #[test]
+  fn unscoped_disable_is_reported_once_per_comment() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_unscoped_disables(true);
+    // Inline placement creates two ranges for one comment.
+    let src = "a { color: red; } /* stylelint-disable */\nb {}\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    let d = &result.diagnostics[0];
+    assert_eq!(d.rule_name, "--report-unscoped-disables");
+    assert_eq!(d.message, "Configuration comment must be scoped");
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.span.offset, 18);
+  }
+
+  #[test]
+  fn scoped_disables_are_not_unscoped() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_unscoped_disables(true);
+    for src in [
+      "/* stylelint-disable block-no-empty */\na {}\n",
+      "/* stylelint-disable-next-line block-no-empty */\na {}\n",
+    ] {
+      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      assert!(result.diagnostics.is_empty(), "{src}");
+    }
   }
 
   #[test]
