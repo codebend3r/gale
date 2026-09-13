@@ -1,0 +1,4 @@
+.clones/
+results/
+node_modules/
+test-cases.json
