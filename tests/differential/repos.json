@@ -1,0 +1,189 @@
+[
+  {
+    "name": "grafana",
+    "repo": "grafana/grafana",
+    "branch": "main",
+    "paths": ["public"],
+    "globs": ["public/**/*.{css,scss}"],
+    "notes": "Simple config, extends stylelint-config-sass-guidelines."
+  },
+  {
+    "name": "bootstrap",
+    "repo": "twbs/bootstrap",
+    "branch": "main",
+    "paths": ["scss"],
+    "globs": ["scss/**/*.scss"],
+    "notes": "Extends stylelint-config-standard + scss. Uses scss, stylistic, order plugins."
+  },
+  {
+    "name": "gutenberg",
+    "repo": "wordpress/gutenberg",
+    "branch": "trunk",
+    "paths": ["packages"],
+    "globs": ["packages/**/*.scss"],
+    "notes": "WordPress editor. Extends stylelint-config-recommended + scss."
+  },
+  {
+    "name": "material-ui",
+    "repo": "mui/material-ui",
+    "branch": "master",
+    "paths": ["."],
+    "globs": ["**/*.css"],
+    "notes": "Pure CSS files. Config hidden in @mui/internal-code-infra."
+  },
+  {
+    "name": "primer-css",
+    "repo": "primer/css",
+    "branch": "main",
+    "paths": ["src"],
+    "globs": ["src/**/*.scss"],
+    "notes": "GitHub design system. Heavy use of custom Primer plugins."
+  },
+  {
+    "name": "carbon",
+    "repo": "carbon-design-system/carbon",
+    "branch": "main",
+    "paths": ["packages"],
+    "globs": ["packages/**/*.scss"],
+    "notes": "IBM design system. Very strict config with many plugins."
+  },
+  {
+    "name": "freecodecamp",
+    "repo": "freeCodeCamp/freeCodeCamp",
+    "branch": "main",
+    "paths": ["."],
+    "globs": ["**/*.css"],
+    "notes": "Most starred repo on GitHub (439k stars). Minimal config."
+  },
+  {
+    "name": "patternfly",
+    "repo": "patternfly/patternfly",
+    "branch": "main",
+    "paths": ["src"],
+    "globs": ["src/**/*.scss"],
+    "notes": "Red Hat design system. Very strict config."
+  },
+  {
+    "name": "govuk-frontend",
+    "repo": "alphagov/govuk-frontend",
+    "branch": "main",
+    "paths": ["packages"],
+    "globs": ["packages/**/*.scss"],
+    "notes": "UK Government frontend, stylelint-config-gds/scss"
+  },
+  {
+    "name": "spectrum-css",
+    "repo": "adobe/spectrum-css",
+    "branch": "main",
+    "paths": ["components", "tokens"],
+    "globs": ["components/**/*.css", "tokens/**/*.css"],
+    "notes": "Adobe design system."
+  },
+  {
+    "name": "angular-components",
+    "repo": "angular/components",
+    "branch": "main",
+    "paths": ["src"],
+    "globs": ["src/**/*.{css,scss}"],
+    "notes": "Angular Material."
+  },
+  {
+    "name": "docusaurus",
+    "repo": "facebook/docusaurus",
+    "branch": "main",
+    "paths": ["packages"],
+    "globs": ["packages/**/*.css"],
+    "notes": "Meta docs framework (61k stars). Pure CSS."
+  },
+  {
+    "name": "discourse",
+    "repo": "discourse/discourse",
+    "branch": "main",
+    "paths": ["app/assets/stylesheets"],
+    "globs": ["app/assets/stylesheets/**/*.scss"],
+    "notes": "Forum software, @discourse/lint-configs/stylelint"
+  },
+  {
+    "name": "elastic-eui",
+    "repo": "elastic/eui",
+    "branch": "main",
+    "paths": ["packages/eui-theme-borealis", "packages/eui-theme-common"],
+    "globs": ["packages/eui-theme-borealis/**/*.scss", "packages/eui-theme-common/**/*.scss"],
+    "skip": true,
+    "notes": "Elastic UI framework. Main package migrated to CSS-in-JS. Theme packages have complex JS configs with npm extends that don't resolve in isolation. Not a realistic migration target."
+  },
+  {
+    "name": "wp-calypso",
+    "repo": "Automattic/wp-calypso",
+    "branch": "trunk",
+    "paths": ["client", "packages"],
+    "globs": ["client/**/*.scss", "packages/**/*.scss"],
+    "notes": "WordPress.com frontend. 2200+ CSS files."
+  },
+  {
+    "name": "mattermost",
+    "repo": "mattermost/mattermost",
+    "branch": "master",
+    "paths": ["webapp/channels"],
+    "globs": ["**/*.{css,scss}"],
+    "cwd": "webapp/channels",
+    "notes": "Monorepo — .stylelintrc.json and CSS files live in webapp/channels/."
+  },
+  {
+    "name": "mastodon",
+    "repo": "mastodon/mastodon",
+    "branch": "main",
+    "paths": ["app/javascript"],
+    "globs": ["app/javascript/**/*.scss"],
+    "notes": "Social media platform (47k stars). SCSS."
+  },
+  {
+    "name": "jupyterlab",
+    "repo": "jupyterlab/jupyterlab",
+    "branch": "main",
+    "paths": ["packages"],
+    "globs": ["packages/**/*.css"],
+    "notes": "Data science IDE (15k stars). Extends stylelint-config-standard."
+  },
+  {
+    "name": "joomla",
+    "repo": "joomla/joomla-cms",
+    "branch": "5.4-dev",
+    "paths": ["media", "build"],
+    "globs": ["media/**/*.{css,scss}", "build/**/*.{css,scss}"],
+    "notes": "CMS platform (5k stars). SCSS in templates."
+  },
+  {
+    "name": "slds",
+    "repo": "salesforce-ux/design-system",
+    "branch": "main",
+    "paths": ["ui"],
+    "globs": ["ui/**/*.scss"],
+    "expected_diffs": [
+      {
+        "file": "ui/components/summary-detail/base/_index.scss",
+        "line": 28,
+        "column": 7,
+        "rule": "property-no-vendor-prefix",
+        "reason": "Stylelint v13 uses different message format ('vendor-prefix' vs v16 'vendor-prefixed property')"
+      }
+    ],
+    "notes": "Salesforce Lightning design system (2k stars). SCSS-heavy. Uses Stylelint v13."
+  },
+  {
+    "name": "rsuite",
+    "repo": "rsuite/rsuite",
+    "branch": "main",
+    "paths": ["src"],
+    "globs": ["src/**/*.scss"],
+    "notes": "React UI library (8.7k stars). stylelint-config-standard-scss v15, stylelint v16."
+  },
+  {
+    "name": "fundamental-styles",
+    "repo": "SAP/fundamental-styles",
+    "branch": "main",
+    "paths": ["src", "packages"],
+    "globs": ["src/**/*.scss", "packages/**/*.scss"],
+    "notes": "SAP design system (900+ stars). stylelint-config-standard-scss, stylelint v16.8."
+  }
+]
