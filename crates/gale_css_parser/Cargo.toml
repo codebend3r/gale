@@ -1,0 +1,12 @@
+[package]
+name = "gale_css_parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CSS parser for the Gale CSS linter"
+
+[dependencies]
+lightningcss = { workspace = true }
+raffia = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }

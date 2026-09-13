@@ -1,0 +1,15 @@
+[package]
+name = "gale_diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Diagnostics and reporting for the Gale CSS linter"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+miette = { workspace = true }
+owo-colors = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

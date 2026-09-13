@@ -1,0 +1,12 @@
+[package]
+name = "gale_formatter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Output formatters for the Gale CSS linter"
+
+[dependencies]
+gale_diagnostics = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+owo-colors = { workspace = true }
