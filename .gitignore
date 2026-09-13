@@ -1,0 +1,28 @@
+/target
+/target-docker-linux-x64
+node_modules/
+.gale_cache
+
+# Benchmarks
+/benchmarks/fixtures/
+/benchmarks/.repos/
+/benchmarks/.hyperfine-*
+/benchmarks/.benchmark-*
+/benchmarks/.parity-*
+/benchmarks/results.md
+
+# Differential tests
+tests/differential/.clones/
+tests/differential/results/
+
+# Editor / OS
+*.swp
+*.swo
+.DS_Store
+dist/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+__pycache__/
+tests/differential/repos/
+/benchmarks/.stylelint-local/
