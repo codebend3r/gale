@@ -1,0 +1,16 @@
+[package]
+name = "gale_lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LSP server for the Gale CSS linter"
+
+[dependencies]
+gale_linter = { workspace = true }
+gale_config = { workspace = true }
+gale_css_parser = { workspace = true }
+gale_diagnostics = { workspace = true }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
