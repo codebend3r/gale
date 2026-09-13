@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gale - An extremely fast CSS linter, written in Rust</title>
+<meta name="description" content="Drop-in replacement for Stylelint. ~100x faster. 250 built-in rules, SCSS/Less support, autofix, LSP server. Zero config migration.">
+<meta property="og:title" content="Gale - Extremely fast CSS linter">
+<meta property="og:description" content="Drop-in replacement for Stylelint, written in Rust. ~100x faster on real-world repos.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#09090b;--bg2:#111113;--bg3:#18181b;
+  --fg:#fafafa;--fg2:#a1a1aa;--fg3:#71717a;
+  --accent:#00d4aa;--accent2:#00b894;--accent-soft:rgba(0,212,170,.12);
+  --border:#27272a;--border2:#3f3f46;
+  --radius:10px;
+  --mono:'Geist Mono','SF Mono','Cascadia Code','Fira Code',Consolas,monospace;
+  --sans:'Geist',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --ease-out:cubic-bezier(0.25,1,0.5,1);
+  --ease-out-expo:cubic-bezier(0.16,1,0.3,1);
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;font-size:16px}
+a{color:var(--accent);text-decoration:none;transition:color .2s var(--ease-out)}
+a:hover{color:var(--accent2)}
+
+/* NAV */
+nav{position:fixed;top:0;width:100%;background:rgba(9,9,11,.8);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid var(--border);z-index:100;padding:0 2rem}
+nav .inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:56px}
+nav .logo{font-family:var(--mono);font-weight:700;font-size:1.15rem;color:var(--fg);letter-spacing:-.02em}
+nav .logo span{color:var(--accent)}
+nav .links{display:flex;gap:1.5rem;align-items:center}
+nav .links a{color:var(--fg2);font-size:.875rem;transition:color .2s var(--ease-out)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .gh{display:inline-flex;align-items:center;gap:.4rem;background:var(--bg3);padding:.4rem .8rem;border-radius:6px;border:1px solid var(--border);font-size:.8rem;color:var(--fg);transition:all .2s var(--ease-out)}
+nav .gh:hover{border-color:var(--accent);text-decoration:none;background:var(--accent-soft)}
+
+/* HERO */
+.hero{padding:10rem 2rem 4rem;text-align:center;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-100px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle,rgba(0,212,170,.07) 0%,rgba(0,212,170,.02) 40%,transparent 70%);pointer-events:none;animation:pulse 8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.6;transform:translateX(-50%) scale(1)}50%{opacity:1;transform:translateX(-50%) scale(1.05)}}
+.hero .badge{display:inline-block;font-family:var(--mono);font-size:.7rem;color:var(--accent);border:1px solid rgba(0,212,170,.25);padding:.35rem .9rem;border-radius:20px;margin-bottom:1.5rem;letter-spacing:.06em;text-transform:uppercase;background:var(--accent-soft)}
+.hero h1{font-size:clamp(2.5rem,6vw,4.5rem);font-weight:800;letter-spacing:-.04em;line-height:1.08;margin-bottom:1rem}
+.hero h1 span{background:linear-gradient(135deg,var(--accent),#00e6b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero .sub{font-size:clamp(1rem,2vw,1.2rem);color:var(--fg2);max-width:580px;margin:0 auto 2.5rem;line-height:1.7}
+
+/* INSTALL CTA */
+.install-cta{display:flex;gap:.75rem;justify-content:center;flex-wrap:wrap;align-items:center;margin-bottom:1.5rem}
+.install-cmd{display:inline-flex;align-items:center;gap:.75rem;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:.65rem 1rem .65rem 1.25rem;font-family:var(--mono);font-size:.9rem;cursor:pointer;transition:all .2s var(--ease-out);position:relative;color:var(--fg)}
+.install-cmd:hover{border-color:var(--accent);background:var(--accent-soft)}
+.install-cmd .prompt{color:var(--fg3)}
+.install-cmd .copy-icon{color:var(--fg3);transition:color .2s;flex-shrink:0}
+.install-cmd:hover .copy-icon{color:var(--accent)}
+.install-cmd .copied{position:absolute;right:-4px;top:-4px;background:var(--accent);color:var(--bg);font-family:var(--sans);font-size:.65rem;font-weight:600;padding:.15rem .4rem;border-radius:4px;opacity:0;transform:translateY(4px);transition:all .25s var(--ease-out);pointer-events:none}
+.install-cmd .copied.show{opacity:1;transform:translateY(0)}
+.hero .links-row{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.6rem 1.25rem;border-radius:8px;font-weight:500;font-size:.875rem;transition:all .2s var(--ease-out);color:var(--fg2);border:1px solid var(--border)}
+.btn:hover{color:var(--fg);border-color:var(--border2);text-decoration:none}
+
+/* STATS */
+.stats{padding:2rem 2rem 0;max-width:800px;margin:0 auto}
+.stats-row{display:flex;justify-content:center;gap:3.5rem;flex-wrap:wrap}
+.stat{text-align:center}
+.stat .num{font-family:var(--mono);font-size:2rem;font-weight:800;color:var(--accent);letter-spacing:-.02em}
+.stat .label{font-size:.8rem;color:var(--fg3);margin-top:.25rem;letter-spacing:.01em}
+
+/* BENCHMARK */
+.benchmark{padding:6rem 2rem 4rem;max-width:1100px;margin:0 auto}
+.section-label{text-align:center;font-family:var(--mono);font-size:.7rem;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;margin-bottom:.75rem}
+.benchmark h2{text-align:center;font-size:1.75rem;margin-bottom:.5rem;font-weight:700;letter-spacing:-.02em}
+.benchmark .desc{text-align:center;color:var(--fg2);margin-bottom:2.5rem;font-size:.9rem}
+.benchmark .note{text-align:center;color:var(--fg3);font-size:.75rem;margin-top:2rem}
+
+/* REPO GRID */
+.repo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.75rem}
+.repo-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;display:flex;flex-direction:column;gap:.65rem;transition:all .25s var(--ease-out);text-decoration:none;color:var(--fg)}
+.repo-card:hover{border-color:var(--border2);transform:translateY(-2px);text-decoration:none;background:rgba(17,17,19,.8)}
+.repo-card .repo-header{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+.repo-card .repo-name{font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.repo-card .repo-speedup{font-family:var(--mono);font-weight:700;font-size:.85rem;color:var(--accent);flex-shrink:0}
+.repo-card .repo-meta{display:flex;align-items:center;gap:.75rem;font-size:.75rem;color:var(--fg3)}
+.repo-card .repo-meta span{display:inline-flex;align-items:center;gap:.3rem}
+.repo-card .repo-bar-track{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.repo-card .repo-bar-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%;transition:width 1s var(--ease-out-expo)}
+.repo-card .repo-validated{font-family:var(--mono);font-size:.7rem;color:var(--accent);display:inline-flex;align-items:center;gap:.3rem}
+.repo-card .repo-validated svg{flex-shrink:0}
+
+/* FEATURES */
+.features{padding:5rem 2rem;max-width:1100px;margin:0 auto}
+.features h2{text-align:center;font-size:1.75rem;margin-bottom:2.5rem;font-weight:700;letter-spacing:-.02em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.25rem}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;transition:all .25s var(--ease-out)}
+.card:hover{border-color:var(--border2);transform:translateY(-2px)}
+.card h3{font-size:1rem;margin-bottom:.5rem;font-weight:600}
+.card .icon{font-size:1.1rem;margin-bottom:.75rem;font-family:var(--mono);color:var(--accent);font-weight:600}
+.card p{color:var(--fg2);font-size:.875rem;line-height:1.6}
+.card code{background:var(--bg3);padding:.1rem .35rem;border-radius:3px;font-family:var(--mono);font-size:.8rem}
+
+/* QUICKSTART */
+.quickstart{padding:5rem 2rem;max-width:700px;margin:0 auto}
+.quickstart h2{text-align:center;font-size:1.75rem;margin-bottom:2rem;font-weight:700;letter-spacing:-.02em}
+.terminal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.terminal-header{display:flex;align-items:center;gap:.5rem;padding:.75rem 1rem;border-bottom:1px solid var(--border);background:var(--bg3)}
+.terminal-dot{width:10px;height:10px;border-radius:50%}
+.terminal-dot.r{background:#ff5f57}.terminal-dot.y{background:#febc2e}.terminal-dot.g{background:#28c840}
+.terminal-body{padding:1.25rem 1.5rem;font-family:var(--mono);font-size:.85rem;line-height:2}
+.terminal-body .prompt{color:var(--accent)}
+.terminal-body .cmd{color:var(--fg)}
+.terminal-body .comment{color:var(--fg3)}
+
+/* MIGRATION */
+.migration{padding:5rem 2rem;max-width:700px;margin:0 auto}
+.migration h2{text-align:center;font-size:1.75rem;margin-bottom:.5rem;font-weight:700;letter-spacing:-.02em}
+.migration .desc{text-align:center;color:var(--fg2);margin-bottom:2rem;font-size:.9rem}
+.diff{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;font-family:var(--mono);font-size:.85rem}
+.diff-header{padding:.6rem 1rem;border-bottom:1px solid var(--border);background:var(--bg3);color:var(--fg3);font-size:.75rem}
+.diff-body{padding:1rem 1.25rem;line-height:1.8}
+.diff .unchanged{color:var(--fg3)}
+.diff .removed{color:#f87171;background:rgba(248,113,113,.06)}
+.diff .added{color:var(--accent);background:rgba(0,212,170,.06)}
+
+/* FOOTER */
+footer{border-top:1px solid var(--border);padding:3rem 2rem;text-align:center;color:var(--fg3);font-size:.8rem}
+footer .links{display:flex;gap:2rem;justify-content:center;margin-bottom:1rem}
+footer a{color:var(--fg2)}
+footer a:hover{color:var(--fg)}
+
+/* RESPONSIVE */
+@media(max-width:600px){
+  nav .links a:not(.gh){display:none}
+  .grid{grid-template-columns:1fr}
+  .repo-grid{grid-template-columns:1fr}
+  .stats-row{gap:2rem}
+  .install-cmd{font-size:.8rem;padding:.55rem .8rem .55rem 1rem}
+}
+
+/* ANIMATIONS */
+.fade-in{opacity:0;transform:translateY(16px);transition:opacity .7s var(--ease-out),transform .7s var(--ease-out)}
+.fade-in.visible{opacity:1;transform:translateY(0)}
+
+/* Staggered children */
+.fade-in.visible .stat:nth-child(1){transition-delay:0s}
+.fade-in.visible .stat:nth-child(2){transition-delay:.1s}
+.fade-in.visible .stat:nth-child(3){transition-delay:.2s}
+.stat{opacity:0;transform:translateY(10px);transition:opacity .5s var(--ease-out),transform .5s var(--ease-out)}
+.fade-in.visible .stat{opacity:1;transform:translateY(0)}
+
+/* Reduced motion */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+  .fade-in{opacity:1;transform:none}
+  .stat{opacity:1;transform:none}
+  .repo-bar-fill{transition:none}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <div class="logo">&gt; <span>gale</span></div>
+    <div class="links">
+      <a href="#benchmark">Benchmarks &amp; Testing</a>
+      <a href="#features">Features</a>
+      <a href="#quickstart">Get Started</a>
+      <a href="https://github.com/codebend3r/gale" class="gh">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="badge">Written in Rust</div>
+  <h1>The <span>fastest</span> CSS linter</h1>
+  <p class="sub">Drop-in replacement for Stylelint. Same config, same rules, same output &mdash; just dramatically faster.</p>
+
+  <div class="install-cta">
+    <div class="install-cmd" onclick="copyInstall(this)" title="Click to copy">
+      <span class="prompt">$</span> bun add -D @codebend3r/gale
+      <svg class="copy-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span class="copied">Copied!</span>
+    </div>
+  </div>
+
+  <div class="links-row">
+    <a href="#quickstart" class="btn">Get Started</a>
+    <a href="https://github.com/codebend3r/gale" class="btn">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+</section>
+
+<section class="stats fade-in">
+  <div class="stats-row">
+    <div class="stat">
+      <div class="num" data-count="100">~100x</div>
+      <div class="label">faster (median)</div>
+    </div>
+    <div class="stat">
+      <div class="num">250</div>
+      <div class="label">built-in rules</div>
+    </div>
+    <div class="stat">
+      <div class="num">21</div>
+      <div class="label">repos tested</div>
+    </div>
+    <div class="stat">
+      <div class="num">7,672</div>
+      <div class="label">files validated</div>
+    </div>
+  </div>
+</section>
+
+<section class="benchmark fade-in" id="benchmark">
+  <div class="section-label">Performance &amp; Compatibility</div>
+  <h2>Tested on 16 real-world repos</h2>
+  <p class="desc">Benchmarked with <a href="https://github.com/sharkdp/hyperfine">hyperfine</a> (10 runs, 3 warmup). Output validated against Stylelint on every file.</p>
+
+  <div class="repo-grid">
+    <!-- Benchmarked repos (sorted by speedup) -->
+    <a href="https://github.com/carbon-design-system/carbon" class="repo-card" data-speedup="399">
+      <div class="repo-header">
+        <span class="repo-name">Carbon</span>
+        <span class="repo-speedup">399x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 1,116 files</span>
+        <span>8.767s &rarr; 0.022s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="100"></div></div>
+    </a>
+
+    <a href="https://github.com/patternfly/patternfly" class="repo-card" data-speedup="353">
+      <div class="repo-header">
+        <span class="repo-name">PatternFly</span>
+        <span class="repo-speedup">353x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 204 files</span>
+        <span>5.298s &rarr; 0.015s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="88"></div></div>
+    </a>
+
+    <a href="https://github.com/adobe/spectrum-css" class="repo-card" data-speedup="268">
+      <div class="repo-header">
+        <span class="repo-name">Spectrum CSS</span>
+        <span class="repo-speedup">268x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 241 files</span>
+        <span>2.952s &rarr; 0.011s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="67"></div></div>
+    </a>
+
+    <a href="https://github.com/alphagov/govuk-frontend" class="repo-card" data-speedup="147">
+      <div class="repo-header">
+        <span class="repo-name">GOV.UK Frontend</span>
+        <span class="repo-speedup">147x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 163 files</span>
+        <span>1.614s &rarr; 0.011s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="37"></div></div>
+    </a>
+
+    <a href="https://github.com/twbs/bootstrap" class="repo-card" data-speedup="143">
+      <div class="repo-header">
+        <span class="repo-name">Bootstrap</span>
+        <span class="repo-speedup">143x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 99 files</span>
+        <span>1.569s &rarr; 0.011s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="36"></div></div>
+    </a>
+
+    <a href="https://github.com/primer/css" class="repo-card" data-speedup="129">
+      <div class="repo-header">
+        <span class="repo-name">Primer CSS</span>
+        <span class="repo-speedup">129x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 113 files</span>
+        <span>1.285s &rarr; 0.010s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="32"></div></div>
+    </a>
+
+    <a href="https://github.com/wordpress/gutenberg" class="repo-card" data-speedup="112">
+      <div class="repo-header">
+        <span class="repo-name">Gutenberg</span>
+        <span class="repo-speedup">112x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 775 files</span>
+        <span>4.715s &rarr; 0.042s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="28"></div></div>
+    </a>
+
+    <a href="https://github.com/Automattic/wp-calypso" class="repo-card" data-speedup="101">
+      <div class="repo-header">
+        <span class="repo-name">wp-calypso</span>
+        <span class="repo-speedup">101x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 2,238 files</span>
+        <span>13.223s &rarr; 0.131s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="25"></div></div>
+    </a>
+
+    <a href="https://github.com/angular/components" class="repo-card" data-speedup="88">
+      <div class="repo-header">
+        <span class="repo-name">Angular Components</span>
+        <span class="repo-speedup">88x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 620 files</span>
+        <span>1.843s &rarr; 0.021s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="22"></div></div>
+    </a>
+
+    <a href="https://github.com/discourse/discourse" class="repo-card" data-speedup="69">
+      <div class="repo-header">
+        <span class="repo-name">Discourse</span>
+        <span class="repo-speedup">69x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 355 files</span>
+        <span>1.438s &rarr; 0.021s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="17"></div></div>
+    </a>
+
+    <!-- Validated-only repos (no benchmark, just parity tested) -->
+    <a href="https://github.com/mattermost/mattermost" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Mattermost</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 494 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/facebook/docusaurus" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Docusaurus</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 212 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/freeCodeCamp/freeCodeCamp" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">freeCodeCamp</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 88 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/mui/material-ui" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Material UI</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 43 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/grafana/grafana" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Grafana</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 12 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/elastic/eui" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Elastic EUI</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 4 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/mastodon/mastodon" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Mastodon</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 67 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/jupyterlab/jupyterlab" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">JupyterLab</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 210 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/Shopify/polaris" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Shopify Polaris</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 145 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/joomla/joomla-cms" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Joomla</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 169 files</span>
+      </div>
+    </a>
+
+    <a href="https://github.com/salesforce-ux/design-system" class="repo-card">
+      <div class="repo-header">
+        <span class="repo-name">Salesforce SLDS</span>
+        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 446 files</span>
+      </div>
+    </a>
+  </div>
+
+  <p class="note">7,672 files validated across 21 repos. <a href="https://github.com/codebend3r/gale/tree/main/benchmarks">Reproduce these results</a></p>
+</section>
+
+<section class="features fade-in" id="features">
+  <div class="section-label">Features</div>
+  <h2>Everything you need</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="icon">250</div>
+      <h3>Built-in Rules</h3>
+      <p>Core Stylelint, SCSS, @stylistic, and order rules. No plugins to install. Same rule names, same config format.</p>
+    </div>
+    <div class="card">
+      <div class="icon">{}</div>
+      <h3>Zero Config Migration</h3>
+      <p>Reads your existing <code>.stylelintrc</code> directly. <code>extends</code>, <code>/* stylelint-disable */</code>, and JSON output all work as-is.</p>
+    </div>
+    <div class="card">
+      <div class="icon">.scss</div>
+      <h3>SCSS &amp; Less</h3>
+      <p>Full preprocessor support. Lint <code>.scss</code>, <code>.less</code>, and <code>.css</code> files with 44 built-in SCSS rules.</p>
+    </div>
+    <div class="card">
+      <div class="icon">--fix</div>
+      <h3>Autofix</h3>
+      <p>Automatically fix problems. Hex shortening, zero units, vendor prefixes, quotes, colon notation, and more.</p>
+    </div>
+    <div class="card">
+      <div class="icon">LSP</div>
+      <h3>Editor Integration</h3>
+      <p>Built-in LSP server for real-time diagnostics. Works with VS Code, Neovim, Helix, Zed, and any LSP client.</p>
+    </div>
+    <div class="card">
+      <div class="icon">||</div>
+      <h3>Parallel &amp; Cached</h3>
+      <p>File-based caching skips unchanged files. Parallel linting via rayon uses all CPU cores.</p>
+    </div>
+  </div>
+</section>
+
+<section class="quickstart fade-in" id="quickstart">
+  <div class="section-label">Quickstart</div>
+  <h2>Get Started</h2>
+  <div class="terminal">
+    <div class="terminal-header">
+      <div class="terminal-dot r"></div>
+      <div class="terminal-dot y"></div>
+      <div class="terminal-dot g"></div>
+    </div>
+    <div class="terminal-body">
+      <div><span class="comment"># Install</span></div>
+      <div><span class="prompt">$</span> <span class="cmd">bun add -D @codebend3r/gale</span></div>
+      <div>&nbsp;</div>
+      <div><span class="comment"># Lint your project (uses your existing .stylelintrc)</span></div>
+      <div><span class="prompt">$</span> <span class="cmd">bunx gale "src/**/*.css"</span></div>
+      <div>&nbsp;</div>
+      <div><span class="comment"># Autofix problems</span></div>
+      <div><span class="prompt">$</span> <span class="cmd">bunx gale --fix "src/**/*.css"</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="migration fade-in" id="migration">
+  <h2>Migrate from Stylelint</h2>
+  <p class="desc">One line change. Your config stays exactly the same.</p>
+  <div class="diff">
+    <div class="diff-header">package.json</div>
+    <div class="diff-body">
+      <div class="unchanged">{</div>
+      <div class="unchanged">&nbsp; "scripts": {</div>
+      <div class="removed">&minus;&nbsp;&nbsp;&nbsp; "lint:css": "stylelint 'src/**/*.css'"</div>
+      <div class="added">&plus;&nbsp;&nbsp;&nbsp; "lint:css": "gale 'src/**/*.css'"</div>
+      <div class="unchanged">&nbsp; },</div>
+      <div class="unchanged">&nbsp; "devDependencies": {</div>
+      <div class="removed">&minus;&nbsp;&nbsp;&nbsp; "stylelint": "^16.0.0"</div>
+      <div class="added">&plus;&nbsp;&nbsp;&nbsp; "@codebend3r/gale": "^0.2.2"</div>
+      <div class="unchanged">&nbsp; }</div>
+      <div class="unchanged">}</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="links">
+    <a href="https://github.com/codebend3r/gale">GitHub</a>
+    <a href="https://www.npmjs.com/package/@codebend3r/gale">npm</a>
+    <a href="https://github.com/codebend3r/gale/blob/main/README.md">Docs</a>
+  </div>
+  <p>MIT License &middot; Built with Rust</p>
+</footer>
+
+<script>
+// Copy install command
+function copyInstall(el) {
+  navigator.clipboard.writeText('bun add -D @codebend3r/gale');
+  const badge = el.querySelector('.copied');
+  badge.classList.add('show');
+  setTimeout(() => badge.classList.remove('show'), 1500);
+}
+
+// Fade-in on scroll with stagger
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.classList.add('visible');
+      obs.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.1 });
+document.querySelectorAll('.fade-in').forEach(el => obs.observe(el));
+
+// Animate repo card bars on scroll
+const barObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const bar = e.target.querySelector('.repo-bar-fill');
+      if (bar) {
+        setTimeout(() => {
+          bar.style.width = bar.dataset.width + '%';
+        }, 150);
+      }
+      barObs.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.2 });
+document.querySelectorAll('.repo-card[data-speedup]').forEach(card => barObs.observe(card));
+
+// Console easter egg
+console.log(
+  '%c> gale %c An extremely fast CSS linter, written in Rust.\n%c   https://github.com/codebend3r/gale',
+  'color:#00d4aa;font-weight:bold;font-size:14px',
+  'color:#a1a1aa;font-size:14px',
+  'color:#71717a;font-size:12px'
+);
+</script>
+</body>
+</html>
