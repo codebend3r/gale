@@ -1,0 +1,214 @@
+name: 📦 Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+# Never cancel a release mid-publish; a re-pushed tag queues behind the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact: gale-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            artifact: gale-aarch64-unknown-linux-gnu
+            cross_compile: true
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-compilation toolchain
+        if: matrix.cross_compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross_compile && 'aarch64-linux-gnu-gcc' || '' }}
+
+      - name: Rename binary
+        run: cp "target/${{ matrix.target }}/release/gale" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            artifact: gale-x86_64-apple-darwin
+            runner: macos-14
+          - target: aarch64-apple-darwin
+            artifact: gale-aarch64-apple-darwin
+            runner: macos-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: cp "target/${{ matrix.target }}/release/gale" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  build-windows:
+    name: Build Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            artifact: gale-x86_64-pc-windows-msvc.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: pwsh
+        run: Copy-Item "target/${{ matrix.target }}/release/gale.exe" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release & Publish npm
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          for dir in artifacts/*/; do
+            cp "$dir"/* release-assets/ 2>/dev/null || true
+          done
+          ls -la release-assets/
+
+      - name: Stage binaries for npm package
+        run: |
+          install -Dm755 release-assets/gale-aarch64-apple-darwin npm/bin/aarch64-apple-darwin/gale
+          install -Dm755 release-assets/gale-x86_64-apple-darwin npm/bin/x86_64-apple-darwin/gale
+          install -Dm755 release-assets/gale-aarch64-unknown-linux-gnu npm/bin/aarch64-unknown-linux-gnu/gale
+          install -Dm755 release-assets/gale-x86_64-unknown-linux-gnu npm/bin/x86_64-unknown-linux-gnu/gale
+          install -Dm755 release-assets/gale-x86_64-pc-windows-msvc.exe npm/bin/x86_64-pc-windows-msvc/gale.exe
+          chmod +x npm/bin/gale.cjs
+          find npm/bin -maxdepth 3 -type f -print
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: release-assets/*
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set npm package version
+        run: |
+          cd npm
+          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Set root (GitHub-install) package version
+        # The root package.json is what `npm i github:owner/gale` installs.
+        # It ships the same npm/ directory, so it must carry the same version.
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm
+          npm publish --access public
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # Member crates must be published before the binary crate that depends
+        # on them, in dependency order.  Publishing only `gale-lint` makes cargo
+        # resolve the workspace `version` requirements against whatever is
+        # already on crates.io, so the released binary would be built from stale
+        # member crates.  `--no-verify` skips a redundant rebuild per crate;
+        # the workspace is already tested and built above.
+        run: |
+          set -euo pipefail
+          for crate in \
+            gale_diagnostics \
+            gale_css_parser \
+            gale_config \
+            gale_formatter \
+            gale_linter \
+            gale_lsp \
+            gale_cli
+          do
+            echo "==> Publishing $crate"
+            cargo publish -p "$crate" --no-verify
+            # Give the index time to expose the new version to the next crate.
+            cargo owner --list "$crate" >/dev/null 2>&1 || true
+            sleep 20
+          done
+          echo "==> Publishing gale-lint"
+          cargo publish -p gale-lint --no-verify
