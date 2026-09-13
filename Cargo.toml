@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gale_css_parser",
+    "crates/gale_linter",
+    "crates/gale_config",
+    "crates/gale_cli",
+    "crates/gale_formatter",
+    "crates/gale_diagnostics",
+    "crates/gale_lsp",
+]
+
+[workspace.package]
+version = "0.2.2"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/codebend3r/gale"
+description = "An extremely fast CSS linter, written in Rust"
+
+[workspace.dependencies]
+# CSS Parsing
+lightningcss = { version = "1.0.0-alpha.71", features = ["visitor", "serde"] }
+raffia = "0.12"
+
+# CLI & Config
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Diagnostics & Output
+miette = { version = "7", features = ["fancy"] }
+owo-colors = "4"
+
+# File discovery
+glob = "0.3"
+globset = "0.4"
+ignore = "0.4"
+
+# Performance
+rayon = "1"
+dashmap = "6"
+
+# General
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Internal crates.
+#
+# These versions MUST track `workspace.package.version` above.  Cargo resolves a
+# `version` requirement against crates.io when publishing, so leaving them behind
+# means `cargo publish` builds the released binary against the last *published*
+# member crates rather than this source tree — shipping stale rules under a new
+# version number.  `cargo xtask`-free reminder: bump all of these together.
+gale_css_parser = { path = "crates/gale_css_parser", version = "0.2.2" }
+gale_linter = { path = "crates/gale_linter", version = "0.2.2" }
+gale_config = { path = "crates/gale_config", version = "0.2.2" }
+gale_cli = { path = "crates/gale_cli", version = "0.2.2" }
+gale_formatter = { path = "crates/gale_formatter", version = "0.2.2" }
+gale_diagnostics = { path = "crates/gale_diagnostics", version = "0.2.2" }
+gale_lsp = { path = "crates/gale_lsp", version = "0.2.2" }
+
+[package]
+name = "gale-lint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "gale"
+path = "src/main.rs"
+
+[dependencies]
+gale_cli = { workspace = true }
+anyhow = { workspace = true }
