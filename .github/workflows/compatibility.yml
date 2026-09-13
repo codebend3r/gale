@@ -1,0 +1,114 @@
+name: 🧩 Compatibility Matrix
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Every Monday at 6am UTC
+  workflow_dispatch: # Manual trigger
+
+permissions:
+  contents: write
+
+# A manual dispatch or the next schedule tick supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-repos:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - name: bootstrap
+            repo: twbs/bootstrap
+            branch: main
+            paths: scss
+            stars: "168K"
+          - name: gutenberg
+            repo: wordpress/gutenberg
+            branch: trunk
+            paths: packages
+            stars: "10K"
+          - name: grafana
+            repo: grafana/grafana
+            branch: main
+            paths: public
+            stars: "62K"
+          - name: primer-css
+            repo: primer/css
+            branch: main
+            paths: src
+            stars: "12K"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Gale
+        run: cargo build --release
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Setup pnpm
+        run: npm install -g pnpm corepack && corepack enable
+
+      - name: Run compatibility test
+        id: test
+        run: |
+          python3 tests/differential/run.py ${{ matrix.repo.name }} --skip-build --benchmark 2>&1 | tee result.txt
+
+          # Extract metrics
+          GALE_WARNINGS=$(grep "Gale:" result.txt | grep -oE '[0-9]+ warnings' | grep -oE '[0-9]+' || echo "?")
+          STYLELINT_WARNINGS=$(grep "Stylelint:" result.txt | grep -oE '[0-9]+ warnings' | grep -oE '[0-9]+' || echo "?")
+          FILES_MATCH=$(grep "Files matching:" result.txt | grep -oE '[0-9]+' || echo "0")
+          FILES_TOTAL=$(grep "Files analyzed:" result.txt | grep -oE '[0-9]+' || echo "0")
+          FP=$(grep "Gale-only" result.txt | grep -oE '[0-9]+' || echo "?")
+          FN=$(grep "Stylelint-only" result.txt | grep -oE '[0-9]+' || echo "?")
+
+          echo "files_match=$FILES_MATCH" >> $GITHUB_OUTPUT
+          echo "files_total=$FILES_TOTAL" >> $GITHUB_OUTPUT
+          echo "fp=$FP" >> $GITHUB_OUTPUT
+          echo "fn=$FN" >> $GITHUB_OUTPUT
+
+      - name: Upload result
+        uses: actions/upload-artifact@v7
+        with:
+          name: result-${{ matrix.repo.name }}
+          path: result.txt
+
+  update-matrix:
+    needs: test-repos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all results
+        uses: actions/download-artifact@v8
+        with:
+          path: results
+
+      - name: Generate compatibility matrix
+        run: |
+          python3 scripts/generate-compatibility-matrix.py results/ > COMPATIBILITY.md
+
+      - name: Commit updated matrix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add COMPATIBILITY.md
+          git diff --staged --quiet || git commit -m "Update compatibility matrix [skip ci]"
+          git push
