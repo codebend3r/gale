@@ -1,0 +1,51 @@
+{
+  "name": "@codebend3r/gale",
+  "version": "0.2.2",
+  "description": "An extremely fast CSS linter, written in Rust. Drop-in replacement for Stylelint.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codebend3r/gale"
+  },
+  "homepage": "https://github.com/codebend3r/gale",
+  "bugs": "https://github.com/codebend3r/gale/issues",
+  "keywords": [
+    "css",
+    "linter",
+    "stylelint",
+    "scss",
+    "less",
+    "rust",
+    "fast",
+    "lint",
+    "gale"
+  ],
+  "type": "module",
+  "main": "index.mjs",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    }
+  },
+  "bin": {
+    "gale": "bin/gale.cjs"
+  },
+  "files": [
+    "bin/",
+    "index.cjs",
+    "index.d.ts",
+    "index.mjs",
+    "platform.cjs",
+    "test.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node test.mjs"
+  }
+}
