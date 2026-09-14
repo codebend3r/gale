@@ -70,7 +70,6 @@ The manifests are not the only place the version lives. These files carry it too
 
 | File | What it holds |
 |---|---|
-| `CLAUDE.md` | `**Current state (vX.Y.Z):**` and `Workspace root (version X.Y.Z, ...)` |
 | `README.md` | `git tag vX.Y.Z` and `build-npm.sh --version X.Y.Z` examples |
 | `PUBLISHING.md` | same two examples plus `(e.g. \`vX.Y.Z\`)` |
 | `scripts/build-npm.sh` | usage comment `--version X.Y.Z` |
@@ -80,7 +79,7 @@ The manifests are not the only place the version lives. These files carry it too
 Rewrite the known files, then run the sweep. The sweep is the real check; the table is only what was true last time.
 
 ```bash
-for f in CLAUDE.md README.md PUBLISHING.md scripts/build-npm.sh tests/differential/open_prs.py docs/index.html; do
+for f in README.md PUBLISHING.md scripts/build-npm.sh tests/differential/open_prs.py docs/index.html; do
   perl -pi -e "s/\b(v?)(\Q$OLD_NPM\E|\Q$OLD_CARGO\E)\b/\${1}$VERSION/g" "$f"
 done
 # perl, not sed: BSD sed has no \b and silently matches nothing. \${1} not \$1: "$1" + "0.2.2" is read as group $10.
@@ -176,7 +175,7 @@ Report the tag commit, the run URL, and the registry version in the final messag
 | Treating "npm version patch" as not a release | It is one. Compute `VERSION` from the registry and run every step. |
 | Computing the bump from `package.json` | A half-finished release leaves manifests ahead of the registry; `npm view` is the baseline. |
 | Cutting a `release/X` branch or opening a PR | Commit on the current branch. |
-| Bumping only the four manifests | Docs, `CLAUDE.md`, `open_prs.py`, and `docs/index.html` carry the version too. Run the sweep; it must print nothing. |
+| Bumping only the four manifests | Docs, `open_prs.py`, and `docs/index.html` carry the version too. Run the sweep; it must print nothing. |
 | Skipping the sweep because the table "covers it" | The table is last release's list. The sweep found a file the table missed the first time it ran. |
 | Committing binaries separately from the version bump | Amend; the tag must include the binaries. |
 | Bumping only package.json | Cargo.toml must move too, or `gale --version` lies. |

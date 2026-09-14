@@ -113,7 +113,7 @@ def get_gale_rules(gale_bin: Path) -> set[str]:
     finally:
         os.unlink(config_path)
 
-    # Fallback: hardcoded set from CLAUDE.md
+    # Fallback: hardcoded list of the rules Gale implements
     print("[warn] Could not detect Gale rules dynamically, using hardcoded list")
     _GALE_RULES_CACHE = {
         "alpha-value-notation", "annotation-no-unknown", "at-rule-no-unknown",

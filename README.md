@@ -6,7 +6,7 @@
 [![CI](https://github.com/codebend3r/gale/actions/workflows/sanity-check.yml/badge.svg)](https://github.com/codebend3r/gale/actions)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **20-100x faster** on real projects.
+Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **10-50x faster** on real projects.
 
 One line change in your `package.json`. No config migration.
 
@@ -14,26 +14,37 @@ One line change in your `package.json`. No config migration.
 
 ## Benchmarks
 
-Real-world benchmarks using [hyperfine](https://github.com/sharkdp/hyperfine) (10 runs, 3 warmup) on an Apple M4 Max. Each repo uses its own Stylelint config. Results vary by machine -- run `./benchmarks/benchmark.sh` to reproduce on yours.
+Real-world benchmarks using [hyperfine](https://github.com/sharkdp/hyperfine) (10 runs, 3 warmup) on an Apple M1 Max, generated on 2026-09-11 by `./benchmarks/benchmark.sh` and recorded in [benchmarks/results.md](benchmarks/results.md). Each repo uses its own Stylelint config. Results vary by machine -- run the script to reproduce on yours.
 
 | Repository | Files | Stylelint | Gale | Speedup |
 |------------|------:|----------:|-----:|--------:|
-| [Angular Components](https://github.com/angular/components) | 621 | 0.743s | 0.008s | **96x** |
-| [Fundamental Styles](https://github.com/SAP/fundamental-styles) | 392 | 3.628s | 0.060s | **61x** |
-| [GOV.UK Frontend](https://github.com/alphagov/govuk-frontend) | 149 | 2.352s | 0.044s | **54x** |
-| [Discourse](https://github.com/discourse/discourse) | 356 | 0.529s | 0.010s | **51x** |
-| [Joomla](https://github.com/joomla/joomla-cms) | 169 | 1.033s | 0.025s | **41x** |
-| [Carbon](https://github.com/carbon-design-system/carbon) | 1,116 | 0.385s | 0.010s | **38x** |
-| [Bootstrap](https://github.com/twbs/bootstrap) | 99 | 0.737s | 0.021s | **35x** |
-| [Gutenberg](https://github.com/wordpress/gutenberg) | 778 | 0.447s | 0.013s | **34x** |
-| [PatternFly](https://github.com/patternfly/patternfly) | 204 | 0.377s | 0.013s | **29x** |
-| [SLDS](https://github.com/salesforce-ux/design-system) | 446 | 0.323s | 0.014s | **24x** |
+| [GOV.UK Frontend](https://github.com/alphagov/govuk-frontend) | 326 | 4.816s | 0.029s | **166x** |
+| [Fundamental Styles](https://github.com/SAP/fundamental-styles) | 392 | 6.800s | 0.121s | **56x** |
+| [Mattermost](https://github.com/mattermost/mattermost) | 564 | 6.085s | 0.115s | **53x** |
+| [Joomla](https://github.com/joomla/joomla-cms) | 169 | 1.556s | 0.034s | **46x** |
+| [freeCodeCamp](https://github.com/freeCodeCamp/freeCodeCamp) | 91 | 0.978s | 0.026s | **38x** |
+| [wp-calypso](https://github.com/Automattic/wp-calypso) | 2,051 | 23.167s | 0.676s | **34x** |
+| [Bootstrap](https://github.com/twbs/bootstrap) | 99 | 2.798s | 0.088s | **32x** |
+| [Angular Components](https://github.com/angular/components) | 627 | 3.028s | 0.112s | **27x** |
+| [rsuite](https://github.com/rsuite/rsuite) | 207 | 3.801s | 0.160s | **24x** |
+| [Carbon](https://github.com/carbon-design-system/carbon) | 1,263 | 4.389s | 0.195s | **22x** |
+| [PatternFly](https://github.com/patternfly/patternfly) | 213 | 6.653s | 0.313s | **21x** |
+| [Spectrum CSS](https://github.com/adobe/spectrum-css) | 236 | 4.304s | 0.260s | **17x** |
+| [Gutenberg](https://github.com/wordpress/gutenberg) | 729 | 2.835s | 0.172s | **16x** |
+| [JupyterLab](https://github.com/jupyterlab/jupyterlab) | 211 | 2.920s | 0.178s | **16x** |
+| [Discourse](https://github.com/discourse/discourse) | 377 | 2.899s | 0.191s | **15x** |
+| [Grafana](https://github.com/grafana/grafana) | 10 | 0.722s | 0.051s | **14x** |
+| [Material UI](https://github.com/mui/material-ui) | 39 | 0.646s | 0.053s | **12x** |
+| [Mastodon](https://github.com/mastodon/mastodon) | 36 | 3.216s | 0.268s | **12x** |
+| [SLDS](https://github.com/salesforce-ux/design-system) | 446 | 2.641s | 0.229s | **12x** |
+| [Primer CSS](https://github.com/primer/css) | 113 | 2.215s | 0.236s | **9x** |
+| [Docusaurus](https://github.com/facebook/docusaurus) | 116 | 0.213s | 0.032s | **7x** |
 
 ## Parity with Stylelint
 
 Gale's goal is byte-for-byte identical output: every warning Stylelint reports, at the same line and column, with the same text and severity — and nothing extra. Any difference is treated as a bug, not a limitation.
 
-Parity is measured by the [differential harness](tests/differential/) against 22 real-world repositories with **no rule filters** — every warning from both tools is compared. A subset of that corpus runs weekly in CI; current per-repo results (files matched, false positives, false negatives, speedup) are published in [COMPATIBILITY.md](COMPATIBILITY.md). Run the harness yourself to reproduce, or to check a repo the weekly job does not cover.
+Parity is measured by the [differential harness](tests/differential/) against 22 real-world repositories with **no rule filters** — every warning from both tools is compared. A subset of that corpus runs weekly in CI; current per-repo results (files matched, false positives, false negatives, speedup) are published in [COMPATIBILITY.md](COMPATIBILITY.md). Run the harness yourself to reproduce, or to check a repo the weekly job does not cover. A second harness, [tests/stylelint-compat/](tests/stylelint-compat/), replays the `testRule()` cases from Stylelint's own test suites against Gale to measure per-rule compatibility.
 
 **Where parity currently stands.** Which warnings Gale reports, and at what line, column, rule and severity, tracks Stylelint closely. The **message wording** does not yet: Gale's strings follow Stylelint v15/v16 phrasing, and v17 rewrote many of them. Spot-checking ten common rules against Stylelint 17.14.1 found identical positions and rule IDs on every warning, but different text on most:
 
@@ -376,11 +387,21 @@ bun run package   # vsce package
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and the
+steps for adding a rule.
+
 ### Prerequisites
 
 - Rust 1.85+ (2024 edition)
 - Python 3 (for differential tests)
-- Node.js 20+ (for differential tests and npm packaging; `.nvmrc` pins 26, and CI tests 20, 22, 24 and 26)
+- Node.js 20+ (for the npm package and the API tests; `.nvmrc` pins 26, and CI tests 20, 22, 24 and 26)
+- [Bun](https://bun.sh) (runs the repo scripts and the feature test suite)
+
+Install the JavaScript dev dependencies once:
+
+```bash
+bun install
+```
 
 ### Build and test
 
@@ -420,6 +441,7 @@ python tests/differential/run.py --benchmark  # Include timing comparison
 python tests/differential/run.py --list       # List available repos
 python tests/differential/run.py --css-only   # Skip SCSS/Less
 python tests/differential/run.py --skip-build # Use existing binary
+python tests/differential/run.py --gale-bin path/to/gale  # Use a specific binary
 python tests/differential/run.py --update     # Force re-clone repos
 ```
 
@@ -436,20 +458,29 @@ Both scripts download fixtures on first run and install a local Stylelint with
 `bun`. `benchmark-quick.sh` uses `hyperfine` when available and falls back to
 `time` otherwise.
 
-### npm package smoke tests
+### Test suites
 
 ```bash
-npm test          # from the repo root
-# or:
-cd npm && npm test
+bun run test            # Rust tests, npm API tests, and feature tests
+bun run test:rust       # cargo test across the workspace
+bun run test:api        # npm/test.mjs against target/release/gale
+bun run test:features   # bun test tests/features
+bun run system-check    # fmt, clippy, release build, npm build, and every suite
 ```
 
-Exercises `lint()`, `formatters`, and `resolveConfig()` against the built binary
-from both the ESM and CommonJS entry points. CI runs it on every push.
+`test:api` and `test:features` run the release binary, so build it first with
+`cargo build --release`. The API tests exercise `lint()`, `formatters`, and
+`resolveConfig()` from both the ESM and CommonJS entry points. The feature
+tests in [tests/features/](tests/features/) drive the binary end to end inside
+throwaway projects, one file per feature area from the
+[feature table](docs/features-table.md). CI runs all three on every pull
+request.
 
 ## Releasing
 
-Releases are automated via GitHub Actions when you push a version tag:
+Releases are automated via GitHub Actions when you push a version tag. See
+[PUBLISHING.md](PUBLISHING.md) for the package layout, the manual publish path,
+and troubleshooting.
 
 ```bash
 # 1. Update the version in Cargo.toml (workspace.package.version)
@@ -508,7 +539,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
 | `gale_cli` | Clap CLI, file discovery with ignore support, cache layer, `--fix` orchestration |
 | `gale_lsp` | LSP server for real-time editor diagnostics |
 
-See [CLAUDE.md](CLAUDE.md) for detailed architecture docs and how to add rules.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a rule.
 
 ## License
 
