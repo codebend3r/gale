@@ -1,18 +1,16 @@
 # Compatibility Matrix
 
-Last updated: 2026-08-31
+Last updated: 2026-09-14
 
 Gale is tested weekly against popular open-source repositories that use Stylelint.
 Both tools run on the same files with the same config. Results are compared automatically.
 
 | Repository | Stars | Files | Pass | FP | FN | Speedup |
 |------------|-------|-------|------|----|----|---------|
-| [twbs/bootstrap](https://github.com/twbs/bootstrap) | 168K | — | **run failed** | — | — | — |
-| [grafana/grafana](https://github.com/grafana/grafana) | 62K | — | **run failed** | — | — | — |
-| [wordpress/gutenberg](https://github.com/wordpress/gutenberg) | 10K | 588/598 | 98% | 5 | 20 | 48.0x |
-| [primer/css](https://github.com/primer/css) | 12K | 113/113 | 100% | 0 | 0 | 2.1x |
-
-> **2 run(s) did not complete** and are shown as `run failed`: twbs/bootstrap, grafana/grafana. A failed run is not evidence of parity — check the workflow logs.
+| [twbs/bootstrap](https://github.com/twbs/bootstrap) | 168K | 93/98 | 95% | 5 | 0 | 24.4x |
+| [grafana/grafana](https://github.com/grafana/grafana) | 62K | 10/10 | 100% | 0 | 0 | 18.1x |
+| [wordpress/gutenberg](https://github.com/wordpress/gutenberg) | 10K | 584/595 | 98% | 18 | 20 | 21.8x |
+| [primer/css](https://github.com/primer/css) | 12K | 113/113 | 100% | 0 | 0 | 6.7x |
 
 ### Legend
 

@@ -37,7 +37,7 @@ cargo test -p gale_linter block_no_empty
 
 ## Adding a new rule
 
-Gale has a well-defined process for adding lint rules. See [CLAUDE.md](CLAUDE.md) for the full walkthrough, but the short version is:
+Gale has a well-defined process for adding lint rules:
 
 1. Create `crates/gale_linter/src/rules/your_rule_name.rs` implementing the `Rule` trait
 2. Add `pub mod your_rule_name;` to `crates/gale_linter/src/rules/mod.rs`
