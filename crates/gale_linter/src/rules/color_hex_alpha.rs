@@ -24,6 +24,8 @@ impl Rule for ColorHexAlpha {
     Severity::Warning
   }
 
+  /// Flags hex colors whose digit count carries an alpha channel under "never",
+  /// or lacks one under "always".
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let declarations: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),

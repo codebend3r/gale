@@ -21,6 +21,7 @@ impl Rule for StylisticBlockClosingBraceNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a closing brace whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("always");
     let source = context.source;
@@ -216,6 +217,7 @@ fn is_next_else(bytes: &[u8], pos: usize) -> bool {
   false
 }
 
+/// Whether the next non-whitespace byte from `pos` is `}`.
 fn is_next_closing_brace(bytes: &[u8], pos: usize) -> bool {
   let mut j = pos;
   while j < bytes.len() {
@@ -228,6 +230,7 @@ fn is_next_closing_brace(bytes: &[u8], pos: usize) -> bool {
   false
 }
 
+/// Whether the block closing at this brace opens on the same line.
 fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
   let bytes = source.as_bytes();
   let mut depth = 1;

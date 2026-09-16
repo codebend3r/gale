@@ -16,6 +16,8 @@ struct UnitOccurrence {
   unit_byte_len: usize,
 }
 
+/// Pulls the units out of `value`, recording each one's byte offset and the
+/// function call it sits inside, if any.
 fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
   let mut results = Vec::new();
   let chars: Vec<char> = value.chars().collect();
@@ -225,6 +227,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') {
     if let Some(inner) = pattern.strip_prefix('/') {
@@ -248,6 +251,7 @@ fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   }
 }
 
+/// Normalises a string or array-of-strings option into a `Vec`.
 fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   match val {
     serde_json::Value::Array(arr) => arr
@@ -259,10 +263,12 @@ fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   }
 }
 
+/// Whether any `ignoreFunctions` pattern matches this function name.
 fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(func_name, p))
 }
 
+/// Whether any pattern matches this property name.
 fn property_matches_any(prop: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(prop, p))
 }
@@ -277,6 +283,8 @@ struct AllowedListOptions {
   ignore_properties: std::collections::HashMap<String, Vec<String>>,
 }
 
+/// Reads the allowed units and the ignore secondaries, accepting the primary
+/// both as a bare array and as the first element of an options array.
 fn parse_options(ctx: &RuleContext) -> AllowedListOptions {
   let primary = ctx.primary_option();
   let secondary = ctx.secondary_options();
@@ -351,6 +359,7 @@ fn find_value_offset(source: &str, decl_offset: usize, decl_length: usize) -> us
   }
 }
 
+/// Byte offset where an at-rule's prelude begins, past its name and whitespace.
 fn find_params_offset(source: &str, at_rule_offset: usize, _at_name: &str) -> usize {
   let start = at_rule_offset;
   if start >= source.len() {
@@ -381,6 +390,8 @@ impl Rule for UnitAllowedList {
     Severity::Warning
   }
 
+  /// Flags units outside the allow list in declarations and at-rule preludes.
+  /// `unicode-range` uses a different grammar and is skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = parse_options(ctx);
     if opts.units.is_empty() {
@@ -457,6 +468,7 @@ impl Rule for UnitAllowedList {
   }
 }
 
+/// Reports each unit in `value` that is neither allowed nor ignored.
 fn check_value(
   value: &str,
   opts: &AllowedListOptions,

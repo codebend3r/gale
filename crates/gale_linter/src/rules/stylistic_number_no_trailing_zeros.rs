@@ -21,6 +21,7 @@ impl Rule for StylisticNumberNoTrailingZeros {
     Severity::Warning
   }
 
+  /// Checks declaration values for trailing zeros.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -34,6 +35,7 @@ impl Rule for StylisticNumberNoTrailingZeros {
   }
 }
 
+/// Reports each number in `value` with a redundant zero after the decimal point.
 fn find_trailing_zeros(
   value: &str,
   base_offset: usize,

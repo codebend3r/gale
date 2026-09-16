@@ -21,6 +21,7 @@ impl Rule for StylisticNoEmptyFirstLine {
     Severity::Warning
   }
 
+  /// Flags a file that opens with a blank line.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if ctx.source.is_empty() {
       return vec![];

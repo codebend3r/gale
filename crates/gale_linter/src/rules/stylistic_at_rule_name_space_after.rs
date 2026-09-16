@@ -21,6 +21,7 @@ impl Rule for StylisticAtRuleNameSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags an at-rule name whose space before its prelude does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("always");
     let source = context.source;

@@ -28,6 +28,8 @@ impl Rule for AtRulePreludeNoInvalid {
     Severity::Error
   }
 
+  /// Validates the prelude of the at-rules this rule knows about — empty or
+  /// unbalanced `@media`, malformed `@import`, unnamed `@keyframes`, and so on.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

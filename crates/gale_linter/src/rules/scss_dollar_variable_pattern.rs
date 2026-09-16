@@ -35,6 +35,8 @@ impl Rule for ScssDollarVariablePattern {
     Severity::Warning
   }
 
+  /// Flags `$variable` names that do not match the configured regex. Loop
+  /// iterators in `@each`/`@for` are never checked, being bindings, not declarations.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

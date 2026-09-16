@@ -25,6 +25,7 @@ impl Rule for FunctionUrlSchemeAllowedList {
     Severity::Warning
   }
 
+  /// Flags `url()` schemes outside the configured allow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed: Vec<String> = match ctx.options {
       Some(serde_json::Value::Array(arr)) => arr
@@ -50,6 +51,8 @@ impl Rule for FunctionUrlSchemeAllowedList {
   }
 }
 
+/// Reports each `url()` whose scheme is absent from `allowed`. Scheme-relative
+/// and relative URLs carry no scheme and are always allowed.
 fn check_url_schemes(
   value: &str,
   base_offset: usize,

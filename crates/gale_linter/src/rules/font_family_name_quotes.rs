@@ -41,16 +41,19 @@ const GENERIC_FAMILIES: &[&str] = &[
 /// System font keywords and vendor-prefixed identifiers that should not be quoted.
 const SYSTEM_FONT_KEYWORDS: &[&str] = &["-apple-system", "blinkmacsystemfont"];
 
+/// Whether `name` is a generic family keyword such as `serif`.
 fn is_generic_family(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   GENERIC_FAMILIES.iter().any(|g| *g == lower)
 }
 
+/// Whether `name` is a system font keyword such as `caption`.
 fn is_system_font_keyword(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   SYSTEM_FONT_KEYWORDS.iter().any(|g| *g == lower)
 }
 
+/// Whether `name` is any keyword, so it must never be quoted.
 fn is_keyword_font(name: &str) -> bool {
   is_generic_family(name) || is_system_font_keyword(name) || is_vendor_prefixed_keyword(name)
 }
@@ -404,6 +407,8 @@ impl Rule for FontFamilyNameQuotes {
     Severity::Warning
   }
 
+  /// Flags quoting on `font-family` and `font` values, reading the source text so
+  /// the original quotes and offsets survive parser normalisation.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let style = match node {
       CssNode::Style(s) => s,
@@ -469,6 +474,8 @@ impl Rule for FontFamilyNameQuotes {
 }
 
 impl FontFamilyNameQuotes {
+  /// Applies the primary option to one family name, reporting a missing or
+  /// unwanted pair of quotes.
   fn check_family(&self, family: &FontFamilyToken, mode: &str, diagnostics: &mut Vec<Diagnostic>) {
     let is_kw = is_keyword_font(&family.name);
 
@@ -533,6 +540,7 @@ impl FontFamilyNameQuotes {
     }
   }
 
+  /// Builds a diagnostic spanning the family name as written in the source.
   fn make_diag(&self, message: String, family: &FontFamilyToken) -> Diagnostic {
     Diagnostic::new(self.name(), message)
       .severity(self.default_severity())

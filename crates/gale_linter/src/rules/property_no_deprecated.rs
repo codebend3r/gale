@@ -12,6 +12,7 @@ static DEPRECATED_PROPERTIES: &[(&str, Option<&str>)] = &[
   ("word-wrap", Some("overflow-wrap")),
 ];
 
+/// Looks `name` up in the deprecated table, yielding its replacement if it has one.
 fn find_deprecated_property(name: &str) -> Option<Option<&'static str>> {
   let lower = name.to_ascii_lowercase();
   DEPRECATED_PROPERTIES
@@ -35,6 +36,8 @@ impl Rule for PropertyNoDeprecated {
     Severity::Warning
   }
 
+  /// Flags deprecated properties, naming the replacement when one exists. Custom
+  /// and vendor-prefixed properties are skipped.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

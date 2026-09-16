@@ -23,6 +23,7 @@ impl Rule for ColorNoHex {
     Severity::Warning
   }
 
+  /// Flags every valid hex color (3, 4, 6 or 8 digits) in a declaration value.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let declarations: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),

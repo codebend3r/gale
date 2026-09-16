@@ -30,6 +30,8 @@ impl Rule for RuleSelectorPropertyDisallowedList {
     Severity::Warning
   }
 
+  /// Flags properties disallowed for a rule whose selector matches one of the
+  /// configured string or regex patterns.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(style_rule) = node else {
       return vec![];

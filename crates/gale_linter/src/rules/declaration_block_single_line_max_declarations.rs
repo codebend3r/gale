@@ -24,6 +24,8 @@ impl Rule for DeclarationBlockSingleLineMaxDeclarations {
     Severity::Warning
   }
 
+  /// Flags single-line blocks holding more than the configured number of
+  /// declarations. Multi-line blocks are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

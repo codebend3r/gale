@@ -21,6 +21,8 @@ impl Rule for StylisticIndentation {
     Severity::Warning
   }
 
+  /// Flags lines whose leading whitespace does not match the expected depth for
+  /// the configured tab or space indent.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let primary = context.primary_option();
     let use_tab: bool;

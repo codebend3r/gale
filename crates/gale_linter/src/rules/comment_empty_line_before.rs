@@ -26,6 +26,8 @@ impl Rule for CommentEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Scans the source for block comments — the AST omits some — and flags those
+  /// whose preceding blank line does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let source = ctx.source;
     if source.is_empty() {

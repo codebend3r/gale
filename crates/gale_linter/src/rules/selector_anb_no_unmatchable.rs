@@ -149,6 +149,7 @@ impl Rule for SelectorAnbNoUnmatchable {
     Severity::Error
   }
 
+  /// Flags An+B expressions such as `:nth-child(0n+0)` that can never match.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

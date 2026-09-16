@@ -108,6 +108,7 @@ impl OrderOrder {
     order.iter().position(|k| *k == kind)
   }
 
+  /// The plural label used for this content kind in messages.
   fn kind_label(kind: ContentKind) -> &'static str {
     match kind {
       ContentKind::CustomProperty => "custom properties",
@@ -131,6 +132,8 @@ impl Rule for OrderOrder {
     Severity::Warning
   }
 
+  /// Flags a block whose content kinds appear out of the configured order. Kinds
+  /// the config does not list are ignored.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

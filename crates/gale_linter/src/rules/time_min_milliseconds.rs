@@ -167,6 +167,8 @@ struct SegmentTime {
   length: usize,
 }
 
+/// Pulls the time values out of one comma-separated segment, keeping each
+/// value's position within the segment.
 fn extract_times_from_segment(value: &str) -> Vec<SegmentTime> {
   let mut times = Vec::new();
   let lower = value.to_ascii_lowercase();
@@ -294,6 +296,8 @@ impl Rule for TimeMinMilliseconds {
     Severity::Warning
   }
 
+  /// Flags time values below the minimum. With `ignore: ["delay"]`, delay
+  /// properties and the delay slot of shorthands are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

@@ -28,6 +28,8 @@ impl Rule for DeclarationPropertyValueDisallowedList {
     Severity::Warning
   }
 
+  /// Compiles the configured property and value patterns once, then flags every
+  /// declaration matching a disallowed pair.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(opts) = ctx.primary_option() else {
       return vec![];
@@ -233,6 +235,7 @@ enum PropertyMatcher {
 }
 
 impl PropertyMatcher {
+  /// Builds a matcher: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
   fn new(pattern: &str) -> Self {
     if pattern.starts_with('/') && pattern.len() > 1 {
       if let Some(end) = pattern[1..].rfind('/') {
@@ -251,6 +254,7 @@ impl PropertyMatcher {
     Self::Exact(pattern.to_string())
   }
 
+  /// Whether the property matches this pattern.
   fn matches(&self, property: &str) -> bool {
     match self {
       Self::Exact(s) => property == s.as_str(),
@@ -266,6 +270,7 @@ enum ValueMatcher {
 }
 
 impl ValueMatcher {
+  /// Builds a matcher: `/…/` (optionally `i`-flagged) is a regex, else an exact value.
   fn new(pattern: &str) -> Self {
     if pattern.starts_with('/') && pattern.len() > 1 {
       if let Some(end) = pattern[1..].rfind('/') {
@@ -284,6 +289,7 @@ impl ValueMatcher {
     Self::Exact(pattern.to_string())
   }
 
+  /// Whether the value matches this pattern.
   fn matches(&self, value: &str) -> bool {
     match self {
       Self::Exact(s) => value == s.as_str(),

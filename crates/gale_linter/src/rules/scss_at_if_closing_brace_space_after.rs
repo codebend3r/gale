@@ -25,6 +25,8 @@ impl Rule for ScssAtIfClosingBraceSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags an `@if` closing brace followed by `@else` whose separating space
+  /// does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -172,6 +174,7 @@ fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
   None
 }
 
+/// Advances `i` past a `#{…}` block, tracking nested braces.
 fn skip_interpolation(bytes: &[u8], len: usize, i: &mut usize) {
   let mut depth = 1;
   while *i < len && depth > 0 {

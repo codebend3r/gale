@@ -22,6 +22,7 @@ impl Rule for CustomMediaPattern {
     Severity::Warning
   }
 
+  /// Flags an `@custom-media` name that is not kebab-case.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

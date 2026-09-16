@@ -23,6 +23,7 @@ impl Rule for ScssAtElseEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags an `@else` whose preceding blank line does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

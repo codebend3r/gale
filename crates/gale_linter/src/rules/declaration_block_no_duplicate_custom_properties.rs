@@ -23,6 +23,8 @@ impl Rule for DeclarationBlockNoDuplicateCustomProperties {
     Severity::Warning
   }
 
+  /// Flags a custom property declared more than once in the same block.
+  /// Interpolated names are skipped, as they cannot be resolved.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

@@ -21,6 +21,7 @@ impl Rule for ColorHexCase {
     Severity::Warning
   }
 
+  /// Flags hex colors containing uppercase digits and fixes them to lowercase.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -59,6 +60,7 @@ impl Rule for ColorHexCase {
   }
 }
 
+/// Scans for `#`-prefixed hex tokens, returning each with its offset into `value`.
 fn find_hex_colors(value: &str) -> Vec<(usize, String)> {
   let mut colors = Vec::new();
   let bytes = value.as_bytes();
@@ -81,6 +83,7 @@ fn find_hex_colors(value: &str) -> Vec<(usize, String)> {
   colors
 }
 
+/// Whether any digit after the `#` is uppercase.
 fn has_uppercase(hex: &str) -> bool {
   hex[1..].chars().any(|c| c.is_ascii_uppercase())
 }

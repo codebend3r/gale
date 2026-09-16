@@ -21,6 +21,7 @@ impl Rule for StylisticFunctionParenthesesSpaceInside {
     Severity::Warning
   }
 
+  /// Flags function parentheses whose inner spaces do not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("never");
     let mut diagnostics = Vec::new();

@@ -26,6 +26,7 @@ enum HeaderPattern {
 }
 
 impl HeaderPattern {
+  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else a substring.
   fn from_str(s: &str) -> Self {
     if let Some(inner) = s.strip_prefix('/').and_then(|s| {
       if let Some(pos) = s.rfind('/') {
@@ -49,6 +50,7 @@ impl HeaderPattern {
     }
   }
 
+  /// Whether the comment text matches this pattern.
   fn matches(&self, text: &str) -> bool {
     match self {
       HeaderPattern::Regex(re) => re.is_match(text),
@@ -57,6 +59,7 @@ impl HeaderPattern {
   }
 }
 
+/// Reads the `pattern` secondary, if configured.
 fn parse_pattern(context: &RuleContext) -> Option<HeaderPattern> {
   let secondary = context.secondary_options()?;
   let pattern_val = secondary.get("pattern")?;
@@ -77,6 +80,7 @@ impl Rule for PluginRequireFileHeaderComment {
     Severity::Warning
   }
 
+  /// Flags a file whose first node is not a comment matching the pattern.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let pattern = match parse_pattern(context) {
       Some(p) => p,

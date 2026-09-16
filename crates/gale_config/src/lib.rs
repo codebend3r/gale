@@ -310,6 +310,7 @@ impl GaleConfig {
 }
 
 impl Default for GaleConfig {
+  /// An empty config: no rules, no overrides, text output.
   fn default() -> Self {
     Self {
       rules: HashMap::new(),
@@ -603,6 +604,7 @@ fn is_severity_string(s: &str) -> bool {
   )
 }
 
+/// Maps a severity keyword to its enum; anything unrecognised is `Off`.
 fn parse_severity(s: &str) -> Severity {
   match s.to_lowercase().as_str() {
     "error" => Severity::Error,
@@ -1593,6 +1595,7 @@ fn extract_reexport_require(source: &str) -> Option<String> {
   None
 }
 
+/// Reads the contents of a leading single- or double-quoted string literal.
 fn extract_string_literal(s: &str) -> Option<String> {
   let s = s.trim();
   let quote = s.chars().next()?;
@@ -3360,6 +3363,8 @@ fn is_preceded_by_quote(s: &str) -> bool {
   trimmed.ends_with('"')
 }
 
+/// Parses config contents using the format implied by the file name.
+/// `.stylelintrc` has no extension, so it is tried as JSON then YAML.
 fn parse_config_file(
   file_name: &str,
   contents: &str,
@@ -4118,6 +4123,7 @@ pub struct ConfigResolver {
 }
 
 impl ConfigResolver {
+  /// An empty resolver with cold config and directory caches.
   pub fn new() -> Self {
     Self {
       cache: HashMap::new(),
@@ -4234,6 +4240,7 @@ impl ConfigResolver {
 }
 
 impl Default for ConfigResolver {
+  /// Same as [`ConfigResolver::new`].
   fn default() -> Self {
     Self::new()
   }

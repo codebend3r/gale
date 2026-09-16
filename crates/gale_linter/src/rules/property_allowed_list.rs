@@ -24,6 +24,7 @@ impl Rule for PropertyAllowedList {
     Severity::Warning
   }
 
+  /// Flags properties outside the configured allow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed: Vec<String> = match ctx.options {
       Some(serde_json::Value::Array(arr)) => arr

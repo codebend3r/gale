@@ -22,6 +22,8 @@ impl Rule for ScssAtIfNoNull {
     Severity::Warning
   }
 
+  /// Flags an `@if` condition comparing against `null` — `not $x` and `$x` say
+  /// the same thing more directly.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

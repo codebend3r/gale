@@ -33,6 +33,7 @@ impl Rule for ScssAtRuleConditionalNoParentheses {
     Severity::Warning
   }
 
+  /// Flags parentheses wrapping the condition of `@if`, `@elsif` or `@while`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

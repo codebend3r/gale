@@ -28,6 +28,8 @@ impl Rule for SelectorAttributeQuotes {
     Severity::Warning
   }
 
+  /// Flags attribute selectors whose value quoting does not match the option.
+  /// Valueless selectors and interpolated ones are skipped.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

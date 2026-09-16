@@ -23,6 +23,7 @@ impl Rule for RuleEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Walks the whole document, since the check depends on what precedes each rule.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = Options::from_ctx(ctx);
     let mut diags = Vec::new();
@@ -53,6 +54,8 @@ enum PrimaryOption {
 }
 
 impl Options {
+  /// Reads the primary option and the `except`/`ignore` secondaries, defaulting
+  /// to "always" with nothing excepted.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       primary: PrimaryOption::Always,
@@ -92,6 +95,7 @@ impl Options {
   }
 }
 
+/// Maps the primary option string, defaulting to always.
 fn parse_primary(s: &str) -> PrimaryOption {
   match s {
     "never" => PrimaryOption::Never,
@@ -101,6 +105,7 @@ fn parse_primary(s: &str) -> PrimaryOption {
   }
 }
 
+/// Sets the `except` and `ignore` flags from the secondary object.
 fn parse_secondary(opts: &mut Options, value: &serde_json::Value) {
   if let Some(except) = value.get("except").and_then(|v| v.as_array()) {
     for item in except {
@@ -400,6 +405,8 @@ fn is_rule_multi_line(source: &str, span: &gale_css_parser::Span) -> bool {
   source[start..end].contains('\n')
 }
 
+/// Flags rules whose preceding blank line does not match the option, recursing
+/// into nested blocks. Rules with interpolated selectors are skipped.
 fn check_nodes(
   rule_impl: &RuleEmptyLineBefore,
   nodes: &[CssNode],
@@ -549,6 +556,7 @@ fn check_nodes(
   }
 }
 
+/// Re-enters [`check_nodes`] for a rule's nested children, as non-root nodes.
 fn check_children(
   rule_impl: &RuleEmptyLineBefore,
   style: &gale_css_parser::StyleRule,

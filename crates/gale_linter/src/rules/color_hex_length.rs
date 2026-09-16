@@ -24,6 +24,8 @@ impl Rule for ColorHexLength {
     Severity::Warning
   }
 
+  /// Flags hex colors that could be shortened under "short", or expanded under
+  /// "long", and offers the rewritten value as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -133,6 +135,7 @@ fn can_shorten(hex: &str) -> bool {
   }
 }
 
+/// Collapses a 6- or 8-digit hex to its 3- or 4-digit form.
 fn shorten(hex: &str) -> String {
   let digits: Vec<char> = hex[1..].chars().map(|c| c.to_ascii_lowercase()).collect();
   match digits.len() {
@@ -148,6 +151,7 @@ fn can_expand(hex: &str) -> bool {
   matches!(digits, 3 | 4)
 }
 
+/// Doubles each digit of a 3- or 4-digit hex to its 6- or 8-digit form.
 fn expand(hex: &str) -> String {
   let digits: Vec<char> = hex[1..].chars().collect();
   match digits.len() {

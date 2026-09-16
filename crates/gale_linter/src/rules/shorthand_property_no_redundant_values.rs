@@ -95,6 +95,7 @@ struct Options {
 }
 
 impl Options {
+  /// Reads the `ignore` secondary, accepting either the object or array form.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       ignore_four_into_three: false,
@@ -137,6 +138,8 @@ impl Rule for ShorthandPropertyNoRedundantValues {
     Severity::Warning
   }
 
+  /// Flags shorthand values that repeat parts a shorter form would imply, and
+  /// offers the shortened value as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -472,6 +475,8 @@ fn shorten_ci(parts: &[String]) -> Option<String> {
   shorten_inner(parts, false)
 }
 
+/// The shortest equivalent of a 2-, 3- or 4-part shorthand value, or `None`
+/// when nothing can be dropped.
 fn shorten_inner(parts: &[String], ignore_four_into_three: bool) -> Option<String> {
   let eq = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
 

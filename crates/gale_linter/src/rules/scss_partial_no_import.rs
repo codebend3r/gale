@@ -24,6 +24,7 @@ impl Rule for ScssPartialNoImport {
     Severity::Warning
   }
 
+  /// Flags `@import` inside a partial file, where `@use` or `@forward` belongs.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

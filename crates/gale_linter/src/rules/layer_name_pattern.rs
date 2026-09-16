@@ -31,6 +31,8 @@ impl Rule for LayerNamePattern {
     Severity::Warning
   }
 
+  /// Flags `@layer` names that do not match the configured regex, validating each
+  /// segment of a dotted name separately.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

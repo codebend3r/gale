@@ -123,6 +123,7 @@ fn collect_disabled_ranges(source: &str, line_index: &SourceLineIndex) -> Vec<Di
   ranges
 }
 
+/// Byte offset of the `*/` closing a block comment started at `from`.
 fn find_comment_end(bytes: &[u8], from: usize) -> Option<usize> {
   let mut j = from;
   while j + 1 < bytes.len() {
@@ -134,6 +135,7 @@ fn find_comment_end(bytes: &[u8], from: usize) -> Option<usize> {
   None
 }
 
+/// Dispatches a comment body that carries a `gale-` or `stylelint-` directive.
 fn process_directive(
   trimmed: &str,
   comment_start: usize,
@@ -160,6 +162,9 @@ fn process_directive(
   }
 }
 
+/// Applies one directive: `disable-next-line` and `disable-line` push a
+/// range for a single line, `enable` closes open disables, and `disable`
+/// opens one (plus the current line when the comment is inline).
 fn handle_directive(
   rest: &str,
   comment_start: usize,

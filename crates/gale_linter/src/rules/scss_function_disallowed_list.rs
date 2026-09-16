@@ -27,6 +27,7 @@ impl Rule for ScssFunctionDisallowedList {
     Severity::Warning
   }
 
+  /// Flags SCSS function calls named in the configured disallow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -62,6 +63,7 @@ impl Rule for ScssFunctionDisallowedList {
   }
 }
 
+/// Reports each function call in `value` that appears in `disallowed`.
 fn find_disallowed_functions(
   value: &str,
   base_offset: usize,

@@ -33,10 +33,13 @@ impl Rule for PluginBrowserCompat {
     Severity::Warning
   }
 
+  /// Unused: the work happens in `check_root`, which needs whole-file context.
   fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
   }
 
+  /// Resolves the browserslist targets and MDN compat data, then flags properties
+  /// and selectors the targets do not support. Missing data disables the rule.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let opts = match parse_options(context) {
       Some(o) => o,
@@ -91,6 +94,7 @@ struct BrowserCompatOptions {
   allow_partial_implementation: bool,
 }
 
+/// Reads `browserslist`, `allow` and the flag/partial tolerances.
 fn parse_options(ctx: &RuleContext) -> Option<BrowserCompatOptions> {
   let opts_val = ctx.secondary_options()?;
   let obj = opts_val.as_object()?;
@@ -174,10 +178,13 @@ enum VersionAdded {
 /// `Arc` so each file borrows the table instead of deep-cloning it.
 static MDN_CACHE: OnceLock<std::sync::Mutex<HashMap<String, Arc<CompatData>>>> = OnceLock::new();
 
+/// Process-wide cache of parsed MDN compat data, keyed by `data.json` path.
 fn mdn_cache() -> &'static std::sync::Mutex<HashMap<String, Arc<CompatData>>> {
   MDN_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// Loads and parses `@mdn/browser-compat-data`, memoised. The lock is held
+/// across the parse so parallel workers do not each read the file.
 fn load_mdn_compat_data(node_modules: &Path) -> Arc<CompatData> {
   let data_path = node_modules
     .join("@mdn")
@@ -233,6 +240,7 @@ fn load_mdn_compat_data(node_modules: &Path) -> Arc<CompatData> {
   data
 }
 
+/// Pulls the `__compat` block out of an MDN node, if it has one.
 fn extract_compat_entry(val: &serde_json::Value) -> Option<CompatEntry> {
   let compat = val.get("__compat")?;
   let mdn_url = compat
@@ -253,6 +261,7 @@ fn extract_compat_entry(val: &serde_json::Value) -> Option<CompatEntry> {
   Some(CompatEntry { mdn_url, support })
 }
 
+/// Normalises MDN's single-object or array support value into a `Vec`.
 fn parse_support_statements(val: &serde_json::Value) -> Vec<SupportStatement> {
   match val {
     serde_json::Value::Object(_) => {
@@ -263,6 +272,7 @@ fn parse_support_statements(val: &serde_json::Value) -> Vec<SupportStatement> {
   }
 }
 
+/// Reads one support statement's added/removed versions, prefix and flags.
 fn parse_single_support(val: &serde_json::Value) -> SupportStatement {
   let version_added = match val.get("version_added") {
     Some(serde_json::Value::Bool(b)) => VersionAdded::Bool(*b),
@@ -346,6 +356,7 @@ fn browserslist_to_mdn() -> &'static [(&'static str, &'static str, &'static str)
 static BROWSERSLIST_CACHE: OnceLock<std::sync::Mutex<HashMap<String, Vec<BrowserTarget>>>> =
   OnceLock::new();
 
+/// Process-wide cache of resolved browserslist targets, keyed by query.
 fn browserslist_cache() -> &'static std::sync::Mutex<HashMap<String, Vec<BrowserTarget>>> {
   BROWSERSLIST_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
@@ -395,6 +406,7 @@ fn run_browserslist(query: Option<&str>, work_dir: &Path) -> Option<std::process
   cmd.current_dir(work_dir).output().ok()
 }
 
+/// Resolves browserslist queries to concrete browser versions, memoised.
 fn resolve_browserslist(queries: &[String], file_path: &Path) -> Option<Vec<BrowserTarget>> {
   if queries.is_empty() {
     return None;
@@ -601,6 +613,8 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
 
 // ── Support checking ────────────────────────────────────────────────────
 
+/// Whether `target` supports the feature. Features with no data count as
+/// supported; flagged and partial implementations depend on the options.
 fn is_supported(entry: &CompatEntry, target: &BrowserTarget, opts: &BrowserCompatOptions) -> bool {
   let support_list = match entry.support.get(&target.mdn_id) {
     Some(list) => list,
@@ -650,6 +664,7 @@ fn is_supported(entry: &CompatEntry, target: &BrowserTarget, opts: &BrowserCompa
   false
 }
 
+/// Parses an MDN version string, taking the low end of a range.
 fn parse_version_f64(v: &str) -> f64 {
   // Strip any ≤ prefix
   let v = v.trim_start_matches('\u{2264}');
@@ -660,6 +675,7 @@ fn parse_version_f64(v: &str) -> f64 {
 
 // ── Feature collection and checking ─────────────────────────────────────
 
+/// Runs [`collect_from_node`] over a node list.
 fn collect_from_nodes(
   nodes: &[CssNode],
   ctx: &RuleContext,
@@ -673,6 +689,7 @@ fn collect_from_nodes(
   }
 }
 
+/// Checks one node's selectors and declarations, recursing into children.
 fn collect_from_node(
   node: &CssNode,
   ctx: &RuleContext,
@@ -728,6 +745,7 @@ fn collect_from_node(
   }
 }
 
+/// Checks a style rule's selector and declarations, then its nested rules.
 fn collect_from_style_rule(
   rule: &gale_css_parser::StyleRule,
   ctx: &RuleContext,
@@ -911,6 +929,7 @@ fn check_selectors(
   }
 }
 
+/// Reports the feature if any target browser lacks support for it.
 fn check_support_and_report(
   entry: &CompatEntry,
   feature_name: &str,
@@ -962,6 +981,7 @@ fn check_support_and_report(
 
 // ── Utility functions ───────────────────────────────────────────────────
 
+/// The unprefixed property name, or `None` if it carries no vendor prefix.
 fn strip_vendor_prefix_prop(prop: &str) -> Option<&str> {
   let prefixes = ["-webkit-", "-moz-", "-ms-", "-o-"];
   for prefix in &prefixes {
@@ -972,6 +992,7 @@ fn strip_vendor_prefix_prop(prop: &str) -> Option<&str> {
   None
 }
 
+/// The unprefixed pseudo name, or `None` if it carries no vendor prefix.
 fn strip_vendor_prefix_pseudo(name: &str) -> Option<&str> {
   let prefixes = ["-webkit-", "-moz-", "-ms-", "-o-"];
   for prefix in &prefixes {
@@ -982,6 +1003,7 @@ fn strip_vendor_prefix_pseudo(name: &str) -> Option<&str> {
   None
 }
 
+/// Nearest `node_modules` directory at or above `file_path`.
 fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
   let mut dir = if file_path.is_file() {
     file_path.parent()?

@@ -25,6 +25,7 @@ impl Rule for PropertyDisallowedList {
     Severity::Warning
   }
 
+  /// Flags properties named in the disallow list.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let declarations: Vec<&gale_css_parser::Declaration> = match node {

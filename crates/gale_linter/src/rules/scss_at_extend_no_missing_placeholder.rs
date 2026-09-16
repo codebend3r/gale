@@ -19,6 +19,7 @@ impl Rule for ScssAtExtendNoMissingPlaceholder {
     Severity::Warning
   }
 
+  /// Flags an `@extend` whose target is not a `%placeholder` selector.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

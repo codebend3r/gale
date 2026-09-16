@@ -24,6 +24,7 @@ impl Rule for StringQuotes {
     Severity::Warning
   }
 
+  /// Flags strings using the quote character the option forbids.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("double");
     let mut diagnostics = Vec::new();

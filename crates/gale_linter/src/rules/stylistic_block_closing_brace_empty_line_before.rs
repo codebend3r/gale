@@ -26,6 +26,7 @@ impl Rule for StylisticBlockClosingBraceEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags a closing brace whose preceding blank line does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("never");
     let source = context.source;
@@ -183,6 +184,7 @@ fn has_empty_line_before_brace(source: &str, brace_pos: usize) -> bool {
   false
 }
 
+/// Whether the block closing at this brace holds nothing.
 fn is_empty_block(source: &str, closing_brace_pos: usize) -> bool {
   let bytes = source.as_bytes();
   // Find the matching opening brace
@@ -204,6 +206,7 @@ fn is_empty_block(source: &str, closing_brace_pos: usize) -> bool {
   true
 }
 
+/// Whether the block closing at this brace opens on the same line.
 fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
   let bytes = source.as_bytes();
   let mut depth = 1;

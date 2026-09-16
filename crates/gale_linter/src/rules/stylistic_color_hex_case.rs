@@ -22,6 +22,8 @@ impl Rule for StylisticColorHexCase {
     Severity::Warning
   }
 
+  /// Flags hex colors not in the configured case and offers the converted value
+  /// as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = ctx.primary_option_str().unwrap_or("lower");
 
@@ -81,6 +83,7 @@ impl Rule for StylisticColorHexCase {
   }
 }
 
+/// Scans for `#`-prefixed hex tokens, returning each with its offset into `value`.
 fn find_hex_colors(value: &str) -> Vec<(usize, String)> {
   let mut colors = Vec::new();
   let bytes = value.as_bytes();

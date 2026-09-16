@@ -23,6 +23,8 @@ impl Rule for NumberMaxPrecision {
     Severity::Warning
   }
 
+  /// Flags numbers with more decimal places than allowed, scanning the raw source
+  /// since lightningcss rounds values.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

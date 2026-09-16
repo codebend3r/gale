@@ -109,6 +109,8 @@ impl Rule for MediaFeatureNameValueNoUnknown {
     Severity::Error
   }
 
+  /// Flags a value the media feature does not accept, for the features this rule
+  /// has a keyword table for.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

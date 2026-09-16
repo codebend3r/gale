@@ -237,6 +237,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 // Pattern matching
 // ---------------------------------------------------------------------------
 
+/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') {
     if let Some(inner) = pattern.strip_prefix('/') {
@@ -260,6 +261,7 @@ fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   }
 }
 
+/// Normalises a string or array-of-strings option into a `Vec`.
 fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   match val {
     serde_json::Value::Array(arr) => arr
@@ -271,10 +273,12 @@ fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   }
 }
 
+/// Whether any `ignoreFunctions` pattern matches this function name.
 fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(func_name, p))
 }
 
+/// Whether any pattern matches this property name.
 fn property_matches_any(prop: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(prop, p))
 }
@@ -290,6 +294,7 @@ struct DisallowedListOptions {
   ignore_media_feature_names: std::collections::HashMap<String, Vec<String>>,
 }
 
+/// Reads the disallowed units and the ignore secondaries.
 fn parse_options(ctx: &RuleContext) -> DisallowedListOptions {
   let primary = ctx.primary_option();
   let secondary = ctx.secondary_options();
@@ -347,6 +352,8 @@ struct MediaFeature {
   value_byte_offset: usize,
 }
 
+/// Splits an at-rule prelude into its media features, keeping each value's
+/// byte offset.
 fn extract_media_features(params: &str) -> Vec<MediaFeature> {
   let mut results = Vec::new();
   let lower = params.to_ascii_lowercase();
@@ -446,6 +453,8 @@ impl Rule for UnitDisallowedList {
     Severity::Warning
   }
 
+  /// Flags disallowed units in declarations and at-rule preludes. `unicode-range`
+  /// uses a different grammar and is skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = parse_options(ctx);
     if opts.units.is_empty() {
@@ -556,6 +565,7 @@ fn find_params_offset(source: &str, at_rule_offset: usize, at_name: &str) -> usi
   start + off
 }
 
+/// Reports each unit in `value` that is disallowed and not ignored.
 fn check_value(
   value: &str,
   opts: &DisallowedListOptions,
@@ -597,6 +607,8 @@ fn check_value(
   }
 }
 
+/// Reports disallowed units in an at-rule prelude, per media feature when the
+/// prelude parses into any.
 fn check_at_rule_params(
   params: &str,
   opts: &DisallowedListOptions,

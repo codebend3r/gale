@@ -31,6 +31,8 @@ impl Rule for MediaFeatureNameValueAllowedList {
     Severity::Warning
   }
 
+  /// Flags values of a listed media feature that match none of its allowed
+  /// strings or regex patterns.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

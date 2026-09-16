@@ -30,10 +30,12 @@ impl Rule for MaterialNoPrefixes {
     Severity::Warning
   }
 
+  /// Never fires; see the type docs for why this stub exists.
   fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
   }
 
+  /// Never fires; see the type docs for why this stub exists.
   fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
   }

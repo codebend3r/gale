@@ -21,6 +21,7 @@ impl Rule for StylisticAtRuleSemicolonSpaceBefore {
     Severity::Warning
   }
 
+  /// Flags an at-rule semicolon whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("never");
     let source = context.source;

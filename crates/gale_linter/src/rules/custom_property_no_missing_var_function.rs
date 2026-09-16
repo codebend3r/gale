@@ -93,6 +93,8 @@ impl Rule for CustomPropertyNoMissingVarFunction {
     Severity::Warning
   }
 
+  /// Flags a `--name` used as a bare value instead of inside `var()`. Custom
+  /// property definitions and interpolated values are skipped.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let style = match node {
       CssNode::Style(s) => s,

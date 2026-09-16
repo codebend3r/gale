@@ -24,6 +24,8 @@ impl Rule for ScssAtElseClosingBraceSpaceAfter {
     Severity::Warning
   }
 
+  /// Scans the SCSS source for `@else` chains and flags a closing brace whose
+  /// following space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -103,6 +105,7 @@ impl Rule for ScssAtElseClosingBraceSpaceAfter {
   }
 }
 
+/// Offset of the brace closing the block that opens at or after `start`.
 fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
   let bytes = source.as_bytes();
   let len = bytes.len();

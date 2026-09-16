@@ -23,6 +23,7 @@ impl Rule for ScssNoDuplicateDollarVariables {
     Severity::Warning
   }
 
+  /// Flags a `$variable` assigned more than once in the same scope.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -35,6 +36,8 @@ impl Rule for ScssNoDuplicateDollarVariables {
   }
 }
 
+/// Recurses through the tree, reporting each repeat assignment of a name
+/// already recorded in `seen`.
 fn collect_dollar_vars(
   nodes: &[CssNode],
   seen: &mut HashMap<String, Span>,

@@ -14,6 +14,7 @@ static DEPRECATED_MEDIA_TYPES: &[&str] = &[
   "tv",
 ];
 
+/// Case-insensitive lookup in the sorted deprecated media type table.
 fn is_deprecated_media_type(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   DEPRECATED_MEDIA_TYPES
@@ -67,6 +68,7 @@ impl Rule for MediaTypeNoDeprecated {
     Severity::Warning
   }
 
+  /// Flags media types that have been deprecated, such as `tv`.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

@@ -27,6 +27,8 @@ impl Rule for HueDegreeNotation {
     Severity::Warning
   }
 
+  /// Flags hue arguments written in the notation the option forbids, reading the
+  /// source text since lightningcss normalises these values.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -56,6 +58,8 @@ impl Rule for HueDegreeNotation {
   }
 }
 
+/// Reports wrong-notation hues in every hue-taking function in `text`, using the
+/// per-function index of the hue component.
 fn check_hue_in_text(
   rule: &HueDegreeNotation,
   text: &str,

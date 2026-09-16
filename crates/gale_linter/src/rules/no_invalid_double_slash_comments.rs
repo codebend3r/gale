@@ -21,6 +21,8 @@ impl Rule for NoInvalidDoubleSlashComments {
     Severity::Warning
   }
 
+  /// Flags `//` comments, which are invalid in plain CSS. String literals are
+  /// skipped so URLs are not mistaken for comments.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     // Only flag in plain CSS mode.
     if context.syntax != Syntax::Css {

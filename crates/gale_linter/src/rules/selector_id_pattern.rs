@@ -30,6 +30,8 @@ impl Rule for SelectorIdPattern {
     Severity::Warning
   }
 
+  /// Flags ID selector names that do not match the configured regex, defaulting
+  /// to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

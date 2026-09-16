@@ -68,6 +68,7 @@ impl Rule for DeclarationPropertyValueNoUnknown {
     Severity::Error
   }
 
+  /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -83,6 +84,8 @@ impl Rule for DeclarationPropertyValueNoUnknown {
 }
 
 impl DeclarationPropertyValueNoUnknown {
+  /// Flags a value keyword the property does not accept. Custom properties and
+  /// values containing function calls are skipped as unverifiable.
   fn check_decl(&self, decl: &gale_css_parser::Declaration) -> Vec<Diagnostic> {
     let property = decl.property.to_ascii_lowercase();
 
@@ -216,6 +219,7 @@ fn contains_function_call(value: &str) -> bool {
   false
 }
 
+/// Whether the value is `inherit`, `initial`, `unset`, `revert` or similar.
 fn is_css_wide_keyword(value: &str) -> bool {
   CSS_WIDE_KEYWORDS.contains(&value)
 }

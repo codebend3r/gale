@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationColonSpaceBefore {
     Severity::Warning
   }
 
+  /// Flags a declaration colon whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("never");
     let mut diagnostics = Vec::new();
@@ -113,6 +114,8 @@ impl Rule for StylisticDeclarationColonSpaceBefore {
   }
 }
 
+/// Whether the `:` at `pos` separates a declaration, rather than introducing a
+/// pseudo-class such as `:not(`.
 fn is_declaration_colon(bytes: &[u8], pos: usize) -> bool {
   if pos == 0 {
     return false;

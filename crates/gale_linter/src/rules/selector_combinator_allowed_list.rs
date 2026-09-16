@@ -109,6 +109,7 @@ fn extract_combinators(selector: &str) -> Vec<String> {
   combinators
 }
 
+/// Reads the allowed combinator strings.
 fn parse_allowed_list(options: Option<&serde_json::Value>) -> Vec<String> {
   let Some(val) = options else {
     return Vec::new();
@@ -135,6 +136,7 @@ impl Rule for SelectorCombinatorAllowedList {
     Severity::Warning
   }
 
+  /// Flags combinators outside the configured allow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed = parse_allowed_list(ctx.options);
     if allowed.is_empty() {

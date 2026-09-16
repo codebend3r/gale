@@ -25,12 +25,14 @@ const WEBKIT_SCROLLBAR_PSEUDO_CLASSES: &[&str] = &[
   "window-inactive",
 ];
 
+/// Whether `name` is a pseudo-class valid only inside `@page`.
 fn is_page_pseudo_class(name: &str) -> bool {
   PAGE_PSEUDO_CLASSES
     .iter()
     .any(|p| p.eq_ignore_ascii_case(name))
 }
 
+/// Whether `name` is one of the WebKit scrollbar pseudo-classes.
 fn is_webkit_scrollbar_pseudo_class(name: &str) -> bool {
   WEBKIT_SCROLLBAR_PSEUDO_CLASSES
     .iter()
@@ -52,6 +54,8 @@ impl Rule for SelectorPseudoClassNoUnknown {
     Severity::Warning
   }
 
+  /// Flags pseudo-classes that are not standard, skipping vendor-prefixed names,
+  /// interpolated selectors, and anything in the ignore list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_list = parse_ignore_list(ctx.options);
 
@@ -157,6 +161,8 @@ impl Rule for SelectorPseudoClassNoUnknown {
     }
   }
 
+  /// Catches pseudo-classes in selectors the parser did not surface, by scanning
+  /// the source outside the ranges the AST already covers.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_list = parse_ignore_list(ctx.options);
     let mut diags = Vec::new();
@@ -506,6 +512,7 @@ fn scan_source_for_unparsed_pseudo_classes(
   results
 }
 
+/// Records the source range each node covers, recursing into children.
 fn collect_node_ranges(nodes: &[CssNode], ranges: &mut Vec<(usize, usize)>) {
   for node in nodes {
     match node {
@@ -535,6 +542,7 @@ fn collect_node_ranges(nodes: &[CssNode], ranges: &mut Vec<(usize, usize)>) {
   }
 }
 
+/// Records the source range of each nested style rule.
 fn collect_style_children(
   children: &[gale_css_parser::StyleRule],
   ranges: &mut Vec<(usize, usize)>,
@@ -571,6 +579,7 @@ fn covered_range_end(offset: usize, ranges: &[(usize, usize)]) -> Option<usize> 
   }
 }
 
+/// Whether `offset` falls inside a range the AST already covers.
 fn is_in_covered_range(offset: usize, ranges: &[(usize, usize)]) -> bool {
   covered_range_end(offset, ranges).is_some()
 }
@@ -607,6 +616,7 @@ fn parse_ignore_list(options: Option<&serde_json::Value>) -> Vec<String> {
   }
 }
 
+/// Whether the name matches an ignore entry, as a regex or an exact string.
 fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
   for pattern in ignore_list {
     if let Some(re) = parse_regex_pattern(pattern) {
@@ -620,6 +630,7 @@ fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
   false
 }
 
+/// Compiles a `/…/` or `/…/i` pattern, or `None` if it is not one.
 fn parse_regex_pattern(s: &str) -> Option<Regex> {
   if let Some(rest) = s.strip_prefix('/') {
     if let Some(end) = rest.rfind('/') {

@@ -28,6 +28,7 @@ impl Rule for AtRuleEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Walks the whole document, since the check depends on what precedes each at-rule.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = Options::from_ctx(ctx);
     let mut diags = Vec::new();
@@ -61,6 +62,8 @@ struct Options {
 }
 
 impl Options {
+  /// Reads the primary option and the `except`/`ignore`/`ignoreAtRules` secondaries,
+  /// defaulting to "always" with nothing excepted.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       primary: PrimaryOption::Always,
@@ -103,6 +106,7 @@ impl Options {
   }
 }
 
+/// Sets the `except`, `ignore` and `ignoreAtRules` flags from the secondary object.
 fn parse_secondary(opts: &mut Options, value: &serde_json::Value) {
   if let Some(except) = value.get("except").and_then(|v| v.as_array()) {
     for item in except {
@@ -215,6 +219,8 @@ fn prev_non_comment(nodes: &[CssNode], index: usize) -> Option<&CssNode> {
   }
 }
 
+/// Recurses through nested blocks, flagging at-rules whose preceding blank line
+/// does not match the option once the except/ignore cases are applied.
 fn check_at_rule_nodes(
   rule_impl: &AtRuleEmptyLineBefore,
   nodes: &[CssNode],
@@ -407,6 +413,7 @@ fn check_at_rule_nodes(
   }
 }
 
+/// Whether the text ending at the at-rule has a whitespace-only line just before it.
 fn has_empty_line_before(before: &str) -> bool {
   // Walk backwards from the end of `before` to find an empty line
   // (a line containing only whitespace).

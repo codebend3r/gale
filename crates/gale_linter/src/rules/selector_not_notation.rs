@@ -24,6 +24,8 @@ impl Rule for SelectorNotNotation {
     Severity::Warning
   }
 
+  /// Flags `:not()` written in the notation the option forbids. Interpolated
+  /// selectors are skipped as unresolvable.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

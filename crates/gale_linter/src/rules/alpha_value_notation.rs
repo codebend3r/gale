@@ -23,6 +23,8 @@ impl Rule for AlphaValueNotation {
     Severity::Warning
   }
 
+  /// Checks every declaration in a style rule, or a bare declaration, then drops
+  /// duplicates that overlapping keyframe spans can produce.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = Options::from_ctx(ctx);
     let mut diags = Vec::new();
@@ -45,6 +47,8 @@ impl Rule for AlphaValueNotation {
   }
 }
 
+/// Flags alpha values in this declaration that use the wrong notation. Properties
+/// in `exceptProperties` are checked against the opposite notation.
 fn check_declaration(
   rule: &AlphaValueNotation,
   decl: &gale_css_parser::Declaration,
@@ -395,6 +399,7 @@ fn strip_trailing_comment(s: &str) -> &str {
   }
 }
 
+/// Whether `s` is a plain decimal number — digits, at most one dot, optional sign.
 fn is_decimal_number(s: &str) -> bool {
   if s.is_empty() {
     return false;
@@ -436,6 +441,8 @@ struct Options {
 }
 
 impl Options {
+  /// Reads the primary notation and the `exceptProperties` list, defaulting to
+  /// percentage notation with no exceptions.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       primary: PrimaryOption::Percentage,
@@ -471,6 +478,7 @@ impl Options {
   }
 }
 
+/// Maps the primary option string; anything but "number" means percentage.
 fn parse_primary(s: &str) -> PrimaryOption {
   match s {
     "number" => PrimaryOption::Number,

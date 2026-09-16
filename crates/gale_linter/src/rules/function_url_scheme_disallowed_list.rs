@@ -23,6 +23,7 @@ impl Rule for FunctionUrlSchemeDisallowedList {
     Severity::Warning
   }
 
+  /// Flags `url()` schemes named in the configured disallow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let disallowed: Vec<String> = match ctx.options {
       Some(serde_json::Value::Array(arr)) => arr
@@ -48,6 +49,7 @@ impl Rule for FunctionUrlSchemeDisallowedList {
   }
 }
 
+/// Reports each `url()` whose scheme appears in `disallowed`.
 fn check_url_schemes(
   value: &str,
   base_offset: usize,

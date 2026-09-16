@@ -50,6 +50,8 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
     Severity::Warning
   }
 
+  /// Flags value keywords that have been deprecated, skipping any listed in
+  /// `ignoreKeywords`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

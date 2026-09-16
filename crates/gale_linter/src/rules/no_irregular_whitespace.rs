@@ -105,6 +105,7 @@ impl Rule for NoIrregularWhitespace {
     Severity::Warning
   }
 
+  /// Flags irregular Unicode whitespace outside comments, which Stylelint allows.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 

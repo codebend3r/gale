@@ -37,6 +37,8 @@ impl Rule for MediaFeatureNameNoVendorPrefix {
     Severity::Warning
   }
 
+  /// Flags vendor-prefixed media features, locating each in the source so the
+  /// reported span covers just the feature name.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(rule) = node else {
       return vec![];

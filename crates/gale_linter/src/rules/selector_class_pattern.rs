@@ -27,6 +27,8 @@ impl Rule for SelectorClassPattern {
     Severity::Warning
   }
 
+  /// Flags class names that do not match the configured regex, defaulting to
+  /// kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -200,6 +202,8 @@ fn extract_class_names_with_offsets(selector: &str) -> Vec<(String, usize)> {
   classes
 }
 
+/// Pulls the class names out of a selector, skipping `.` that does not start
+/// a valid identifier.
 fn extract_class_names(selector: &str) -> Vec<String> {
   let mut classes = Vec::new();
   let chars: Vec<char> = selector.chars().collect();

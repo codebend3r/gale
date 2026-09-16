@@ -70,6 +70,8 @@ const SYSTEM_COLORS_CSS4: &[&str] = &[
   "VisitedText",
 ];
 
+/// Whether `s` is a system color, gated on the installed Stylelint's major
+/// version since CSS4 added more.
 fn is_system_color(s: &str) -> bool {
   let v = stylelint_major_version();
   if SYSTEM_COLORS_CSS2.iter().any(|c| c.eq_ignore_ascii_case(s)) {
@@ -96,6 +98,7 @@ const SVG_CAMEL_CASE_KEYWORDS: &[&str] = &[
   "linearRGB",
 ];
 
+/// Whether `s` is an SVG keyword that is legitimately camelCase.
 fn is_svg_camel_case_keyword(s: &str) -> bool {
   SVG_CAMEL_CASE_KEYWORDS
     .iter()
@@ -119,6 +122,7 @@ const CUSTOM_IDENT_PROPERTIES: &[&str] = &[
   "will-change",
 ];
 
+/// Whether the property takes a `<custom-ident>`, whose case is author-chosen.
 fn is_custom_ident_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
   let stripped = strip_vendor_prefix(&lower);
@@ -128,6 +132,7 @@ fn is_custom_ident_property(prop: &str) -> bool {
 /// Properties where some positions are keywords and some are custom idents.
 const MIXED_IDENT_PROPERTIES: &[&str] = &["animation", "font", "font-family", "list-style"];
 
+/// Whether the property mixes keywords with author-chosen identifiers.
 fn is_mixed_ident_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
   let stripped = strip_vendor_prefix(&lower);
@@ -151,6 +156,7 @@ const GENERIC_FONT_FAMILIES: &[&str] = &[
   "fangsong",
 ];
 
+/// Whether `s` is a generic family keyword such as `serif`.
 fn is_generic_font_family(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   GENERIC_FONT_FAMILIES.iter().any(|f| *f == lower)
@@ -159,6 +165,7 @@ fn is_generic_font_family(s: &str) -> bool {
 /// Global CSS keywords.
 const GLOBAL_KEYWORDS: &[&str] = &["inherit", "initial", "unset", "revert", "revert-layer"];
 
+/// Whether `s` is `inherit`, `initial`, `unset` or similar.
 fn is_global_keyword(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   GLOBAL_KEYWORDS.iter().any(|k| *k == lower)
@@ -234,6 +241,7 @@ const LIST_STYLE_TYPE_KEYWORDS: &[&str] = &[
   "revert-layer",
 ];
 
+/// Whether `s` is a `list-style-type` keyword.
 fn is_list_style_type_keyword(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   LIST_STYLE_TYPE_KEYWORDS.iter().any(|k| *k == lower)
@@ -243,6 +251,7 @@ fn is_list_style_type_keyword(s: &str) -> bool {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The string with any vendor prefix removed.
 fn strip_vendor_prefix(s: &str) -> &str {
   if (s.starts_with("-webkit-")
     || s.starts_with("-moz-")
@@ -255,6 +264,7 @@ fn strip_vendor_prefix(s: &str) -> &str {
   s
 }
 
+/// Matches `value` against a `/…/` regex pattern, else an exact string.
 fn matches_pattern(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') && pattern.ends_with('/') {
     let re_str = &pattern[1..pattern.len() - 1];
@@ -268,6 +278,7 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
   }
 }
 
+/// As the above, but exact strings compare case-insensitively.
 fn matches_pattern_case_insensitive(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') && pattern.ends_with('/') {
     matches_pattern(value, pattern)
@@ -566,6 +577,8 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
 // Property-context filtering
 // ---------------------------------------------------------------------------
 
+/// Whether this token is a keyword whose case the rule owns, rather than an
+/// author-chosen identifier, system color or other exempt value.
 fn should_check_keyword(
   token_text: &str,
   property: &str,
@@ -606,6 +619,8 @@ fn should_check_keyword(
   true
 }
 
+/// For a property mixing keywords and identifiers, whether this token is one of
+/// the property's keywords.
 fn should_check_in_mixed_property(token_text: &str, prop: &str) -> bool {
   if is_global_keyword(token_text) {
     return true;
@@ -674,6 +689,7 @@ fn should_check_in_mixed_property(token_text: &str, prop: &str) -> bool {
 // ignoreFunctions support
 // ---------------------------------------------------------------------------
 
+/// Whether the token at `token_offset` sits inside a function on the ignore list.
 fn is_in_ignored_function(value: &str, token_offset: usize, ignore_fns: &[String]) -> bool {
   let bytes = value.as_bytes();
   let mut i = 0;
@@ -753,6 +769,8 @@ impl Rule for ValueKeywordCase {
     Severity::Warning
   }
 
+  /// Flags keyword values not in the configured case, honouring the ignore
+  /// secondaries and the SVG camelCase allowance.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Collect declarations from either a style rule or a standalone declaration
     // (e.g., inside a @mixin, @function, @if at-rule).

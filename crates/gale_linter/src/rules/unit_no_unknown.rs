@@ -17,6 +17,8 @@ struct UnitOccurrence {
   unit_byte_len: usize,
 }
 
+/// Pulls the units out of `value`, recording each one's byte offset and the
+/// function call it sits inside, if any.
 fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
   let mut results = Vec::new();
   let chars: Vec<char> = value.chars().collect();
@@ -229,6 +231,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') {
     if let Some(inner) = pattern.strip_prefix('/') {
@@ -252,6 +255,7 @@ fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   }
 }
 
+/// Normalises a string or array-of-strings option into a `Vec`.
 fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   match val {
     serde_json::Value::Array(arr) => arr
@@ -276,6 +280,8 @@ struct Options {
   additional_unknown_units: Vec<String>,
 }
 
+/// Reads the `ignoreUnits` and `ignoreFunctions` secondaries, plus the extra
+/// unknown units the CLI injects for Stylelint version compatibility.
 fn parse_options(ctx: &RuleContext) -> Options {
   let secondary = ctx.secondary_options();
   let mut ignore_units = Vec::new();
@@ -302,10 +308,12 @@ fn parse_options(ctx: &RuleContext) -> Options {
   }
 }
 
+/// Whether any `ignoreUnits` pattern matches this unit.
 fn unit_is_ignored(unit: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(unit, p))
 }
 
+/// Whether any `ignoreFunctions` pattern matches this function name.
 fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(func_name, p))
 }
@@ -321,6 +329,7 @@ fn is_x_unit_valid_in_context(func: Option<&str>, in_media_resolution: bool) -> 
   false
 }
 
+/// Byte offset where a declaration's value begins, past the colon and whitespace.
 fn find_value_offset(source: &str, decl_offset: usize, decl_length: usize) -> usize {
   let end = (decl_offset + decl_length).min(source.len());
   if decl_offset >= source.len() || end <= decl_offset {
@@ -340,6 +349,7 @@ fn find_value_offset(source: &str, decl_offset: usize, decl_length: usize) -> us
   }
 }
 
+/// Byte offset where an at-rule's prelude begins, past its name and whitespace.
 fn find_params_offset(source: &str, at_rule_offset: usize) -> usize {
   let start = at_rule_offset;
   if start >= source.len() {
@@ -374,6 +384,8 @@ impl Rule for UnitNoUnknown {
     Severity::Warning
   }
 
+  /// Flags units that are not standard CSS. `content`, `unicode-range` and SCSS
+  /// variable declarations are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = parse_options(ctx);
     let mut diags = Vec::new();
@@ -468,6 +480,8 @@ impl Rule for UnitNoUnknown {
   }
 }
 
+/// Reports each unknown unit in `value`. Resolution features accept units the
+/// rest of CSS does not.
 fn check_value(
   value: &str,
   opts: &Options,
@@ -521,6 +535,7 @@ fn check_value(
   }
 }
 
+/// Reports unknown units in an at-rule prelude, per media feature.
 fn check_at_rule_params(
   params: &str,
   opts: &Options,
@@ -560,6 +575,7 @@ fn check_at_rule_params(
   }
 }
 
+/// Splits an at-rule prelude into `(name, value, value_offset)` triples.
 fn extract_media_features(params: &str) -> Vec<(String, String, usize)> {
   let mut results = Vec::new();
   let lower = params.to_ascii_lowercase();

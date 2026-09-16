@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationBlockSemicolonNewlineBefore {
     Severity::Warning
   }
 
+  /// Flags a declaration semicolon whose preceding newline does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

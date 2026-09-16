@@ -35,6 +35,7 @@ struct Config {
 }
 
 impl Config {
+  /// Reads the maximum depth and the `ignoreAtRules`/`ignore` secondaries.
   fn from_context(ctx: &RuleContext) -> Self {
     let max = ctx
       .primary_option()
@@ -97,6 +98,7 @@ impl Rule for MaxNestingDepth {
     Severity::Warning
   }
 
+  /// Walks the document from depth zero, since depth is a whole-tree property.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let config = Config::from_context(ctx);
     let mut diags = Vec::new();
@@ -211,6 +213,8 @@ fn check_nodes_depth(
   }
 }
 
+/// Recurses into nested rules, flagging those past the limit. Interpolated
+/// selectors and any ignored nesting are skipped along with their descendants.
 fn check_style_depth(
   rule_impl: &MaxNestingDepth,
   style: &gale_css_parser::StyleRule,

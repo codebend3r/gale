@@ -51,6 +51,7 @@ enum IgnorePattern {
 }
 
 impl Config {
+  /// Reads the `id,class,type` maximum and the `ignoreSelectors` secondary.
   fn from_context(ctx: &RuleContext) -> Self {
     let (max_id, max_class, max_type) = ctx
       .primary_option()
@@ -86,6 +87,7 @@ impl Config {
     }
   }
 
+  /// Whether this pseudo-class's specificity contribution is ignored.
   fn is_pseudo_ignored(&self, pseudo_name: &str) -> bool {
     // Check against patterns like ":is", ":has", "/my-/"
     for pat in &self.ignore_selectors {
@@ -115,6 +117,8 @@ impl Config {
     false
   }
 
+  /// Whether the specificity tuple sorts above the configured maximum, compared
+  /// component by component from the left.
   fn exceeds_max(&self, ids: usize, classes: usize, types: usize) -> bool {
     // Specificity comparison: compare component by component from left to right
     // A specificity of (1,0,0) exceeds (0,255,255) because id > max_id
@@ -149,6 +153,8 @@ impl Rule for SelectorMaxSpecificity {
     Severity::Warning
   }
 
+  /// Flags selectors whose specificity exceeds the maximum, stripping
+  /// preprocessor interpolation first.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -223,6 +229,7 @@ fn extract_paren_content<'a>(selector: &'a str, i: &mut usize) -> &'a str {
   &selector[start..end]
 }
 
+/// Counts the id, class and type contributions of one selector.
 fn compute_single_specificity(selector: &str, config: &Config) -> (usize, usize, usize) {
   let mut ids = 0;
   let mut classes = 0;
@@ -518,10 +525,12 @@ fn strip_preprocessor_interpolation(selector: &str, syntax: gale_css_parser::Syn
   result
 }
 
+/// Whether the byte can begin a CSS identifier.
 fn is_ident_start(b: u8) -> bool {
   b.is_ascii_alphabetic() || b == b'_' || b == b'-' || b > 127
 }
 
+/// Whether the byte can appear inside a CSS identifier.
 fn is_ident_char(b: u8) -> bool {
   b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b > 127
 }

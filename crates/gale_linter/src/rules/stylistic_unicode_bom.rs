@@ -23,6 +23,7 @@ impl Rule for StylisticUnicodeBom {
     Severity::Warning
   }
 
+  /// Flags a file whose byte-order mark does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("never");
     let has_bom = ctx.source.starts_with(BOM);

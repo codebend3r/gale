@@ -11,6 +11,7 @@ enum PropertyMatcher {
 }
 
 impl PropertyMatcher {
+  /// Builds a matcher: `/…/` is a regex, anything else an exact lowercase name.
   fn from_pattern(pattern: &str) -> Self {
     if pattern.starts_with('/') && pattern.ends_with('/') && pattern.len() > 2 {
       let re_str = &pattern[1..pattern.len() - 1];
@@ -23,6 +24,7 @@ impl PropertyMatcher {
     }
   }
 
+  /// Whether the property matches, comparing case-insensitively for exact names.
   fn matches(&self, lower_prop: &str, original_prop: &str) -> bool {
     match self {
       PropertyMatcher::Exact(s) => lower_prop == s,
@@ -46,6 +48,8 @@ impl Rule for PropertyNoUnknown {
     Severity::Warning
   }
 
+  /// Flags properties that are not standard CSS, skipping any matched by
+  /// `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

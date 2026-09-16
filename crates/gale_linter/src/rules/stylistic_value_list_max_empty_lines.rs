@@ -21,6 +21,7 @@ impl Rule for StylisticValueListMaxEmptyLines {
     Severity::Warning
   }
 
+  /// Flags runs of blank lines inside a declaration value longer than the maximum.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = ctx.primary_option().and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 

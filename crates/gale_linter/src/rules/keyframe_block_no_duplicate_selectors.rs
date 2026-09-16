@@ -26,6 +26,7 @@ impl Rule for KeyframeBlockNoDuplicateSelectors {
     Severity::Warning
   }
 
+  /// Flags two keyframe blocks in one `@keyframes` sharing a selector.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

@@ -21,6 +21,8 @@ impl Rule for StylisticDeclarationBlockTrailingSemicolon {
     Severity::Warning
   }
 
+  /// Flags a block whose last declaration's trailing semicolon does not match
+  /// the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

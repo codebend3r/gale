@@ -24,6 +24,7 @@ impl Rule for SelectorMaxId {
     Severity::Warning
   }
 
+  /// Flags a selector holding more ID selectors than allowed.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

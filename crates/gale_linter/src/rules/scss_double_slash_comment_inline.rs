@@ -27,6 +27,8 @@ impl Rule for ScssDoubleSlashCommentInline {
     Severity::Warning
   }
 
+  /// Flags a `//` comment whose inline placement does not match the option; a
+  /// comment counts as inline when code precedes it on the same line.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

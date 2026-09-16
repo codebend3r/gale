@@ -25,6 +25,8 @@ impl Rule for CustomPropertyEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags custom properties whose preceding blank line does not match the option.
+  /// Declarations directly inside at-rule bodies are checked too.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Collect declarations from style rules OR at-rules with declaration
     // children (e.g. `@theme inline { --color-bg: ...; }`).
@@ -155,6 +157,8 @@ struct Options {
 }
 
 impl Options {
+  /// Reads the primary option and the `except`/`ignore` secondaries, defaulting
+  /// to "always" with nothing excepted.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       primary: PrimaryOption::Always,
@@ -191,6 +195,7 @@ impl Options {
   }
 }
 
+/// Maps the primary option string; anything but "never" means always.
 fn parse_primary(s: &str) -> PrimaryOption {
   match s {
     "never" => PrimaryOption::Never,
@@ -198,6 +203,7 @@ fn parse_primary(s: &str) -> PrimaryOption {
   }
 }
 
+/// Sets the `except` and `ignore` flags from the secondary object.
 fn parse_secondary(opts: &mut Options, value: &serde_json::Value) {
   if let Some(except) = value.get("except").and_then(|v| v.as_array()) {
     for item in except {

@@ -23,6 +23,8 @@ impl Rule for NoDuplicateSelectors {
     Severity::Warning
   }
 
+  /// Flags a selector list that repeats one seen earlier in the file, reporting
+  /// the first occurrence's line and skipping anything in `ignoreSelectors`.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let line_index = SourceLineIndex::build(context.source);
     let mut seen: HashMap<String, usize> = HashMap::new();

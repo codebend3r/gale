@@ -54,6 +54,7 @@ fn extract_media_features(params: &str) -> Vec<String> {
   features
 }
 
+/// Reads the allowed media feature names, lowercased.
 fn parse_allowed_list(options: Option<&serde_json::Value>) -> Vec<String> {
   let Some(val) = options else {
     return Vec::new();
@@ -80,6 +81,7 @@ impl Rule for MediaFeatureNameAllowedList {
     Severity::Warning
   }
 
+  /// Flags media features outside the configured allow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed = parse_allowed_list(ctx.options);
     if allowed.is_empty() {

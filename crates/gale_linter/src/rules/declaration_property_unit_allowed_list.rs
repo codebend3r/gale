@@ -56,6 +56,7 @@ fn extract_units(value: &str) -> Vec<String> {
   units
 }
 
+/// Reads the property-to-allowed-units map from the options object.
 fn parse_options(options: Option<&serde_json::Value>) -> HashMap<String, Vec<String>> {
   let Some(val) = options else {
     return HashMap::new();
@@ -89,6 +90,7 @@ impl Rule for DeclarationPropertyUnitAllowedList {
     Severity::Warning
   }
 
+  /// Flags units used by a listed property that are not in its allowed list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed_map = parse_options(ctx.options);
     if allowed_map.is_empty() {

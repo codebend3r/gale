@@ -27,6 +27,8 @@ impl Rule for ScssDollarVariableEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags a `$variable` declaration whose preceding blank line does not match
+  /// the option, after applying the `except`/`ignore` secondaries.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

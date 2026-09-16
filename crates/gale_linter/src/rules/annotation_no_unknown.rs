@@ -27,6 +27,8 @@ impl Rule for AnnotationNoUnknown {
     Severity::Warning
   }
 
+  /// Flags a comment whose `stylelint-`/`gale-` prefix is followed by a command
+  /// outside the known directive set.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Comment(comment) = node else {
       return vec![];

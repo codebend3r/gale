@@ -25,6 +25,8 @@ impl Rule for BlockNoRedundantNestedStyleRules {
     Severity::Warning
   }
 
+  /// Flags nested rules whose selector is a bare `&`, since their declarations
+  /// could live in the parent block.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

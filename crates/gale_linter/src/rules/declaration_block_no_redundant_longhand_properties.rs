@@ -198,6 +198,8 @@ impl Rule for DeclarationBlockNoRedundantLonghandProperties {
     Severity::Warning
   }
 
+  /// Checks a style rule's declarations, and bare declarations inside SCSS
+  /// at-rule bodies such as `@mixin`.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     match node {
       CssNode::Style(rule) => check_declarations(self, &rule.declarations, rule.span),
@@ -224,6 +226,7 @@ impl Rule for DeclarationBlockNoRedundantLonghandProperties {
   }
 }
 
+/// Owned-slice wrapper around [`check_declarations_slice`].
 fn check_declarations(
   rule_impl: &DeclarationBlockNoRedundantLonghandProperties,
   declarations: &[Declaration],
@@ -233,6 +236,8 @@ fn check_declarations(
   check_declarations_slice(rule_impl, &refs, fallback_span)
 }
 
+/// Flags a shorthand whose every longhand is present. Declarations set to a
+/// CSS-wide keyword are excluded, since those cannot be safely combined.
 fn check_declarations_slice(
   rule_impl: &DeclarationBlockNoRedundantLonghandProperties,
   declarations: &[&Declaration],

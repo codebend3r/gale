@@ -37,6 +37,7 @@ enum IgnorePattern {
 }
 
 impl Config {
+  /// Reads the maximum and the `ignore`/`ignoreTypes` secondaries.
   fn from_context(ctx: &RuleContext) -> Self {
     let max = ctx
       .primary_option()
@@ -91,6 +92,7 @@ impl Config {
     }
   }
 
+  /// Whether this type selector is covered by `ignoreTypes`.
   fn is_type_ignored(&self, type_name: &str) -> bool {
     for pat in &self.ignore_types {
       match pat {
@@ -126,6 +128,8 @@ impl Rule for SelectorMaxType {
     Severity::Warning
   }
 
+  /// Flags selectors holding more type selectors than allowed, stripping
+  /// preprocessor constructs first.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -366,6 +370,7 @@ fn parse_selector_segments(selector: &str) -> Vec<SelectorSegment> {
   segments
 }
 
+/// Whether the character can appear inside a CSS identifier.
 fn is_ident_char(c: char) -> bool {
   c.is_ascii_alphanumeric() || c == '-' || c == '_' || !c.is_ascii()
 }

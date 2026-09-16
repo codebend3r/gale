@@ -10,6 +10,8 @@ pub fn stylelint_major_version() -> u32 {
   *STYLELINT_MAJOR.get_or_init(detect)
 }
 
+/// Walks up from the current directory looking for an installed Stylelint
+/// and parses its major version, falling back to 16.
 fn detect() -> u32 {
   let cwd = match std::env::current_dir() {
     Ok(d) => d,

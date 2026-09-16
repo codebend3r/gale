@@ -21,6 +21,8 @@ impl Rule for DeclarationNoImportant {
     Severity::Warning
   }
 
+  /// Flags `!important` declarations, locating the token in the source so the
+  /// fix removes it along with the whitespace in front of it.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

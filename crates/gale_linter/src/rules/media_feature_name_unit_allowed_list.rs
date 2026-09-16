@@ -30,6 +30,7 @@ impl Rule for MediaFeatureNameUnitAllowedList {
     Severity::Warning
   }
 
+  /// Flags units used by a listed media feature that are not in its allowed list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

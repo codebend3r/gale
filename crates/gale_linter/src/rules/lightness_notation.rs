@@ -36,6 +36,8 @@ impl Rule for LightnessNotation {
     Severity::Warning
   }
 
+  /// Flags lightness arguments written in the notation the option forbids, using
+  /// the per-function index of the lightness component.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

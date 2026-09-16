@@ -30,6 +30,8 @@ impl Rule for DeclarationPropertyMaxValues {
     Severity::Warning
   }
 
+  /// Flags declarations holding more values than the config allows for that
+  /// property. Property names are matched as written, without prefix stripping.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let limits = parse_options(ctx.primary_option());
 

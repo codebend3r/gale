@@ -29,6 +29,8 @@ impl Rule for RuleNestingAtRuleRequiredList {
     Severity::Warning
   }
 
+  /// Flags a listed at-rule that sits at the top level rather than nested inside
+  /// a style rule.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let required = match parse_options(ctx.options) {
       Some(r) => r,

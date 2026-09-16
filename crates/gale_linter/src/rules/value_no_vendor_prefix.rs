@@ -50,6 +50,8 @@ impl Rule for ValueNoVendorPrefix {
     Severity::Warning
   }
 
+  /// Flags vendor-prefixed values that have a standard equivalent, skipping any
+  /// listed in `ignoreValues`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

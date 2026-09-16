@@ -26,6 +26,8 @@ impl Rule for ScssAtIfClosingBraceNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags an `@if` closing brace, when no `@else` follows, whose trailing
+  /// newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

@@ -21,6 +21,8 @@ impl Rule for SelectorNoQualifyingType {
     Severity::Warning
   }
 
+  /// Flags selectors qualifying a class, attribute or ID with a type, honouring
+  /// the `ignore` options. Runs at root so nesting can be resolved.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_class = has_ignore_option(ctx, "class");
     let ignore_attribute = has_ignore_option(ctx, "attribute");
@@ -121,6 +123,8 @@ fn walk_nodes(
   }
 }
 
+/// Recurses into nested rules, carrying down whether an ancestor supplied the
+/// type or contained interpolation.
 fn walk_style_children(
   rule_impl: &SelectorNoQualifyingType,
   style: &gale_css_parser::StyleRule,
@@ -574,6 +578,8 @@ fn is_bare_type_selector(selector: &str) -> bool {
   chars.iter().all(|c| is_ident_char(*c))
 }
 
+/// Whether the character at `i` begins a type selector rather than a class,
+/// ID or pseudo name.
 fn is_type_selector_start(chars: &[char], i: usize) -> bool {
   let ch = chars[i];
   if !ch.is_ascii_alphabetic() && ch.is_ascii() {
@@ -589,6 +595,7 @@ fn is_type_selector_start(chars: &[char], i: usize) -> bool {
   true
 }
 
+/// Whether the character can appear inside a CSS identifier.
 fn is_ident_char(ch: char) -> bool {
   ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || !ch.is_ascii()
 }

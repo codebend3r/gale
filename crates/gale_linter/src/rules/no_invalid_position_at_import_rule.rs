@@ -28,6 +28,8 @@ impl Rule for NoInvalidPositionAtImportRule {
     Severity::Warning
   }
 
+  /// Flags an `@import` that follows a non-import statement. SCSS and Sass are
+  /// skipped, where the ordering semantics differ.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     // In SCSS/Sass, `@import` can validly appear after `@mixin`, `@function`,
     // and inside `@if` blocks. The import ordering semantics differ from CSS.

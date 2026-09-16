@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationColonNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a declaration colon whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("always-multi-line");
     let source = context.source;

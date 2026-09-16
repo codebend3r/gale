@@ -45,6 +45,8 @@ impl Rule for MediaFeatureRangeNotation {
     Severity::Warning
   }
 
+  /// Flags media features written in the notation the option forbids. Queries
+  /// holding preprocessor variables or math are skipped as unresolvable.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];
@@ -138,6 +140,7 @@ enum Notation {
   Prefix,
 }
 
+/// Maps the primary option; anything but "prefix" means context notation.
 fn parse_notation(options: Option<&serde_json::Value>) -> Notation {
   let Some(value) = options else {
     return Notation::Context;
