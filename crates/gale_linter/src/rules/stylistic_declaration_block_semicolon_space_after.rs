@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationBlockSemicolonSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags a declaration semicolon whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("always-single-line");
     let source = context.source;

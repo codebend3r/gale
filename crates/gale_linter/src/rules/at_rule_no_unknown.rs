@@ -19,6 +19,8 @@ impl Rule for AtRuleNoUnknown {
     Severity::Warning
   }
 
+  /// Flags at-rules that are not standard for the file's syntax. Vendor-prefixed
+  /// names are left alone.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

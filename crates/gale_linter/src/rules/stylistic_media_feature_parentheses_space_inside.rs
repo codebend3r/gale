@@ -21,6 +21,7 @@ impl Rule for StylisticMediaFeatureParenthesesSpaceInside {
     Severity::Warning
   }
 
+  /// Flags media feature parentheses whose inner spaces do not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("never");
     let source = context.source;

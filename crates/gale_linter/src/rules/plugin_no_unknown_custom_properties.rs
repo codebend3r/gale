@@ -30,6 +30,7 @@ enum AllowPattern {
 }
 
 impl AllowPattern {
+  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
   fn from_str(s: &str) -> Self {
     if let Some(inner) = s.strip_prefix('/').and_then(|s| {
       if let Some(pos) = s.rfind('/') {
@@ -53,6 +54,7 @@ impl AllowPattern {
     }
   }
 
+  /// Whether the custom property name matches this pattern.
   fn matches(&self, name: &str) -> bool {
     match self {
       AllowPattern::Exact(s) => name == s,
@@ -61,6 +63,7 @@ impl AllowPattern {
   }
 }
 
+/// Reads the `allowedProperties` secondary into patterns.
 fn parse_allowed_properties(context: &RuleContext) -> Vec<AllowPattern> {
   let secondary = match context.secondary_options() {
     Some(opts) => opts,
@@ -211,6 +214,8 @@ impl Rule for PluginNoUnknownCustomProperties {
     Severity::Warning
   }
 
+  /// Collects the file's custom property definitions, then flags every `var()`
+  /// reference that is neither defined nor allowlisted.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let allowed = parse_allowed_properties(context);
 

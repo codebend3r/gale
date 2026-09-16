@@ -118,6 +118,8 @@ impl Rule for CustomPropertyPattern {
     Severity::Warning
   }
 
+  /// Flags custom property names that do not match the configured regex,
+  /// defaulting to kebab-case and honouring a custom `message`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

@@ -19,6 +19,7 @@ impl Rule for SelectorPseudoElementNoUnknown {
     Severity::Warning
   }
 
+  /// Flags pseudo-elements that are not standard. Vendor-prefixed names are skipped.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

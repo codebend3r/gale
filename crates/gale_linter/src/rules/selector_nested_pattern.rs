@@ -22,6 +22,8 @@ impl Rule for SelectorNestedPattern {
     Severity::Warning
   }
 
+  /// Flags nested selectors that do not match the configured pattern. Uses
+  /// `fancy_regex` so lookarounds in the pattern work.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -45,6 +47,7 @@ impl Rule for SelectorNestedPattern {
   }
 }
 
+/// Reports each nested selector, split on commas, that fails the pattern.
 fn check_nested_selectors(
   rule: &SelectorNestedPattern,
   style: &gale_css_parser::StyleRule,

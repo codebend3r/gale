@@ -39,6 +39,7 @@ static COUNTER_STYLE_DESCRIPTORS: &[&str] = &[
 /// Known descriptors for `@property` (sorted).
 static PROPERTY_DESCRIPTORS: &[&str] = &["inherits", "initial-value", "syntax"];
 
+/// The descriptor table for an at-rule, or `None` if it takes no descriptors.
 fn known_descriptors_for_at_rule(name: &str) -> Option<&'static [&'static str]> {
   match name.to_ascii_lowercase().as_str() {
     "font-face" => Some(FONT_FACE_DESCRIPTORS),
@@ -48,6 +49,7 @@ fn known_descriptors_for_at_rule(name: &str) -> Option<&'static [&'static str]> 
   }
 }
 
+/// Case-insensitive binary search over a sorted descriptor table.
 fn is_known_descriptor(descriptors: &[&str], name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   descriptors.binary_search(&lower.as_str()).is_ok()
@@ -66,6 +68,8 @@ impl Rule for AtRuleDescriptorNoUnknown {
     Severity::Error
   }
 
+  /// Flags declarations inside a descriptor-taking at-rule whose property is not
+  /// a known descriptor. Vendor-prefixed names are skipped.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

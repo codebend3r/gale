@@ -28,6 +28,7 @@ impl Rule for FunctionDisallowedList {
     Severity::Warning
   }
 
+  /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     match node {
@@ -45,6 +46,7 @@ impl Rule for FunctionDisallowedList {
   }
 }
 
+/// Scans `value` for function calls and reports each one on the disallow list.
 #[allow(clippy::const_is_empty)]
 fn find_disallowed_functions(
   value: &str,

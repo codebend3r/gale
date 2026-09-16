@@ -55,6 +55,7 @@ pub struct LintCache {
 }
 
 impl Default for LintCache {
+  /// An empty cache using the default fingerprint strategy.
   fn default() -> Self {
     Self::new(CacheStrategy::default())
   }

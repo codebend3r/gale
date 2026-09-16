@@ -31,6 +31,8 @@ impl Rule for ScssAtFunctionParenthesesSpaceBefore {
     Severity::Warning
   }
 
+  /// Flags an `@function` whose space before the opening parenthesis does not
+  /// match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

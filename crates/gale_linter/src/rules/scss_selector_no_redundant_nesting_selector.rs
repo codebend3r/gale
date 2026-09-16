@@ -44,6 +44,8 @@ impl Rule for ScssSelectorNoRedundantNestingSelector {
     Severity::Warning
   }
 
+  /// Flags a nested selector whose leading `&` is followed by a combinator or
+  /// descendant, where dropping it changes nothing.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

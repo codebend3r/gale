@@ -31,6 +31,8 @@ impl Rule for SpectrumToolsNoUnknownCustomProperties {
     Severity::Warning
   }
 
+  /// In `index.css` only, collects custom properties from this file and sibling
+  /// `themes/*.css`, then flags `var()` references defined by none of them.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let file_path = context.file_path;
 
@@ -147,6 +149,7 @@ fn find_component_root(file_path: &str) -> Option<String> {
   None
 }
 
+/// The component directory path containing `pattern`, if the path has one.
 fn extract_component_root(file_path: &str, pattern: &str) -> Option<String> {
   let idx = file_path.find(pattern)?;
   let after = &file_path[idx + pattern.len()..];
@@ -417,11 +420,13 @@ fn find_var_refs_in_value(value: &str) -> Vec<VarRef> {
   refs
 }
 
+/// Whether the byte is CSS whitespace.
 #[inline]
 fn is_whitespace(b: u8) -> bool {
   b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
 
+/// Whether the byte can appear in a custom property name.
 #[inline]
 fn is_name_char(b: u8) -> bool {
   b.is_ascii_alphanumeric() || b == b'-' || b == b'_'

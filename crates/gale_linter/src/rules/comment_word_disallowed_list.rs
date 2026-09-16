@@ -24,6 +24,7 @@ impl Rule for CommentWordDisallowedList {
     Severity::Warning
   }
 
+  /// Flags comments containing any of the configured words, case-insensitively.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Comment(comment) = node else {
       return vec![];

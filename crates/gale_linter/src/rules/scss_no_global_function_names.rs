@@ -181,6 +181,8 @@ fn is_deprecated_global(name: &str) -> bool {
   )
 }
 
+/// Reports deprecated global function calls in `value`, naming the module-based
+/// replacement. Offsets are re-derived from the source for an exact span.
 fn scan_value_for_global_functions(
   rule_name: &'static str,
   severity: Severity,
@@ -270,6 +272,7 @@ impl Rule for ScssNoGlobalFunctionNames {
     Severity::Warning
   }
 
+  /// Checks declarations and at-rule params for deprecated global function names.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

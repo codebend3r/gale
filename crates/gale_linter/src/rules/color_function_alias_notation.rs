@@ -76,6 +76,8 @@ impl Rule for ColorFunctionAliasNotation {
     Severity::Warning
   }
 
+  /// Flags legacy `rgba()`/`hsla()` aliases, reading the source text so
+  /// lightningcss normalisation does not hide them. SCSS arguments are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),

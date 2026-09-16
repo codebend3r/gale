@@ -48,6 +48,7 @@ fn extract_media_features(params: &str) -> Vec<String> {
   features
 }
 
+/// Reads the disallowed media feature names, lowercased.
 fn parse_disallowed_list(options: Option<&serde_json::Value>) -> Vec<String> {
   let Some(val) = options else {
     return Vec::new();
@@ -74,6 +75,7 @@ impl Rule for MediaFeatureNameDisallowedList {
     Severity::Warning
   }
 
+  /// Flags media features named in the configured disallow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let disallowed = parse_disallowed_list(ctx.options);
     if disallowed.is_empty() {

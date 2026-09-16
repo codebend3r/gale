@@ -189,11 +189,13 @@ static KNOWN_SCSS_FUNCTIONS: &[&str] = &[
   "zip",
 ];
 
+/// Whether `name` is a standard CSS function.
 fn is_known_function(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   KNOWN_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
 }
 
+/// Whether `name` is a built-in SCSS function.
 fn is_known_scss_function(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   KNOWN_SCSS_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
@@ -245,6 +247,8 @@ impl Rule for FunctionNoUnknown {
     Severity::Error
   }
 
+  /// Flags function names that are neither standard CSS nor, in SCSS files, a
+  /// built-in SCSS function. Vendor-prefixed names are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

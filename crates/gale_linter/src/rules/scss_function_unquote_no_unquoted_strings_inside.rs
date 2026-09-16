@@ -19,6 +19,7 @@ impl Rule for ScssFunctionUnquoteNoUnquotedStringsInside {
     Severity::Warning
   }
 
+  /// Flags `unquote()` calls whose argument is already unquoted.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

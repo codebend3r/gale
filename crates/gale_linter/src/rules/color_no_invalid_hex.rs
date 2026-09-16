@@ -18,6 +18,7 @@ impl Rule for ColorNoInvalidHex {
     Severity::Error
   }
 
+  /// Flags hex colors whose digit count is not 3, 4, 6 or 8.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

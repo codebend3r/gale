@@ -46,6 +46,8 @@ impl Rule for SelectorNoVendorPrefix {
     Severity::Warning
   }
 
+  /// Flags vendor-prefixed selectors that have a standard equivalent. Prefixed
+  /// selectors with no standard form are left alone.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

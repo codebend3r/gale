@@ -87,6 +87,8 @@ impl Rule for SyntaxStringNoInvalid {
     Severity::Error
   }
 
+  /// Flags a `@property` `syntax` descriptor that is unquoted, empty, or names a
+  /// CSS type this rule does not know.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

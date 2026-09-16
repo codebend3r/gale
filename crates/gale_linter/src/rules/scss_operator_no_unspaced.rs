@@ -26,6 +26,8 @@ impl Rule for ScssOperatorNoUnspaced {
     Severity::Warning
   }
 
+  /// Checks declaration values, and interpolations inside property names, for
+  /// operators missing their surrounding spaces.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass) {
       return vec![];
@@ -56,6 +58,8 @@ impl Rule for ScssOperatorNoUnspaced {
     diagnostics
   }
 
+  /// Covers what the AST loses: source-level constructs such as variable
+  /// assignments and media queries, plus multi-space `calc()` operands.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass) {
       return vec![];
@@ -67,6 +71,7 @@ impl Rule for ScssOperatorNoUnspaced {
   }
 }
 
+/// Byte offset of `prop` in the source, searched backwards from its value.
 fn find_prop_offset(source: &str, prop: &str, val_offset: usize) -> usize {
   if val_offset > prop.len() + 2 {
     let start = val_offset.saturating_sub(prop.len() + 20);
@@ -77,6 +82,8 @@ fn find_prop_offset(source: &str, prop: &str, val_offset: usize) -> usize {
   0
 }
 
+/// Whether the property is a shorthand where `/` separates values rather than
+/// dividing, as in `font` and `border-radius`.
 fn is_shorthand_with_slash(property: &str) -> bool {
   let prop = property.to_ascii_lowercase();
   let prop = prop
@@ -443,12 +450,14 @@ fn check_calc_multi_space(
   }
 }
 
+/// Advances `i` past ASCII whitespace.
 fn skip_ws(b: &[u8], i: &mut usize) {
   while *i < b.len() && b[*i].is_ascii_whitespace() {
     *i += 1;
   }
 }
 
+/// The text inside a `#{…}` starting at `start`, and the offset just past it.
 fn extract_interpolation(source: &str, start: usize) -> (&str, usize) {
   let b = source.as_bytes();
   let len = b.len();
@@ -468,6 +477,8 @@ fn extract_interpolation(source: &str, start: usize) -> (&str, usize) {
   (&source[start..j], j + 1)
 }
 
+/// Offset of the `;` or `}` ending the statement, ignoring ones nested in
+/// parentheses or strings.
 fn find_stmt_end(source: &str, start: usize) -> usize {
   let b = source.as_bytes();
   let len = b.len();
@@ -496,6 +507,7 @@ fn find_stmt_end(source: &str, start: usize) -> usize {
   len
 }
 
+/// Offset of the `)` closing the parameter list opened at depth `init_depth`.
 fn find_param_end(source: &str, start: usize, init_depth: i32) -> usize {
   let b = source.as_bytes();
   let len = b.len();
@@ -528,6 +540,7 @@ fn find_param_end(source: &str, start: usize, init_depth: i32) -> usize {
   len
 }
 
+/// Checks the parenthesised value of each media feature in `mt`.
 fn check_media_values(
   mt: &str,
   base: usize,
@@ -603,6 +616,8 @@ fn check_interpolations_only(
 
 // ── Core value checking ────────────────────────────────────────────────
 
+/// Checks a declaration value, treating interpolation context as expression
+/// context. Thin wrapper over [`check_value_inner`].
 fn check_value(
   value: &str,
   base_offset: usize,
@@ -624,6 +639,7 @@ fn check_value(
   );
 }
 
+/// Checks a value known to be an expression, such as a variable assignment.
 fn check_value_expr(
   value: &str,
   base_offset: usize,
@@ -633,6 +649,8 @@ fn check_value_expr(
   check_value_inner(value, base_offset, false, false, true, rule, diags);
 }
 
+/// Walks `value` byte by byte and reports operators used as binary operators
+/// without a space on both sides.
 fn check_value_inner(
   value: &str,
   base_offset: usize,
@@ -1022,6 +1040,7 @@ fn check_value_inner(
   }
 }
 
+/// The text inside a `#{…}` within a value, and the offset just past it.
 fn extract_interp_local(value: &str, start: usize) -> (&str, usize) {
   let b = value.as_bytes();
   let len = b.len();
@@ -1041,6 +1060,7 @@ fn extract_interp_local(value: &str, start: usize) -> (&str, usize) {
   (&value[start..j], j + 1)
 }
 
+/// Pushes a diagnostic for one unspaced operator.
 fn emit(
   rule: &ScssOperatorNoUnspaced,
   diags: &mut Vec<Diagnostic>,
@@ -1276,6 +1296,8 @@ enum TokType {
   Unknown,
 }
 
+/// Classifies the token immediately before `i`, which decides whether the
+/// operator there is binary.
 fn classify_before(b: &[u8], i: usize) -> TokType {
   if i == 0 {
     return TokType::Unknown;
@@ -1338,6 +1360,8 @@ fn classify_before(b: &[u8], i: usize) -> TokType {
   TokType::Numeric
 }
 
+/// Classifies the token immediately after `i`, which decides whether the
+/// operator there is binary.
 fn classify_after(b: &[u8], i: usize) -> TokType {
   let len = b.len();
   let mut j = i + 1;
@@ -1479,6 +1503,7 @@ fn is_color_function_at(value: &str, i: usize) -> Option<usize> {
   None
 }
 
+/// Whether the `%` at `i` is the modulo operator rather than a percentage unit.
 fn is_modulo(b: &[u8], i: usize) -> bool {
   let len = b.len();
   let mut ap = i + 1;
@@ -1535,6 +1560,8 @@ fn is_modulo(b: &[u8], i: usize) -> bool {
   false
 }
 
+/// Whether the sign at `i` is unary — leading, after `(`, `,` or `:`, or
+/// introducing a negative literal.
 fn is_unary(b: &[u8], i: usize) -> bool {
   if i == 0 {
     return true;
@@ -1563,6 +1590,7 @@ fn is_unary(b: &[u8], i: usize) -> bool {
   )
 }
 
+/// Whether what precedes `i` can end an operand, making a comparison plausible.
 fn is_comparison_ctx(b: &[u8], i: usize) -> bool {
   let mut j = i;
   while j > 0 && b[j - 1] == b' ' {
@@ -1575,6 +1603,7 @@ fn is_comparison_ctx(b: &[u8], i: usize) -> bool {
   p.is_ascii_alphanumeric() || p == b')' || p == b'}' || p == b'$'
 }
 
+/// Number of whitespace bytes immediately before `i`.
 fn count_ws_before(b: &[u8], i: usize) -> usize {
   let mut c = 0;
   let mut j = i;
@@ -1584,6 +1613,7 @@ fn count_ws_before(b: &[u8], i: usize) -> usize {
   }
   c
 }
+/// Number of whitespace bytes immediately after `i`.
 fn count_ws_after(b: &[u8], i: usize) -> usize {
   let mut c = 0;
   let mut j = i + 1;
@@ -1593,6 +1623,7 @@ fn count_ws_after(b: &[u8], i: usize) -> usize {
   }
   c
 }
+/// Whether the whitespace run before `i` contains a newline.
 fn has_nl_before(b: &[u8], i: usize) -> bool {
   let mut j = i;
   while j > 0 && b[j - 1].is_ascii_whitespace() {
@@ -1603,6 +1634,7 @@ fn has_nl_before(b: &[u8], i: usize) -> bool {
   }
   false
 }
+/// Whether the whitespace run after `i` contains a newline.
 fn has_nl_after(b: &[u8], i: usize) -> bool {
   let mut j = i + 1;
   while j < b.len() && b[j].is_ascii_whitespace() {

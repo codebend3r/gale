@@ -24,6 +24,8 @@ impl Rule for ScssAtRuleNoUnknown {
     Severity::Warning
   }
 
+  /// Flags at-rules that are neither standard CSS nor SCSS. Runs on every syntax,
+  /// as Stylelint does, since configs enable it project-wide.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Stylelint runs scss/at-rule-no-unknown on ALL file types (including
     // plain CSS) when the rule is enabled — typically via

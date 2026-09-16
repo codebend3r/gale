@@ -24,6 +24,7 @@ impl Rule for StylisticSelectorAttributeOperatorSpaceBefore {
     Severity::Warning
   }
 
+  /// Flags an attribute operator whose preceding space does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -74,6 +75,7 @@ impl Rule for StylisticSelectorAttributeOperatorSpaceBefore {
   }
 }
 
+/// Checks the operator inside one `[…]` block, offsets relative to `base_offset`.
 fn check_attr_operator(
   attr_content: &str,
   base_offset: usize,

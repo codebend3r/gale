@@ -24,6 +24,7 @@ impl Rule for FunctionUrlNoSchemeRelative {
     Severity::Warning
   }
 
+  /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let declarations: Vec<&gale_css_parser::Declaration> = match node {
@@ -38,6 +39,7 @@ impl Rule for FunctionUrlNoSchemeRelative {
   }
 }
 
+/// Flags `url()` arguments beginning with `//`.
 fn check_value(
   value: &str,
   base_offset: usize,

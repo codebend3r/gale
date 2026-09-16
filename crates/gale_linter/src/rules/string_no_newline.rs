@@ -24,6 +24,7 @@ impl Rule for StringNoNewline {
     Severity::Warning
   }
 
+  /// Checks declaration values for unescaped newlines inside strings.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -36,6 +37,7 @@ impl Rule for StringNoNewline {
     diagnostics
   }
 
+  /// Also scans the raw source, catching strings the parser discarded as malformed.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     // Source-level scan to catch newlines in strings that the parser
     // may not preserve (e.g., lightningcss discards malformed strings).
@@ -113,6 +115,7 @@ fn scan_source_for_string_newlines(
   diagnostics
 }
 
+/// Reports each unescaped newline inside a quoted string in `value`.
 fn check_value_for_newlines(
   value: &str,
   base_offset: usize,

@@ -14,6 +14,7 @@ pub enum Severity {
 }
 
 impl std::fmt::Display for Severity {
+  /// Renders the severity as its lowercase Stylelint name.
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       Severity::Error => write!(f, "error"),
@@ -38,6 +39,7 @@ pub struct Span {
 }
 
 impl Span {
+  /// Builds a span from a byte offset and a byte length.
   pub fn new(offset: usize, length: usize) -> Self {
     Self { offset, length }
   }
@@ -73,6 +75,7 @@ pub struct SourceLocation {
 }
 
 impl SourceLocation {
+  /// Builds a location from an already-known line, column and offset.
   pub fn new(line: usize, column: usize, offset: usize) -> Self {
     Self {
       line,
@@ -150,6 +153,7 @@ pub struct Edit {
 }
 
 impl Edit {
+  /// Builds an edit replacing `span` with `new_text`.
   pub fn new(span: Span, new_text: impl Into<String>) -> Self {
     Self {
       span,
@@ -166,6 +170,7 @@ pub struct Fix {
 }
 
 impl Fix {
+  /// Builds a fix from a description and the edits that apply it.
   pub fn new(description: impl Into<String>, edits: Vec<Edit>) -> Self {
     Self {
       description: description.into(),
@@ -233,26 +238,31 @@ impl Diagnostic {
     }
   }
 
+  /// Sets the severity. Builder method.
   pub fn severity(mut self, severity: Severity) -> Self {
     self.severity = severity;
     self
   }
 
+  /// Sets the source span. Builder method.
   pub fn span(mut self, span: Span) -> Self {
     self.span = span;
     self
   }
 
+  /// Sets the owning file path. Builder method.
   pub fn file_path(mut self, path: impl Into<String>) -> Self {
     self.file_path = path.into();
     self
   }
 
+  /// Sets the rule documentation URL. Builder method.
   pub fn url(mut self, url: impl Into<String>) -> Self {
     self.url = Some(url.into());
     self
   }
 
+  /// Attaches an auto-fix. Builder method.
   pub fn fix(mut self, fix: Fix) -> Self {
     self.fix = Some(fix);
     self
@@ -260,6 +270,7 @@ impl Diagnostic {
 }
 
 impl std::fmt::Display for Diagnostic {
+  /// Renders the diagnostic as `severity: message (rule-name)`.
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(
       f,
@@ -285,6 +296,7 @@ pub struct LintResult {
 }
 
 impl LintResult {
+  /// Bundles a file's path, source and diagnostics into one result.
   pub fn new(
     file_path: impl Into<String>,
     source: impl Into<String>,

@@ -45,6 +45,7 @@ const ZERO_UNIT_EXEMPT_PROPERTIES: &[&str] = &[
   "animation-duration",
 ];
 
+/// Whether `prop` is one where a zero still needs its unit, such as `flex`.
 fn is_exempt_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
   ZERO_UNIT_EXEMPT_PROPERTIES.iter().any(|&p| lower == p)
@@ -78,6 +79,7 @@ const MATH_FUNCTIONS: &[&str] = &[
   "-moz-calc",
 ];
 
+/// Whether `name` is a math function, where units on zero are meaningful.
 fn is_math_function(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   MATH_FUNCTIONS.iter().any(|&f| lower == f)
@@ -92,6 +94,7 @@ struct Options {
   ignore_functions: Vec<String>,
 }
 
+/// Reads the `ignore` and `ignoreFunctions` secondaries.
 fn parse_options(ctx: &RuleContext) -> Options {
   let secondary = ctx.secondary_options();
   let mut ignore_custom_properties = false;
@@ -118,6 +121,7 @@ fn parse_options(ctx: &RuleContext) -> Options {
   }
 }
 
+/// Normalises a string or array-of-strings option into a `Vec`.
 fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   match val {
     serde_json::Value::Array(arr) => arr
@@ -129,6 +133,7 @@ fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
   }
 }
 
+/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   if pattern.starts_with('/') {
     if let Some(inner) = pattern.strip_prefix('/') {
@@ -152,6 +157,7 @@ fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   }
 }
 
+/// Whether any `ignoreFunctions` pattern matches this function name.
 fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
   patterns.iter().any(|p| matches_pattern_ci(func_name, p))
 }
@@ -169,6 +175,8 @@ impl Rule for LengthZeroNoUnit {
     Severity::Warning
   }
 
+  /// Flags units on zero lengths, skipping exempt properties, math functions, and
+  /// anything the ignore options cover.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = parse_options(ctx);
     let mut diags = Vec::new();

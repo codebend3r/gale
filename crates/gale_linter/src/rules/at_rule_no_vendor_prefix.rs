@@ -33,6 +33,8 @@ impl Rule for AtRuleNoVendorPrefix {
     Severity::Warning
   }
 
+  /// Flags a vendor-prefixed at-rule and offers a fix that drops the prefix,
+  /// locating the name in the source so the edit span is exact.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(rule) = node else {
       return vec![];

@@ -29,6 +29,8 @@ impl Rule for MaxLineLength {
     Severity::Warning
   }
 
+  /// Flags source lines longer than the configured maximum, skipping any that
+  /// match an `ignorePattern`.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     // Read the max length from the primary option (integer), defaulting to 120.
     let max_length = context

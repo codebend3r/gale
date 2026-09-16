@@ -23,6 +23,7 @@ impl Rule for CommentPattern {
     Severity::Warning
   }
 
+  /// Flags comment text that does not match the configured regex.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Comment(comment) = node else {
       return vec![];

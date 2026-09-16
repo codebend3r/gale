@@ -26,6 +26,8 @@ impl Rule for ScssAtFunctionPattern {
     Severity::Warning
   }
 
+  /// Flags an `@function` name that does not match the configured regex,
+  /// defaulting to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

@@ -23,6 +23,7 @@ const WRAPPER_AT_RULES: &[&str] = &[
   "supports",
 ];
 
+/// Recurses into nested rules, checking the at-rules nested inside each.
 fn check_style_rule(
   rule: &NoInvalidPositionDeclaration,
   sr: &gale_css_parser::StyleRule,
@@ -107,6 +108,7 @@ impl Rule for NoInvalidPositionDeclaration {
     Severity::Warning
   }
 
+  /// Flags declarations sitting directly inside an at-rule that takes only rules.
   fn check_root(&self, nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     check_nodes(self, nodes, false, &mut diags);

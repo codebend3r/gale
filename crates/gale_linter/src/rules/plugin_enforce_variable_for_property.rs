@@ -33,6 +33,7 @@ enum Pattern {
 }
 
 impl Pattern {
+  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact value.
   fn from_str(s: &str) -> Self {
     // Patterns wrapped in `/` are treated as regexes.
     if let Some(inner) = s.strip_prefix('/').and_then(|s| {
@@ -58,6 +59,7 @@ impl Pattern {
     }
   }
 
+  /// Whether the value matches this pattern.
   fn matches(&self, value: &str) -> bool {
     match self {
       Pattern::Exact(s) => value == s,
@@ -66,6 +68,7 @@ impl Pattern {
   }
 }
 
+/// Reads the property-to-allowed-patterns map from the `properties` secondary.
 fn parse_options(context: &RuleContext) -> HashMap<String, Vec<Pattern>> {
   let secondary = match context.secondary_options() {
     Some(opts) => opts,
@@ -169,6 +172,7 @@ impl Rule for PluginEnforceVariableForProperty {
     Severity::Warning
   }
 
+  /// Flags a configured property whose value matches none of its allowed patterns.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let property_map = parse_options(ctx);
     if property_map.is_empty() {

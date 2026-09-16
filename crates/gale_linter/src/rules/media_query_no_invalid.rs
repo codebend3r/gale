@@ -26,6 +26,8 @@ impl Rule for MediaQueryNoInvalid {
     Severity::Warning
   }
 
+  /// Flags media queries that are empty, have unbalanced parentheses, or chain
+  /// operators with no condition between them.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

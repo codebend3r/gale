@@ -20,6 +20,7 @@ static IMPORT_CACHE: OnceLock<
   std::sync::Mutex<std::collections::HashMap<String, HashSet<String>>>,
 > = OnceLock::new();
 
+/// Process-wide cache of parsed `importFrom` sources, keyed by path list.
 fn import_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, HashSet<String>>> {
   IMPORT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -37,6 +38,8 @@ impl Rule for CsstoolsValueNoUnknownCustomProperties {
     Severity::Warning
   }
 
+  /// Collects custom property definitions from `importFrom` and from this file,
+  /// then flags every `var()` reference that resolves to none of them.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
 
@@ -242,6 +245,8 @@ fn collect_definitions_from_source(source: &str, props: &mut HashSet<String>) {
 // Loading imported custom properties
 // ---------------------------------------------------------------------------
 
+/// Reads the `importFrom` sources and returns the custom properties they define,
+/// memoising the result on the sorted path list.
 fn load_imported_custom_properties(context: &RuleContext) -> HashSet<String> {
   let secondary = match context.secondary_options() {
     Some(opts) => opts,
@@ -290,6 +295,7 @@ fn load_imported_custom_properties(context: &RuleContext) -> HashSet<String> {
   props
 }
 
+/// Nearest `node_modules` directory at or above `file_path`.
 fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
   let mut dir = if file_path.is_file() {
     file_path.parent()?
@@ -306,6 +312,8 @@ fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
   }
 }
 
+/// Resolves an `importFrom` entry: absolute as-is, bare specifiers against
+/// `node_modules`, relative against the current directory.
 fn resolve_import_path(path_str: &str, node_modules: Option<&Path>) -> Option<std::path::PathBuf> {
   let p = Path::new(path_str);
 
@@ -400,11 +408,13 @@ fn find_var_refs_in_value(value: &str, base_offset: usize) -> Vec<VarRef> {
   refs
 }
 
+/// Whether the byte is CSS whitespace.
 #[inline]
 fn is_whitespace(b: u8) -> bool {
   b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
 
+/// Whether the byte can appear in a custom property name.
 #[inline]
 fn is_name_char(b: u8) -> bool {
   b.is_ascii_alphanumeric() || b == b'-' || b == b'_'

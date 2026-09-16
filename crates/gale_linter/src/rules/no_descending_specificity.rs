@@ -717,6 +717,7 @@ fn check_one_selector_with_src(
   }
 }
 
+/// Checks a selector against those already seen, using it as its own source text.
 fn check_one_selector(
   selector: &str,
   span: Span,
@@ -740,6 +741,8 @@ impl Rule for NoDescendingSpecificity {
     Severity::Warning
   }
 
+  /// Groups selectors by their last compound and flags one whose specificity is
+  /// lower than an earlier sibling's. Preprocessor files get their `&` expanded first.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut comparison_ctx: HashMap<String, Vec<(Specificity, String)>> = HashMap::new();

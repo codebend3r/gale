@@ -21,6 +21,7 @@ impl Rule for ScssNoDuplicateMixins {
     Severity::Warning
   }
 
+  /// Flags a `@mixin` name declared more than once.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -33,6 +34,8 @@ impl Rule for ScssNoDuplicateMixins {
   }
 }
 
+/// Recurses through the tree, reporting each repeat of a mixin name. The name
+/// is everything before the first `(` or space.
 fn collect_mixins(
   nodes: &[CssNode],
   seen: &mut HashSet<String>,

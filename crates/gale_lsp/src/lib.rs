@@ -77,6 +77,7 @@ pub struct GaleLspServer {
 }
 
 impl GaleLspServer {
+  /// Starts with no runner; `initialize` builds it from the resolved config.
   fn new(client: Client, config_path: Option<PathBuf>) -> Self {
     Self {
       client,
@@ -282,6 +283,9 @@ impl GaleLspServer {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for GaleLspServer {
+  /// Resolves the config (explicit `--config`, else the workspace root, else
+  /// the cwd) and builds the shared runner, then advertises full-text sync
+  /// and code actions.
   async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
     // An explicit `--config` wins over discovery, matching the CLI.
     let (config, has_config_file) = if let Some(path) = &self.config_path {
@@ -333,20 +337,24 @@ impl LanguageServer for GaleLspServer {
     })
   }
 
+  /// Handshake complete; `initialize` already did the setup.
   async fn initialized(&self, _: InitializedParams) {
     debug!("Gale LSP server initialized");
   }
 
+  /// Nothing to tear down.
   async fn shutdown(&self) -> Result<()> {
     Ok(())
   }
 
+  /// Lints the newly opened document and publishes its diagnostics.
   async fn did_open(&self, params: DidOpenTextDocumentParams) {
     let uri = params.text_document.uri;
     let source = params.text_document.text;
     self.lint_and_publish(uri, &source).await;
   }
 
+  /// Re-lints on every edit; full sync means the last event holds all the text.
   async fn did_change(&self, params: DidChangeTextDocumentParams) {
     // We use full sync, so the last change event contains the full text.
     let uri = params.text_document.uri;
@@ -355,6 +363,7 @@ impl LanguageServer for GaleLspServer {
     }
   }
 
+  /// Forgets the document and clears its diagnostics from the editor.
   async fn did_close(&self, params: DidCloseTextDocumentParams) {
     self
       .documents
@@ -369,12 +378,14 @@ impl LanguageServer for GaleLspServer {
       .await;
   }
 
+  /// Offers quick fixes for the fixable diagnostics under the cursor.
   async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
     Ok(Some(
       self.quick_fixes(&params.text_document.uri, &params.range),
     ))
   }
 
+  /// Re-lints on save, using the notification's text or re-reading the file.
   async fn did_save(&self, params: DidSaveTextDocumentParams) {
     let uri = params.text_document.uri;
     // If the save notification includes text, use it; otherwise read from disk.

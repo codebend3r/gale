@@ -21,6 +21,7 @@ impl Rule for StylisticFunctionCommaNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a function argument comma whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("always-multi-line");
     let mut diagnostics = Vec::new();

@@ -21,6 +21,8 @@ impl Rule for CommentNoEmpty {
     Severity::Warning
   }
 
+  /// Flags block comments with no content, fixing by deleting the comment and its
+  /// trailing newline. SCSS/Less `//` comments are left alone.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
     match node {
       CssNode::Comment(comment) => {

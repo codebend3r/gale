@@ -21,6 +21,8 @@ impl Rule for StylisticValueListCommaSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags a value list comma whose trailing space does not match the option.
+  /// Commas inside function arguments belong to the function-comma rules.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("always");
     let mut diagnostics = Vec::new();

@@ -23,6 +23,7 @@ impl Rule for FontFamilyNoDuplicateNames {
     Severity::Warning
   }
 
+  /// Flags a family name listed twice in the same `font-family` or `font` value.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

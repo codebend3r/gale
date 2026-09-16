@@ -21,6 +21,8 @@ impl Rule for BlockNoEmpty {
     Severity::Warning
   }
 
+  /// Flags a block with no declarations or children. With `ignore: ["comments"]`
+  /// a block holding only comments is allowed, so the source is re-checked.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
     // Read the `ignore` secondary option.
     // Options may be stored as:

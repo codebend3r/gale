@@ -54,6 +54,8 @@ impl Rule for DisplayNotation {
     Severity::Warning
   }
 
+  /// Flags `display` values written in the notation the primary option forbids,
+  /// using the short/long mapping table above.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

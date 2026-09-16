@@ -23,6 +23,8 @@ impl Rule for NoUnknownAnimations {
     Severity::Warning
   }
 
+  /// Collects the `@keyframes` names in the file, then flags animation values
+  /// referencing a name none of them define.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     // First pass: collect all @keyframes names.
     let mut keyframe_names = Vec::new();
@@ -40,6 +42,7 @@ impl Rule for NoUnknownAnimations {
   }
 }
 
+/// Gathers every `@keyframes` name, recursing into nested at-rules.
 fn collect_keyframe_names(nodes: &[CssNode], names: &mut Vec<String>) {
   for node in nodes {
     if let CssNode::AtRule(at_rule) = node {
@@ -51,6 +54,8 @@ fn collect_keyframe_names(nodes: &[CssNode], names: &mut Vec<String>) {
   }
 }
 
+/// Reports `animation-name` and `animation` values naming an undefined keyframe,
+/// splitting comma-separated lists.
 fn collect_animation_issues(
   nodes: &[CssNode],
   keyframe_names: &[String],

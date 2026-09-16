@@ -29,6 +29,8 @@ impl Rule for ScssDoubleSlashCommentEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags a `//` comment whose preceding blank line does not match the option,
+  /// after applying the `except`/`ignore` secondaries.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -184,6 +186,7 @@ fn is_first_content_in_source(source: &str, offset: usize) -> bool {
   true
 }
 
+/// Whether anything other than whitespace precedes `pos` on its line.
 fn has_non_whitespace_before_on_line(bytes: &[u8], pos: usize) -> bool {
   let mut j = pos;
   while j > 0 {
@@ -197,6 +200,7 @@ fn has_non_whitespace_before_on_line(bytes: &[u8], pos: usize) -> bool {
   false
 }
 
+/// Whether the line before `offset` contains only whitespace.
 fn has_empty_line_before(source: &str, offset: usize) -> bool {
   let before = &source[..offset];
   let bytes = before.as_bytes();
@@ -496,6 +500,7 @@ fn forward_scan_for_opening_brace(source: &str, offset: usize, len: usize) -> bo
   false
 }
 
+/// Whether the comment is a `stylelint-`/`gale-` disable or enable directive.
 fn is_stylelint_command(comment_text: &str) -> bool {
   let trimmed = comment_text.trim();
   trimmed.starts_with("stylelint-disable")

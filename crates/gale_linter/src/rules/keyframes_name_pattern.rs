@@ -28,6 +28,8 @@ impl Rule for KeyframesNamePattern {
     Severity::Warning
   }
 
+  /// Flags a `@keyframes` name that does not match the configured regex,
+  /// defaulting to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

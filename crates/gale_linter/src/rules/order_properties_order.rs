@@ -81,6 +81,8 @@ impl Rule for OrderPropertiesOrder {
     Severity::Warning
   }
 
+  /// Flags a property that appears before one the config orders ahead of it.
+  /// SCSS variables and custom properties are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

@@ -14,6 +14,7 @@ use crate::rule::{Rule, RuleContext};
 /// Equivalent to Stylelint's `declaration-property-value-allowed-list` rule.
 pub struct DeclarationPropertyValueAllowedList;
 
+/// Reads the property-to-allowed-values map from the options object.
 fn parse_options(options: Option<&serde_json::Value>) -> HashMap<String, Vec<String>> {
   let Some(val) = options else {
     return HashMap::new();
@@ -47,6 +48,7 @@ impl Rule for DeclarationPropertyValueAllowedList {
     Severity::Warning
   }
 
+  /// Flags a listed property whose value contains none of its allowed patterns.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let allowed_map = parse_options(ctx.options);
     if allowed_map.is_empty() {

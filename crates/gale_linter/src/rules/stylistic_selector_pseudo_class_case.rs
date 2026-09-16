@@ -21,6 +21,7 @@ impl Rule for StylisticSelectorPseudoClassCase {
     Severity::Warning
   }
 
+  /// Flags pseudo-class names not in the configured case.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("lower");
     let source = context.source;

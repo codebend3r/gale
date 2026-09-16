@@ -25,6 +25,7 @@ impl Rule for SelectorDisallowedList {
     Severity::Warning
   }
 
+  /// Flags a selector containing any disallowed substring.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationBangSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags a `!` whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = ctx.primary_option_str().unwrap_or("never");
     let mut diagnostics = Vec::new();

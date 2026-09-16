@@ -21,6 +21,7 @@ impl Rule for StylisticPropertyCase {
     Severity::Warning
   }
 
+  /// Flags property names not in the configured case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = ctx.primary_option_str().unwrap_or("lower");
 

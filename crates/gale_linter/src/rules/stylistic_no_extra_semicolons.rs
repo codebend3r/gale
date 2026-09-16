@@ -21,6 +21,7 @@ impl Rule for StylisticNoExtraSemicolons {
     Severity::Warning
   }
 
+  /// Flags semicolons that terminate nothing.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
     let bytes = source.as_bytes();

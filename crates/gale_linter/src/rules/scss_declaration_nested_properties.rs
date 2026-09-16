@@ -33,6 +33,7 @@ impl Rule for ScssDeclarationNestedProperties {
     Severity::Warning
   }
 
+  /// Under "never", flags SCSS namespace blocks such as `font: { … }`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

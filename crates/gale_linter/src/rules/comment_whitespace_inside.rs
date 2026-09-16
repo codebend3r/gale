@@ -22,6 +22,8 @@ impl Rule for CommentWhitespaceInside {
     Severity::Warning
   }
 
+  /// Flags block comments missing whitespace just inside `/*` or `*/`. Comments
+  /// inside selector lists are skipped, as postcss never exposes them.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Comment(comment) = node else {
       return vec![];

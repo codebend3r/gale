@@ -49,6 +49,8 @@ impl Rule for FunctionLinearGradientNoNonstandardDirection {
     Severity::Warning
   }
 
+  /// Checks declaration values, preferring source text so the original direction
+  /// keywords survive parser normalisation.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let declarations: Vec<&gale_css_parser::Declaration> = match node {
@@ -70,6 +72,8 @@ impl Rule for FunctionLinearGradientNoNonstandardDirection {
   }
 }
 
+/// Flags unprefixed `linear-gradient()` calls whose direction omits `to`.
+/// Vendor-prefixed calls legitimately use the old syntax and are skipped.
 fn check_value(
   value: &str,
   base_offset: usize,

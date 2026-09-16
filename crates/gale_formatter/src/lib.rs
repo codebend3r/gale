@@ -8,6 +8,7 @@ use serde::Serialize;
 
 /// Trait for formatting lint results into a displayable string.
 pub trait Formatter {
+  /// Renders every result into the formatter's output string.
   fn format(&self, results: &[LintResult]) -> String;
 }
 
@@ -43,6 +44,7 @@ pub struct TextFormatter {
 }
 
 impl Default for TextFormatter {
+  /// Colour is on unless the CLI turns it off.
   fn default() -> Self {
     Self { color: true }
   }
@@ -55,6 +57,7 @@ struct Palette {
 }
 
 impl Palette {
+  /// Red, for errors.
   fn red(self, text: &str) -> String {
     if self.enabled {
       text.red().to_string()
@@ -63,6 +66,7 @@ impl Palette {
     }
   }
 
+  /// Yellow, for warnings and below.
   fn yellow(self, text: &str) -> String {
     if self.enabled {
       text.yellow().to_string()
@@ -71,6 +75,7 @@ impl Palette {
     }
   }
 
+  /// Dimmed, for the trailing rule name.
   fn dimmed(self, text: &str) -> String {
     if self.enabled {
       text.dimmed().to_string()
@@ -79,6 +84,7 @@ impl Palette {
     }
   }
 
+  /// Underlined, for file headers.
   fn underline(self, text: &str) -> String {
     if self.enabled {
       text.underline().to_string()
@@ -87,6 +93,7 @@ impl Palette {
     }
   }
 
+  /// Bold, for the summary line.
   fn bold(self, text: &str) -> String {
     if self.enabled {
       text.bold().to_string()
@@ -97,6 +104,8 @@ impl Palette {
 }
 
 impl Formatter for TextFormatter {
+  /// Groups warnings under an underlined file header and appends a
+  /// `N problems (E errors, W warnings)` summary.
   fn format(&self, results: &[LintResult]) -> String {
     let paint = Palette {
       enabled: self.color,
@@ -200,6 +209,8 @@ struct JsonWarning {
 }
 
 impl Formatter for JsonFormatter {
+  /// Emits one `JsonResult` per file, with 1-indexed start and end positions
+  /// and Stylelint's `" (rule-name)"` message suffix.
   fn format(&self, results: &[LintResult]) -> String {
     let json_results: Vec<JsonResult> = results
       .iter()
@@ -260,6 +271,7 @@ impl Formatter for JsonFormatter {
 pub struct CompactFormatter;
 
 impl Formatter for CompactFormatter {
+  /// Emits `file: line N, col N, severity - message` per warning.
   fn format(&self, results: &[LintResult]) -> String {
     let mut output = String::new();
 
@@ -297,6 +309,7 @@ impl Formatter for CompactFormatter {
 pub struct UnixFormatter;
 
 impl Formatter for UnixFormatter {
+  /// Emits `file:line:col: message [severity]` per warning, then a total.
   fn format(&self, results: &[LintResult]) -> String {
     let mut output = String::new();
     let mut total = 0usize;
@@ -337,6 +350,8 @@ impl Formatter for UnixFormatter {
 pub struct TapFormatter;
 
 impl Formatter for TapFormatter {
+  /// Emits one TAP test point per file; failing files carry a YAML block
+  /// per warning.
   fn format(&self, results: &[LintResult]) -> String {
     let mut output = String::from("TAP version 13\n");
     output.push_str(&format!("1..{}\n", results.len()));
@@ -389,12 +404,14 @@ pub struct VerboseFormatter {
 }
 
 impl Default for VerboseFormatter {
+  /// Colour is on unless the CLI turns it off.
   fn default() -> Self {
     Self { color: true }
   }
 }
 
 impl Formatter for VerboseFormatter {
+  /// Text output followed by the file count and per-rule tallies.
   fn format(&self, results: &[LintResult]) -> String {
     let mut output = TextFormatter { color: self.color }.format(results);
 

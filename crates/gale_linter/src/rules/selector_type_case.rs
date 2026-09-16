@@ -66,6 +66,8 @@ impl Rule for SelectorTypeCase {
     Severity::Warning
   }
 
+  /// Flags type selectors not in the configured case. Case-sensitive SVG element
+  /// names are skipped.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

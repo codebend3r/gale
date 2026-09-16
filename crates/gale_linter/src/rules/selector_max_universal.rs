@@ -29,6 +29,7 @@ struct Config {
 }
 
 impl Config {
+  /// Reads the maximum and the `ignoreAfterCombinators` secondary.
   fn from_context(ctx: &RuleContext) -> Self {
     let max = ctx
       .primary_option()
@@ -72,6 +73,8 @@ impl Rule for SelectorMaxUniversal {
     Severity::Warning
   }
 
+  /// Flags selectors holding more `*` than allowed, checking each comma-separated
+  /// selector on its own.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

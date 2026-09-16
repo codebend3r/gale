@@ -32,6 +32,7 @@ impl Rule for ScssAtImportPartialExtension {
     Severity::Warning
   }
 
+  /// Flags an `@import` whose file extension does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

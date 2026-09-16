@@ -497,6 +497,8 @@ impl Rule for FunctionCalcNoUnspacedOperator {
     Severity::Warning
   }
 
+  /// Scans the raw source for math functions and flags `+`/`-` operators that lack
+  /// a space on either side. Matches inside comments or longer names are skipped.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
     let is_scss = matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass);
@@ -544,6 +546,7 @@ impl Rule for FunctionCalcNoUnspacedOperator {
     diagnostics
   }
 
+  /// Unused: the work happens in `check_root`, since the parser normalises `calc()`.
   fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     // All checking is done in check_root using raw source text,
     // since the CSS parser normalizes calc expressions.

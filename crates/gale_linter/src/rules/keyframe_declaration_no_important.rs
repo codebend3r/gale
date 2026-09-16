@@ -24,6 +24,7 @@ impl Rule for KeyframeDeclarationNoImportant {
     Severity::Warning
   }
 
+  /// Checks the children of a `@keyframes` at-rule.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -37,6 +38,8 @@ impl Rule for KeyframeDeclarationNoImportant {
   }
 }
 
+/// Recurses through keyframe blocks, flagging every `!important` declaration —
+/// browsers ignore them there.
 fn collect_important_in_children(
   children: &[CssNode],
   rule: &KeyframeDeclarationNoImportant,

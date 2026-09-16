@@ -42,6 +42,8 @@ impl Rule for ColorFunctionNotation {
     Severity::Warning
   }
 
+  /// Flags color functions written in the notation the primary option forbids,
+  /// optionally ignoring ones containing `var()`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),

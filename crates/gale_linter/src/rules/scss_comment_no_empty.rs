@@ -22,6 +22,7 @@ impl Rule for ScssCommentNoEmpty {
     Severity::Warning
   }
 
+  /// Flags empty block and `//` comments in SCSS files.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

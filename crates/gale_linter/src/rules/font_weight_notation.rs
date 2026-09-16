@@ -47,21 +47,26 @@ fn numeric_to_named(num: &str) -> Option<&'static str> {
   }
 }
 
+/// Whether `s` is `inherit`, `initial`, `unset` or similar.
 fn is_css_wide_keyword(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   CSS_WIDE_KEYWORDS.iter().any(|kw| *kw == lower)
 }
 
+/// Whether `s` is `bolder` or `lighter`.
 fn is_relative_weight(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   RELATIVE_WEIGHTS.iter().any(|kw| *kw == lower)
 }
 
+/// Whether `s` is a named weight such as `normal` or `bold`.
 fn is_named_weight(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
   NAMED_WEIGHTS.iter().any(|kw| *kw == lower)
 }
 
+/// Whether `s` is a preprocessor variable, interpolation or function call, so
+/// its resolved weight is unknown.
 fn is_variable_or_function(s: &str) -> bool {
   s.starts_with('$')
     || s.starts_with('@')
@@ -148,6 +153,8 @@ impl Rule for FontWeightNotation {
     Severity::Warning
   }
 
+  /// Checks style rule declarations and those nested in at-rules, tracking whether
+  /// the enclosing at-rule is `@font-face`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
@@ -175,6 +182,7 @@ impl Rule for FontWeightNotation {
 }
 
 impl FontWeightNotation {
+  /// Runs [`Self::check_single_declaration`] over a declaration list.
   fn check_declarations(
     &self,
     declarations: &[gale_css_parser::Declaration],
@@ -187,6 +195,8 @@ impl FontWeightNotation {
     }
   }
 
+  /// Dispatches `font-weight` and the `font` shorthand to the weight checks,
+  /// preferring source text so reported offsets are exact.
   fn check_single_declaration(
     &self,
     decl: &gale_css_parser::Declaration,
@@ -283,6 +293,8 @@ impl FontWeightNotation {
     }
   }
 
+  /// Flags one weight token that uses the notation the mode forbids. Fractional
+  /// values, valid in `@font-face`, are left alone.
   fn check_weight_token(
     &self,
     token: &str,
@@ -342,6 +354,8 @@ impl FontWeightNotation {
     }
   }
 
+  /// Locates the weight token in a `font` shorthand — it precedes the font-size —
+  /// and checks it.
   fn check_font_shorthand(
     &self,
     value: &str,

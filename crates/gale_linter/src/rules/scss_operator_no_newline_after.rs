@@ -26,6 +26,8 @@ impl Rule for ScssOperatorNoNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a line ending in a binary arithmetic operator, scanning line by line
+  /// and tracking whether the position is inside a block comment.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

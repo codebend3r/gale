@@ -21,6 +21,8 @@ impl Rule for PropertyNoVendorPrefix {
     Severity::Warning
   }
 
+  /// Flags vendor-prefixed properties that have an unprefixed equivalent,
+  /// skipping any listed in `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Read ignoreProperties from options (secondary option object).
     let ignore_props: Vec<String> = ctx
@@ -92,6 +94,7 @@ impl Rule for PropertyNoVendorPrefix {
   }
 }
 
+/// The property with any vendor prefix removed, preserving the original case.
 fn strip_vendor_prefix(property: &str) -> String {
   let p = property.to_ascii_lowercase();
   for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
@@ -217,6 +220,7 @@ const KNOWN_PREFIXABLE_PROPERTIES: &[&str] = &[
   "writing-mode",
 ];
 
+/// Whether the property carries a vendor prefix. Custom properties do not.
 fn is_vendor_prefixed(property: &str) -> bool {
   let p = property.to_ascii_lowercase();
   // Custom properties (--) are not vendor prefixes
@@ -238,6 +242,7 @@ fn is_vendor_prefixed(property: &str) -> bool {
     .is_ok()
 }
 
+/// The already-lowercase property with any vendor prefix removed.
 fn strip_vendor_prefix_lower(property: &str) -> String {
   for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
     if let Some(stripped) = property.strip_prefix(prefix) {

@@ -6,6 +6,7 @@ use crate::rule::{Rule, RuleContext};
 /// Deprecated CSS at-rules (sorted for binary search).
 static DEPRECATED_AT_RULES: &[&str] = &["charset", "document"];
 
+/// Case-insensitive lookup in the sorted deprecated at-rule table.
 fn is_deprecated_at_rule(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   DEPRECATED_AT_RULES.binary_search(&lower.as_str()).is_ok()
@@ -26,6 +27,7 @@ impl Rule for AtRuleNoDeprecated {
     Severity::Error
   }
 
+  /// Flags at-rules that have been removed from the spec.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

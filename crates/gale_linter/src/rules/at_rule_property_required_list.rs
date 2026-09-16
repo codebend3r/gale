@@ -31,6 +31,7 @@ impl Rule for AtRulePropertyRequiredList {
     Severity::Warning
   }
 
+  /// Flags an at-rule that is missing any property the config requires for it.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

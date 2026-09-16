@@ -23,6 +23,8 @@ impl Rule for DeclarationEmptyLineBefore {
     Severity::Warning
   }
 
+  /// Flags declarations whose preceding blank line does not match the option,
+  /// including declarations inside at-rule bodies such as `@mixin`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = Options::from_ctx(ctx);
     let mut diags = Vec::new();
@@ -71,6 +73,8 @@ enum PrimaryOption {
 }
 
 impl Options {
+  /// Reads the primary option and the `except`/`ignore` secondaries, defaulting
+  /// to "never" with nothing excepted.
   fn from_ctx(ctx: &RuleContext) -> Self {
     let mut opts = Options {
       primary: PrimaryOption::Never,
@@ -107,6 +111,7 @@ impl Options {
   }
 }
 
+/// Maps the primary option string; anything but "always" means never.
 fn parse_primary(s: &str) -> PrimaryOption {
   match s {
     "always" => PrimaryOption::Always,
@@ -114,6 +119,7 @@ fn parse_primary(s: &str) -> PrimaryOption {
   }
 }
 
+/// Sets the `except` and `ignore` flags from the secondary object.
 fn parse_secondary(opts: &mut Options, value: &serde_json::Value) {
   if let Some(except) = value.get("except").and_then(|v| v.as_array()) {
     for item in except {

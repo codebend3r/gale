@@ -25,6 +25,8 @@ impl Rule for SelectorPseudoElementColonNotation {
     Severity::Warning
   }
 
+  /// Flags the four dual-syntax pseudo-elements written with the colon notation
+  /// the option forbids, reading the source for exact offsets.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

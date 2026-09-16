@@ -21,6 +21,7 @@ impl Rule for StylisticMaxEmptyLines {
     Severity::Warning
   }
 
+  /// Flags runs of blank lines longer than the maximum.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let max = context
       .primary_option()

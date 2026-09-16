@@ -51,14 +51,17 @@ pub struct Span {
 }
 
 impl Span {
+  /// Builds a span from a byte offset and a byte length.
   pub fn new(offset: usize, length: usize) -> Self {
     Self { offset, length }
   }
 
+  /// The exclusive end byte offset.
   pub fn end(&self) -> usize {
     self.offset + self.length
   }
 
+  /// A zero-length span at offset 0, for nodes with no known position.
   fn empty() -> Self {
     Self {
       offset: 0,
@@ -232,6 +235,7 @@ pub fn parse(source: &str, syntax: Syntax) -> Result<ParseResult, ParseError> {
 // `Copy` nor cheaply cloneable. Constructing a default is trivial.
 // ---------------------------------------------------------------------------
 
+/// A fresh default `PrinterOptions`; see the note above on why it is not reused.
 fn po() -> PrinterOptions<'static> {
   PrinterOptions::default()
 }
@@ -247,6 +251,7 @@ struct LineIndex {
 }
 
 impl LineIndex {
+  /// Records the byte offset each line starts at, for binary search.
   fn build(source: &str) -> Self {
     let mut line_starts = vec![0usize];
     for (i, b) in source.bytes().enumerate() {
@@ -276,6 +281,8 @@ impl LineIndex {
   }
 }
 
+/// Parses plain CSS with nesting and error recovery, then lowers the
+/// lightningcss stylesheet into the simplified AST.
 fn parse_css(source: &str) -> Result<ParseResult, ParseError> {
   let opts = ParserOptions {
     flags: ParserFlags::NESTING,
@@ -637,6 +644,8 @@ fn convert_keyframes(
   children
 }
 
+/// Lowers a lightningcss style rule, re-deriving each declaration's byte span
+/// from the source so `!important` declarations keep their original order.
 fn convert_style_rule(
   style: &lightningcss::rules::style::StyleRule,
   source: &str,
@@ -800,6 +809,8 @@ fn convert_style_rule(
   }
 }
 
+/// Lowers one declaration, restoring its vendor prefix and locating it in the
+/// source. Returns the declaration and the offset to resume searching from.
 fn convert_property(
   prop: &lightningcss::properties::Property,
   important: bool,

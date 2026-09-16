@@ -20,6 +20,8 @@ impl Rule for ScssLoadNoPartialLeadingUnderscore {
     Severity::Warning
   }
 
+  /// Flags a `@use`, `@forward` or `@import` path whose partial name starts with
+  /// an underscore; Sass adds it implicitly.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

@@ -21,6 +21,8 @@ impl Rule for StylisticNoMissingEndOfSourceNewline {
     Severity::Warning
   }
 
+  /// Flags a file not ending in a newline. Trailing whitespace does not count,
+  /// matching Stylelint.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if ctx.source.is_empty() {
       return vec![];

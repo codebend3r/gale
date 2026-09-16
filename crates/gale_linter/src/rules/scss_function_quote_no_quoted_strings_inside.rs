@@ -19,6 +19,7 @@ impl Rule for ScssFunctionQuoteNoQuotedStringsInside {
     Severity::Warning
   }
 
+  /// Flags `quote()` calls whose argument is already a quoted string.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

@@ -31,6 +31,7 @@ impl Rule for ScssAtMixinArgumentlessCallParentheses {
     Severity::Warning
   }
 
+  /// Flags an argumentless `@include` whose parentheses do not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

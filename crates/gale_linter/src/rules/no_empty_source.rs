@@ -21,6 +21,7 @@ impl Rule for NoEmptySource {
     Severity::Warning
   }
 
+  /// Flags a file that parsed to nothing and holds only whitespace.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     if nodes.is_empty() && context.source.trim().is_empty() {
       vec![

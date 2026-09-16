@@ -24,6 +24,7 @@ impl Rule for StylisticSelectorAttributeOperatorSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags an attribute operator whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("never");
     let source = context.source;
@@ -101,6 +102,7 @@ impl Rule for StylisticSelectorAttributeOperatorSpaceAfter {
 }
 
 impl StylisticSelectorAttributeOperatorSpaceAfter {
+  /// Checks the operator inside one `[…]` block, offsets relative to `base_offset`.
   fn check_attr_content(
     &self,
     content: &[u8],

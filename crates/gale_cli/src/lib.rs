@@ -272,6 +272,7 @@ fn write_output_file(path: &Path, report: &str) -> std::io::Result<()> {
   std::fs::write(path, strip_ansi(report))
 }
 
+/// Whether the path's extension is one Gale knows how to lint.
 fn is_css_file(path: &Path) -> bool {
   path
     .extension()
@@ -536,6 +537,8 @@ fn expand_braces(pattern: &str) -> Vec<String> {
   vec![pattern.to_string()]
 }
 
+/// Expands the given paths into a deduplicated file list, walking directories
+/// and dropping anything matched by ignore files or config ignore patterns.
 fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> {
   let mut files: Vec<PathBuf> = Vec::new();
 
@@ -846,6 +849,8 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Vec<PathBuf> 
 /// Config file names that, if present, prevent `--init` from creating a new one.
 const EXISTING_CONFIG_FILES: &[&str] = &["gale.json", "gale.toml", ".stylelintrc.json"];
 
+/// Writes a `gale.json` extending the recommended preset, refusing to
+/// overwrite an existing config.
 fn generate_init_config() -> Result<()> {
   let cwd = std::env::current_dir()?;
 
@@ -872,6 +877,8 @@ fn generate_init_config() -> Result<()> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Parses the CLI arguments and runs the requested mode — LSP server, `--init`,
+/// or a lint pass — returning the process exit code's worth of result.
 pub fn run() -> Result<()> {
   let cli = match Cli::try_parse() {
     Ok(cli) => cli,

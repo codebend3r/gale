@@ -26,6 +26,8 @@ impl Rule for FunctionUrlQuotes {
     Severity::Warning
   }
 
+  /// Flags `url()` arguments whose quoting does not match the option. With
+  /// `except: ["empty"]` the primary is inverted for empty URLs.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Read the primary option: "always" (default) or "never"
     let option = ctx.primary_option_str().unwrap_or("always");
@@ -119,6 +121,7 @@ impl Rule for FunctionUrlQuotes {
   }
 }
 
+/// The declaration's source slice when the span is usable, else `fallback`.
 fn get_search_area<'a>(
   offset: usize,
   length: usize,
@@ -133,6 +136,7 @@ fn get_search_area<'a>(
   }
 }
 
+/// Reports every `url()` in `search_area` whose quoting is wrong for `option`.
 fn check_urls(
   search_area: &str,
   base_offset: usize,

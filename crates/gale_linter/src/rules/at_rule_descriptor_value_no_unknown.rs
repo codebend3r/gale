@@ -27,6 +27,7 @@ static FONT_STRETCH_KEYWORDS: &[&str] = &[
 /// Known values for `inherits` in `@property`.
 static PROPERTY_INHERITS_VALUES: &[&str] = &["false", "true"];
 
+/// Case-insensitive binary search over a sorted table.
 fn lookup(haystack: &[&str], needle: &str) -> bool {
   let lower = needle.to_ascii_lowercase();
   haystack.binary_search(&lower.as_str()).is_ok()
@@ -142,6 +143,8 @@ impl Rule for AtRuleDescriptorValueNoUnknown {
     Severity::Error
   }
 
+  /// Validates descriptor values inside `@font-face` and `@property`, the only
+  /// at-rules this rule has value knowledge for.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

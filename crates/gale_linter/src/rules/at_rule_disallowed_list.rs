@@ -24,6 +24,7 @@ impl Rule for AtRuleDisallowedList {
     Severity::Warning
   }
 
+  /// Flags any at-rule named in the configured list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

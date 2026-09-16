@@ -21,6 +21,7 @@ impl Rule for SelectorAttributeOperatorDisallowedList {
     Severity::Warning
   }
 
+  /// Flags attribute operators named in the configured disallow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

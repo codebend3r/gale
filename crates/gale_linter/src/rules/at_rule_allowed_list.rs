@@ -39,6 +39,7 @@ impl Rule for AtRuleAllowedList {
     Severity::Warning
   }
 
+  /// Flags any at-rule outside the allowed set.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

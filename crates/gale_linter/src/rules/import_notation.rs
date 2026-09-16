@@ -22,6 +22,7 @@ impl Rule for ImportNotation {
     Severity::Warning
   }
 
+  /// Flags an `@import` written with `url()` rather than a quoted string.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

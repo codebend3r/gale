@@ -127,6 +127,8 @@ impl Rule for FunctionNameCase {
     Severity::Warning
   }
 
+  /// Flags function names not in the configured case, skipping any matched by
+  /// `ignoreFunctions`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

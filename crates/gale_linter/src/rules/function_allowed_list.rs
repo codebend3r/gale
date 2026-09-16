@@ -28,6 +28,8 @@ impl Rule for FunctionAllowedList {
     Severity::Warning
   }
 
+  /// Flags functions outside the configured allow list, accepting the option as a
+  /// bare array or nested inside the options array.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     // The primary option is an array of allowed function names/patterns.
     // It can arrive as:
@@ -114,6 +116,7 @@ impl Rule for FunctionAllowedList {
   }
 }
 
+/// Exact name or regex match only — no prefix stripping, no case folding.
 fn is_function_allowed(fname: &str, plain_names: &[String], regex_patterns: &[Regex]) -> bool {
   // Strict matching: exact string match or regex pattern match only.
   // No vendor prefix stripping, no implicit case-insensitive matching.
@@ -130,6 +133,7 @@ fn is_function_allowed(fname: &str, plain_names: &[String], regex_patterns: &[Re
   false
 }
 
+/// Scans `value` for function calls and reports each one not on the allow list.
 fn find_disallowed_functions(
   value: &str,
   base_offset: usize,

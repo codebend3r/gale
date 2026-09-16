@@ -25,6 +25,8 @@ impl Rule for KeyframeSelectorNotation {
     Severity::Warning
   }
 
+  /// Flags keyframe selectors written in the notation the option forbids. Under
+  /// the default, a block using only keywords is left alone.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];

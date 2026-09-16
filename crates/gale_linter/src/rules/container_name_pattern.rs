@@ -28,6 +28,8 @@ impl Rule for ContainerNamePattern {
     Severity::Warning
   }
 
+  /// Flags `container-name` values and `@container` names that do not match the
+  /// configured regex, defaulting to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = ctx
       .options

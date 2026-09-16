@@ -21,6 +21,7 @@ impl Rule for StylisticValueListCommaNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a value list comma whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let option = context.primary_option_str().unwrap_or("always");
     let source = context.source;

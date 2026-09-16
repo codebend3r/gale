@@ -32,6 +32,7 @@ impl Rule for ScssAtMixinDisallowedList {
     Severity::Warning
   }
 
+  /// Flags an `@include` whose mixin name matches a configured string or regex.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

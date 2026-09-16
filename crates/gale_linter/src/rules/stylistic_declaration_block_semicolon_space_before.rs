@@ -21,6 +21,7 @@ impl Rule for StylisticDeclarationBlockSemicolonSpaceBefore {
     Severity::Warning
   }
 
+  /// Flags a declaration semicolon whose preceding space does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

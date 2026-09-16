@@ -417,6 +417,8 @@ impl Rule for ColorNamed {
     Severity::Warning
   }
 
+  /// Flags named colors under "never", or hex/function colors that have an exact
+  /// name under "always-where-possible", honouring the ignore secondaries.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -868,14 +870,17 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Whether `word` is a CSS named color.
 fn is_named_color(word: &str) -> bool {
   NAMED_COLORS.contains(&word)
 }
 
+/// Whether `word` is a CSS system color keyword.
 fn is_system_color(word: &str) -> bool {
   SYSTEM_COLORS.contains(&word)
 }
 
+/// Whether `prop` never takes a color, so its values can be skipped.
 fn is_non_color_property(prop: &str) -> bool {
   NON_COLOR_PROPERTIES.contains(&prop)
 }
@@ -1170,6 +1175,7 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
   )
 }
 
+/// One channel of the HSL-to-RGB conversion, for the given hue offset `t`.
 fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
   if t < 0.0 {
     t += 1.0;

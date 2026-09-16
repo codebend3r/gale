@@ -27,6 +27,8 @@ impl Rule for MediaFeatureNameNoUnknown {
     Severity::Warning
   }
 
+  /// Flags media feature names that are not standard, skipping any matched by
+  /// `ignoreMediaFeatureNames` and any query containing interpolation.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];

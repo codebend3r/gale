@@ -121,6 +121,8 @@ impl Rule for DeclarationBlockNoShorthandPropertyOverrides {
     Severity::Warning
   }
 
+  /// Flags a shorthand that appears after — and so silently overrides — a
+  /// longhand it covers.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let style = match node {
       CssNode::Style(s) => s,

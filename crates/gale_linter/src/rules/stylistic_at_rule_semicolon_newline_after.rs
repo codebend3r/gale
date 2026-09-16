@@ -21,6 +21,7 @@ impl Rule for StylisticAtRuleSemicolonNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags an at-rule semicolon not followed by a newline.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let _option = context.primary_option_str().unwrap_or("always");
     let source = context.source;

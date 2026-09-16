@@ -37,6 +37,7 @@ impl Rule for FontFamilyNoMissingGenericFamilyKeyword {
     Severity::Warning
   }
 
+  /// Flags a `font-family` whose last entry is not a generic family keyword.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let style = match node {
       CssNode::Style(s) => s,

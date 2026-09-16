@@ -24,6 +24,8 @@ impl Rule for SelectorTypeNoUnknown {
     Severity::Warning
   }
 
+  /// Flags type selectors that are not known HTML elements. Custom elements
+  /// and preprocessor line comments are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

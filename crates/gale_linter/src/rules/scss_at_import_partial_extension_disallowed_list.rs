@@ -24,6 +24,7 @@ impl Rule for ScssAtImportPartialExtensionDisallowedList {
     Severity::Warning
   }
 
+  /// Flags an `@import`, `@use` or `@forward` whose extension is on the list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

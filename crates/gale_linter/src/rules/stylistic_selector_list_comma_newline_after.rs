@@ -21,6 +21,7 @@ impl Rule for StylisticSelectorListCommaNewlineAfter {
     Severity::Warning
   }
 
+  /// Flags a selector list comma whose trailing newline does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

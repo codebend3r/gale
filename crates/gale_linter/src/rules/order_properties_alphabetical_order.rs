@@ -34,6 +34,8 @@ impl Rule for OrderPropertiesAlphabeticalOrder {
     Severity::Warning
   }
 
+  /// Flags a property that sorts before the one declared above it. SCSS variables
+  /// are skipped.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

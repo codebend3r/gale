@@ -33,6 +33,8 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
     Severity::Warning
   }
 
+  /// Flags a `$variable` declaration whose space after the colon does not match
+  /// the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

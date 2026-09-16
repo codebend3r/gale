@@ -47,6 +47,8 @@ impl Rule for ScssDoubleSlashCommentWhitespaceInside {
     Severity::Warning
   }
 
+  /// Flags a `//` comment whose whitespace after the slashes does not match the
+  /// option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];

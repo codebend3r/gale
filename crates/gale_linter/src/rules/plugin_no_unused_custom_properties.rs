@@ -29,6 +29,7 @@ enum IgnorePattern {
 }
 
 impl IgnorePattern {
+  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
   fn from_str(s: &str) -> Self {
     if let Some(inner) = s.strip_prefix('/').and_then(|s| {
       if let Some(pos) = s.rfind('/') {
@@ -52,6 +53,7 @@ impl IgnorePattern {
     }
   }
 
+  /// Whether the custom property name matches this pattern.
   fn matches(&self, name: &str) -> bool {
     match self {
       IgnorePattern::Exact(s) => name == s,
@@ -60,6 +62,7 @@ impl IgnorePattern {
   }
 }
 
+/// Reads the `ignoreProperties` secondary into patterns.
 fn parse_ignore_properties(context: &RuleContext) -> Vec<IgnorePattern> {
   let secondary = match context.secondary_options() {
     Some(opts) => opts,
@@ -205,6 +208,8 @@ impl Rule for PluginNoUnusedCustomProperties {
     Severity::Warning
   }
 
+  /// Flags custom properties that no `var()` in the file references, reporting
+  /// each name once at its first definition.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let ignore_patterns = parse_ignore_properties(context);
 

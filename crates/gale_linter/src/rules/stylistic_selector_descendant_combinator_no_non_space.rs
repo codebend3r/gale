@@ -21,6 +21,7 @@ impl Rule for StylisticSelectorDescendantCombinatorNoNonSpace {
     Severity::Warning
   }
 
+  /// Flags a descendant combinator written as anything but one space.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

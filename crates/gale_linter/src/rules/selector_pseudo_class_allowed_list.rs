@@ -21,6 +21,7 @@ impl Rule for SelectorPseudoClassAllowedList {
     Severity::Warning
   }
 
+  /// Flags pseudo-classes outside the configured allow list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];

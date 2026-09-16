@@ -27,6 +27,8 @@ impl Rule for NamedGridAreasNoInvalid {
     Severity::Error
   }
 
+  /// Flags `grid-template-areas` whose rows differ in cell count or whose named
+  /// areas do not form contiguous rectangles.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Declaration(decl) = node else {
       return vec![];

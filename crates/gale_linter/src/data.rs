@@ -6,15 +6,18 @@ use gale_css_parser::Syntax;
 
 // Lookup helpers — case-insensitive binary search.
 
+/// Case-insensitive binary search over a sorted, lowercase table.
 fn lookup(haystack: &[&str], needle: &str) -> bool {
   let lower = needle.to_ascii_lowercase();
   haystack.binary_search(&lower.as_str()).is_ok()
 }
 
+/// Whether `name` is a standard CSS property.
 pub fn is_known_property(name: &str) -> bool {
   lookup(KNOWN_PROPERTIES, name)
 }
 
+/// Whether `name` is a standard CSS at-rule (without the `@`).
 pub fn is_known_at_rule(name: &str) -> bool {
   lookup(KNOWN_AT_RULES, name)
 }
@@ -35,22 +38,27 @@ pub fn is_known_at_rule_for_syntax(name: &str, syntax: Syntax) -> bool {
   }
 }
 
+/// Whether `name` is a standard CSS pseudo-class (without the `:`).
 pub fn is_known_pseudo_class(name: &str) -> bool {
   lookup(KNOWN_PSEUDO_CLASSES, name)
 }
 
+/// Whether `name` is a standard CSS pseudo-element (without the `::`).
 pub fn is_known_pseudo_element(name: &str) -> bool {
   lookup(KNOWN_PSEUDO_ELEMENTS, name)
 }
 
+/// Whether `name` is a standard CSS unit.
 pub fn is_known_unit(name: &str) -> bool {
   lookup(KNOWN_UNITS, name)
 }
 
+/// Whether `name` is a standard CSS media feature.
 pub fn is_known_media_feature(name: &str) -> bool {
   lookup(KNOWN_MEDIA_FEATURES, name)
 }
 
+/// Whether `name` is a standard HTML element name.
 pub fn is_known_html_element(name: &str) -> bool {
   lookup(KNOWN_HTML_ELEMENTS, name)
 }

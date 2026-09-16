@@ -23,6 +23,7 @@ impl Rule for NoDuplicateAtImportRules {
     Severity::Warning
   }
 
+  /// Flags an `@import` whose target was already imported.
   fn check_root(&self, nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
     let mut seen = HashSet::new();
     let mut diagnostics = Vec::new();
