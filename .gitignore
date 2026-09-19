@@ -26,3 +26,6 @@ dist/
 __pycache__/
 tests/differential/repos/
 /benchmarks/.stylelint-local/
+
+# Personal lefthook overrides
+lefthook-local.yml

@@ -53,6 +53,15 @@ else
   fail "node_modules" "run-s missing, scripts using run-s will fail"
 fi
 
+# Worktrees keep .git as a file and share hooks with the main checkout, so ask
+# git where they actually live rather than assuming "$ROOT/.git/hooks".
+HOOKS_DIR="$(cd "$ROOT" && git rev-parse --path-format=absolute --git-path hooks 2>/dev/null)"
+if [[ -n "$HOOKS_DIR" && -x "$HOOKS_DIR/pre-commit" ]]; then
+  ok "hooks" "lefthook installed"
+else
+  fail "hooks" "not installed, run bunx lefthook install"
+fi
+
 head2 "Rust toolchain"
 
 if command -v cargo &>/dev/null; then

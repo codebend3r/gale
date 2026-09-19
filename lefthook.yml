@@ -1,0 +1,88 @@
+# Git hooks for gale, managed by lefthook: https://lefthook.dev
+#
+# Hooks install themselves during `bun install`. If they ever go missing,
+# run `bunx lefthook install`.
+#
+# The split is by cost: pre-commit only runs checks that finish in seconds on a
+# warm target directory, and pre-push runs the test suites. Anything heavier
+# (release builds, the npm package matrix, benchmarks) stays in CI.
+#
+# To skip a hook once: `git commit --no-verify`, or `LEFTHOOK=0 git push`.
+
+min_version: 2.1.0
+
+# Refuse to run with stale hooks rather than silently skipping checks.
+assert_lefthook_installed: true
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: fmt
+      # rustup keeps cargo in ~/.cargo/bin, which git clients that do not start
+      # from a login shell will not have on PATH.
+      env: &cargo_path
+        PATH: "${HOME}/.cargo/bin:${PATH}"
+      glob: "*.rs"
+      run: cargo fmt --all --check
+      fail_text: "Formatting is off. Run `bun run fmt`, then stage the result."
+
+    - name: clippy
+      env: *cargo_path
+      glob:
+        - "*.rs"
+        - "*.toml"
+      run: cargo clippy --workspace --all-targets -- -D warnings
+      fail_text: "Clippy found warnings. Fix them or justify with an #[allow]."
+
+    - name: conflict-markers
+      # Written as a regex so this file does not trip its own check.
+      run: |
+        if grep -lE '^(<{7}|>{7}) ' {staged_files} </dev/null 2>/dev/null; then
+          echo "The files above still contain merge conflict markers."
+          exit 1
+        fi
+
+commit-msg:
+  jobs:
+    - name: subject-style
+      # {1} is the path to the commit message file.
+      run: |
+        subject=$(sed -n '1p' {1})
+        case "$subject" in
+          "" | "#"* | fixup!* | squash!* | Merge\ * | Revert\ *) exit 0 ;;
+        esac
+        if [ ${#subject} -gt 72 ]; then
+          echo "Subject is ${#subject} characters. Keep it to 72 or fewer."
+          exit 1
+        fi
+        case "$subject" in
+          *.) echo "Drop the trailing period from the subject." ; exit 1 ;;
+        esac
+
+pre-push:
+  # Sequential: every cargo invocation takes the same target directory lock, so
+  # running these in parallel would only queue them behind it.
+  parallel: false
+  jobs:
+    - name: cargo-test
+      env: *cargo_path
+      glob:
+        - "*.rs"
+        - "*.toml"
+        - "Cargo.lock"
+      run: cargo test -q --workspace --lib --bins --tests
+
+    - name: feature-tests
+      env: *cargo_path
+      glob:
+        - "*.rs"
+        - "*.toml"
+        - "*.ts"
+        - "*.mjs"
+        - "*.cjs"
+      # Debug binary on purpose: a release build costs minutes and these tests
+      # only assert behaviour. CI runs the same suite against release.
+      run: |
+        cargo build -q
+        GALE_BIN="$(git rev-parse --show-toplevel)/target/debug/gale" \
+          bun test --parallel=8 tests/features

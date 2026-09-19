@@ -57,6 +57,10 @@
     "test:rust": "cargo test -q --workspace --lib --bins --tests"
   },
   "devDependencies": {
+    "lefthook": "2.1.14",
     "npm-run-all2": "9.0.3"
-  }
+  },
+  "trustedDependencies": [
+    "lefthook"
+  ]
 }
