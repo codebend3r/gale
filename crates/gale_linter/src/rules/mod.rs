@@ -130,7 +130,9 @@ pub mod selector_max_specificity;
 pub mod selector_max_type;
 pub mod selector_max_universal;
 pub mod selector_nested_pattern;
+pub mod selector_no_invalid;
 pub mod selector_no_qualifying_type;
+pub mod selector_no_unmatchable;
 pub mod selector_no_vendor_prefix;
 pub mod selector_not_notation;
 pub mod selector_pseudo_class_allowed_list;
@@ -536,6 +538,8 @@ pub fn register_all(registry: &mut RuleRegistry) {
   registry.register(Box::new(
     selector_no_qualifying_type::SelectorNoQualifyingType,
   ));
+  registry.register(Box::new(selector_no_invalid::SelectorNoInvalid));
+  registry.register(Box::new(selector_no_unmatchable::SelectorNoUnmatchable));
   registry.register(Box::new(selector_no_vendor_prefix::SelectorNoVendorPrefix));
   registry.register(Box::new(selector_type_case::SelectorTypeCase));
   registry.register(Box::new(selector_not_notation::SelectorNotNotation));

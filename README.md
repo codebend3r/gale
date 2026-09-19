@@ -126,13 +126,13 @@ Download pre-built binaries from [GitHub Releases](https://github.com/codebend3r
 For a row-by-row comparison of every feature in Gale and Stylelint, see the
 [feature table](docs/features-table.md).
 
-### 269 built-in rules
+### 271 built-in rules
 
-Gale registers 269 rules across these namespaces:
+Gale registers 271 rules across these namespaces:
 
 | Namespace | Count | Examples |
 |-----------|------:|---------|
-| Core Stylelint | 144 | `block-no-empty`, `color-no-invalid-hex`, `property-no-unknown`, `display-notation` |
+| Core Stylelint | 146 | `block-no-empty`, `color-no-invalid-hex`, `property-no-unknown`, `selector-no-unmatchable` |
 | `@stylistic/*` | 69 | `@stylistic/indentation`, `@stylistic/declaration-colon-space-after`, `@stylistic/no-eol-whitespace` |
 | `scss/*` | 45 | `scss/at-rule-no-unknown`, `scss/no-duplicate-mixins`, `scss/dollar-variable-pattern` |
 | `plugin/*` | 5 | `plugin/enforce-variable-for-property`, `plugin/browser-compat` |
@@ -220,7 +220,7 @@ const { lint } = require('@codebend3r/gale');
 
 ### Not yet supported
 
-- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 269 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
+- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 271 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
 - **Dynamic JavaScript configs.** See the config compatibility note above.
 - **Accurate positions in `.sass` files.** `.sass` sources are converted to SCSS before parsing, so reported line/column numbers refer to the converted text and drift from the original file. Rules fire correctly; the coordinates are not trustworthy.
 - **Custom JS formatters.** There is no `--custom-formatter` flag; use one of the built-in formatters.
@@ -290,7 +290,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | Preset | Description |
 |--------|-------------|
 | `gale:recommended` | Sensible defaults (29 rules: 15 error + 14 warning) |
-| `gale:all` | Every one of the 269 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
+| `gale:all` | Every one of the 271 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
 
 Gale also has built-in equivalents for `stylelint-config-recommended`,
 `stylelint-config-standard`, `stylelint-config-recommended-scss`, and
@@ -524,7 +524,7 @@ gale (binary)
 gale_cli         CLI definition (clap), file discovery, orchestration
   |
   +-- gale_config       Config loading, resolution, presets
-  +-- gale_linter       Rule trait, registry, runner, 269 built-in rules
+  +-- gale_linter       Rule trait, registry, runner, 271 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types
   +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix)
