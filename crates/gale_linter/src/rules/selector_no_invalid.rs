@@ -1,11 +1,11 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
 use crate::selector::{
   Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
-  scan_style_rules,
 };
+use crate::style_rules::scan_style_rules;
 
 /// Disallow invalid selectors.
 ///
@@ -54,20 +54,15 @@ impl Rule for SelectorNoInvalid {
     Severity::Warning
   }
 
-  /// Checks every style rule prelude outside `@keyframes`, reporting
-  /// selectors that fail to parse or that break a structural rule of the
-  /// selector grammar.
+  /// Checks every style rule prelude, reporting selectors that fail to parse
+  /// or that break a structural rule of the selector grammar.
   ///
   /// Preludes are read from the source text rather than the parsed AST: the
   /// CSS parser drops rules whose selectors it cannot parse, which are exactly
   /// the ones this rule exists to report.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let scss_comments = !matches!(ctx.syntax, Syntax::Css);
     let mut diagnostics = Vec::new();
-    for raw in scan_style_rules(ctx.source, scss_comments) {
-      if raw.in_keyframes {
-        continue;
-      }
+    for raw in scan_style_rules(ctx.source, ctx.syntax) {
       self.check_prelude(&raw.prelude, raw.offset, &mut diagnostics);
     }
     diagnostics

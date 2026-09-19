@@ -1,12 +1,13 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_html_element;
 use crate::rule::{Rule, RuleContext};
 use crate::selector::{
-  Combinator, RawStyleRule, Selector, SelectorList, SelectorNode, is_standard_syntax_selector,
-  parse_selector_list, scan_style_rules,
+  Combinator, Selector, SelectorList, SelectorNode, is_standard_syntax_selector,
+  parse_selector_list,
 };
+use crate::style_rules::{RawStyleRule, scan_style_rules};
 
 /// Disallow unmatchable selectors.
 ///
@@ -102,19 +103,15 @@ impl Rule for SelectorNoUnmatchable {
     Severity::Warning
   }
 
-  /// Checks every style rule prelude outside `@keyframes`, resolving nested
-  /// selectors against their ancestors first.
+  /// Checks every style rule prelude, resolving nested selectors against
+  /// their ancestors first.
   ///
   /// Preludes are read from the source text rather than the parsed AST so
   /// that selectors are seen exactly as written.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let scss_comments = !matches!(ctx.syntax, Syntax::Css);
-    let rules = scan_style_rules(ctx.source, scss_comments);
+    let rules = scan_style_rules(ctx.source, ctx.syntax);
     let mut diagnostics = Vec::new();
     for raw in &rules {
-      if raw.in_keyframes {
-        continue;
-      }
       self.check_rule(raw, &rules, &mut diagnostics);
     }
     diagnostics
