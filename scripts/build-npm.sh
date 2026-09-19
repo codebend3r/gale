@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/build-npm.sh                 # Build for current platform only
 #   ./scripts/build-npm.sh --all           # Build for all supported platforms (requires cross)
-#   ./scripts/build-npm.sh --version 0.2.3 # Set version in npm/package.json before building
+#   ./scripts/build-npm.sh --version 0.2.4 # Set version in npm/package.json before building
 #
 set -euo pipefail
 

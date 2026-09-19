@@ -488,7 +488,7 @@ and troubleshooting.
 # 1. Update the version in Cargo.toml (workspace.package.version)
 # 2. Commit the version bump
 # 3. Tag and push
-git tag v0.2.3
+git tag v0.2.4
 git push && git push --tags
 ```
 
@@ -510,7 +510,7 @@ The [release workflow](.github/workflows/release.yml) will:
 ./scripts/build-npm.sh --all
 
 # Set npm package version before building
-./scripts/build-npm.sh --version 0.2.3
+./scripts/build-npm.sh --version 0.2.4
 ```
 
 ## Architecture
