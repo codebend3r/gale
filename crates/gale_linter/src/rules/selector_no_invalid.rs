@@ -3,7 +3,8 @@ use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
 use crate::selector::{
-  Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
+  Pseudo, PseudoArg, Selector, SelectorList, SelectorNode, any_pseudo, is_standard_syntax_selector,
+  parse_selector_list, walk_pseudos,
 };
 use crate::style_rules::scan_style_rules;
 
@@ -88,10 +89,6 @@ impl SelectorNoInvalid {
       }
     };
 
-    if !selector.contains(':') {
-      return;
-    }
-
     for sel in &list.selectors {
       let source = &selector[sel.offset..sel.end];
       let span = Span::from_range(base + sel.offset, base + sel.end);
@@ -114,124 +111,52 @@ impl SelectorNoInvalid {
   }
 }
 
-/// `::name()` / `:name` in the lower-cased form Stylelint prints in reasons.
-fn format_pseudo_name(node: &SelectorNode) -> String {
-  match node {
-    SelectorNode::PseudoClass { name, raw_args, .. } => {
-      format!(":{}{}", name.to_ascii_lowercase(), parens(raw_args))
-    }
-    SelectorNode::PseudoElement { name, raw_args, .. } => {
-      format!("::{}{}", name.to_ascii_lowercase(), parens(raw_args))
-    }
-    _ => String::new(),
-  }
-}
-
-fn parens(raw_args: &Option<String>) -> &'static str {
-  if raw_args.is_some() { "()" } else { "" }
-}
-
-/// Visit every pseudo-class and pseudo-element in a selector, including those
-/// nested inside arguments, in source order.
-fn walk_pseudos<'a>(selector: &'a Selector, visit: &mut dyn FnMut(&'a SelectorNode)) {
-  for node in &selector.nodes {
-    match node {
-      SelectorNode::PseudoClass { args, .. } | SelectorNode::PseudoElement { args, .. } => {
-        visit(node);
-        if let Some(list) = args {
-          for inner in &list.selectors {
-            walk_pseudos(inner, visit);
-          }
-        }
-      }
-      _ => {}
-    }
-  }
-}
-
-/// The lower-cased name and parsed argument of a pseudo node, if it is one.
-fn pseudo_parts(node: &SelectorNode) -> Option<(String, &Option<SelectorList>)> {
-  match node {
-    SelectorNode::PseudoClass { name, args, .. }
-    | SelectorNode::PseudoElement { name, args, .. } => Some((name.to_ascii_lowercase(), args)),
-    _ => None,
-  }
-}
-
 /// Reports pseudo-selectors whose unforgiving arguments contain something the
 /// grammar does not allow there.
 fn check_unforgiving_arguments(selector: &Selector, complain: &mut dyn FnMut(String)) {
-  walk_pseudos(selector, &mut |node| {
-    let Some((name, args)) = pseudo_parts(node) else {
-      return;
-    };
-    if !UNFORGIVING_ARGUMENT_PSEUDOS.contains(&name.as_str()) {
-      return;
-    }
-    if let Some(reason) = check_container_arguments(node, &name, args) {
+  walk_pseudos(&selector.nodes, &mut |visit| {
+    if visit.pseudo.is_one_of(UNFORGIVING_ARGUMENT_PSEUDOS)
+      && let Some(reason) = invalid_argument_reason(visit.pseudo)
+    {
       complain(reason);
     }
+    true
   });
 }
 
-/// The reason a container's arguments are invalid, if any.
-fn check_container_arguments(
-  container: &SelectorNode,
-  name: &str,
-  args: &Option<SelectorList>,
-) -> Option<String> {
-  let Some(list) = args else {
-    return None;
-  };
+/// The reason a pseudo-selector's argument is invalid, if any.
+fn invalid_argument_reason(pseudo: &Pseudo) -> Option<String> {
+  let list = pseudo.selectors()?;
 
-  if has_argument_pseudo_element(list) {
+  if list.any_node(SelectorNode::is_pseudo_element) {
     return Some(format!(
       "pseudo-elements are invalid within \"{}\"",
-      format_pseudo_name(container)
+      pseudo.display_name()
     ));
   }
 
-  if name == "has" && has_nested_has(list) {
+  if pseudo.is("has") && contains_has(list) {
     return Some("\":has()\" is invalid within \":has()\"".to_string());
   }
 
-  if COMPOUND_ARGUMENT_PSEUDOS.contains(&name) && has_argument_combinator(list) {
+  if pseudo.is_one_of(COMPOUND_ARGUMENT_PSEUDOS) && has_argument_combinator(list) {
     return Some(format!(
       "combinators are invalid within \"{}\"",
-      format_pseudo_name(container)
+      pseudo.display_name()
     ));
   }
 
   None
 }
 
-/// Whether an argument list contains a pseudo-element, without looking inside
-/// nested pseudo-classes that take arguments of their own.
-fn has_argument_pseudo_element(list: &SelectorList) -> bool {
-  list.selectors.iter().any(|sel| {
-    sel.nodes.iter().any(|node| match node {
-      SelectorNode::PseudoElement { .. } => true,
-      SelectorNode::PseudoClass { args: None, .. } => false,
-      SelectorNode::PseudoClass { .. } => false,
-      _ => false,
-    })
-  })
-}
-
 /// Whether a `:has()` argument contains another `:has()` at any depth; see
 /// https://drafts.csswg.org/selectors/#relational
-fn has_nested_has(list: &SelectorList) -> bool {
-  let mut found = false;
-  for sel in &list.selectors {
-    walk_pseudos(sel, &mut |node| {
-      if let SelectorNode::PseudoClass { name, .. } = node {
-        if name.eq_ignore_ascii_case("has") {
-          found = true;
-        }
-      }
-    });
-  }
-  found
+fn contains_has(list: &SelectorList) -> bool {
+  list.selectors.iter().any(|selector| {
+    any_pseudo(&selector.nodes, |pseudo| {
+      !pseudo.element && pseudo.is("has")
+    })
+  })
 }
 
 /// Whether the first selector of an argument list contains a combinator.
@@ -239,53 +164,42 @@ fn has_argument_combinator(list: &SelectorList) -> bool {
   list
     .selectors
     .first()
-    .map(|sel| {
-      sel
-        .nodes
-        .iter()
-        .any(|n| matches!(n, SelectorNode::Combinator { .. }))
-    })
-    .unwrap_or(false)
+    .is_some_and(|selector| selector.nodes.iter().any(SelectorNode::is_combinator))
 }
 
 /// Combinators and further pseudo-elements after a pseudo-element are
 /// invalid; see https://drafts.csswg.org/selectors/#pseudo-element-structure
 /// and https://drafts.csswg.org/selectors/#sub-pseudo-elements
 fn check_top_level_selector(selector: &Selector, complain: &mut dyn FnMut(String)) {
-  if selector
-    .nodes
-    .iter()
-    .any(|n| matches!(n, SelectorNode::Nesting { .. }))
-  {
+  if selector.nodes.contains(&SelectorNode::Nesting) {
     return;
   }
 
-  let mut last_pseudo_element: Option<&SelectorNode> = None;
+  let mut last_pseudo_element: Option<&Pseudo> = None;
   let mut previous: Option<&SelectorNode> = None;
 
   for node in &selector.nodes {
-    if matches!(node, SelectorNode::Comment { .. }) {
-      continue;
-    }
     match node {
-      SelectorNode::PseudoElement { .. } => {
-        if let Some(prev @ SelectorNode::PseudoElement { .. }) = previous {
-          if is_invalid_sub_pseudo_element(prev, node) {
-            complain(format!(
-              "\"{}\" is invalid after \"{}\"",
-              format_pseudo_name(node),
-              format_pseudo_name(prev)
-            ));
-            return;
-          }
+      SelectorNode::Comment(_) => continue,
+      SelectorNode::Pseudo(pseudo) if pseudo.element => {
+        if let Some(SelectorNode::Pseudo(prev)) = previous
+          && prev.element
+          && is_invalid_sub_pseudo_element(prev, pseudo)
+        {
+          complain(format!(
+            "\"{}\" is invalid after \"{}\"",
+            pseudo.display_name(),
+            prev.display_name()
+          ));
+          return;
         }
-        last_pseudo_element = Some(node);
+        last_pseudo_element = Some(pseudo);
       }
-      SelectorNode::Combinator { .. } => {
+      SelectorNode::Combinator(_) => {
         if let Some(last) = last_pseudo_element {
           complain(format!(
             "combinators are invalid after \"{}\"",
-            format_pseudo_name(last)
+            last.display_name()
           ));
           return;
         }
@@ -297,52 +211,36 @@ fn check_top_level_selector(selector: &Selector, complain: &mut dyn FnMut(String
 }
 
 /// Whether `second`, compounded to `first`, is not a defined sub-pseudo-element.
-fn is_invalid_sub_pseudo_element(first: &SelectorNode, second: &SelectorNode) -> bool {
-  let (Some((first_name, _)), Some((second_name, _))) = (pseudo_parts(first), pseudo_parts(second))
-  else {
-    return false;
-  };
-  if ELEMENT_BACKED_PSEUDO_ELEMENTS.contains(&first_name.as_str()) {
-    return false;
-  }
-  if SUB_PSEUDO_ELEMENTS.contains(&second_name.as_str()) {
-    return false;
-  }
-  true
+fn is_invalid_sub_pseudo_element(first: &Pseudo, second: &Pseudo) -> bool {
+  !first.is_one_of(ELEMENT_BACKED_PSEUDO_ELEMENTS) && !second.is_one_of(SUB_PSEUDO_ELEMENTS)
 }
 
 /// Reports `:dir()` pseudo-classes whose argument is not `ltr` or `rtl`.
 fn check_dir_pseudo_classes(selector: &Selector, complain: &mut dyn FnMut(String)) {
-  walk_pseudos(selector, &mut |node| {
-    let SelectorNode::PseudoClass { name, raw_args, .. } = node else {
-      return;
-    };
-    if !name.eq_ignore_ascii_case("dir") {
-      return;
+  walk_pseudos(&selector.nodes, &mut |visit| {
+    let pseudo = visit.pseudo;
+    if !pseudo.element && pseudo.is("dir") && !is_valid_dir_argument(&pseudo.arg) {
+      let expected = DIR_IDENTIFIERS
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(" or ");
+      complain(format!(
+        "expected {expected} within \"{}\"",
+        pseudo.display_name()
+      ));
     }
-    if is_valid_dir_argument(raw_args) {
-      return;
-    }
-    let expected = DIR_IDENTIFIERS
-      .iter()
-      .map(|id| format!("\"{id}\""))
-      .collect::<Vec<_>>()
-      .join(" or ");
-    complain(format!(
-      "expected {expected} within \"{}\"",
-      format_pseudo_name(node)
-    ));
+    true
   });
 }
 
-fn is_valid_dir_argument(raw_args: &Option<String>) -> bool {
-  let Some(raw) = raw_args else {
-    return false;
-  };
-  let ident = raw.trim();
-  DIR_IDENTIFIERS
-    .iter()
-    .any(|id| id.eq_ignore_ascii_case(ident))
+fn is_valid_dir_argument(arg: &PseudoArg) -> bool {
+  match arg {
+    PseudoArg::Raw(raw) => DIR_IDENTIFIERS
+      .iter()
+      .any(|id| id.eq_ignore_ascii_case(raw.trim())),
+    _ => false,
+  }
 }
 
 #[cfg(test)]
