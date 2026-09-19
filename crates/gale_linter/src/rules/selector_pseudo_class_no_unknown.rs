@@ -424,7 +424,9 @@ fn scan_source_for_unparsed_pseudo_classes(
     }
 
     // Look for @page pseudo-classes that the parser dropped
-    if i + 5 < len && &source[i..i + 5] == "@page" {
+    // Compared as bytes: `i` walks byte offsets, so `source[i..i + 5]` would
+    // panic whenever a multi-byte character straddles either end.
+    if i + 5 < len && bytes[i..].starts_with(b"@page") {
       // Skip the @page keyword
       let page_start = i;
       i += 5;
@@ -725,5 +727,14 @@ mod tests {
     let d = SelectorPseudoClassNoUnknown.check(&style_with_selector(":first"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(":first"));
+  }
+
+  #[test]
+  fn handles_multibyte_selectors_in_the_source_scan() {
+    // The scan walks byte offsets and compares a fixed five-byte window against
+    // "@page", which lands mid-character on a non-ASCII selector.
+    let src = ".\u{4e2d}\u{6587}\u{540d} { color: red; }";
+    let entries = scan_source_for_unparsed_pseudo_classes(src, &[]);
+    assert_eq!(entries.len(), 0, "no pseudo-classes in this selector");
   }
 }

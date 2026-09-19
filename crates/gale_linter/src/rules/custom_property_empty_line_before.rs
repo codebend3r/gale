@@ -287,7 +287,9 @@ fn is_first_in_block_by_source(source: &str, offset: usize) -> bool {
       return false;
     }
     // Check for end of a block comment `*/`
-    if pos >= 2 && &before[pos - 2..pos] == "*/" {
+    // Compared as bytes: `pos` walks backwards over bytes, so `pos - 2` can
+    // land inside a multi-byte character.
+    if bytes[..pos].ends_with(b"*/") {
       // Find the matching `/*`
       if let Some(open) = before[..pos - 2].rfind("/*") {
         pos = open;
@@ -551,5 +553,26 @@ mod tests {
     let d = CustomPropertyEmptyLineBefore.check(&node, &make_ctx_with_options(src, &opts));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected"));
+  }
+
+  #[test]
+  fn handles_multibyte_char_before_the_custom_property() {
+    // The backwards comment scan steps two bytes at a time, which lands inside
+    // a multi-byte character when one sits just before the custom property.
+    let src = "a {\n  color: \u{4e2d};\n\n  --my-var: blue;\n}";
+    let var_offset = src.find("--my-var").expect("custom property present");
+    let node = CssNode::Style(StyleRule {
+      selector: "a".to_string(),
+      declarations: vec![Declaration {
+        property: "--my-var".to_string(),
+        value: "blue".to_string(),
+        span: ParserSpan::new(var_offset, "--my-var: blue;".len()),
+        important: false,
+      }],
+      span: ParserSpan::new(0, src.len()),
+      ..Default::default()
+    });
+    let d = CustomPropertyEmptyLineBefore.check(&node, &make_ctx(src));
+    assert!(d.is_empty(), "empty line is present, got: {:?}", d);
   }
 }

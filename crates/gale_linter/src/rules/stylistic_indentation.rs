@@ -319,7 +319,7 @@ impl Rule for StylisticIndentation {
           colon_seen_this_line = true;
         }
         // Track @include for SCSS mixin call detection
-        if bytes[i] == b'@' && i + 7 < len && &source[i..i + 8] == "@include" {
+        if bytes[i] == b'@' && i + 7 < len && bytes[i..].starts_with(b"@include") {
           at_include_seen_this_line = true;
         }
       }
@@ -439,6 +439,20 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line transition property value
     let source = "a {\n  transition:\n    background-color 0.2s linear,\n    opacity 0.2s linear;\n  color: red;\n}";
+    let d = StylisticIndentation.check_root(&[], &ctx_with_option(source, &opt));
+    assert!(
+      d.is_empty(),
+      "got: {:?}",
+      d.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn handles_multibyte_char_after_an_at_rule() {
+    // The `@include` lookahead reads a fixed eight bytes, which lands inside a
+    // multi-byte character when one follows a shorter at-rule name.
+    let opt = serde_json::json!(2);
+    let source = "a {\n  @media \u{4e2d} {\n    color: red;\n  }\n}";
     let d = StylisticIndentation.check_root(&[], &ctx_with_option(source, &opt));
     assert!(
       d.is_empty(),
