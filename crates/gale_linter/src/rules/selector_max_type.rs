@@ -336,14 +336,16 @@ fn parse_selector_segments(selector: &str) -> Vec<SelectorSegment> {
         while i < len && is_ident_char(chars[i]) {
           i += 1;
         }
-        let name = &selector[start..i];
+        // `start` and `i` index `chars`, not bytes, so the name is rebuilt
+        // from the character slice rather than cut out of `selector`.
+        let name: String = chars[start..i].iter().collect();
         let is_custom_element = name.contains('-');
 
         let comb = last_combinator;
 
         let seg_idx = segments.len();
         segments.push(SelectorSegment {
-          name: name.to_string(),
+          name,
           is_after_descendant_combinator: comb == Some(' '),
           is_after_child_combinator: comb == Some('>'),
           is_after_next_sibling_combinator: comb == Some('+') || comb == Some('~'),
@@ -611,5 +613,17 @@ mod tests {
     let c = ctx_with_options(&opts);
     let d = SelectorMaxType.check(&style_with_selector("div:has(span a)"), &c);
     assert_eq!(d.len(), 1, "3 types with max 2 should fail");
+  }
+
+  #[test]
+  fn handles_multibyte_type_selectors() {
+    // Segment bounds come from a `Vec<char>`, so a multi-byte identifier used
+    // to be cut out of the selector at character indices.
+    let opts = serde_json::json!(1);
+    let d = SelectorMaxType.check(
+      &style_with_selector("\u{4e2d}\u{6587} div"),
+      &ctx_with_options(&opts),
+    );
+    assert_eq!(d.len(), 1);
   }
 }

@@ -383,7 +383,9 @@ fn prev_is_rule_by_source(source: &str, offset: usize) -> bool {
       return false;
     }
     // Skip block comments
-    if pos >= 2 && &before[pos - 2..pos] == "*/" {
+    // Compared as bytes: `pos` walks backwards over bytes, so `pos - 2` can
+    // land inside a multi-byte character.
+    if bytes[..pos].ends_with(b"*/") {
       if let Some(open) = before[..pos - 2].rfind("/*") {
         pos = open;
         continue;
@@ -960,5 +962,34 @@ mod tests {
       "Expected 1 diagnostic for 100% without empty line. Got: {:?}",
       d
     );
+  }
+
+  #[test]
+  fn handles_multibyte_char_before_the_rule() {
+    // Same backwards comment scan as `custom-property-empty-line-before`: two
+    // bytes back from a multi-byte character is not a char boundary.
+    let src = "--x: \u{4e2d};\n\nb { color: blue; }";
+    let b_offset = src.find("b {").expect("rule present");
+    let nodes = vec![
+      CssNode::Declaration(Declaration {
+        property: "--x".to_string(),
+        value: "\u{4e2d}".to_string(),
+        span: ParserSpan::new(0, "--x: \u{4e2d};".len()),
+        important: false,
+      }),
+      CssNode::Style(StyleRule {
+        selector: "b".to_string(),
+        declarations: vec![Declaration {
+          property: "color".to_string(),
+          value: "blue".to_string(),
+          span: ParserSpan::new(b_offset + 4, 11),
+          important: false,
+        }],
+        span: ParserSpan::new(b_offset, src.len() - b_offset),
+        ..Default::default()
+      }),
+    ];
+    let d = RuleEmptyLineBefore.check_root(&nodes, &make_ctx(src));
+    assert!(d.is_empty(), "empty line is present, got: {:?}", d);
   }
 }

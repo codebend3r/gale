@@ -72,10 +72,16 @@ impl Rule for ScssOperatorNoUnspaced {
 }
 
 /// Byte offset of `prop` in the source, searched backwards from its value.
+///
+/// Both ends of the search window are arithmetic, so they are floored to char
+/// boundaries: a multi-byte character anywhere in the preceding 20-odd bytes
+/// (box-drawing rules in section comments, an em dash, an emoji) would
+/// otherwise put the slice mid-character and panic.
 fn find_prop_offset(source: &str, prop: &str, val_offset: usize) -> usize {
   if val_offset > prop.len() + 2 {
-    let start = val_offset.saturating_sub(prop.len() + 20);
-    if let Some(pos) = source[start..val_offset].rfind(prop) {
+    let end = source.floor_char_boundary(val_offset.min(source.len()));
+    let start = source.floor_char_boundary(end.saturating_sub(prop.len() + 20));
+    if let Some(pos) = source[start..end].rfind(prop) {
       return start + pos;
     }
   }
@@ -2011,6 +2017,41 @@ mod tests {
     assert!(
       diags.is_empty(),
       "== followed by newline should not be flagged, got: {:?}",
+      diags
+    );
+  }
+
+  #[test]
+  fn find_prop_offset_handles_multibyte_chars_in_the_window() {
+    // The backwards search window is sized in bytes, so its start can land
+    // inside a multi-byte character such as the `\u{2500}` used in section comments.
+    let source = "// \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\na { width: 10px; }";
+    let val_offset = source.find("10px").expect("value present");
+    assert_eq!(
+      find_prop_offset(source, "width", val_offset),
+      source.find("width").expect("property present")
+    );
+  }
+
+  #[test]
+  fn checks_declarations_below_box_drawing_comments() {
+    let scss = "// \u{2500}\u{2500} geometry \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n.a {\n  width: 10px;\n}";
+    let rule = ScssOperatorNoUnspaced;
+    let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
+    let ctx = RuleContext {
+      file_path: "test.scss",
+      source: scss,
+      syntax: Syntax::Scss,
+      options: None,
+    };
+    let diags: Vec<_> = result
+      .nodes
+      .iter()
+      .flat_map(|n| rule.check(n, &ctx))
+      .collect();
+    assert!(
+      diags.is_empty(),
+      "clean declaration should not be flagged, got: {:?}",
       diags
     );
   }
