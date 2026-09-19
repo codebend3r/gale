@@ -63,6 +63,12 @@ pub fn is_known_html_element(name: &str) -> bool {
   lookup(KNOWN_HTML_ELEMENTS, name)
 }
 
+/// Whether `name` is an HTML element Stylelint recognises that has not yet
+/// reached the standard set, such as `selectlist` or `fencedframe`.
+pub fn is_experimental_html_element(name: &str) -> bool {
+  lookup(EXPERIMENTAL_HTML_ELEMENTS, name)
+}
+
 // ---------------------------------------------------------------------------
 // CSS Properties (curated standard set, sorted)
 // ---------------------------------------------------------------------------
@@ -980,6 +986,19 @@ static KNOWN_HTML_ELEMENTS: &[&str] = &[
   "wbr",
 ];
 
+/// HTML elements Stylelint knows about that are not yet in the standard set.
+static EXPERIMENTAL_HTML_ELEMENTS: &[&str] = &[
+  "fencedframe",
+  "geolocation",
+  "install",
+  "listbox",
+  "model",
+  "portal",
+  "selectedcontent",
+  "selectlist",
+  "usermedia",
+];
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1130,5 +1149,6 @@ mod tests {
     assert_sorted(KNOWN_UNITS, "KNOWN_UNITS");
     assert_sorted(KNOWN_MEDIA_FEATURES, "KNOWN_MEDIA_FEATURES");
     assert_sorted(KNOWN_HTML_ELEMENTS, "KNOWN_HTML_ELEMENTS");
+    assert_sorted(EXPERIMENTAL_HTML_ELEMENTS, "EXPERIMENTAL_HTML_ELEMENTS");
   }
 }

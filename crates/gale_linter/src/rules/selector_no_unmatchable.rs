@@ -1,11 +1,12 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::data::is_known_html_element;
+use crate::data::{is_experimental_html_element, is_known_html_element};
 use crate::rule::{Rule, RuleContext};
+use crate::selector::nesting::{resolve_nested, resolve_nested_list};
 use crate::selector::{
-  Combinator, Selector, SelectorList, SelectorNode, is_standard_syntax_selector,
-  parse_selector_list,
+  Pseudo, Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
+  walk_pseudos,
 };
 use crate::style_rules::{RawStyleRule, scan_style_rules};
 
@@ -44,19 +45,6 @@ const TREE_STRUCTURAL_PSEUDO_CLASSES: &[&str] = &[
   "only-child",
   "only-of-type",
   "root",
-];
-
-/// HTML elements Stylelint knows about that are not yet in the standard set.
-const EXPERIMENTAL_HTML_ELEMENTS: &[&str] = &[
-  "fencedframe",
-  "geolocation",
-  "install",
-  "listbox",
-  "model",
-  "portal",
-  "selectedcontent",
-  "selectlist",
-  "usermedia",
 ];
 
 const DISABLEABLE_ELEMENTS: &[&str] = &[
@@ -103,7 +91,7 @@ impl Rule for SelectorNoUnmatchable {
     Severity::Warning
   }
 
-  /// Checks every style rule prelude, resolving nested selectors against
+  /// Checks every style rule's selectors, resolving nested selectors against
   /// their ancestors first.
   ///
   /// Preludes are read from the source text rather than the parsed AST so
@@ -111,575 +99,305 @@ impl Rule for SelectorNoUnmatchable {
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let rules = scan_style_rules(ctx.source, ctx.syntax);
     let mut diagnostics = Vec::new();
+    // Each rule's resolved selector list, for its nested rules to build on.
+    // Parents precede their children, so one pass in document order does.
+    let mut resolved: Vec<Option<SelectorList>> = Vec::with_capacity(rules.len());
     for raw in &rules {
-      self.check_rule(raw, &rules, &mut diagnostics);
+      let entry = self.check_rule(raw, &resolved, &mut diagnostics);
+      resolved.push(entry);
     }
     diagnostics
   }
 }
 
 impl SelectorNoUnmatchable {
+  /// Checks one rule's selectors and returns them resolved against the
+  /// parent, or `None` when the rule or an ancestor cannot be resolved.
   fn check_rule(
     &self,
     raw: &RawStyleRule,
-    rules: &[RawStyleRule],
+    resolved: &[Option<SelectorList>],
     diagnostics: &mut Vec<Diagnostic>,
-  ) {
+  ) -> Option<SelectorList> {
     if !is_standard_syntax_selector(&raw.prelude) {
-      return;
+      return None;
     }
-    let Ok(own) = parse_selector_list(&raw.prelude) else {
-      return;
-    };
-    let Some(parent) = resolve_ancestors(raw, rules) else {
-      return;
+    let own = parse_selector_list(&raw.prelude).ok()?;
+    let parent = match raw.parent {
+      Some(index) => Some(resolved[index].as_ref()?),
+      None => None,
     };
 
     for selector in &own.selectors {
-      let (resolved, nested) = match &parent {
-        Some(parent_list) => {
-          let single = SelectorList {
-            selectors: vec![selector.clone()],
-          };
-          (resolve_nested(&single, parent_list), true)
-        }
-        None => (
-          SelectorList {
-            selectors: vec![selector.clone()],
-          },
-          false,
-        ),
-      };
-
-      let resolved_text = if nested {
-        stringify_list(&resolved)
-      } else {
-        raw.prelude[selector.offset..selector.end].to_string()
-      };
-      if !resolved_text.contains(':') {
+      let nested = parent.map(|parent| resolve_nested(selector, parent));
+      let subject = nested.as_ref().unwrap_or(selector);
+      let reason = check_unrepresentable_pseudo_elements(selector, nested.as_ref())
+        .or_else(|| check_shadow(subject))
+        .or_else(|| check_pseudo_classing_pseudo_elements(subject))
+        .or_else(|| check_applicable_elements(subject));
+      let Some(reason) = reason else {
         continue;
-      }
-
-      let context = CheckContext {
-        selector,
-        resolved: &resolved,
-        nested,
-        resolved_text: &resolved_text,
-        may_have_pseudo_element: resolved_text.contains("::"),
       };
 
-      let reason = check_unrepresentable_pseudo_elements(&context)
-        .or_else(|| check_shadow(&context))
-        .or_else(|| check_pseudo_classing_pseudo_elements(&context))
-        .or_else(|| check_applicable_elements(&context));
-
-      if let Some(reason) = reason {
-        let (text, start, end) = stripped_selector_source(selector, &raw.prelude);
-        let subject = if nested {
-          format!("\"{text}\" (\"{}\")", resolved_text.trim())
-        } else {
-          format!("\"{text}\"")
-        };
-        diagnostics.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unmatchable selector {subject}, {reason}"),
-          )
-          .severity(self.default_severity())
-          .span(Span::from_range(raw.offset + start, raw.offset + end)),
-        );
-      }
-    }
-  }
-}
-
-/// What the checks need to know about one selector of a rule.
-struct CheckContext<'a> {
-  /// The selector as written.
-  selector: &'a Selector,
-  /// The selector with nesting resolved.
-  resolved: &'a SelectorList,
-  /// Whether the rule is nested inside another style rule.
-  nested: bool,
-  /// `resolved` as text.
-  resolved_text: &'a str,
-  may_have_pseudo_element: bool,
-}
-
-/// The resolved selector list of a rule's enclosing style rules, outermost
-/// first, or `None` if any ancestor cannot be resolved. `Some(None)` means
-/// the rule is not nested.
-fn resolve_ancestors(raw: &RawStyleRule, rules: &[RawStyleRule]) -> Option<Option<SelectorList>> {
-  let mut chain = Vec::new();
-  let mut parent = raw.parent;
-  while let Some(index) = parent {
-    chain.push(&rules[index]);
-    parent = rules[index].parent;
-  }
-  chain.reverse();
-
-  let mut resolved: Option<SelectorList> = None;
-  for ancestor in chain {
-    if !is_standard_syntax_selector(&ancestor.prelude) {
-      return None;
-    }
-    let list = parse_selector_list(&ancestor.prelude).ok()?;
-    resolved = Some(match resolved {
-      Some(outer) => resolve_nested(&list, &outer),
-      None => list,
-    });
-  }
-  Some(resolved)
-}
-
-// ---------------------------------------------------------------------------
-// Nesting resolution, following @csstools/selector-resolve-nested
-// ---------------------------------------------------------------------------
-
-/// Resolve `child` against `parent` per the CSS Nesting specification.
-fn resolve_nested(child: &SelectorList, parent: &SelectorList) -> SelectorList {
-  let mut selectors = Vec::with_capacity(child.selectors.len());
-  for selector in &child.selectors {
-    let mut nodes = selector.nodes.clone();
-    if !contains_nesting(&nodes) {
-      nodes.insert(
-        0,
-        SelectorNode::Combinator {
-          kind: Combinator::Descendant,
-          offset: 0,
-          length: 0,
-        },
+      let text = &raw.prelude[selector.offset..selector.end];
+      let written = match &nested {
+        Some(nested) => format!("\"{text}\" (\"{}\")", nested.to_string().trim()),
+        None => format!("\"{text}\""),
+      };
+      diagnostics.push(
+        Diagnostic::new(
+          self.name(),
+          format!("Unmatchable selector {written}, {reason}"),
+        )
+        .severity(self.default_severity())
+        .span(Span::from_range(
+          raw.offset + selector.offset,
+          raw.offset + selector.end,
+        )),
       );
-      nodes.insert(0, SelectorNode::Nesting { offset: 0 });
-    } else if matches!(nodes.first(), Some(SelectorNode::Combinator { .. })) {
-      nodes.insert(0, SelectorNode::Nesting { offset: 0 });
     }
-    let nodes = replace_nesting(nodes, parent, false);
-    selectors.push(Selector {
-      nodes,
-      offset: selector.offset,
-      end: selector.end,
-    });
-  }
-  SelectorList { selectors }
-}
 
-/// Whether a selector contains `&` at any depth.
-fn contains_nesting(nodes: &[SelectorNode]) -> bool {
-  nodes.iter().any(|node| match node {
-    SelectorNode::Nesting { .. } => true,
-    SelectorNode::PseudoClass {
-      args: Some(list), ..
-    }
-    | SelectorNode::PseudoElement {
-      args: Some(list), ..
-    } => list.selectors.iter().any(|s| contains_nesting(&s.nodes)),
-    _ => false,
-  })
-}
-
-/// Replace every `&` with the parent selector, then sort the compound
-/// selectors of any selector that changed.
-fn replace_nesting(
-  nodes: Vec<SelectorNode>,
-  parent: &SelectorList,
-  in_has: bool,
-) -> Vec<SelectorNode> {
-  let mut result = Vec::with_capacity(nodes.len());
-  let mut replaced = false;
-  for node in nodes {
-    match node {
-      SelectorNode::Nesting { .. } => {
-        result.extend(prepare_parent_selectors(parent, in_has));
-        replaced = true;
-      }
-      SelectorNode::PseudoClass {
-        name,
-        args: Some(list),
-        raw_args,
-        offset,
-        length,
-      } => {
-        let is_has = name.eq_ignore_ascii_case("has");
-        let list = replace_nesting_in_list(list, parent, is_has);
-        result.push(SelectorNode::PseudoClass {
-          name,
-          args: Some(list),
-          raw_args,
-          offset,
-          length,
-        });
-      }
-      SelectorNode::PseudoElement {
-        name,
-        args: Some(list),
-        raw_args,
-        offset,
-        length,
-      } => {
-        let list = replace_nesting_in_list(list, parent, false);
-        result.push(SelectorNode::PseudoElement {
-          name,
-          args: Some(list),
-          raw_args,
-          offset,
-          length,
-        });
-      }
-      other => result.push(other),
-    }
-  }
-  if replaced {
-    result = sort_compound_selectors(result);
-  }
-  result
-}
-
-fn replace_nesting_in_list(
-  list: SelectorList,
-  parent: &SelectorList,
-  in_has: bool,
-) -> SelectorList {
-  SelectorList {
-    selectors: list
-      .selectors
-      .into_iter()
-      .map(|s| Selector {
-        nodes: replace_nesting(s.nodes, parent, in_has),
-        offset: s.offset,
-        end: s.end,
-      })
-      .collect(),
+    Some(match parent {
+      Some(parent) => resolve_nested_list(&own, parent),
+      None => own,
+    })
   }
 }
 
-/// The nodes that stand in for `&`: the parent inline when it is a single
-/// compound selector, otherwise wrapped in `:is()`.
-fn prepare_parent_selectors(parent: &SelectorList, force_is: bool) -> Vec<SelectorNode> {
-  if force_is || !is_compound_selector_list(parent) {
-    return vec![SelectorNode::PseudoClass {
-      name: "is".to_string(),
-      args: Some(parent.clone()),
-      raw_args: Some(stringify_list(parent)),
-      offset: 0,
-      length: 0,
-    }];
-  }
-  parent.selectors[0].nodes.clone()
-}
-
-/// Whether a selector list is exactly one compound selector.
-fn is_compound_selector_list(list: &SelectorList) -> bool {
-  if list.selectors.len() != 1 {
-    return false;
-  }
-  !list.selectors[0].nodes.iter().any(|node| {
-    matches!(
-      node,
-      SelectorNode::Combinator { .. } | SelectorNode::PseudoElement { .. }
-    )
-  })
-}
-
-/// Reorder each compound selector into canonical order after substitution,
-/// merging duplicate universal and type selectors.
-fn sort_compound_selectors(nodes: Vec<SelectorNode>) -> Vec<SelectorNode> {
-  let mut groups: Vec<Vec<SelectorNode>> = Vec::new();
-  let mut current: Vec<SelectorNode> = Vec::new();
-
-  for node in nodes {
-    match &node {
-      SelectorNode::Combinator { .. } => {
-        groups.push(std::mem::take(&mut current));
-        groups.push(vec![node]);
-      }
-      SelectorNode::PseudoElement { .. } => {
-        groups.push(std::mem::take(&mut current));
-        current.push(node);
-      }
-      SelectorNode::Universal { .. }
-        if current
-          .iter()
-          .any(|n| matches!(n, SelectorNode::Universal { .. })) => {}
-      SelectorNode::Tag { .. }
-        if current
-          .iter()
-          .any(|n| matches!(n, SelectorNode::Tag { .. })) =>
-      {
-        let list = SelectorList {
-          selectors: vec![Selector {
-            nodes: vec![node.clone()],
-            offset: 0,
-            end: 0,
-          }],
-        };
-        current.push(SelectorNode::PseudoClass {
-          name: "is".to_string(),
-          raw_args: Some(stringify_list(&list)),
-          args: Some(list),
-          offset: 0,
-          length: 0,
-        });
-      }
-      _ => current.push(node),
-    }
-  }
-  groups.push(current);
-
-  let mut sorted = Vec::new();
-  for mut group in groups {
-    group.sort_by_key(selector_type_order);
-    sorted.extend(group);
-  }
-  sorted
-}
-
-fn selector_type_order(node: &SelectorNode) -> u8 {
-  match node {
-    SelectorNode::Universal { .. } => 0,
-    SelectorNode::Tag { .. } => 1,
-    SelectorNode::PseudoElement { .. } => 2,
-    SelectorNode::Nesting { .. } => 3,
-    SelectorNode::Id { .. } => 4,
-    SelectorNode::Class { .. } => 5,
-    SelectorNode::Attribute { .. } => 6,
-    SelectorNode::PseudoClass { .. } => 7,
-    SelectorNode::Comment { .. } => 8,
-    SelectorNode::Combinator { .. } => 9,
-  }
+fn is_negation_or_relational(pseudo: &Pseudo) -> bool {
+  pseudo.is_one_of(NEGATION_AND_RELATIONAL_PSEUDO_CLASSES)
 }
 
 // ---------------------------------------------------------------------------
-// Serialisation
+// Checks
 // ---------------------------------------------------------------------------
 
-/// A selector list as text, with normalised spacing and comments dropped.
-fn stringify_list(list: &SelectorList) -> String {
-  list
-    .selectors
-    .iter()
-    .map(|s| stringify_nodes(&s.nodes))
-    .collect::<Vec<_>>()
-    .join(",")
-}
-
-fn stringify_nodes(nodes: &[SelectorNode]) -> String {
-  let mut out = String::new();
-  for node in nodes {
-    stringify_node(node, &mut out);
-  }
-  out
-}
-
-fn stringify_node(node: &SelectorNode, out: &mut String) {
-  match node {
-    SelectorNode::Tag { name, .. } => out.push_str(name),
-    SelectorNode::Universal { .. } => out.push('*'),
-    SelectorNode::Class { name, .. } => {
-      out.push('.');
-      out.push_str(name);
+/// Pseudo-elements cannot be represented by `:is()`, `:where()` or `&`; see
+/// https://drafts.csswg.org/selectors/#matches
+fn check_unrepresentable_pseudo_elements(
+  selector: &Selector,
+  nested: Option<&Selector>,
+) -> Option<String> {
+  let mut reason = None;
+  walk_pseudos(&selector.nodes, &mut |visit| {
+    if !visit.pseudo.element
+      || visit
+        .ancestors
+        .iter()
+        .any(|ancestor| is_negation_or_relational(ancestor))
+    {
+      return true;
     }
-    SelectorNode::Id { name, .. } => {
-      out.push('#');
-      out.push_str(name);
-    }
-    SelectorNode::Attribute { raw, .. } => out.push_str(raw),
-    SelectorNode::PseudoClass {
-      name,
-      args,
-      raw_args,
-      ..
-    } => {
-      out.push(':');
-      out.push_str(name);
-      stringify_args(args, raw_args, out);
-    }
-    SelectorNode::PseudoElement {
-      name,
-      args,
-      raw_args,
-      ..
-    } => {
-      out.push_str("::");
-      out.push_str(name);
-      stringify_args(args, raw_args, out);
-    }
-    SelectorNode::Nesting { .. } => out.push('&'),
-    SelectorNode::Combinator { kind, .. } => out.push_str(match kind {
-      Combinator::Descendant => " ",
-      Combinator::Child => " > ",
-      Combinator::NextSibling => " + ",
-      Combinator::SubsequentSibling => " ~ ",
-      Combinator::Column => " || ",
-    }),
-    SelectorNode::Comment { .. } => {}
-  }
-}
-
-fn stringify_args(args: &Option<SelectorList>, raw_args: &Option<String>, out: &mut String) {
-  match (args, raw_args) {
-    (Some(list), Some(raw)) if is_anb_argument(raw) => {
-      out.push('(');
-      out.push_str(raw);
-      out.push(')');
-      let _ = list;
-    }
-    (Some(list), _) => {
-      out.push('(');
-      out.push_str(&stringify_list(list));
-      out.push(')');
-    }
-    (None, Some(raw)) => {
-      out.push('(');
-      out.push_str(raw);
-      out.push(')');
-    }
-    (None, None) => {}
-  }
-}
-
-/// Whether a raw pseudo argument is An+B notation with an `of` clause, which
-/// is serialised as written rather than rebuilt from its parsed selectors.
-fn is_anb_argument(raw: &str) -> bool {
-  let lower = raw.to_ascii_lowercase();
-  lower.contains(" of ") || lower.starts_with("of ")
-}
-
-/// The selector text Stylelint reports: from the first to the last
-/// non-comment node, trimmed. Returns the text and its offsets within the
-/// prelude.
-fn stripped_selector_source(selector: &Selector, prelude: &str) -> (String, usize, usize) {
-  let first = selector
-    .nodes
-    .iter()
-    .find(|n| !matches!(n, SelectorNode::Comment { .. }));
-  let last = selector
-    .nodes
-    .iter()
-    .rev()
-    .find(|n| !matches!(n, SelectorNode::Comment { .. }));
-  let (start, end) = match (first, last) {
-    (Some(first), Some(last)) => (first.offset(), node_end(last)),
-    _ => (selector.offset, selector.end),
-  };
-  let text = prelude[start..end].trim().to_string();
-  let end = start + text.len();
-  (text, start, end)
-}
-
-/// The exclusive end offset of a node within its prelude.
-fn node_end(node: &SelectorNode) -> usize {
-  match node {
-    SelectorNode::Tag { name, offset } => offset + name.len(),
-    SelectorNode::Universal { offset } => offset + 1,
-    SelectorNode::Class { name, offset } => offset + 1 + name.len(),
-    SelectorNode::Id { name, offset } => offset + 1 + name.len(),
-    SelectorNode::Attribute { raw, offset } => offset + raw.len(),
-    SelectorNode::PseudoClass { offset, length, .. }
-    | SelectorNode::PseudoElement { offset, length, .. } => offset + length,
-    SelectorNode::Nesting { offset } => offset + 1,
-    SelectorNode::Combinator { offset, length, .. } => offset + length,
-    SelectorNode::Comment { raw, offset } => offset + raw.len(),
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Walking
-// ---------------------------------------------------------------------------
-
-/// A pseudo node together with where it sits: the selector holding it and the
-/// pseudo-classes enclosing it, nearest first.
-struct PseudoVisit<'a> {
-  node: &'a SelectorNode,
-  siblings: &'a [SelectorNode],
-  index: usize,
-  ancestors: Vec<&'a SelectorNode>,
-}
-
-/// Visit every pseudo-class and pseudo-element in a selector list, in source
-/// order, stopping once `visit` returns `false`.
-fn walk_pseudos<'a>(
-  list: &'a SelectorList,
-  visit: &mut dyn FnMut(&PseudoVisit<'a>) -> bool,
-) -> bool {
-  for selector in &list.selectors {
-    if !walk_selector_pseudos(&selector.nodes, Vec::new(), visit) {
-      return false;
-    }
-  }
-  true
-}
-
-fn walk_selector_pseudos<'a>(
-  nodes: &'a [SelectorNode],
-  ancestors: Vec<&'a SelectorNode>,
-  visit: &mut dyn FnMut(&PseudoVisit<'a>) -> bool,
-) -> bool {
-  for (index, node) in nodes.iter().enumerate() {
-    let args = match node {
-      SelectorNode::PseudoClass { args, .. } | SelectorNode::PseudoElement { args, .. } => args,
-      _ => continue,
+    let Some(nearest) = visit.ancestors.last() else {
+      return true;
     };
-    let keep_going = visit(&PseudoVisit {
-      node,
-      siblings: nodes,
-      index,
-      ancestors: ancestors.clone(),
-    });
-    if !keep_going {
+    if nearest.is_one_of(FORGIVING_PSEUDO_CLASSES) {
+      reason = Some(format!(
+        "pseudo-elements cannot be represented by \":{}()\"",
+        nearest.lower_name()
+      ));
       return false;
     }
-    if let Some(list) = args {
-      // Only pseudo-classes count as ancestors; a pseudo-element breaks the chain.
-      let inner_ancestors = if matches!(node, SelectorNode::PseudoClass { .. }) {
-        let mut a = vec![node];
-        a.extend(ancestors.iter().copied());
-        a
-      } else {
-        Vec::new()
-      };
-      for selector in &list.selectors {
-        if !walk_selector_pseudos(&selector.nodes, inner_ancestors.clone(), visit) {
-          return false;
+    true
+  });
+  reason.or_else(|| nested.and_then(find_unrepresentable_nesting_selector))
+}
+
+/// The nesting selector cannot represent pseudo-elements; see
+/// https://drafts.csswg.org/css-nesting/#nest-selector
+fn find_unrepresentable_nesting_selector(resolved: &Selector) -> Option<String> {
+  let mut found = false;
+  walk_pseudos(&resolved.nodes, &mut |visit| {
+    let pseudo = visit.pseudo;
+    found = !pseudo.element
+      && pseudo.is_one_of(FORGIVING_PSEUDO_CLASSES)
+      && !visit
+        .ancestors
+        .iter()
+        .any(|ancestor| is_negation_or_relational(ancestor))
+      && pseudo
+        .selectors()
+        .is_some_and(|list| list.any_node(SelectorNode::is_pseudo_element));
+    !found
+  });
+  found.then(|| "\"&\" cannot represent pseudo-elements".to_string())
+}
+
+/// The shadow host is featureless and has no selectable ancestors or
+/// siblings; see https://drafts.csswg.org/css-shadow-1/#host-selector
+fn check_shadow(selector: &Selector) -> Option<String> {
+  let mut reason = None;
+  walk_pseudos(&selector.nodes, &mut |visit| {
+    let pseudo = visit.pseudo;
+
+    if pseudo.element && pseudo.is("slotted") {
+      let slots_host = pseudo.selectors().is_some_and(|list| {
+        list.any_node(|node| {
+          node
+            .as_pseudo()
+            .is_some_and(|inner| !inner.element && inner.is("host"))
+        })
+      });
+      if slots_host {
+        reason = Some("slotted elements are never the shadow host".to_string());
+      }
+      return false;
+    }
+
+    if pseudo.element
+      || !pseudo.is("host")
+      || visit
+        .ancestors
+        .iter()
+        .any(|ancestor| is_negation_or_relational(ancestor))
+    {
+      return true;
+    }
+
+    if visit.siblings[..visit.index]
+      .iter()
+      .any(SelectorNode::is_combinator)
+    {
+      reason = Some("the shadow host has no ancestors or siblings in its shadow tree".to_string());
+      return false;
+    }
+
+    if let Some(feature) = compound_feature_sibling(visit.siblings, visit.index) {
+      reason = Some(format!("\"{feature}\" never matches the shadow host"));
+      return false;
+    }
+
+    true
+  });
+  reason
+}
+
+/// A type, class, id or attribute selector compounded with the node at
+/// `index`, if any.
+fn compound_feature_sibling(siblings: &[SelectorNode], index: usize) -> Option<&SelectorNode> {
+  let before = siblings[..index]
+    .iter()
+    .enumerate()
+    .rev()
+    .take_while(|(_, node)| !node.is_combinator());
+  let after = siblings
+    .iter()
+    .enumerate()
+    .skip(index + 1)
+    .take_while(|(_, node)| !node.is_combinator() && !node.is_pseudo_element());
+  before
+    .chain(after)
+    .find(|(i, node)| is_feature_selector(i.checked_sub(1).map(|j| &siblings[j]), node))
+    .map(|(_, node)| node)
+}
+
+/// Whether `node` is a type, class, id or attribute selector.
+fn is_feature_selector(prev: Option<&SelectorNode>, node: &SelectorNode) -> bool {
+  match node {
+    SelectorNode::Tag(_) => !is_nesting_suffix(prev),
+    SelectorNode::Class(_) | SelectorNode::Id(_) | SelectorNode::Attribute(_) => true,
+    _ => false,
+  }
+}
+
+/// Whether a type selector after `&` is really a nesting suffix, as in the
+/// `-bar` of `&-bar`, rather than an element name.
+fn is_nesting_suffix(prev: Option<&SelectorNode>) -> bool {
+  matches!(prev, Some(SelectorNode::Nesting))
+}
+
+/// Tree-structural pseudo-classes never match pseudo-elements; see
+/// https://drafts.csswg.org/selectors/#structural-pseudos
+fn check_pseudo_classing_pseudo_elements(selector: &Selector) -> Option<String> {
+  compound_selectors(&selector.nodes)
+    .into_iter()
+    .find_map(|compound| {
+      let first = compound
+        .first()?
+        .as_pseudo()
+        .filter(|pseudo| pseudo.element)?;
+      if first.is_one_of(ELEMENT_REPRESENTING_PSEUDO_ELEMENTS) {
+        return None;
+      }
+      let structural = compound.iter().find_map(|node| {
+        node
+          .as_pseudo()
+          .filter(|pseudo| !pseudo.element && pseudo.is_one_of(TREE_STRUCTURAL_PSEUDO_CLASSES))
+      })?;
+      Some(format!(
+        "\"{}\" never matches pseudo-elements",
+        structural.value()
+      ))
+    })
+}
+
+/// Some pseudo-classes only match specific elements; see
+/// https://html.spec.whatwg.org/multipage/semantics-other.html#pseudo-classes
+fn check_applicable_elements(selector: &Selector) -> Option<String> {
+  compound_selectors(&selector.nodes)
+    .into_iter()
+    .find_map(|compound| {
+      if compound
+        .first()
+        .is_some_and(|node| node.is_pseudo_element())
+      {
+        return None;
+      }
+
+      let applicable: Vec<(&Pseudo, &[&str])> = compound
+        .iter()
+        .filter_map(|node| {
+          let pseudo = node.as_pseudo().filter(|pseudo| !pseudo.element)?;
+          Some((pseudo, applicable_elements(&pseudo.lower_name())?))
+        })
+        .collect();
+      if applicable.is_empty() {
+        return None;
+      }
+
+      // A type selector the pseudo-class never matches.
+      if let Some((tag, element)) = html_type_selector(&compound)
+        && let Some((pseudo, _)) = applicable
+          .iter()
+          .find(|(_, elements)| !elements.contains(&element.as_str()))
+      {
+        return Some(format!(
+          "\"{}\" never matches \"{tag}\" elements",
+          pseudo.value()
+        ));
+      }
+
+      // Two pseudo-classes with no element in common.
+      for (i, (first, first_elements)) in applicable.iter().enumerate() {
+        for (second, second_elements) in &applicable[i + 1..] {
+          if first_elements.iter().all(|e| !second_elements.contains(e)) {
+            return Some(format!(
+              "\"{}\" and \"{}\" never match the same element",
+              first.value(),
+              second.value()
+            ));
+          }
         }
       }
-    }
-  }
-  true
+      None
+    })
 }
 
-/// The lower-cased name of a pseudo node without its colons.
-fn pseudo_name(node: &SelectorNode) -> Option<String> {
-  match node {
-    SelectorNode::PseudoClass { name, .. } | SelectorNode::PseudoElement { name, .. } => {
-      Some(name.to_ascii_lowercase())
-    }
-    _ => None,
+/// The first type selector in a compound that names an HTML element: its
+/// name as written and lower-cased.
+fn html_type_selector<'a>(compound: &[&'a SelectorNode]) -> Option<(&'a str, String)> {
+  let (index, name) = compound
+    .iter()
+    .enumerate()
+    .find_map(|(i, node)| match node {
+      SelectorNode::Tag(name) => Some((i, name.as_str())),
+      _ => None,
+    })?;
+  if name.contains('|') || is_nesting_suffix(index.checked_sub(1).map(|i| compound[i])) {
+    return None;
   }
-}
-
-/// `:name` or `::name` as written, which Stylelint calls the node's value.
-fn pseudo_value(node: &SelectorNode) -> String {
-  match node {
-    SelectorNode::PseudoClass { name, .. } => format!(":{name}"),
-    SelectorNode::PseudoElement { name, .. } => format!("::{name}"),
-    _ => String::new(),
-  }
-}
-
-fn is_negation_or_relational(node: &SelectorNode) -> bool {
-  pseudo_name(node)
-    .map(|n| NEGATION_AND_RELATIONAL_PSEUDO_CLASSES.contains(&n.as_str()))
-    .unwrap_or(false)
-}
-
-fn pseudo_args(node: &SelectorNode) -> Option<&SelectorList> {
-  match node {
-    SelectorNode::PseudoClass { args, .. } | SelectorNode::PseudoElement { args, .. } => {
-      args.as_ref()
-    }
-    _ => None,
-  }
+  let lower = name.to_ascii_lowercase();
+  (is_known_html_element(&lower) || is_experimental_html_element(&lower)).then_some((name, lower))
 }
 
 // ---------------------------------------------------------------------------
@@ -687,51 +405,48 @@ fn pseudo_args(node: &SelectorNode) -> Option<&SelectorList> {
 // `groupNegationArguments: false`
 // ---------------------------------------------------------------------------
 
-/// Every compound selector reachable from a resolved selector list, with
-/// `:has()` arguments and forgiving selector lists expanded.
-fn compound_selectors(list: &SelectorList) -> Vec<Vec<&SelectorNode>> {
-  let mut compounds = Vec::new();
-  for selector in &list.selectors {
-    let (terminated, current) = group_compounds(&selector.nodes);
-    compounds.extend(terminated);
-    compounds.extend(current);
-  }
+type Compounds<'a> = Vec<Vec<&'a SelectorNode>>;
+
+/// Every compound selector reachable from a selector, with `:has()`
+/// arguments and forgiving selector lists expanded and comments dropped.
+fn compound_selectors(nodes: &[SelectorNode]) -> Compounds<'_> {
+  let (mut compounds, mut current) = group_compounds(nodes);
+  compounds.append(&mut current);
   compounds
     .into_iter()
-    .map(|c| {
-      c.into_iter()
-        .filter(|n| !matches!(n, SelectorNode::Comment { .. }))
+    .map(|compound| {
+      compound
+        .into_iter()
+        .filter(|node| !matches!(node, SelectorNode::Comment(_)))
         .collect::<Vec<_>>()
     })
-    .filter(|c| !c.is_empty())
+    .filter(|compound| !compound.is_empty())
     .collect()
 }
 
-type Compounds<'a> = Vec<Vec<&'a SelectorNode>>;
-
+/// Split `nodes` into the compounds ended by a combinator or pseudo-element
+/// and the compounds still open at the end.
 fn group_compounds(nodes: &[SelectorNode]) -> (Compounds<'_>, Compounds<'_>) {
   let mut terminated: Compounds = Vec::new();
   let mut current: Compounds = vec![Vec::new()];
 
   for node in nodes {
-    if matches!(node, SelectorNode::Combinator { .. }) {
+    if node.is_combinator() {
       terminated.append(&mut current);
       current = vec![Vec::new()];
       continue;
     }
 
-    if matches!(node, SelectorNode::PseudoElement { .. }) {
+    if node.is_pseudo_element() {
       terminated.append(&mut current);
       current = vec![Vec::new()];
     }
 
-    if let SelectorNode::PseudoClass {
-      name,
-      args: Some(list),
-      ..
-    } = node
+    if let SelectorNode::Pseudo(pseudo) = node
+      && !pseudo.element
+      && let Some(list) = pseudo.selectors()
     {
-      if name.eq_ignore_ascii_case("has") && !list.selectors.is_empty() {
+      if pseudo.is("has") && !list.selectors.is_empty() {
         for child in &list.selectors {
           let (mut child_terminated, mut child_current) = group_compounds(&child.nodes);
           terminated.append(&mut child_terminated);
@@ -740,7 +455,7 @@ fn group_compounds(nodes: &[SelectorNode]) -> (Compounds<'_>, Compounds<'_>) {
         continue;
       }
 
-      if !name.eq_ignore_ascii_case("not") {
+      if !pseudo.is("not") {
         let mut combinations: Compounds = Vec::new();
         for child in &list.selectors {
           let (mut child_terminated, child_current) = group_compounds(&child.nodes);
@@ -769,306 +484,6 @@ fn group_compounds(nodes: &[SelectorNode]) -> (Compounds<'_>, Compounds<'_>) {
   }
 
   (terminated, current)
-}
-
-// ---------------------------------------------------------------------------
-// Checks
-// ---------------------------------------------------------------------------
-
-/// Pseudo-elements cannot be represented by `:is()`, `:where()` or `&`; see
-/// https://drafts.csswg.org/selectors/#matches
-fn check_unrepresentable_pseudo_elements(ctx: &CheckContext) -> Option<String> {
-  if !ctx.may_have_pseudo_element {
-    return None;
-  }
-
-  let own = SelectorList {
-    selectors: vec![ctx.selector.clone()],
-  };
-  let mut reason = None;
-  walk_pseudos(&own, &mut |visit| {
-    if !matches!(visit.node, SelectorNode::PseudoElement { .. }) {
-      return true;
-    }
-    if visit.ancestors.iter().any(|a| is_negation_or_relational(a)) {
-      return true;
-    }
-    let Some(nearest) = visit.ancestors.first() else {
-      return true;
-    };
-    let name = pseudo_name(nearest).unwrap_or_default();
-    if FORGIVING_PSEUDO_CLASSES.contains(&name.as_str()) {
-      reason = Some(format!(
-        "pseudo-elements cannot be represented by \":{name}()\""
-      ));
-      return false;
-    }
-    true
-  });
-
-  if reason.is_some() || !ctx.nested {
-    return reason;
-  }
-
-  find_unrepresentable_nesting_selector(ctx.resolved)
-}
-
-/// The nesting selector cannot represent pseudo-elements; see
-/// https://drafts.csswg.org/css-nesting/#nest-selector
-fn find_unrepresentable_nesting_selector(resolved: &SelectorList) -> Option<String> {
-  let mut reason = None;
-  walk_pseudos(resolved, &mut |visit| {
-    if !matches!(visit.node, SelectorNode::PseudoClass { .. }) {
-      return true;
-    }
-    let name = pseudo_name(visit.node).unwrap_or_default();
-    if !FORGIVING_PSEUDO_CLASSES.contains(&name.as_str()) {
-      return true;
-    }
-    if visit.ancestors.iter().any(|a| is_negation_or_relational(a)) {
-      return true;
-    }
-    let contains_pseudo_element = pseudo_args(visit.node)
-      .map(|list| {
-        list.selectors.iter().any(|s| {
-          s.nodes
-            .iter()
-            .any(|n| matches!(n, SelectorNode::PseudoElement { .. }))
-        })
-      })
-      .unwrap_or(false);
-    if !contains_pseudo_element {
-      return true;
-    }
-    reason = Some("\"&\" cannot represent pseudo-elements".to_string());
-    false
-  });
-  reason
-}
-
-/// The shadow host is featureless and has no selectable ancestors or
-/// siblings; see https://drafts.csswg.org/css-shadow-1/#host-selector
-fn check_shadow(ctx: &CheckContext) -> Option<String> {
-  if !ctx.resolved_text.to_ascii_lowercase().contains(":host") {
-    return None;
-  }
-
-  let mut reason = None;
-  walk_pseudos(ctx.resolved, &mut |visit| {
-    let name = pseudo_name(visit.node).unwrap_or_default();
-
-    if name == "slotted" && matches!(visit.node, SelectorNode::PseudoElement { .. }) {
-      if contains_host_pseudo_class(visit.node) {
-        reason = Some("slotted elements are never the shadow host".to_string());
-      }
-      return false;
-    }
-
-    if name != "host" || !matches!(visit.node, SelectorNode::PseudoClass { .. }) {
-      return true;
-    }
-
-    if visit.ancestors.iter().any(|a| is_negation_or_relational(a)) {
-      return true;
-    }
-
-    if visit.siblings[..visit.index]
-      .iter()
-      .any(|n| matches!(n, SelectorNode::Combinator { .. }))
-    {
-      reason = Some("the shadow host has no ancestors or siblings in its shadow tree".to_string());
-      return false;
-    }
-
-    if let Some(feature) = find_compound_feature_sibling(visit.siblings, visit.index) {
-      reason = Some(format!(
-        "\"{}\" never matches the shadow host",
-        stringify_nodes(std::slice::from_ref(feature)).trim()
-      ));
-      return false;
-    }
-
-    true
-  });
-  reason
-}
-
-/// Whether a `::slotted()` argument contains `:host` at its top level.
-fn contains_host_pseudo_class(slotted: &SelectorNode) -> bool {
-  pseudo_args(slotted)
-    .map(|list| {
-      list.selectors.iter().any(|s| {
-        s.nodes.iter().any(|n| {
-          matches!(n, SelectorNode::PseudoClass { .. }) && pseudo_name(n).as_deref() == Some("host")
-        })
-      })
-    })
-    .unwrap_or(false)
-}
-
-/// A type, class, id or attribute selector compounded with the node at
-/// `index`, if any.
-fn find_compound_feature_sibling(siblings: &[SelectorNode], index: usize) -> Option<&SelectorNode> {
-  for (i, sibling) in siblings[..index].iter().enumerate().rev() {
-    if matches!(sibling, SelectorNode::Combinator { .. }) {
-      break;
-    }
-    if is_feature_selector(siblings, i) {
-      return Some(sibling);
-    }
-  }
-  for (i, sibling) in siblings.iter().enumerate().skip(index + 1) {
-    if matches!(
-      sibling,
-      SelectorNode::Combinator { .. } | SelectorNode::PseudoElement { .. }
-    ) {
-      break;
-    }
-    if is_feature_selector(siblings, i) {
-      return Some(sibling);
-    }
-  }
-  None
-}
-
-fn is_feature_selector(siblings: &[SelectorNode], index: usize) -> bool {
-  match &siblings[index] {
-    SelectorNode::Tag { .. } => is_standard_syntax_type_selector(siblings, index),
-    SelectorNode::Class { .. } | SelectorNode::Id { .. } | SelectorNode::Attribute { .. } => true,
-    _ => false,
-  }
-}
-
-/// Whether a type selector is standard CSS rather than preprocessor syntax.
-fn is_standard_syntax_type_selector(siblings: &[SelectorNode], index: usize) -> bool {
-  let SelectorNode::Tag { name, .. } = &siblings[index] else {
-    return false;
-  };
-  // `&-bar` is a nesting selector combined with a suffix.
-  if index > 0 && matches!(siblings[index - 1], SelectorNode::Nesting { .. }) {
-    return false;
-  }
-  if name.starts_with('%') {
-    return false;
-  }
-  // Reference combinators like `/deep/`.
-  if name.starts_with('/') && name.ends_with('/') {
-    return false;
-  }
-  true
-}
-
-/// Tree-structural pseudo-classes never match pseudo-elements; see
-/// https://drafts.csswg.org/selectors/#structural-pseudos
-fn check_pseudo_classing_pseudo_elements(ctx: &CheckContext) -> Option<String> {
-  if !ctx.may_have_pseudo_element {
-    return None;
-  }
-
-  for compound in compound_selectors(ctx.resolved) {
-    let Some(first) = compound.first() else {
-      continue;
-    };
-    if !matches!(first, SelectorNode::PseudoElement { .. }) {
-      continue;
-    }
-    let first_name = pseudo_name(first).unwrap_or_default();
-    if ELEMENT_REPRESENTING_PSEUDO_ELEMENTS.contains(&first_name.as_str()) {
-      continue;
-    }
-    let structural = compound.iter().find(|n| {
-      matches!(n, SelectorNode::PseudoClass { .. })
-        && pseudo_name(n)
-          .map(|name| TREE_STRUCTURAL_PSEUDO_CLASSES.contains(&name.as_str()))
-          .unwrap_or(false)
-    });
-    if let Some(node) = structural {
-      return Some(format!(
-        "\"{}\" never matches pseudo-elements",
-        pseudo_value(node)
-      ));
-    }
-  }
-  None
-}
-
-/// Some pseudo-classes only match specific elements; see
-/// https://html.spec.whatwg.org/multipage/semantics-other.html#pseudo-classes
-fn check_applicable_elements(ctx: &CheckContext) -> Option<String> {
-  for compound in compound_selectors(ctx.resolved) {
-    if matches!(compound.first(), Some(SelectorNode::PseudoElement { .. })) {
-      continue;
-    }
-
-    let applicable: Vec<(&SelectorNode, &'static [&'static str])> = compound
-      .iter()
-      .filter_map(|node| {
-        if !matches!(node, SelectorNode::PseudoClass { .. }) {
-          return None;
-        }
-        let name = pseudo_name(node)?;
-        applicable_elements(&name).map(|elements| (*node, elements))
-      })
-      .collect();
-
-    if applicable.is_empty() {
-      continue;
-    }
-
-    let tag_index = compound
-      .iter()
-      .position(|n| matches!(n, SelectorNode::Tag { .. }));
-    if let Some(index) = tag_index {
-      let tag = compound[index];
-      if let Some(tag_name) = html_type_selector_name(&compound, index) {
-        for (node, elements) in &applicable {
-          if !elements.contains(&tag_name.as_str()) {
-            let SelectorNode::Tag { name, .. } = tag else {
-              unreachable!()
-            };
-            return Some(format!(
-              "\"{}\" never matches \"{name}\" elements",
-              pseudo_value(node)
-            ));
-          }
-        }
-      }
-    }
-
-    for (i, (first_node, first_elements)) in applicable.iter().enumerate() {
-      for (second_node, second_elements) in &applicable[i + 1..] {
-        let disjoint = first_elements.iter().all(|e| !second_elements.contains(e));
-        if disjoint {
-          return Some(format!(
-            "\"{}\" and \"{}\" never match the same element",
-            pseudo_value(first_node),
-            pseudo_value(second_node)
-          ));
-        }
-      }
-    }
-  }
-  None
-}
-
-/// The lower-cased name of a type selector when it is an HTML element.
-fn html_type_selector_name(compound: &[&SelectorNode], index: usize) -> Option<String> {
-  let SelectorNode::Tag { name, .. } = compound[index] else {
-    return None;
-  };
-  if name.contains('|') {
-    return None;
-  }
-  let owned: Vec<SelectorNode> = compound.iter().map(|n| (*n).clone()).collect();
-  if !is_standard_syntax_type_selector(&owned, index) {
-    return None;
-  }
-  let lower = name.to_ascii_lowercase();
-  if is_known_html_element(&lower) || EXPERIMENTAL_HTML_ELEMENTS.contains(&lower.as_str()) {
-    Some(lower)
-  } else {
-    None
-  }
 }
 
 #[cfg(test)]
