@@ -96,7 +96,9 @@ npm install -D @codebend3r/gale
 
 The npm package ships prebuilt binaries, so install does not run a postinstall
 script or download executables. A small Node launcher picks the right one.
-Supported platforms: macOS (arm64, x64), Linux (x64, arm64), Windows (x64).
+Bundled platforms: macOS (arm64, x64) and Linux (x64, arm64). Windows is not
+bundled in the npm package; install it with `cargo install gale-lint` or build
+from source.
 
 ### Cargo
 
@@ -170,7 +172,7 @@ Gale walks up from the working directory and uses the first config it finds, in 
 - **LSP server** for editor integration (`--lsp`)
 - **Parallel linting** using all CPU cores
 - **Inline disable comments** (`stylelint-disable` and `gale-disable`)
-- **Text, JSON, compact, verbose, TAP, and unix** output formatters; JSON matches Stylelint's result shape field-for-field
+- **Text, string, JSON, compact, verbose, TAP, and unix** output formatters; JSON matches Stylelint's result shape field-for-field
 - **Programmatic Node.js API** (`lint()`, `resolveConfig()`, `formatters`) modeled on `stylelint.lint()`, usable from both ESM and CommonJS
 - **`extends`** with built-in presets, npm packages, and relative paths
 - **`.stylelintignore` and `.galeignore`** files (gitignore syntax) for custom exclusions
@@ -486,7 +488,7 @@ and troubleshooting.
 # 1. Update the version in Cargo.toml (workspace.package.version)
 # 2. Commit the version bump
 # 3. Tag and push
-git tag v0.2.2
+git tag v0.2.3
 git push && git push --tags
 ```
 
@@ -508,7 +510,7 @@ The [release workflow](.github/workflows/release.yml) will:
 ./scripts/build-npm.sh --all
 
 # Set npm package version before building
-./scripts/build-npm.sh --version 0.2.2
+./scripts/build-npm.sh --version 0.2.3
 ```
 
 ## Architecture
