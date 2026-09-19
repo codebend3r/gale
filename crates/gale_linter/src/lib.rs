@@ -11,6 +11,7 @@ pub mod registry;
 pub mod rule;
 pub mod rules;
 pub mod runner;
+pub mod selector;
 pub mod stylelint_version;
 
 pub use registry::RuleRegistry;

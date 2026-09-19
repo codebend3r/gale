@@ -35,8 +35,10 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 
 | Feature | Description | Gale | Stylelint |
 |---------|-------------|:----:|:---------:|
-| Core Stylelint rules | The built-in rule set (`block-no-empty`, `property-no-unknown`, ...) | ✅ 144 rules built in | ✅ |
-| `display-notation` (v17.1) | Newest core rule for `display` value notation | ✅ | ✅ |
+| Core Stylelint rules | The built-in rule set (`block-no-empty`, `property-no-unknown`, ...) | ✅ 146 rules built in | ✅ |
+| `display-notation` (v17.1) | Core rule for `display` value notation | ✅ | ✅ |
+| `selector-no-invalid` | Core rule flagging selectors the CSS grammar rejects, e.g. `a ) b`, `:not(::before)`, `:dir(foo)` | ✅ Reads selectors from the source text, since the parser drops rules it cannot parse | ✅ |
+| `selector-no-unmatchable` (v17.15) | Newest core rule flagging valid selectors that can never match, e.g. `label:enabled`, `::before:first-child`, `:is(::before)` | ✅ Resolves CSS nesting before checking | ✅ |
 | `@stylistic/*` rules | Formatting rules from `@stylistic/stylelint-plugin` | ✅ 69 rules built in | ✅ Via plugin |
 | `scss/*` rules | Rules from `stylelint-scss` | ✅ 45 rules built in | ✅ Via plugin |
 | `order/*` rules | Rules from `stylelint-order` | ✅ 3 rules built in | ✅ Via plugin |
