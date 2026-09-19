@@ -35,6 +35,31 @@ Run a single test by name:
 cargo test -p gale_linter block_no_empty
 ```
 
+## Hooks
+
+[Lefthook](https://lefthook.dev) runs the checks below automatically. It
+installs itself when you run `bun install`; if the hooks ever go missing, run
+`bunx lefthook install`.
+
+| Hook | Checks | Warm cost |
+| --- | --- | --- |
+| `pre-commit` | `cargo fmt --check`, `cargo clippy -D warnings`, leftover conflict markers | under a second |
+| `commit-msg` | subject is 72 characters or fewer, with no trailing period | instant |
+| `pre-push` | `cargo test --workspace`, the bun feature suite against a debug build | around ten seconds |
+
+Jobs are filtered by glob, so a docs-only commit skips the Rust checks
+entirely. Release builds, the npm package matrix, and benchmarks are left to
+CI.
+
+To bypass a hook once:
+
+```bash
+git commit --no-verify
+LEFTHOOK=0 git push
+```
+
+Personal overrides go in `lefthook-local.yml`, which is not tracked.
+
 ## Adding a new rule
 
 Gale has a well-defined process for adding lint rules:
@@ -74,5 +99,8 @@ See `tests/differential/` for more details.
 4. Make sure `cargo clippy --workspace -- -D warnings` is clean
 5. Make sure `cargo fmt --check` passes
 6. Open a PR with a clear description of what you changed and why
+
+Steps 3 to 5 run on their own if you have the hooks installed (see
+[Hooks](#hooks)).
 
 That's it. We try to keep the process lightweight.
