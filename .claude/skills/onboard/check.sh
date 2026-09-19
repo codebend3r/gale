@@ -47,10 +47,10 @@ command -v bun  &>/dev/null && ok "bun"  "$(bun --version)"        || fail "bun"
 command -v npm  &>/dev/null && ok "npm"  "v$(npm --version)"       || fail "npm" "not installed"
 command -v git  &>/dev/null && ok "git"  "$(git --version | awk '{print $3}')" || fail "git" "not installed"
 
-if [[ -x "$ROOT/node_modules/.bin/run-s" ]]; then
-  ok "node_modules" "run-s present"
+if [[ -x "$ROOT/node_modules/.bin/lefthook" ]]; then
+  ok "node_modules" "lefthook present"
 else
-  fail "node_modules" "run-s missing, scripts using run-s will fail"
+  fail "node_modules" "lefthook missing, run bun install"
 fi
 
 # Worktrees keep .git as a file and share hooks with the main checkout, so ask
