@@ -1,6 +1,6 @@
 ---
 name: onboard
-description: Use when setting up gale in this repo (path contains `git/gale`) on a new machine or a fresh clone, or when any `package.json` script fails for environment reasons rather than code reasons: "cargo: command not found", "'cross' is not installed", "hyperfine not found", "run-s: not found", `bun build:all` / `bun run lint` / `bun test:rust` exiting before it compiles anything, or the user asks whether everything needed to run the scripts is installed.
+description: Use when setting up gale in this repo (path contains `git/gale`) on a new machine or a fresh clone, or when any `package.json` script fails for environment reasons rather than code reasons: "cargo: command not found", "'cross' is not installed", "hyperfine not found", "lefthook: not found", `bun build:all` / `bun run lint` / `bun test:rust` exiting before it compiles anything, or the user asks whether everything needed to run the scripts is installed.
 ---
 
 # Onboard a machine onto gale
