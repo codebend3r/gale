@@ -165,7 +165,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Fixed output on stdin | `--fix --stdin` prints the fixed source | ✅ | ✅ |
 | Repeated passes until stable | Re-run fixes when one fix enables another | ✅ | ⚠️ Single pass |
 | Disable comments suppress fixes | A disabled rule does not fix its range | ✅ | ✅ |
-| `disableFix` per rule | Report but never fix a specific rule | ❌ | ✅ |
+| `disableFix` per rule | Report but never fix a specific rule | ✅ | ✅ |
 | Edit info in results | Fix ranges returned without writing files | ❌ | ✅ `computeEditInfo` |
 
 ## Programmatic API (Node.js)
@@ -207,7 +207,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Prebuilt binaries on GitHub Releases | Download and run without a package manager | ✅ | ❌ |
 | macOS (arm64, x64) | Runs natively | ✅ | ✅ |
 | Linux (x64, arm64) | Runs natively | ✅ | ✅ |
-| Windows | Runs natively | ✅ x64 prebuilt binary; arm64 from source | ✅ |
+| Windows | Runs natively | ⚠️ No binary is bundled in the npm package; install with Cargo or build from source | ✅ |
 | No Node.js runtime required | Run without Node installed | ✅ | ❌ |
 | Zero-dependency install | No `postinstall` script, no downloads at install time | ✅ A Node launcher picks the bundled binary | ❌ Pulls the PostCSS dependency tree |
 

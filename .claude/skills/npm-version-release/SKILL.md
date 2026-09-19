@@ -8,7 +8,7 @@ argument-hint: <semver | patch | minor | major>
 
 ## Overview
 
-A release is **one commit named `X.Y.Z` on the current branch** that carries every version reference in the repo *and* the four rebuilt binaries, an annotated tag `vX.Y.Z` on that commit, and a publish of `npm/` to the registry. The binaries are built by CI from the tag, then folded back into the same commit. The whole thing, publish included, is this skill's job; nothing is handed back to the user except an expired `npm login`.
+A release is **one commit named `X.Y.Z` on the current branch** that carries every version reference in the repo *and* the four rebuilt binaries, an annotated tag `vX.Y.Z` on that commit, and a publish of `npm/` to the registry. The binaries are built locally from the bumped source, then folded back into the same commit. The whole thing, publish included, is this skill's job; nothing is handed back to the user except an expired `npm login`.
 
 **No release branch. No pull request. No `git reset --hard`.** The user commits releases directly on the branch they are on. Do not branch or switch branches. Do not ask which of several release strategies to use — this file is the strategy.
 
@@ -103,43 +103,50 @@ git commit -m "$VERSION"
 git tag -a "v$VERSION" -m "$VERSION"
 ```
 
-### 5. Push the tag only, and wait for CI to build the binaries
+### 5. Build the binaries locally
+
+`scripts/build-npm.sh` builds each target and drops it straight into `npm/bin/<triple>/gale`, so there is nothing to download or unpack afterwards. It builds the host target with `cargo build --release` and every other target with `cross build --release --target <triple>`.
+
+Prerequisites, checked before building:
 
 ```bash
-git push origin "v$VERSION"            # not main yet; the commit gets amended in step 7. Re-release: git push -f
-RUN=""; for i in 1 2 3 4 5 6; do
-  RUN=$(gh run list -R codebend3r/gale --workflow=release.yml --commit "$(git rev-parse HEAD)" -L1 --json databaseId -q '.[0].databaseId')
-  [ -n "$RUN" ] && break; sleep 10
-done
-[ -n "$RUN" ] || { echo "release run not found for v$VERSION"; exit 1; }
-gh run watch -R codebend3r/gale "$RUN" --exit-status || true
-gh run view -R codebend3r/gale "$RUN"
+command -v cargo || { curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; . "$HOME/.cargo/env"; }
+command -v cross || cargo install cross
+docker info >/dev/null 2>&1 || echo "Docker is not running; cross cannot build the three non-host targets"
 ```
 
-The four build jobs and the "Create GitHub Release" step must be green. The "Publish to npm" step fails with `ENEEDAUTH` because this fork has no `NPM_TOKEN` secret; that is expected and step 9 does the publish locally. Any build job failing is a real problem: stop and report it.
-
-### 6. Put the CI binaries into npm/bin
+All four targets, which is what a release ships:
 
 ```bash
-DL=$(mktemp -d)
-gh release download "v$VERSION" -R codebend3r/gale -D "$DL" -p 'gale-*'
-for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-  install -m755 "$DL/gale-$t" "npm/bin/$t/gale"
-done
+./scripts/build-npm.sh --all
+```
+
+Host target only (`aarch64-apple-darwin` on this Mac), when the other three are already current:
+
+```bash
+./scripts/build-npm.sh
+```
+
+`--version "$VERSION"` is available on both forms but redundant here: step 2 already set `npm/package.json`. A release needs all four targets, so `--all` is the default choice; falling back to the host-only build ships stale binaries for the other three platforms and must be called out explicitly.
+
+### 6. Verify the binaries carry the new version
+
+```bash
 node ./npm/bin/gale.cjs --version      # the launcher is gale.cjs, not bin/gale; must print "gale $VERSION"
+ls -l npm/bin/*/gale                   # four files, all freshly mtimed
 git status --short                     # exactly the four npm/bin/*/gale files
 ```
 
-Local cross-compiling (`scripts/build-npm.sh --all`) needs `cross` and a running Docker daemon, which this machine does not have. Use the CI assets.
+If the launcher still prints the old version, the Cargo substitution in step 2 did not land; fix it and rebuild. Do not proceed with binaries that disagree with the manifests, because npm can never reuse the version number once it is published.
 
-### 7. Fold the binaries into the release commit and move the tag
+### 7. Fold the binaries into the release commit and push
 
 ```bash
 git add npm/bin
 git commit --amend --no-edit
 git tag -f -a "v$VERSION" -m "$VERSION"
-git push -f origin "v$VERSION"         # re-runs CI on the amended commit; the release gets identical assets
-git push origin HEAD                   # plain push; origin never saw the pre-amend commit
+git push origin HEAD                   # plain push unless this is a re-release
+git push -f origin "v$VERSION"
 ```
 
 ### 8. Re-releasing a version that already exists
@@ -166,7 +173,7 @@ npm view "$PKG" version                # must equal VERSION
 open "https://www.npmjs.com/package/$PKG"
 ```
 
-Report the tag commit, the run URL, and the registry version in the final message.
+Report the tag commit, the four built targets, and the registry version in the final message.
 
 ## Common mistakes
 
@@ -179,8 +186,8 @@ Report the tag commit, the run URL, and the registry version in the final messag
 | Skipping the sweep because the table "covers it" | The table is last release's list. The sweep found a file the table missed the first time it ran. |
 | Committing binaries separately from the version bump | Amend; the tag must include the binaries. |
 | Bumping only package.json | Cargo.toml must move too, or `gale --version` lies. |
-| Pushing main before amending | Push the tag alone first; push the branch after step 7. |
+| Pushing anything before the binaries are folded in | Nothing is pushed until step 7; the amended commit and its tag go up together. |
 | Trusting `npm org ls` for publish rights | Only `npm access list collaborators` counts. |
-| Treating the CI `ENEEDAUTH` failure as a blocker | Builds and the GitHub Release are already done; publish locally. |
 | Handing `npm publish` to the user | npm 11 uses browser-based 2FA; run it yourself with a long timeout. |
 | Checking `npm view` once right after publish | The registry takes minutes to process; poll. |
+| Publishing without rebuilding the binaries | `npm/bin` keeps the previous release's builds until step 5 overwrites them. Verify with `node ./npm/bin/gale.cjs --version` first; a published version number can never be reused. |
