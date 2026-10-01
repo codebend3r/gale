@@ -7,6 +7,7 @@
 )]
 
 pub mod data;
+pub mod embedded;
 pub mod known_rules;
 pub mod panic_guard;
 pub mod pattern;
