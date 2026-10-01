@@ -86,6 +86,53 @@ pub fn is_standard_syntax_property(prop: &str) -> bool {
     || has_interpolation(prop))
 }
 
+/// Stylelint's `isStandardSyntaxValue`: not a Sass or Less variable (after
+/// an optional leading operator), not a Sass module member, free of
+/// interpolation, and no WebExtension `__MSG_name__` placeholder.
+pub fn is_standard_syntax_value(value: &str) -> bool {
+  let normalized = match value.as_bytes().first() {
+    Some(b'-' | b'+' | b'*' | b'/') => &value[1..],
+    _ => value,
+  };
+  if normalized.starts_with('$') || normalized.starts_with('@') {
+    return false;
+  }
+  // `/^.+\.\$/` and `/^.+\.[-\w]+\(/`: a Sass module's variable or
+  // function, on the first line.
+  let first_line = value.lines().next().unwrap_or("");
+  let bytes = first_line.as_bytes();
+  let module_member = (1..bytes.len()).any(|dot| {
+    if bytes[dot] != b'.' {
+      return false;
+    }
+    if bytes.get(dot + 1) == Some(&b'$') {
+      return true;
+    }
+    let mut i = dot + 1;
+    while i < bytes.len()
+      && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+    {
+      i += 1;
+    }
+    i > dot + 1 && bytes.get(i) == Some(&b'(')
+  });
+  if module_member || has_interpolation(normalized) {
+    return false;
+  }
+  // `/__MSG_\S+__/`
+  !value.match_indices("__MSG_").any(|(i, _)| {
+    let rest = &value[i + "__MSG_".len()..];
+    let run = rest
+      .find(char::is_whitespace)
+      .map_or(rest, |end| &rest[..end]);
+    // At least one character, then `__`.
+    run
+      .char_indices()
+      .nth(1)
+      .is_some_and(|(second, _)| run[second..].contains("__"))
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -108,6 +155,33 @@ mod tests {
       "<% a %>",
     ] {
       assert!(!is_standard_syntax_selector(selector), "{selector}");
+    }
+  }
+
+  #[test]
+  fn recognises_non_standard_values() {
+    for value in [
+      "red",
+      "1px solid",
+      "-1px",
+      "a.b",
+      "url(x.png)",
+      "__MSG_é",
+      "__MSG___",
+    ] {
+      assert!(is_standard_syntax_value(value), "{value}");
+    }
+    for value in [
+      "$a",
+      "-$a",
+      "@a",
+      "ns.$a",
+      "ns.fn(1)",
+      "#{$a}",
+      "__MSG_name__",
+      "__MSG_é__",
+    ] {
+      assert!(!is_standard_syntax_value(value), "{value}");
     }
   }
 
