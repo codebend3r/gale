@@ -7,6 +7,7 @@
 )]
 
 pub mod data;
+pub mod panic_guard;
 pub mod registry;
 pub mod rule;
 pub mod rules;

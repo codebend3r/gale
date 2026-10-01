@@ -10,6 +10,7 @@ use tracing::debug;
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
+use gale_linter::panic_guard;
 use gale_linter::{LintRunner, RuleRegistry};
 
 // ---------------------------------------------------------------------------
@@ -24,10 +25,18 @@ use gale_linter::{LintRunner, RuleRegistry};
 ///
 /// `line_start_byte` is the byte offset where the line begins and `byte_col` is
 /// the number of bytes from that start (0-indexed).
+///
+/// An offset that lands inside a multibyte character (a rule bug) is pulled
+/// back to the start of that character rather than panicking.
 fn byte_col_to_utf16(source: &str, line_start_byte: usize, byte_col: usize) -> u32 {
-  let end = (line_start_byte + byte_col).min(source.len());
-  let slice = &source[line_start_byte..end];
-  slice.chars().map(|ch| ch.len_utf16() as u32).sum()
+  let start = source.floor_char_boundary(line_start_byte.min(source.len()));
+  let end = source.floor_char_boundary((line_start_byte + byte_col).min(source.len()));
+  source
+    .get(start..end.max(start))
+    .unwrap_or_default()
+    .chars()
+    .map(|ch| ch.len_utf16() as u32)
+    .sum()
 }
 
 /// Convert a byte span in `source` to an LSP range (0-indexed lines, UTF-16
@@ -205,13 +214,38 @@ impl GaleLspServer {
 
   /// Lint source text, remember it for code actions, and publish
   /// diagnostics to the client.
+  ///
+  /// Linting and the position conversion run inside a panic guard (which
+  /// depends on panics unwinding, see [`panic_guard`]): a document that
+  /// trips a bug is published with one internal-error diagnostic instead of
+  /// taking the server down.
   async fn lint_and_publish(&self, uri: Url, source: &str) {
-    let diagnostics = self.lint(&uri, source);
-    let line_index = SourceLineIndex::build(source);
-    let lsp_diagnostics = diagnostics
-      .iter()
-      .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
-      .collect();
+    let linted = panic_guard::catch(|| {
+      let diagnostics = self.lint(&uri, source);
+      let line_index = SourceLineIndex::build(source);
+      let lsp_diagnostics: Vec<tower_lsp::lsp_types::Diagnostic> = diagnostics
+        .iter()
+        .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
+        .collect();
+      (diagnostics, lsp_diagnostics)
+    });
+    let (diagnostics, lsp_diagnostics) = linted.unwrap_or_else(|caught| {
+      let diag = tower_lsp::lsp_types::Diagnostic {
+        range: Range::default(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(
+          gale_linter::runner::INTERNAL_ERROR_RULE.to_string(),
+        )),
+        source: Some("gale".to_string()),
+        message: format!(
+          "Internal error while linting this file: {}. This is a bug in gale; please report it at {}",
+          caught.describe(),
+          panic_guard::ISSUES_URL
+        ),
+        ..Default::default()
+      };
+      (Vec::new(), vec![diag])
+    });
 
     self
       .documents
@@ -378,11 +412,12 @@ impl LanguageServer for GaleLspServer {
       .await;
   }
 
-  /// Offers quick fixes for the fixable diagnostics under the cursor.
+  /// Offers quick fixes for the fixable diagnostics under the cursor.  A
+  /// panic while building them yields no actions rather than a dead server.
   async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-    Ok(Some(
-      self.quick_fixes(&params.text_document.uri, &params.range),
-    ))
+    let actions = panic_guard::catch(|| self.quick_fixes(&params.text_document.uri, &params.range))
+      .unwrap_or_default();
+    Ok(Some(actions))
   }
 
   /// Re-lints on save, using the notification's text or re-reading the file.
@@ -434,6 +469,16 @@ mod tests {
 
     let range = span_to_range(source, &line_index, Span::new(23, 1));
     assert_eq!(range.start, Position::new(1, 4));
+  }
+
+  #[test]
+  fn span_to_range_survives_offsets_inside_a_multibyte_character() {
+    // `é` is two bytes; offsets 6 and 7 fall inside and past it.
+    let source = "a { b: é; }\n";
+    let line_index = SourceLineIndex::build(source);
+    let range = span_to_range(source, &line_index, Span::new(8, 40));
+    assert_eq!(range.start, Position::new(0, 7));
+    assert_eq!(byte_col_to_utf16(source, 0, 8), 7);
   }
 
   #[test]

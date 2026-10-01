@@ -23,13 +23,13 @@ export class LspClient {
   private waiters: Waiter[] = [];
   private closed = false;
 
-  constructor(cwd: string, extraArgs: string[] = []) {
+  constructor(cwd: string, extraArgs: string[] = [], env: Record<string, string> = {}) {
     this.proc = Bun.spawn([GALE_BIN, "--lsp", ...extraArgs], {
       cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
-      env: BASE_ENV,
+      env: { ...BASE_ENV, ...env },
     });
     void this.readLoop();
   }

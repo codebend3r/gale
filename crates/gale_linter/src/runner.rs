@@ -4,8 +4,9 @@ use std::time::Instant;
 use gale_css_parser::{CssNode, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
+use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::registry::RuleRegistry;
-use crate::rule::{RuleContext, secondary_options_of};
+use crate::rule::{Rule, RuleContext, secondary_options_of};
 
 // ---------------------------------------------------------------------------
 // Inline disable-comment support
@@ -684,6 +685,22 @@ fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::V
   }
 }
 
+/// The rule named by `GALE_DEBUG_PANIC`, read once per process.
+static DEBUG_PANIC_RULE: std::sync::LazyLock<Option<String>> =
+  std::sync::LazyLock::new(|| std::env::var("GALE_DEBUG_PANIC").ok());
+
+/// The text a file must contain for `GALE_DEBUG_PANIC` to fire on it.
+const DEBUG_PANIC_MARKER: &str = "gale-debug-panic";
+
+/// Fault injection for testing the crash guard end to end: with
+/// `GALE_DEBUG_PANIC=<rule-name>` set, that rule panics on every file whose
+/// source contains `gale-debug-panic`, the way a slicing bug would.
+fn debug_panic(rule_name: &str, source: &str) {
+  if DEBUG_PANIC_RULE.as_deref() == Some(rule_name) && source.contains(DEBUG_PANIC_MARKER) {
+    panic!("GALE_DEBUG_PANIC: simulated crash in {rule_name}");
+  }
+}
+
 /// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
 fn perf_enabled() -> bool {
   std::env::var("GALE_DEBUG_PERF")
@@ -893,7 +910,17 @@ impl LintRunner {
   }
 
   /// Parse and lint a CSS source string, returning all diagnostics.
+  ///
+  /// Never panics: a rule that crashes is reported as an internal-error
+  /// problem on the file and the remaining rules still run.
   pub fn lint_source(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    guard_file(source, file_path, || {
+      self.lint_source_unguarded(source, file_path, syntax)
+    })
+  }
+
+  /// [`Self::lint_source`] without the file-level panic guard.
+  fn lint_source_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
@@ -913,34 +940,29 @@ impl LintRunner {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
 
-    let mut diagnostics = Vec::new();
-
     // Collect enabled rules from the registry.
-    let active_rules: Vec<&dyn crate::rule::Rule> = self
+    let active_rules: Vec<&dyn Rule> = self
       .enabled_rules
       .iter()
       .filter_map(|name| self.registry.get(name))
       .collect();
+    let options: Vec<Option<&serde_json::Value>> = active_rules
+      .iter()
+      .map(|rule| self.rule_options.get(rule.name()))
+      .collect();
+
+    let mut run = RuleRun::new(
+      &active_rules,
+      options.clone(),
+      options,
+      file_path,
+      source,
+      syntax,
+    );
 
     // Run document-level checks (check_root).
     let t1 = Instant::now();
-    for rule in &active_rules {
-      let tr = Instant::now();
-      let context = RuleContext {
-        file_path,
-        source,
-        syntax,
-        options: self.rule_options.get(rule.name()),
-      };
-      let mut results = rule.check_root(&parse_result.nodes, &context);
-      if debug {
-        let elapsed = tr.elapsed().as_secs_f64();
-        if elapsed > 0.001 {
-          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
-        }
-      }
-      diagnostics.append(&mut results);
-    }
+    run.check_root(&parse_result.nodes, debug);
     if debug {
       eprintln!(
         "[perf] check_root total: {:.3}s",
@@ -951,19 +973,16 @@ impl LintRunner {
     // Walk each top-level node for per-node checks.
     let t2 = Instant::now();
     for node in &parse_result.nodes {
-      walk_node(
-        node,
-        &active_rules,
-        file_path,
-        source,
-        syntax,
-        &self.rule_options,
-        &mut diagnostics,
-      );
+      run.walk(node);
     }
     if debug {
       eprintln!("[perf] walk: {:.3}s", t2.elapsed().as_secs_f64());
     }
+    let RuleRun {
+      mut diagnostics,
+      failures,
+      ..
+    } = run;
 
     // Set file_path and apply severity overrides on all diagnostics.
     let t3 = Instant::now();
@@ -1006,6 +1025,10 @@ impl LintRunner {
       eprintln!("[perf] disable-filter: {:.3}s", t4.elapsed().as_secs_f64());
     }
 
+    // Rule crashes go in last so that disables, severity overrides and the
+    // `message` option cannot hide or soften them.
+    diagnostics.extend(failures);
+
     // Sort diagnostics by position for consistent output.  The rule name
     // breaks ties: rules run in the order `enabled_rules` happens to hold
     // them, which comes from a HashMap and so varies between processes.
@@ -1029,7 +1052,31 @@ impl LintRunner {
   /// Parse and lint a CSS source string using a custom set of enabled rule
   /// names instead of the runner's default list.  Used when config overrides
   /// change the effective rules for a specific file.
+  ///
+  /// Never panics, for the same reason as [`Self::lint_source`].
   pub fn lint_source_with_rules(
+    &self,
+    source: &str,
+    file_path: &str,
+    syntax: Syntax,
+    enabled_rules: &[String],
+    rule_options: &HashMap<String, serde_json::Value>,
+    rule_severities: &HashMap<String, Severity>,
+  ) -> LintResult {
+    guard_file(source, file_path, || {
+      self.lint_source_with_rules_unguarded(
+        source,
+        file_path,
+        syntax,
+        enabled_rules,
+        rule_options,
+        rule_severities,
+      )
+    })
+  }
+
+  /// [`Self::lint_source_with_rules`] without the file-level panic guard.
+  fn lint_source_with_rules_unguarded(
     &self,
     source: &str,
     file_path: &str,
@@ -1057,33 +1104,43 @@ impl LintRunner {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
 
-    let mut diagnostics = Vec::new();
-
-    let active_rules: Vec<&dyn crate::rule::Rule> = enabled_rules
+    let active_rules: Vec<&dyn Rule> = enabled_rules
       .iter()
       .filter_map(|name| self.registry.get(name))
       .collect();
 
-    let t1 = Instant::now();
-    for rule in &active_rules {
-      let context = RuleContext {
-        file_path,
-        source,
-        syntax,
-        options: rule_options
+    // `check_root` sees the per-file options, falling back to the runner's
+    // own.  The node walk sees the per-file options alone when there are
+    // any, and the runner's otherwise.
+    let root_options: Vec<Option<&serde_json::Value>> = active_rules
+      .iter()
+      .map(|rule| {
+        rule_options
           .get(rule.name())
-          .or_else(|| self.rule_options.get(rule.name())),
-      };
-      let tr = Instant::now();
-      let mut results = rule.check_root(&parse_result.nodes, &context);
-      if debug {
-        let elapsed = tr.elapsed().as_secs_f64();
-        if elapsed > 0.001 {
-          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
-        }
-      }
-      diagnostics.append(&mut results);
-    }
+          .or_else(|| self.rule_options.get(rule.name()))
+      })
+      .collect();
+    let merged_options = if rule_options.is_empty() {
+      &self.rule_options
+    } else {
+      rule_options
+    };
+    let node_options: Vec<Option<&serde_json::Value>> = active_rules
+      .iter()
+      .map(|rule| merged_options.get(rule.name()))
+      .collect();
+
+    let mut run = RuleRun::new(
+      &active_rules,
+      root_options,
+      node_options,
+      file_path,
+      source,
+      syntax,
+    );
+
+    let t1 = Instant::now();
+    run.check_root(&parse_result.nodes, debug);
     if debug {
       eprintln!(
         "[perf] check_root total: {:.3}s",
@@ -1091,30 +1148,18 @@ impl LintRunner {
       );
     }
 
-    // Merge rule_options with self.rule_options (override-specific takes precedence)
-    let merged_options = if rule_options.is_empty() {
-      &self.rule_options
-    } else {
-      // We need a merged map; use a temporary
-      // For efficiency, just pass both and let walk_node check both
-      rule_options
-    };
-
     let t2 = Instant::now();
     for node in &parse_result.nodes {
-      walk_node(
-        node,
-        &active_rules,
-        file_path,
-        source,
-        syntax,
-        merged_options,
-        &mut diagnostics,
-      );
+      run.walk(node);
     }
     if debug {
       eprintln!("[perf] walk: {:.3}s", t2.elapsed().as_secs_f64());
     }
+    let RuleRun {
+      mut diagnostics,
+      mut failures,
+      ..
+    } = run;
 
     // Build alias map: canonical rule name -> config-specified name.
     // When the config uses a deprecated name (e.g. "function-comma-space-after"),
@@ -1173,6 +1218,15 @@ impl LintRunner {
       );
     }
 
+    // Rule crashes go in last, as in `lint_source`, under the rule name the
+    // config used.
+    for failure in &mut failures {
+      if let Some(config_name) = alias_map.get(&failure.rule_name) {
+        failure.rule_name = config_name.clone();
+      }
+    }
+    diagnostics.extend(failures);
+
     // Tie-broken by rule name for the same reason as in `lint_source`.
     diagnostics.sort_by(|a, b| {
       a.span
@@ -1185,72 +1239,177 @@ impl LintRunner {
   }
 }
 
-/// Recursively walk the AST, invoking each rule's `check` on every node.
-fn walk_node(
-  node: &CssNode,
-  rules: &[&dyn crate::rule::Rule],
-  file_path: &str,
-  source: &str,
+/// The problem reported in place of a rule that panicked.
+///
+/// It is an error whatever the rule's configured severity, so the run exits
+/// non-zero, and it carries the panic message and location so the report is
+/// enough to file a bug.
+fn internal_error(rule_name: &str, caught: &Caught, offset: usize) -> Diagnostic {
+  Diagnostic::new(
+    rule_name,
+    format!(
+      "Internal error in rule \"{rule_name}\": {}. This is a bug in gale; please report it at {ISSUES_URL}",
+      caught.describe()
+    ),
+  )
+  .severity(Severity::Error)
+  .span(Span::new(offset, 0))
+}
+
+/// The rule name for a crash that happened outside any one rule, such as in
+/// the parser.
+pub const INTERNAL_ERROR_RULE: &str = "internal-error";
+
+/// Lint one file through `lint`, reporting a panic that escapes it (from the
+/// parser or the disable-comment scanner, say) as a single internal-error
+/// problem on the file rather than aborting the whole run.
+///
+/// Panics inside a rule never get this far: [`RuleRun`] catches those per
+/// rule so the other rules still report.
+fn guard_file(source: &str, file_path: &str, lint: impl FnOnce() -> LintResult) -> LintResult {
+  panic_guard::catch(lint).unwrap_or_else(|caught| {
+    let diag = Diagnostic::new(
+      INTERNAL_ERROR_RULE,
+      format!(
+        "Internal error while linting this file: {}. This is a bug in gale; please report it at {ISSUES_URL}",
+        caught.describe()
+      ),
+    )
+    .severity(Severity::Error)
+    .span(Span::new(0, 0))
+    .file_path(file_path);
+    LintResult::new(file_path, source, vec![diag])
+  })
+}
+
+/// One file's pass over its active rules.
+///
+/// Every `check_root` and `check` call runs inside [`panic_guard::catch`].  A
+/// rule that panics is reported once, as an internal error at the node it was
+/// checking, and skipped for the rest of the file; the other rules carry on.
+struct RuleRun<'a> {
+  rules: &'a [&'a dyn Rule],
+  /// The options each rule sees in `check_root`, by index into `rules`.
+  root_options: Vec<Option<&'a serde_json::Value>>,
+  /// The options each rule sees in `check`, by index into `rules`.
+  node_options: Vec<Option<&'a serde_json::Value>>,
+  file_path: &'a str,
+  source: &'a str,
   syntax: Syntax,
-  rule_options: &HashMap<String, serde_json::Value>,
-  diagnostics: &mut Vec<gale_diagnostics::Diagnostic>,
-) {
-  // Run rules on this node.
-  for rule in rules {
-    let context = RuleContext {
+  /// `failed[i]` once `rules[i]` has panicked on this file.
+  failed: Vec<bool>,
+  /// What the rules reported.
+  diagnostics: Vec<Diagnostic>,
+  /// One internal-error problem per rule that panicked.  Kept apart from
+  /// `diagnostics` so disables and severity overrides never touch them.
+  failures: Vec<Diagnostic>,
+}
+
+impl<'a> RuleRun<'a> {
+  /// Prepare a pass of `rules` over one file.
+  fn new(
+    rules: &'a [&'a dyn Rule],
+    root_options: Vec<Option<&'a serde_json::Value>>,
+    node_options: Vec<Option<&'a serde_json::Value>>,
+    file_path: &'a str,
+    source: &'a str,
+    syntax: Syntax,
+  ) -> Self {
+    Self {
+      rules,
+      root_options,
+      node_options,
       file_path,
       source,
       syntax,
-      options: rule_options.get(rule.name()),
-    };
-    let mut results = rule.check(node, &context);
-    diagnostics.append(&mut results);
+      failed: vec![false; rules.len()],
+      diagnostics: Vec::new(),
+      failures: Vec::new(),
+    }
   }
 
-  // Recurse into children based on node type.
-  match node {
-    CssNode::Style(style_rule) => {
-      for child in &style_rule.children {
-        let child_node = CssNode::Style(child.clone());
-        walk_node(
-          &child_node,
-          rules,
-          file_path,
-          source,
-          syntax,
-          rule_options,
-          diagnostics,
-        );
-      }
-      // Walk at-rules nested inside the style rule (e.g. @include,
-      // @if/@else, @media) so lint rules can inspect their contents.
-      for at_node in &style_rule.nested_at_rules {
-        walk_node(
-          at_node,
-          rules,
-          file_path,
-          source,
-          syntax,
-          rule_options,
-          diagnostics,
-        );
-      }
+  /// The context a rule's options are read through for one call.
+  fn context(&self, options: Option<&'a serde_json::Value>) -> RuleContext<'a> {
+    RuleContext {
+      file_path: self.file_path,
+      source: self.source,
+      syntax: self.syntax,
+      options,
     }
-    CssNode::AtRule(at_rule) => {
-      for child in &at_rule.children {
-        walk_node(
-          child,
-          rules,
-          file_path,
-          source,
-          syntax,
-          rule_options,
-          diagnostics,
-        );
-      }
-    }
-    CssNode::Comment(_) | CssNode::Declaration(_) => {}
   }
+
+  /// Keep what rule `index` returned, or record its panic and retire it.
+  fn record(&mut self, index: usize, outcome: Result<Vec<Diagnostic>, Caught>, offset: usize) {
+    match outcome {
+      Ok(mut found) => self.diagnostics.append(&mut found),
+      Err(caught) => {
+        self.failed[index] = true;
+        let offset = clamp_to_char_boundary(self.source, offset);
+        self
+          .failures
+          .push(internal_error(self.rules[index].name(), &caught, offset));
+      }
+    }
+  }
+
+  /// Run every rule's document-level `check_root`.
+  fn check_root(&mut self, nodes: &[CssNode], debug: bool) {
+    for index in 0..self.rules.len() {
+      let rule = self.rules[index];
+      let context = self.context(self.root_options[index]);
+      let started = Instant::now();
+      let source = self.source;
+      let outcome = panic_guard::catch(|| {
+        debug_panic(rule.name(), source);
+        rule.check_root(nodes, &context)
+      });
+      if debug {
+        let elapsed = started.elapsed().as_secs_f64();
+        if elapsed > 0.001 {
+          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
+        }
+      }
+      self.record(index, outcome, 0);
+    }
+  }
+
+  /// Recursively walk the AST, invoking each rule's `check` on every node.
+  fn walk(&mut self, node: &CssNode) {
+    for index in 0..self.rules.len() {
+      if self.failed[index] {
+        continue;
+      }
+      let rule = self.rules[index];
+      let context = self.context(self.node_options[index]);
+      let outcome = panic_guard::catch(|| rule.check(node, &context));
+      self.record(index, outcome, node.span().offset);
+    }
+
+    // Recurse into children based on node type.
+    match node {
+      CssNode::Style(style_rule) => {
+        for child in &style_rule.children {
+          self.walk(&CssNode::Style(child.clone()));
+        }
+        // Walk at-rules nested inside the style rule (e.g. @include,
+        // @if/@else, @media) so lint rules can inspect their contents.
+        for at_node in &style_rule.nested_at_rules {
+          self.walk(at_node);
+        }
+      }
+      CssNode::AtRule(at_rule) => {
+        for child in &at_rule.children {
+          self.walk(child);
+        }
+      }
+      CssNode::Comment(_) | CssNode::Declaration(_) => {}
+    }
+  }
+}
+
+/// `offset`, pulled back to the nearest character boundary in `source`.
+fn clamp_to_char_boundary(source: &str, offset: usize) -> usize {
+  source.floor_char_boundary(offset.min(source.len()))
 }
 
 #[cfg(test)]
@@ -1282,6 +1441,128 @@ mod tests {
     let runner = LintRunner::new(registry, vec![]);
     let result = runner.lint_source("a { }", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
+  }
+
+  // -- Panic isolation --
+
+  /// A rule that panics on every style rule, the way an out-of-bounds slice
+  /// would.
+  struct PanickingRule;
+
+  impl Rule for PanickingRule {
+    fn name(&self) -> &'static str {
+      "test/panics"
+    }
+
+    fn description(&self) -> &'static str {
+      "Panics on every style rule"
+    }
+
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+      if let CssNode::Style(rule) = node {
+        let _ = &rule.selector[..rule.selector.len() + 1];
+      }
+      vec![]
+    }
+  }
+
+  /// A registry with the built-in rules plus [`PanickingRule`].
+  fn registry_with_panicking_rule() -> RuleRegistry {
+    let mut registry = RuleRegistry::default();
+    registry.register(Box::new(PanickingRule));
+    registry
+  }
+
+  #[test]
+  fn a_panicking_rule_is_reported_once_and_other_rules_still_run() {
+    let runner = LintRunner::new(
+      registry_with_panicking_rule(),
+      vec!["test/panics".to_string(), "block-no-empty".to_string()],
+    );
+    let result = runner.lint_source("a {}\nb {}\n", "test.css", Syntax::Css);
+
+    let crashes: Vec<&Diagnostic> = result
+      .diagnostics
+      .iter()
+      .filter(|d| d.rule_name == "test/panics")
+      .collect();
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    let crash = crashes[0];
+    assert_eq!(crash.severity, Severity::Error);
+    assert!(
+      crash
+        .message
+        .starts_with("Internal error in rule \"test/panics\": "),
+      "{}",
+      crash.message
+    );
+    assert!(crash.message.contains("out of bounds"), "{}", crash.message);
+    assert!(crash.message.contains(ISSUES_URL), "{}", crash.message);
+    assert_eq!(crash.span.offset, 0, "reported at the node it was checking");
+
+    let empty_blocks = result
+      .diagnostics
+      .iter()
+      .filter(|d| d.rule_name == "block-no-empty")
+      .count();
+    assert_eq!(empty_blocks, 2, "the other rule still reports everything");
+  }
+
+  #[test]
+  fn a_rule_crash_ignores_disables_and_severity_overrides() {
+    let mut severities = HashMap::new();
+    severities.insert("test/panics".to_string(), Severity::Warning);
+    let mut options = HashMap::new();
+    options.insert(
+      "test/panics".to_string(),
+      serde_json::json!([true, { "message": "custom" }]),
+    );
+    let runner = LintRunner::with_options_and_severities(
+      registry_with_panicking_rule(),
+      vec!["test/panics".to_string()],
+      options,
+      severities,
+    );
+    let src = "/* stylelint-disable */\na { color: red; }\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].severity, Severity::Error);
+    assert!(result.diagnostics[0].message.starts_with("Internal error"));
+  }
+
+  #[test]
+  fn per_file_rule_sets_are_guarded_too() {
+    let runner = LintRunner::new(registry_with_panicking_rule(), vec![]);
+    let result = runner.lint_source_with_rules(
+      "a { color: red; }",
+      "test.css",
+      Syntax::Css,
+      &["test/panics".to_string(), "color-named".to_string()],
+      &HashMap::new(),
+      &HashMap::new(),
+    );
+    let rules: Vec<&str> = result
+      .diagnostics
+      .iter()
+      .map(|d| d.rule_name.as_str())
+      .collect();
+    assert!(rules.contains(&"test/panics"), "{rules:?}");
+    assert!(rules.contains(&"color-named"), "{rules:?}");
+  }
+
+  #[test]
+  fn a_panic_outside_any_rule_becomes_one_problem_on_the_file() {
+    let result = guard_file("a {}", "test.css", || panic!("parser exploded"));
+    assert_eq!(result.file_path, "test.css");
+    assert_eq!(result.diagnostics.len(), 1);
+    let d = &result.diagnostics[0];
+    assert_eq!(d.rule_name, INTERNAL_ERROR_RULE);
+    assert_eq!(d.severity, Severity::Error);
+    assert!(d.message.contains("parser exploded"), "{}", d.message);
   }
 
   // -- Inline disable comment tests --
