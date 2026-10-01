@@ -126,6 +126,14 @@ impl SourceLineIndex {
     Self { line_starts }
   }
 
+  /// The 1-indexed line holding byte offset `offset`.
+  pub fn line(&self, offset: usize) -> usize {
+    match self.line_starts.binary_search(&offset) {
+      Ok(exact) => exact + 1,
+      Err(insert) => insert,
+    }
+  }
+
   /// Convert a byte offset to a 1-indexed (line, column) pair.
   pub fn offset_to_location(&self, offset: usize) -> (usize, usize) {
     // Binary search for the line containing `offset`.
