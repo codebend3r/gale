@@ -7,7 +7,7 @@
 //! [`declaration_value`] and [`at_rule_params`] give what PostCSS hands
 //! Stylelint as `decl.value` and `atRule.params`, with their offsets.
 
-use gale_css_parser::{AtRule, Declaration};
+use gale_css_parser::{AtRule, CssNode, Declaration};
 
 /// The value of `decl` as written in `source`, and its byte offset there.
 ///
@@ -73,6 +73,137 @@ pub fn at_rule_params<'a>(source: &'a str, at: &AtRule) -> Option<(&'a str, usiz
   let text = source.get(params_start..)?;
   let end = value_end(text, false);
   Some((text[..end].trim_end(), params_start))
+}
+
+/// A declaration as written in the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrittenDeclaration<'a> {
+  /// The property as written (see [`declaration_property`]).
+  pub prop: &'a str,
+  /// Byte offset of `prop`.
+  pub prop_start: usize,
+  /// The value as written (see [`declaration_value`]).
+  pub value: &'a str,
+  /// Byte offset of `value`.
+  pub value_start: usize,
+}
+
+/// Every declaration `node` holds directly, as written in `source`: a style
+/// rule's declarations, a lone declaration, or the descriptors of an
+/// at-rule whose declarations the CSS parser keeps without positions (as it
+/// does for `@font-face`), read from its block instead.
+///
+/// This is what Stylelint's `walkDecls` visits at each node, minus nesting:
+/// the runner calls rules for nested nodes separately.
+pub fn written_declarations<'a>(source: &'a str, node: &CssNode) -> Vec<WrittenDeclaration<'a>> {
+  let located = |decl: &Declaration| {
+    if decl.span.length == 0 {
+      return None;
+    }
+    let (prop, prop_start) = declaration_property(source, decl)?;
+    let (value, value_start) = declaration_value(source, decl)?;
+    Some(WrittenDeclaration {
+      prop,
+      prop_start,
+      value,
+      value_start,
+    })
+  };
+  match node {
+    CssNode::Style(rule) => rule.declarations.iter().filter_map(located).collect(),
+    CssNode::Declaration(decl) => located(decl).into_iter().collect(),
+    CssNode::AtRule(at) => {
+      let unplaced = at
+        .children
+        .iter()
+        .any(|child| matches!(child, CssNode::Declaration(d) if d.span.length == 0));
+      if unplaced {
+        block_declarations(source, at)
+      } else {
+        Vec::new()
+      }
+    }
+    CssNode::Comment(_) => Vec::new(),
+  }
+}
+
+/// The declarations directly inside the block of `at`, found by reading the
+/// source: each `property: value` statement of the block, skipping nested
+/// blocks.
+fn block_declarations<'a>(source: &'a str, at: &AtRule) -> Vec<WrittenDeclaration<'a>> {
+  let mut out = Vec::new();
+  let Some(rest) = source.get(at.span.offset..) else {
+    return out;
+  };
+  // The block opens where the params end.
+  let open = value_end(rest, false);
+  if rest.as_bytes().get(open) != Some(&b'{') {
+    return out;
+  }
+  let mut pos = at.span.offset + open + 1;
+  loop {
+    let Some(text) = source.get(pos..) else {
+      break;
+    };
+    let leading = text.len() - text.trim_start().len();
+    pos += leading;
+    let text = &text[leading..];
+    if text.is_empty() || text.starts_with('}') {
+      break;
+    }
+    if text.starts_with("/*") {
+      pos += text.find("*/").map_or(text.len(), |close| close + 2);
+      continue;
+    }
+    let end = value_end(text, text.starts_with("--"));
+    match text.as_bytes().get(end) {
+      // A nested block: skip it whole.
+      Some(b'{') => {
+        let mut depth = 0usize;
+        let mut close = text.len();
+        for (i, b) in text.bytes().enumerate().skip(end) {
+          match b {
+            b'{' => depth += 1,
+            b'}' => {
+              depth -= 1;
+              if depth == 0 {
+                close = i + 1;
+                break;
+              }
+            }
+            _ => {}
+          }
+        }
+        pos += close;
+        continue;
+      }
+      terminator => {
+        if let Some(colon) = find_colon(&text[..end]) {
+          let name = &text[..colon];
+          let name_end = name
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(name.len())
+            .min(name.find("/*").unwrap_or(name.len()));
+          let after = &text[colon + 1..end];
+          let value_leading = after.len() - after.trim_start().len();
+          let value = strip_important(after.trim());
+          if name_end > 0 {
+            out.push(WrittenDeclaration {
+              prop: &name[..name_end],
+              prop_start: pos,
+              value,
+              value_start: pos + colon + 1 + value_leading,
+            });
+          }
+        }
+        pos += end + usize::from(terminator == Some(&b';'));
+        if terminator != Some(&b';') {
+          break;
+        }
+      }
+    }
+  }
+  out
 }
 
 /// Offset of the `:` that ends the property name at the start of `text`,
@@ -228,6 +359,25 @@ mod tests {
       .filter_map(|decl| declaration_property(source, decl))
       .collect();
     assert_eq!(props[0], ("-WEBKIT-Transform", 4));
+  }
+
+  #[test]
+  fn reads_font_face_descriptors_from_the_block() {
+    let source =
+      "@font-face { font-family: 'foo' ; src: url( foo.ttf ) !important; @x { a: b } c: d }";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let found: Vec<(&str, usize, &str, usize)> = written_declarations(source, &parsed.nodes[0])
+      .into_iter()
+      .map(|d| (d.prop, d.prop_start, d.value, d.value_start))
+      .collect();
+    assert_eq!(
+      found,
+      vec![
+        ("font-family", 13, "'foo'", 26),
+        ("src", 34, "url( foo.ttf )", 39),
+        ("c", 78, "d", 81),
+      ]
+    );
   }
 
   #[test]
