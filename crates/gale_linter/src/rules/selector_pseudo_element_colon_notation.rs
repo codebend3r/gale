@@ -5,6 +5,7 @@ use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
 use crate::style_rules::scan_style_rules;
+use crate::stylelint_version::stylelint_major_version;
 
 /// Enforces a specific colon notation (`::` or `:`) for pseudo-elements that
 /// support both syntaxes (`:before`, `:after`, `:first-line`, `:first-letter`).
@@ -40,6 +41,11 @@ impl Rule for SelectorPseudoElementColonNotation {
       ("::", "Expected double colon pseudo-element notation")
     };
 
+    // Stylelint 13 and older searched the selector text for `:before` and
+    // the like, so a `::before` it wanted single was reported from its
+    // second colon; 14 reports from the first.
+    let second_colon = single && stylelint_major_version() <= 13;
+
     let mut diags = Vec::new();
     for rule in scan_style_rules(ctx.source, ctx.syntax) {
       if !rule.prelude.contains(':') || !is_standard_syntax_selector(&rule.prelude) {
@@ -65,7 +71,11 @@ impl Rule for SelectorPseudoElementColonNotation {
         diags.push(
           Diagnostic::new(self.name(), message)
             .severity(self.default_severity())
-            .span(Span::new(node.start, if is_double { 2 } else { 1 }))
+            .span(if is_double && second_colon {
+              Span::new(node.start + 1, 1)
+            } else {
+              Span::new(node.start, if is_double { 2 } else { 1 })
+            })
             .fix(Fix::new(
               format!("Write \"{colons}{name}\""),
               vec![Edit::new(Span::new(node.start, written), colons)],
