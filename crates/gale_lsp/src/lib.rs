@@ -10,6 +10,7 @@ use tracing::debug;
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
+use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::panic_guard;
 use gale_linter::{LintRunner, RuleRegistry};
 
@@ -356,7 +357,38 @@ impl LanguageServer for GaleLspServer {
 
     // Build the lint runner once.
     let runner = Self::build_runner(&config, has_config_file);
+    // Rules gale has not implemented, and rules Stylelint has removed, are
+    // skipped; say so once, as the CLI does.  Names that are no rule at all
+    // show up as `Unknown rule` diagnostics in each document instead.
+    let mut not_implemented: Vec<&str> = Vec::new();
+    let mut removed: Vec<&str> = Vec::new();
+    for (name, rule) in &config.rules {
+      if rule.severity == Some(gale_config::Severity::Off) {
+        continue;
+      }
+      match known_rules::classify(runner.registry(), name) {
+        RuleSupport::NotImplemented => not_implemented.push(name),
+        RuleSupport::Removed => removed.push(name),
+        RuleSupport::Implemented | RuleSupport::Unknown => {}
+      }
+    }
     *self.runner.write().unwrap_or_else(|e| e.into_inner()) = Some(runner);
+    for (mut names, why) in [
+      (not_implemented, "gale does not support these rules yet"),
+      (removed, "these rules were removed from Stylelint"),
+    ] {
+      if names.is_empty() {
+        continue;
+      }
+      names.sort_unstable();
+      self
+        .client
+        .log_message(
+          MessageType::WARNING,
+          format!("{why}, so they were skipped: {}", names.join(", ")),
+        )
+        .await;
+    }
 
     Ok(InitializeResult {
       capabilities: ServerCapabilities {

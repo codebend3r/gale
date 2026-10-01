@@ -215,10 +215,21 @@ impl Diagnostic {
     self.rule_name.starts_with("--report-") || self.rule_name == "reportDisables"
   }
 
+  /// Whether this is Stylelint's `Unknown rule <name>.` report for a
+  /// configured name that is no rule.  Stylelint adds those straight to the
+  /// result, so their text carries no ` (rule-name)` suffix either.
+  pub fn is_unknown_rule(&self) -> bool {
+    self
+      .message
+      .strip_prefix("Unknown rule ")
+      .and_then(|rest| rest.strip_prefix(self.rule_name.as_str()))
+      .is_some_and(|rest| rest.starts_with('.'))
+  }
+
   /// The warning text Stylelint's formatters print: the message with the
-  /// rule name appended, except for comment problems.
+  /// rule name appended, except for comment problems and unknown rules.
   pub fn stylelint_text(&self) -> String {
-    if self.is_comment_problem() {
+    if self.is_comment_problem() || self.is_unknown_rule() {
       self.message.clone()
     } else {
       format!("{} ({})", self.message, self.rule_name)
@@ -489,6 +500,26 @@ mod tests {
     assert!(
       json.contains("\"url\":\"https://example.com/rule\""),
       "{json}"
+    );
+  }
+
+  #[test]
+  fn unknown_rule_reports_carry_no_rule_suffix() {
+    let unknown = Diagnostic::new(
+      "block-no-emty",
+      "Unknown rule block-no-emty. Did you mean block-no-empty?",
+    );
+    assert!(unknown.is_unknown_rule());
+    assert_eq!(
+      unknown.stylelint_text(),
+      "Unknown rule block-no-emty. Did you mean block-no-empty?"
+    );
+    // A rule message that merely mentions another name is left alone.
+    let other = Diagnostic::new("some-rule", "Unknown rule other-rule.");
+    assert!(!other.is_unknown_rule());
+    assert_eq!(
+      other.stylelint_text(),
+      "Unknown rule other-rule. (some-rule)"
     );
   }
 

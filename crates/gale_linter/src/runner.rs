@@ -4,6 +4,7 @@ use std::time::Instant;
 use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
+use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::registry::RuleRegistry;
 use crate::rule::{Rule, RuleContext, secondary_options_of};
@@ -944,11 +945,7 @@ impl LintRunner {
     let text = parse_result.source.as_str();
 
     // Collect enabled rules from the registry.
-    let active_rules: Vec<&dyn Rule> = self
-      .enabled_rules
-      .iter()
-      .filter_map(|name| self.registry.get(name))
-      .collect();
+    let (active_rules, missing) = self.resolve_rules(&self.enabled_rules);
     let options: Vec<Option<&serde_json::Value>> = active_rules
       .iter()
       .map(|rule| self.rule_options.get(rule.name()))
@@ -1033,7 +1030,8 @@ impl LintRunner {
     diagnostics.extend(failures);
 
     let t5 = Instant::now();
-    let result = finish(file_path, source, &parse_result, diagnostics);
+    let unknown = self.unknown_rule_problems(&missing, source, file_path);
+    let result = finish(file_path, source, &parse_result, diagnostics, unknown);
     if debug {
       eprintln!("[perf] sort: {:.3}s", t5.elapsed().as_secs_f64());
       eprintln!("[perf] total diagnostics: {}", result.diagnostics.len());
@@ -1099,10 +1097,7 @@ impl LintRunner {
     // SCSS that every node span points into.  `finish` maps the spans back.
     let text = parse_result.source.as_str();
 
-    let active_rules: Vec<&dyn Rule> = enabled_rules
-      .iter()
-      .filter_map(|name| self.registry.get(name))
-      .collect();
+    let (active_rules, missing) = self.resolve_rules(enabled_rules);
 
     // `check_root` sees the per-file options, falling back to the runner's
     // own.  The node walk sees the per-file options alone when there are
@@ -1222,7 +1217,50 @@ impl LintRunner {
     }
     diagnostics.extend(failures);
 
-    finish(file_path, source, &parse_result, diagnostics)
+    let unknown = self.unknown_rule_problems(&missing, source, file_path);
+    finish(file_path, source, &parse_result, diagnostics, unknown)
+  }
+
+  /// The registered rules behind `names`, and the names the registry does
+  /// not know (in one pass, as the registry lookup is a linear scan).
+  fn resolve_rules<'r>(&'r self, names: &'r [String]) -> (Vec<&'r dyn Rule>, Vec<&'r str>) {
+    let mut active = Vec::with_capacity(names.len());
+    let mut missing = Vec::new();
+    for name in names {
+      match self.registry.get(name) {
+        Some(rule) => active.push(rule),
+        None => missing.push(name.as_str()),
+      }
+    }
+    (active, missing)
+  }
+
+  /// Stylelint's report for every enabled name that is no rule at all:
+  /// `Unknown rule <name>.` as an error at the very start of the file, like
+  /// Stylelint's own (which disables, severities and the `message` option do
+  /// not touch either).
+  ///
+  /// `missing` holds the enabled names the registry does not know.  Those
+  /// that are real Stylelint or plugin rules gale has not implemented, or
+  /// rules Stylelint has removed, are skipped silently here; the CLI warns
+  /// about them once per run.
+  fn unknown_rule_problems(
+    &self,
+    missing: &[&str],
+    source: &str,
+    file_path: &str,
+  ) -> Vec<Diagnostic> {
+    let first_char = source.chars().next().map_or(1, char::len_utf8);
+    missing
+      .iter()
+      .filter(|name| known_rules::classify(&self.registry, name) == RuleSupport::Unknown)
+      .map(|name| {
+        Diagnostic::new(*name, known_rules::unknown_rule_message(name))
+          .severity(Severity::Error)
+          .span(Span::new(0, first_char))
+          .file_path(file_path)
+      })
+      .collect()
   }
 }
 
@@ -1237,11 +1275,15 @@ impl LintRunner {
 /// in the order `enabled_rules` happens to hold them, which comes from a
 /// HashMap and so varies between processes.  Without a tiebreaker two
 /// warnings at the same offset swap places between runs.
+///
+/// `unknown_rules` (from [`LintRunner::unknown_rule_problems`]) already point
+/// into `source` and are added after the mapping.
 fn finish(
   file_path: &str,
   source: &str,
   parsed: &ParseResult,
   mut diagnostics: Vec<Diagnostic>,
+  unknown_rules: Vec<Diagnostic>,
 ) -> LintResult {
   if let Some(map) = &parsed.source_map {
     for diag in &mut diagnostics {
@@ -1251,6 +1293,7 @@ fn finish(
       diag.fix = None;
     }
   }
+  diagnostics.extend(unknown_rules);
 
   diagnostics.sort_by(|a, b| {
     a.span
@@ -1464,6 +1507,59 @@ mod tests {
     let runner = LintRunner::new(registry, vec![]);
     let result = runner.lint_source("a { }", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
+  }
+
+  // -- Unknown rule names --
+
+  #[test]
+  fn an_unknown_rule_is_reported_like_stylelint() {
+    let runner = runner_for(&["block-no-emty", "block-no-empty"]);
+    let result = runner.lint_source("a {}\n", "test.css", Syntax::Css);
+    let unknown: Vec<&Diagnostic> = result
+      .diagnostics
+      .iter()
+      .filter(|d| d.rule_name == "block-no-emty")
+      .collect();
+    assert_eq!(unknown.len(), 1);
+    let d = unknown[0];
+    assert_eq!(
+      d.message,
+      "Unknown rule block-no-emty. Did you mean block-no-empty?"
+    );
+    assert_eq!(d.severity, Severity::Error);
+    assert_eq!(d.span, Span::new(0, 1));
+    assert!(
+      result
+        .diagnostics
+        .iter()
+        .any(|d| d.rule_name == "block-no-empty"),
+      "the real rule still runs"
+    );
+  }
+
+  #[test]
+  fn rules_gale_lacks_are_not_unknown() {
+    // A Stylelint core rule gale has not implemented, and a plugin rule.
+    let runner = runner_for(&["no-unknown-custom-properties", "acme/no-foo"]);
+    let result = runner.lint_source("a {}\n", "test.css", Syntax::Css);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+  }
+
+  #[test]
+  fn unknown_rules_ignore_disables_and_default_severity() {
+    let mut runner = runner_for(&["not-a-rule"]);
+    runner.set_default_severity(Some(Severity::Warning));
+    let result = runner.lint_source_with_rules(
+      "/* stylelint-disable */\na {}\n",
+      "test.css",
+      Syntax::Css,
+      &["not-a-rule".to_string()],
+      &HashMap::new(),
+      &HashMap::new(),
+    );
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].message, "Unknown rule not-a-rule.");
+    assert_eq!(result.diagnostics[0].severity, Severity::Error);
   }
 
   // -- Panic isolation --

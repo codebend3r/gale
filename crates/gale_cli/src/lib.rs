@@ -1,5 +1,6 @@
 mod cache;
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -15,6 +16,7 @@ use gale_config::{ConfigResolver, GaleConfig};
 use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
 use gale_formatter::{create_formatter_with_color, strip_ansi};
+use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::{LintRunner, RuleRegistry};
 
 use crate::cache::{
@@ -960,16 +962,15 @@ pub fn run() -> Result<()> {
     }
   }
 
-  // Warn about rules from known plugins that Gale hasn't implemented yet.
-  if has_config_file {
-    for rule_name in config.rules.keys() {
-      if gale_config::is_known_plugin_rule(rule_name) && registry.get(rule_name).is_none() {
-        eprintln!(
-          "warning: Rule \"{rule_name}\" is not yet supported by Gale and will be skipped."
-        );
-      }
-    }
-  }
+  // Real Stylelint and plugin rules gale has not implemented, and rules
+  // older Stylelint versions had, are skipped with a warning per run.
+  // Names that are no rule at all are reported by the runner as
+  // `Unknown rule`, the way Stylelint does.
+  let mut skipped_rules = if has_config_file {
+    SkippedRules::in_config(&config, &registry)
+  } else {
+    SkippedRules::default()
+  };
 
   let enabled_rules: Vec<String> = if config.rules.is_empty() && !has_config_file {
     // No config file found at all — enable all registered rules as a
@@ -990,7 +991,6 @@ pub fn run() -> Result<()> {
           .map(|s| !matches!(s, gale_config::Severity::Off))
           .unwrap_or(true)
       })
-      .filter(|(name, _)| registry.get(name).is_some())
       .map(|(name, _)| name.clone())
       .collect()
   };
@@ -1197,7 +1197,6 @@ pub fn run() -> Result<()> {
           .map(|s| !matches!(s, gale_config::Severity::Off))
           .unwrap_or(true)
       })
-      .filter(|(name, _)| runner.has_rule(name))
       .map(|(name, _)| name.clone())
       .collect();
     let mut rule_options: std::collections::HashMap<String, serde_json::Value> = config
@@ -1291,7 +1290,6 @@ pub fn run() -> Result<()> {
           .map(|s| !matches!(s, gale_config::Severity::Off))
           .unwrap_or(true)
       })
-      .filter(|(name, _)| runner.has_rule(name))
       .map(|(name, _)| name.clone())
       .collect();
     let override_options: std::collections::HashMap<String, serde_json::Value> = effective_rules
@@ -1367,6 +1365,7 @@ pub fn run() -> Result<()> {
 
   // Lint: either from stdin or from discovered files.
   let mut results: Vec<LintResult> = if cli.stdin {
+    skipped_rules.warn();
     let mut source = String::new();
     std::io::stdin().read_to_string(&mut source)?;
 
@@ -1460,10 +1459,14 @@ pub fn run() -> Result<()> {
           dir_params.len(),
           params_by_ptr.len()
         );
+        for params in params_by_ptr.values() {
+          skipped_rules.extend(SkippedRules::in_config(&params.config, runner.registry()));
+        }
         Some(dir_params)
       } else {
         None
       };
+    skipped_rules.warn();
 
     if use_cache {
       // With caching: read files, check cache, skip clean ones.
@@ -1717,6 +1720,69 @@ pub fn run() -> Result<()> {
   Ok(())
 }
 
+/// Configured rules that gale skips rather than runs, by reason.
+#[derive(Debug, Default)]
+struct SkippedRules {
+  /// Real Stylelint or plugin rules gale has not implemented yet.
+  not_implemented: BTreeSet<String>,
+  /// Rules an older Stylelint had that Stylelint 17 has removed.
+  removed: BTreeSet<String>,
+}
+
+impl SkippedRules {
+  /// The rules `config` enables (at the top level or in an override) that
+  /// gale skips.  Names that are no rule at all are not among them: the
+  /// runner reports those as `Unknown rule`.
+  fn in_config(config: &GaleConfig, registry: &RuleRegistry) -> Self {
+    let mut skipped = Self::default();
+    let enabled = config
+      .rules
+      .iter()
+      .chain(config.overrides.iter().flat_map(|o| o.rules.iter()))
+      .filter(|(_, rule)| rule.severity != Some(gale_config::Severity::Off));
+    for (name, _) in enabled {
+      match known_rules::classify(registry, name) {
+        RuleSupport::NotImplemented => skipped.not_implemented.insert(name.clone()),
+        RuleSupport::Removed => skipped.removed.insert(name.clone()),
+        RuleSupport::Implemented | RuleSupport::Unknown => false,
+      };
+    }
+    skipped
+  }
+
+  /// Add the rules another config skips.
+  fn extend(&mut self, other: Self) {
+    self.not_implemented.extend(other.not_implemented);
+    self.removed.extend(other.removed);
+  }
+
+  /// One warning line per reason that has any rules, each listing them.
+  fn warnings(&self) -> Vec<String> {
+    let list = |names: &BTreeSet<String>| names.iter().cloned().collect::<Vec<_>>().join(", ");
+    let mut warnings = Vec::new();
+    if !self.not_implemented.is_empty() {
+      warnings.push(format!(
+        "warning: gale does not support these rules yet, so they were skipped: {}",
+        list(&self.not_implemented)
+      ));
+    }
+    if !self.removed.is_empty() {
+      warnings.push(format!(
+        "warning: these rules were removed from Stylelint, so they were skipped: {}",
+        list(&self.removed)
+      ));
+    }
+    warnings
+  }
+
+  /// Print [`Self::warnings`] to stderr.
+  fn warn(&self) {
+    for warning in self.warnings() {
+      eprintln!("{warning}");
+    }
+  }
+}
+
 /// Detect whether the project uses an older Stylelint version (< 15) that
 /// doesn't recognize certain modern CSS units (dynamic viewport units,
 /// container query units, etc.).
@@ -1781,6 +1847,42 @@ mod tests {
       ignore_patterns: &[],
       disable_default_ignores: false,
     }
+  }
+
+  #[test]
+  fn skipped_rules_lists_rules_gale_lacks_and_rules_stylelint_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(".stylelintrc.json");
+    fs::write(
+      &path,
+      r#"{
+        "rules": {
+          "block-no-empty": true,
+          "no-unknown-custom-properties": true,
+          "acme/no-foo": true,
+          "not-a-rule": true,
+          "linebreaks": "unix",
+          "no-unknown-custom-media": null
+        },
+        "overrides": [
+          { "files": ["*.scss"], "rules": { "no-unknown-custom-properties": true, "selector-no-deprecated": true } }
+        ]
+      }"#,
+    )
+    .unwrap();
+    let config = gale_config::load_config(&path).unwrap();
+    let skipped = SkippedRules::in_config(&config, &RuleRegistry::default());
+    assert_eq!(
+      skipped.warnings(),
+      vec![
+        "warning: gale does not support these rules yet, so they were skipped: \
+         acme/no-foo, no-unknown-custom-properties, selector-no-deprecated"
+          .to_string(),
+        "warning: these rules were removed from Stylelint, so they were skipped: linebreaks"
+          .to_string(),
+      ]
+    );
+    assert!(SkippedRules::default().warnings().is_empty());
   }
 
   #[test]
