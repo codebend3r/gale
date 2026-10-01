@@ -134,15 +134,50 @@ describe("platform launcher", () => {
   });
 });
 
-describe("Windows release binaries", () => {
-  const workflow = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8");
+describe("release workflow", () => {
+  interface Build {
+    target: string;
+    runner: string;
+  }
 
-  test("the release workflow builds x86_64-pc-windows-msvc", () => {
-    expect(workflow).toContain("x86_64-pc-windows-msvc");
-    expect(workflow).toMatch(/runs-on:.*windows/);
+  interface Workflow {
+    jobs: { build: { strategy: { matrix: { include: Build[] } } } };
+  }
+
+  const workflow = Bun.YAML.parse(
+    readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf8"),
+  ) as Workflow;
+  const builds = workflow.jobs.build.strategy.matrix.include;
+
+  async function launcherTargets(): Promise<string[]> {
+    const { resolveTarget, supportedPlatforms } = await import("../../npm/platform.cjs");
+
+    return supportedPlatforms().map((pair: string) => {
+      const [platform, arch] = pair.split("-");
+      return resolveTarget(platform, arch);
+    });
+  }
+
+  test("builds exactly the targets the npm launcher maps", async () => {
+    // A mapped target with no build would publish a package that fails on that
+    // platform; a build with no mapping would ship a binary nothing can run.
+    const built = builds.map((build) => build.target).sort();
+
+    expect(built).toEqual((await launcherTargets()).sort());
   });
 
-  test("the Windows binary is staged into the npm package", () => {
-    expect(workflow).toContain("npm/bin/x86_64-pc-windows-msvc/gale.exe");
+  test("builds each target on a runner for its operating system", () => {
+    const runnerFor: Record<string, RegExp> = {
+      "apple-darwin": /^macos-/,
+      "pc-windows-msvc": /^windows-/,
+      "unknown-linux-gnu": /^ubuntu-/,
+    };
+
+    for (const { target, runner } of builds) {
+      const os = Object.keys(runnerFor).find((suffix) => target.endsWith(suffix));
+
+      expect(os, `${target} has no known operating system`).toBeDefined();
+      expect(runner, `${target} builds on ${runner}`).toMatch(runnerFor[os as string]);
+    }
   });
 });

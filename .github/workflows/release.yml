@@ -1,214 +1,364 @@
 name: 📦 Release
 
+# Pushing a v* tag builds every platform binary, publishes @codebend3r/gale to
+# npm and the gale-lint crates to crates.io, then creates the GitHub Release.
+#
+# Dispatch it by hand with "dry run" ticked to run the whole pipeline without
+# publishing: npm and cargo publish with --dry-run, and no GitHub Release.
+#
+# Every publish step skips what is already published, so a failed run can be
+# re-run as is once the cause is fixed. PUBLISHING.md has the one-time setup.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Dry run: build and package everything, publish nothing"
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 # Never cancel a release mid-publish; a re-pushed tag queues behind the run in flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    # Git Bash on Windows too, and -o pipefail everywhere.
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-linux:
-    name: Build Linux (${{ matrix.target }})
-    runs-on: ubuntu-24.04
+  guard:
+    name: Version guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      dry-run: ${{ steps.check.outputs.dry-run }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that every version matches the tag
+        id: check
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, tomllib
+          from pathlib import Path
+
+          def toml(path):
+              with open(path, "rb") as f:
+                  return tomllib.load(f)
+
+          ref_type, ref_name = os.environ["GITHUB_REF_TYPE"], os.environ["GITHUB_REF_NAME"]
+          dry_run = os.environ["DRY_RUN"] == "true"
+
+          cargo = toml("Cargo.toml")
+          workspace_version = cargo["workspace"]["package"]["version"]
+
+          # Every place the release version lives, keyed by where it lives.
+          found = {"Cargo.toml [workspace.package] version": workspace_version}
+          internal = set()
+          for name, dep in cargo["workspace"]["dependencies"].items():
+              if isinstance(dep, dict) and "path" in dep:
+                  internal.add(name)
+                  found[f"Cargo.toml [workspace.dependencies] {name}"] = dep.get("version", "(none)")
+          for member in [".", *cargo["workspace"]["members"]]:
+              path = "Cargo.toml" if member == "." else f"{member}/Cargo.toml"
+              manifest = toml(path)
+              internal.add(manifest["package"]["name"])
+              if manifest["package"].get("version") != {"workspace": True}:
+                  found[f"{path} [package] version"] = manifest["package"].get("version", "(none)")
+              for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+                  for name, dep in manifest.get(table, {}).items():
+                      if isinstance(dep, dict) and "path" in dep and "version" in dep:
+                          found[f"{path} [{table}] {name}"] = dep["version"]
+          for package in toml("Cargo.lock")["package"]:
+              if package["name"] in internal and "source" not in package:
+                  found[f"Cargo.lock {package['name']}"] = package["version"]
+          for path in ("package.json", "npm/package.json"):
+              found[f"{path} version"] = json.loads(Path(path).read_text())["version"]
+
+          errors = []
+          if ref_type == "tag":
+              expected, source = ref_name.removeprefix("v"), f"tag {ref_name}"
+          else:
+              expected, source = workspace_version, "Cargo.toml (no tag on a dry run)"
+              if not dry_run:
+                  errors.append(
+                      f"A real release runs from a v* tag, not {ref_type} {ref_name}. "
+                      "Push the tag, or dispatch with dry run ticked."
+                  )
+          if not re.fullmatch(r"\d+\.\d+\.\d+", expected):
+              errors.append(f"{expected!r} from {source} is not a plain MAJOR.MINOR.PATCH version.")
+          for where, version in found.items():
+              if version != expected:
+                  errors.append(f"{where} is {version}, expected {expected} from {source}.")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"### Version guard: {expected} from {source}\n\n| Where | Version |\n|---|---|\n")
+              summary.writelines(f"| {where} | {version} |\n" for where, version in found.items())
+
+          if errors:
+              for error in errors:
+                  print(f"::error title=Version guard::{error}")
+              print("Bump every manifest to the same version (the npm-version-release skill does it), "
+                    "commit, and move the tag to that commit.")
+              raise SystemExit(1)
+
+          print(f"All {len(found)} version references are {expected}" + (" (dry run)." if dry_run else "."))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={expected}\ndry-run={str(dry_run).lower()}\n")
+          PY
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: guard
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        # One entry per target npm/platform.cjs maps. The npm job refuses to
+        # publish if one is missing, and tests/features/npm-package.test.ts fails
+        # if the two lists drift apart. `smoke` marks the binaries the runner can
+        # execute, which are checked to report the release version.
         include:
           - target: x86_64-unknown-linux-gnu
-            artifact: gale-x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            smoke: true
           - target: aarch64-unknown-linux-gnu
-            artifact: gale-aarch64-unknown-linux-gnu
-            cross_compile: true
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install cross-compilation toolchain
-        if: matrix.cross_compile
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross_compile && 'aarch64-linux-gnu-gcc' || '' }}
-
-      - name: Rename binary
-        run: cp "target/${{ matrix.target }}/release/gale" "${{ matrix.artifact }}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
-
-  build-macos:
-    name: Build macOS (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
+            runner: ubuntu-24.04-arm
+            smoke: true
           - target: x86_64-apple-darwin
-            artifact: gale-x86_64-apple-darwin
-            runner: macos-14
-          - target: aarch64-apple-darwin
-            artifact: gale-aarch64-apple-darwin
             runner: macos-latest
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Rename binary
-        run: cp "target/${{ matrix.target }}/release/gale" "${{ matrix.artifact }}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
-
-  build-windows:
-    name: Build Windows (${{ matrix.target }})
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
+            smoke: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            smoke: true
           - target: x86_64-pc-windows-msvc
-            artifact: gale-x86_64-pc-windows-msvc.exe
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Rename binary
-        shell: pwsh
-        run: Copy-Item "target/${{ matrix.target }}/release/gale.exe" "${{ matrix.artifact }}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
-
-  release:
-    name: Create Release & Publish npm
-    needs: [build-linux, build-macos, build-windows]
-    runs-on: ubuntu-latest
+            runner: windows-latest
+            smoke: true
+          - target: aarch64-pc-windows-msvc
+            runner: windows-latest
+            smoke: false
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.guard.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          path: artifacts
+          targets: ${{ matrix.target }}
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare release assets
-        run: |
-          mkdir -p release-assets
-          for dir in artifacts/*/; do
-            cp "$dir"/* release-assets/ 2>/dev/null || true
-          done
-          ls -la release-assets/
-
-      - name: Stage binaries for npm package
-        run: |
-          install -Dm755 release-assets/gale-aarch64-apple-darwin npm/bin/aarch64-apple-darwin/gale
-          install -Dm755 release-assets/gale-x86_64-apple-darwin npm/bin/x86_64-apple-darwin/gale
-          install -Dm755 release-assets/gale-aarch64-unknown-linux-gnu npm/bin/aarch64-unknown-linux-gnu/gale
-          install -Dm755 release-assets/gale-x86_64-unknown-linux-gnu npm/bin/x86_64-unknown-linux-gnu/gale
-          install -Dm755 release-assets/gale-x86_64-pc-windows-msvc.exe npm/bin/x86_64-pc-windows-msvc/gale.exe
-          chmod +x npm/bin/gale.cjs
-          find npm/bin -maxdepth 3 -type f -print
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+      - uses: Swatinem/rust-cache@v2
         with:
-          generate_release_notes: true
-          files: release-assets/*
+          key: ${{ matrix.target }}
+          # A tag run can read main's caches, but nothing can read a tag run's.
+          # So only runs dispatched from main save, warming the next release.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Name the binary for the release
+        id: binary
+        run: |
+          ext=""
+          case "$TARGET" in *-windows-*) ext=".exe" ;; esac
+          mkdir -p dist
+          cp "target/$TARGET/release/gale$ext" "dist/gale-$TARGET$ext"
+          echo "path=dist/gale-$TARGET$ext" >> "$GITHUB_OUTPUT"
+
+      - name: Check the binary reports the release version
+        if: matrix.smoke
+        env:
+          BINARY: ${{ steps.binary.outputs.path }}
+        run: |
+          reported=$("$BINARY" --version)
+          echo "$reported"
+          if [ "$reported" != "gale $VERSION" ]; then
+            echo "::error title=Wrong version::$BINARY reports '$reported', expected 'gale $VERSION'."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gale-${{ matrix.target }}
+          path: ${{ steps.binary.outputs.path }}
+          if-no-files-found: error
+
+  npm:
+    name: Publish to npm
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # npm trusted publishing (OIDC) and provenance.
+      id-token: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      DRY_RUN: ${{ needs.guard.outputs.dry-run }}
+    steps:
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
+          # Node 26 ships npm 11, which trusted publishing needs (11.5.1+).
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
 
-      - name: Set npm package version
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gale-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Stage a binary for every platform the launcher maps
         run: |
-          cd npm
-          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+          # Start from an empty bin/ so a binary tracked in git can never ship.
+          find npm/bin -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          node -e '
+            const { binaryFileName, resolveTarget, supportedPlatforms } = require("./npm/platform.cjs");
+            for (const pair of supportedPlatforms()) {
+              const [platform, arch] = pair.split("-");
+              console.log(resolveTarget(platform, arch), binaryFileName(platform));
+            }
+          ' | while read -r target file; do
+            src="artifacts/gale-$target${file#gale}"
+            if [ ! -f "$src" ]; then
+              echo "::error title=Missing binary::npm/platform.cjs maps $target, but no build produced $src. Add it to the build matrix."
+              exit 1
+            fi
+            install -Dm755 "$src" "npm/bin/$target/$file"
+          done
+          find npm/bin -type f | sort
 
-      - name: Set root (GitHub-install) package version
-        # The root package.json is what `npm i github:owner/gale` installs.
-        # It ships the same npm/ directory, so it must carry the same version.
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+      - name: Check the staged launcher reports the release version
+        run: |
+          reported=$(node npm/bin/gale.cjs --version)
+          echo "$reported"
+          if [ "$reported" != "gale $VERSION" ]; then
+            echo "::error title=Wrong version::The launcher reports '$reported', expected 'gale $VERSION'."
+            exit 1
+          fi
 
-      - name: Publish to npm
+      - name: Check the published file list
+        working-directory: npm
+        run: npm pack --dry-run
+
+      - name: Publish
+        working-directory: npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # npm publish rather than bun publish: bun cannot do trusted publishing
+        # or provenance. npm tries OIDC first and falls back to NPM_TOKEN.
+        # The already-published check comes first in a dry run too, both because
+        # that is what a real run would do and because npm refuses even a dry
+        # run of a version the registry already has.
         run: |
-          cd npm
-          npm publish --access public
+          pkg=$(node -p 'require("./package.json").name')
+          if curl -sfo /dev/null "https://registry.npmjs.org/${pkg/\//%2f}/$VERSION"; then
+            echo "::notice title=npm::$pkg@$VERSION is already published; skipping."
+          elif [ "$DRY_RUN" = "true" ]; then
+            npm publish --dry-run --access public
+          else
+            if [ -n "$NPM_TOKEN" ]; then
+              export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            fi
+            if ! npm publish --access public --provenance; then
+              echo "::error title=npm publish failed::Add a trusted publisher for $pkg on npmjs.com (codebend3r/gale, workflow release.yml) or an NPM_TOKEN secret, then re-run this job. See PUBLISHING.md."
+              exit 1
+            fi
+          fi
+
+  crates:
+    name: Publish to crates.io
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      DRY_RUN: ${{ needs.guard.outputs.dry-run }}
+    steps:
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish to crates.io
+      - name: Publish every crate not yet on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # Member crates must be published before the binary crate that depends
-        # on them, in dependency order.  Publishing only `gale-lint` makes cargo
-        # resolve the workspace `version` requirements against whatever is
-        # already on crates.io, so the released binary would be built from stale
-        # member crates.  `--no-verify` skips a redundant rebuild per crate;
-        # the workspace is already tested and built above.
+        # cargo orders the crates by dependency, verifies each one builds from
+        # its packaged sources, and waits for each to reach the index before
+        # publishing the crates that depend on it. Crates already at VERSION
+        # are left out, so a run that failed partway can simply be re-run.
         run: |
-          set -euo pipefail
-          for crate in \
-            gale_diagnostics \
-            gale_css_parser \
-            gale_config \
-            gale_formatter \
-            gale_linter \
-            gale_lsp \
-            gale_cli
-          do
-            echo "==> Publishing $crate"
-            cargo publish -p "$crate" --no-verify
-            # Give the index time to expose the new version to the next crate.
-            cargo owner --list "$crate" >/dev/null 2>&1 || true
-            sleep 20
+          # crates.io's sparse index path; every crate name here is 4+ characters.
+          index_url() {
+            local name
+            name=$(tr '[:upper:]' '[:lower:]' <<<"$1")
+            echo "https://index.crates.io/${name:0:2}/${name:2:2}/$name"
+          }
+
+          pending=()
+          for crate in $(cargo metadata --no-deps --locked --format-version 1 | jq -r '.packages[] | select(.publish != []) | .name'); do
+            if curl -sf "$(index_url "$crate")" | jq -e --arg v "$VERSION" 'select(.vers == $v)' >/dev/null; then
+              echo "$crate $VERSION is already on crates.io; skipping it."
+            else
+              pending+=(--package "$crate")
+            fi
           done
-          echo "==> Publishing gale-lint"
-          cargo publish -p gale-lint --no-verify
+
+          if [ ${#pending[@]} -eq 0 ]; then
+            echo "::notice title=crates.io::Every crate is already at $VERSION; nothing to publish."
+          elif [ "$DRY_RUN" = "true" ]; then
+            cargo publish --locked --dry-run "${pending[@]}"
+          elif [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error title=crates.io::No CARGO_REGISTRY_TOKEN secret. Add one (see PUBLISHING.md), then re-run this job."
+            exit 1
+          else
+            cargo publish --locked "${pending[@]}"
+          fi
+
+  github-release:
+    # Last, so a published release always means npm and crates.io have it too.
+    name: GitHub Release
+    needs: [guard, npm, crates]
+    if: needs.guard.outputs.dry-run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gale-*
+          path: assets
+          merge-multiple: true
+
+      - name: Add checksums
+        working-directory: assets
+        run: sha256sum gale-* > SHA256SUMS
+
+      - name: Create the release, or refresh its assets on a re-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* --verify-tag --title "$TAG" --generate-notes
+          fi
