@@ -1,12 +1,16 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::postcss_tree::{NodeKind as StatementKind, PostcssTree};
 use crate::rule::{Rule, RuleContext};
+use crate::value_parser::{self, NodeKind};
 
-/// Prefer string notation for `@import` (i.e. quoted strings, not `url()`).
+/// Specify string or URL notation for `@import` rules.
 ///
-/// Equivalent to Stylelint's `import-notation` rule with "string" option.
-/// Detection-only (no autofix).
+/// Equivalent to Stylelint's `import-notation` rule, including its autofix.
+/// Primary option `"string"` wants `@import "foo.css"`, `"url"` wants
+/// `@import url(foo.css)`.  The fix rewrites the params up to the end of the
+/// reported URL or string, keeping media queries and conditions after it.
 pub struct ImportNotation;
 
 impl Rule for ImportNotation {
@@ -22,81 +26,160 @@ impl Rule for ImportNotation {
     Severity::Warning
   }
 
-  /// Flags an `@import` written with `url()` rather than a quoted string.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
+  /// Reports the first `@import` URL or string in the other notation, with
+  /// a fix that rewrites it.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let want_string = match ctx.primary_option_str() {
+      Some("string") => true,
+      Some("url") => false,
+      _ => return Vec::new(),
     };
-    if at_rule.name != "import" {
-      return vec![];
+    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let mut diags = Vec::new();
+
+    for at_rule in tree
+      .nodes
+      .iter()
+      .filter(|n| n.kind == StatementKind::AtRule)
+    {
+      let is_import = ctx
+        .source_slice(at_rule.name_span.start, at_rule.name_span.end)
+        .is_some_and(|name| name.eq_ignore_ascii_case("import"));
+      let Some(params) = ctx.source_slice(at_rule.value_span.start, at_rule.value_span.end) else {
+        continue;
+      };
+      if !is_import || has_url_call(params) != want_string {
+        continue;
+      }
+      let base = at_rule.value_span.start;
+      for node in value_parser::parse(params) {
+        let (message, fixed) = if want_string {
+          if !node.is_function() || !node.value.eq_ignore_ascii_case("url") {
+            continue;
+          }
+          let arguments = value_parser::stringify(&node.nodes);
+          let quoted = if node.nodes.first().is_some_and(|n| n.is_word()) {
+            format!("\"{arguments}\"")
+          } else {
+            arguments
+          };
+          let full = node.to_css();
+          (format!("Expected \"{full}\" to be \"{quoted}\""), quoted)
+        } else {
+          if node.kind == NodeKind::Space {
+            break;
+          }
+          if !node.is_word() && node.kind != NodeKind::String {
+            continue;
+          }
+          let path = node.to_css();
+          let quoted = match node.quote {
+            Some(quote) if node.kind == NodeKind::String => format!("{quote}{}{quote}", node.value),
+            _ => format!("\"{}\"", node.value),
+          };
+          (
+            format!("Expected \"{quoted}\" to be \"url({path})\""),
+            format!("url({path})"),
+          )
+        };
+        // Stylelint reports from the start of the params to the end of this
+        // node, and rewrites the params as the fixed text followed by the
+        // rest of PostCSS's cleaned params, which drops comments there.
+        let end = node.source_end_index.min(params.len());
+        let span = Span::from_range(base, base + end);
+        let rest = at_rule.params.get(end..).unwrap_or("");
+        diags.push(
+          Diagnostic::new(self.name(), message)
+            .severity(self.default_severity())
+            .span(span)
+            .fix(Fix::new(
+              format!("Replace with {fixed}"),
+              vec![Edit::new(
+                Span::from_range(base, base + params.len()),
+                format!("{fixed}{rest}"),
+              )],
+            )),
+        );
+        break;
+      }
     }
-
-    // Check the source text around the @import span for url() usage.
-    let span_start = at_rule.span.offset;
-    let span_end = span_start + at_rule.span.length;
-    let search_area = if span_end <= ctx.source.len() && span_start < span_end {
-      &ctx.source[span_start..span_end]
-    } else {
-      &at_rule.params
-    };
-
-    let lower = search_area.to_ascii_lowercase();
-    if lower.contains("url(") {
-      return vec![
-        Diagnostic::new(
-          self.name(),
-          "Expected string notation for @import instead of url()",
-        )
-        .severity(self.default_severity())
-        .span(Span::new(span_start, at_rule.span.length)),
-      ];
-    }
-
-    vec![]
+    diags
   }
+}
+
+/// Whether `params` contains `url(` in any case.
+fn has_url_call(params: &str) -> bool {
+  params.to_ascii_lowercase().contains("url(")
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    }
+  use crate::fix_testing::{fix, warnings};
+
+  const RULE: &str = "import-notation";
+
+  #[test]
+  fn fixes_urls_to_strings() {
+    let string = || json!(["string"]);
+    assert_eq!(
+      fix(RULE, string(), "@import url(foo.css) print;", Syntax::Css),
+      "@import \"foo.css\" print;"
+    );
+    assert_eq!(
+      fix(RULE, string(), "@import URL( 'foo.css' );", Syntax::Css),
+      "@import 'foo.css';"
+    );
   }
 
   #[test]
-  fn reports_url_notation() {
-    let src = "@import url(\"foo.css\");";
-    let node = CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: "foo.css".to_string(),
-      span: ParserSpan::new(0, src.len()),
-      children: vec![],
-    });
-    let d = ImportNotation.check(&node, &ctx_with_source(src));
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("string notation"));
+  fn fixes_strings_to_urls() {
+    let url = || json!(["url"]);
+    assert_eq!(
+      fix(RULE, url(), "@import 'foo.css' print;", Syntax::Css),
+      "@import url('foo.css') print;"
+    );
+    assert_eq!(
+      fix(RULE, url(), "@IMPORT \"foo.css\";", Syntax::Css),
+      "@IMPORT url(\"foo.css\");"
+    );
   }
 
   #[test]
-  fn allows_string_notation() {
-    // When lightningcss parses `@import "foo.css";`, the params is just
-    // the URL string without url() wrapper. The source text also doesn't
-    // contain url().
-    let src = "@import \"foo.css\";";
-    let node = CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: "foo.css".to_string(),
-      span: ParserSpan::new(0, src.len()),
-      children: vec![],
-    });
-    let d = ImportNotation.check(&node, &ctx_with_source(src));
-    assert!(d.is_empty());
+  fn the_fix_drops_comments_after_the_url_as_stylelint_does() {
+    assert_eq!(
+      fix(
+        RULE,
+        json!(["string"]),
+        "@import url('a.css') /* a comment */ tv;",
+        Syntax::Css
+      ),
+      "@import 'a.css'  tv;"
+    );
+  }
+
+  #[test]
+  fn reports_the_params_up_to_the_url() {
+    let source = "@import url(foo.css) print;";
+    let diags = warnings(RULE, json!(["string"]), source, Syntax::Css);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+      &source[diags[0].span.offset..diags[0].span.end()],
+      "url(foo.css)"
+    );
+    assert_eq!(
+      diags[0].message,
+      "Expected \"url(foo.css)\" to be \"\"foo.css\"\""
+    );
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = json!(["string", { "disableFix": true }]);
+    let source = "@import url(foo.css);";
+    assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
+    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
   }
 }
