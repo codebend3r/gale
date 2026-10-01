@@ -1424,25 +1424,35 @@ const CONFIG_FILENAMES: &[&str] = &[
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
   let mut dir = start_dir.to_path_buf();
   loop {
-    for name in CONFIG_FILENAMES {
-      let candidate = dir.join(name);
-      if candidate.is_file() {
-        return Some(candidate);
-      }
-    }
-    // Lowest priority: check for a `"stylelint"` field in package.json.
-    let pkg_path = dir.join("package.json");
-    if pkg_path.is_file()
-      && let Ok(content) = std::fs::read_to_string(&pkg_path)
-      && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
-      && pkg.get("stylelint").is_some()
-    {
-      return Some(pkg_path);
+    if let Some(found) = config_in_dir(&dir) {
+      return Some(found);
     }
     if !dir.pop() {
       return None;
     }
   }
+}
+
+/// The config file `dir` itself provides, without looking at its ancestors:
+/// the first of [`CONFIG_FILENAMES`] present, else a `package.json` with a
+/// `"stylelint"` field.
+fn config_in_dir(dir: &Path) -> Option<PathBuf> {
+  for name in CONFIG_FILENAMES {
+    let candidate = dir.join(name);
+    if candidate.is_file() {
+      return Some(candidate);
+    }
+  }
+  // Lowest priority: check for a `"stylelint"` field in package.json.
+  let pkg_path = dir.join("package.json");
+  if pkg_path.is_file()
+    && let Ok(content) = std::fs::read_to_string(&pkg_path)
+    && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content)
+    && pkg.get("stylelint").is_some()
+  {
+    return Some(pkg_path);
+  }
+  None
 }
 
 // ---------------------------------------------------------------------------
@@ -4294,15 +4304,37 @@ impl ConfigResolver {
     } else {
       file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
     };
+    self.find_config_path_for_dir(dir)
+  }
 
-    // Check directory cache first.
-    if let Some(cached) = self.dir_cache.get(&dir) {
-      return cached.clone();
+  /// The config file that applies to files in `dir`, as [`find_config`]
+  /// would find it.
+  ///
+  /// A directory's answer is its own config file when it has one and its
+  /// parent's answer otherwise, so every directory passed on the way up is
+  /// cached too.  Each directory is examined at most once per resolver, no
+  /// matter how many of its descendants are asked about.
+  fn find_config_path_for_dir(&mut self, dir: PathBuf) -> Option<PathBuf> {
+    let mut visited: Vec<PathBuf> = Vec::new();
+    let mut cur = dir;
+    let found = loop {
+      if let Some(cached) = self.dir_cache.get(&cur) {
+        break cached.clone();
+      }
+      let own = config_in_dir(&cur);
+      visited.push(cur.clone());
+      if own.is_some() {
+        break own;
+      }
+      // The same step `find_config` takes, so both visit the same chain.
+      if !cur.pop() {
+        break None;
+      }
+    };
+    for dir in visited {
+      self.dir_cache.insert(dir, found.clone());
     }
-
-    let config_path = find_config(&dir);
-    self.dir_cache.insert(dir, config_path.clone());
-    config_path
+    found
   }
 
   /// Resolve the effective config for a given file path.
@@ -4361,9 +4393,7 @@ impl ConfigResolver {
     let mut dir_to_arc: HashMap<PathBuf, Arc<GaleConfig>> = HashMap::with_capacity(dirs.len());
 
     for dir in &dirs {
-      // Synthesize a dummy file path in this directory so find_config_path works.
-      let dummy = dir.join("__dummy__");
-      let config_arc = if let Some(config_path) = self.find_config_path(&dummy) {
+      let config_arc = if let Some(config_path) = self.find_config_path_for_dir(dir.clone()) {
         // Load config if not already cached.
         if !self.cache.contains_key(&config_path) {
           let config = load_config(&config_path).unwrap_or_else(|err| {
@@ -5985,6 +6015,54 @@ overrides:
       root_resolved.rules.contains_key("max-nesting-depth"),
       "max-nesting-depth should be enabled in the root config"
     );
+  }
+
+  #[test]
+  fn resolver_memo_agrees_with_find_config_in_any_order() {
+    // root/.stylelintrc.json
+    // root/a/package.json            (no "stylelint" field)
+    // root/a/b/package.json          ("stylelint" field)
+    // root/a/b/c/                    (inherits a/b)
+    // root/d/e/                      (inherits root)
+    // root/x/gale.json + x/y/z/      (inherits x)
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(root.join(".stylelintrc.json"), "{}").unwrap();
+    let dirs: Vec<PathBuf> = ["a", "a/b", "a/b/c", "d", "d/e", "x", "x/y", "x/y/z"]
+      .iter()
+      .map(|d| root.join(d))
+      .collect();
+    for dir in &dirs {
+      std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(root.join("a/package.json"), r#"{"name": "a"}"#).unwrap();
+    std::fs::write(
+      root.join("a/b/package.json"),
+      r#"{"stylelint": {"rules": {}}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("x/gale.json"), "{}").unwrap();
+
+    let mut all = vec![root.to_path_buf()];
+    all.extend(dirs);
+    let expected: Vec<Option<PathBuf>> = all.iter().map(|d| find_config(d)).collect();
+    assert_eq!(expected[3], Some(root.join("a/b/package.json")));
+    assert_eq!(expected[5], Some(root.join(".stylelintrc.json")));
+    assert_eq!(expected[8], Some(root.join("x/gale.json")));
+
+    // Deepest first fills the cache from below; shallowest first from above.
+    for order in [all.iter().rev().collect::<Vec<_>>(), all.iter().collect()] {
+      let mut resolver = ConfigResolver::new();
+      for dir in order {
+        let i = all.iter().position(|d| d == dir).unwrap();
+        assert_eq!(
+          resolver.find_config_path_for_dir(dir.clone()),
+          expected[i],
+          "{}",
+          dir.display()
+        );
+      }
+    }
   }
 
   // -----------------------------------------------------------------------
