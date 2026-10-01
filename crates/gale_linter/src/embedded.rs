@@ -146,8 +146,10 @@ pub fn lint_host(
     }
   }
 
-  if !options.ignore_disables {
-    apply_document_disables(source, &roots, &mut diagnostics);
+  if let Some(rejected) =
+    apply_document_disables(source, file_path, &roots, options, &mut diagnostics)
+  {
+    return LintResult::new(file_path, source, vec![rejected]);
   }
   diagnostics.sort_by(|a, b| {
     a.span
@@ -268,13 +270,18 @@ fn ignores_disables(d: &Diagnostic) -> bool {
 /// open in one `<style>` block reaches into the blocks after it until an
 /// `enable` in a later one.  The runner leaves suppression inside an
 /// embedded sheet to this pass.
+///
+/// Returns Stylelint's `CssSyntaxError` for a comment it rejects, which
+/// replaces every other problem in the file, `ignoreDisables` or not.
 fn apply_document_disables(
   source: &str,
+  file_path: &str,
   roots: &[(StyleBlock, Syntax)],
+  options: HostOptions,
   diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Option<Diagnostic> {
   if !disables::may_have_directives(source) {
-    return;
+    return None;
   }
   let lines = SourceLineIndex::build(source);
   let line_of = |offset: usize| lines.line(offset);
@@ -282,12 +289,15 @@ fn apply_document_disables(
   for (block, syntax) in roots {
     collector.scan(&sheet_text(source, block), *syntax, block.range.start);
   }
-  let (ranges, _rejected) = collector.finish();
-  if ranges.is_empty() {
-    return;
+  let (ranges, rejected) = collector.finish();
+  if let Some(rejected) = rejected {
+    return Some(rejected.to_diagnostic(file_path));
   }
-  diagnostics
-    .retain(|d| ignores_disables(d) || !ranges.covers(&d.rule_name, line_of(d.span.offset)));
+  if !options.ignore_disables && !ranges.is_empty() {
+    diagnostics
+      .retain(|d| ignores_disables(d) || !ranges.covers(&d.rule_name, line_of(d.span.offset)));
+  }
+  None
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +736,44 @@ mod tests {
       fake_lint,
     );
     assert_eq!(ignored.diagnostics.len(), 4);
+  }
+
+  #[test]
+  fn a_rejected_command_anywhere_replaces_the_files_problems() {
+    let source = "<style>a{!}</style>\n<style>\n/* stylelint-enable fake */\n</style>";
+    for ignore_disables in [false, true] {
+      let result = lint_host(
+        source,
+        "x.vue",
+        HostLanguage::Vue,
+        HostOptions { ignore_disables },
+        fake_lint,
+      );
+      assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+      let d = &result.diagnostics[0];
+      assert_eq!(d.rule_name, "CssSyntaxError");
+      assert_eq!(d.message, "\"fake\" has not been disabled");
+      assert_eq!(
+        &source[d.span.offset..d.span.end()],
+        "/* stylelint-enable fake */"
+      );
+    }
+    // An enable for a disable in an earlier block is fine.
+    let source = "<style>\n/* stylelint-disable fake */\n</style>\n\
+                  <style>\n/* stylelint-enable fake */\na{!}\n</style>";
+    let result = lint_host(
+      source,
+      "x.vue",
+      HostLanguage::Vue,
+      HostOptions::default(),
+      fake_lint,
+    );
+    let rules: Vec<&str> = result
+      .diagnostics
+      .iter()
+      .map(|d| d.rule_name.as_str())
+      .collect();
+    assert_eq!(rules, vec!["fake"]);
   }
 
   #[test]

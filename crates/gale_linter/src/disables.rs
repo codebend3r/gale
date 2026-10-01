@@ -260,6 +260,20 @@ pub(crate) struct DirectiveError {
   pub node: DirectiveNode,
 }
 
+impl DirectiveError {
+  /// The problem Stylelint reports in place of every other one in the
+  /// file: a `CssSyntaxError` spanning the comment's node.
+  pub(crate) fn to_diagnostic(&self, file_path: &str) -> Diagnostic {
+    Diagnostic::new(SYNTAX_ERROR, self.message.clone())
+      .severity(Severity::Error)
+      .span(Span::from_range(self.node.start, self.node.end))
+      .file_path(file_path)
+  }
+}
+
+/// The rule name Stylelint gives a `CssSyntaxError`.
+pub(crate) const SYNTAX_ERROR: &str = "CssSyntaxError";
+
 /// One configuration comment, ready to apply.
 struct Directive {
   /// The comment's text without its delimiters, trimmed (merged `//`
