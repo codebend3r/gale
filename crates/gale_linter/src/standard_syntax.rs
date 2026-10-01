@@ -2,6 +2,8 @@
 //! from preprocessor syntax (interpolation, variables, mixins) that the
 //! rules skip.
 
+use crate::value_parser::{NodeKind, ValueNode};
+
 /// Stylelint's `isStandardSyntaxSelector`: whether a rule's selector is
 /// plain CSS rather than interpolation, a Sass placeholder or nested
 /// property, a Less mixin or `:extend`, a template tag or a line comment.
@@ -133,6 +135,35 @@ pub fn is_standard_syntax_value(value: &str) -> bool {
   })
 }
 
+/// Stylelint's `isStandardSyntaxFunction`: false for nameless parentheses
+/// (Sass lists) and interpolated or template-literal names.
+pub fn is_standard_syntax_function(node: &ValueNode<'_>) -> bool {
+  !(node.value.is_empty()
+    || node.value.starts_with("#{")
+    || node.value.starts_with("${")
+    || node.value.starts_with('`'))
+}
+
+/// Stylelint's `isStandardSyntaxColorFunction`: a standard function whose
+/// arguments hold no `#hex`-like, `$variable` or `namespace.$variable` word.
+/// Like upstream, only the first nested function is looked into.
+pub fn is_standard_syntax_color_function(node: &ValueNode<'_>) -> bool {
+  if !is_standard_syntax_function(node) {
+    return false;
+  }
+  for arg in &node.nodes {
+    if arg.kind == NodeKind::Function {
+      return is_standard_syntax_color_function(arg);
+    }
+    if arg.kind == NodeKind::Word
+      && (arg.value.starts_with('#') || arg.value.starts_with('$') || arg.value.contains(".$"))
+    {
+      return false;
+    }
+  }
+  true
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -183,6 +214,18 @@ mod tests {
     ] {
       assert!(!is_standard_syntax_value(value), "{value}");
     }
+  }
+
+  #[test]
+  fn color_functions_with_preprocessor_arguments_are_not_standard() {
+    let standard =
+      |text: &str| is_standard_syntax_color_function(&crate::value_parser::parse(text)[0]);
+    assert!(standard("rgb(0 0 0)"));
+    assert!(!standard("rgba($a, 0.5)"));
+    assert!(!standard("rgba(#fff, 0.5)"));
+    assert!(!standard("rgba(color.$a, 0.5)"));
+    assert!(!standard("(a, b)"));
+    assert!(!standard("#{$f}(a)"));
   }
 
   #[test]

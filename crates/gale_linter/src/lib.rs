@@ -13,6 +13,9 @@ pub mod data;
 pub mod disables;
 pub mod embedded;
 pub mod empty_lines;
+#[cfg(test)]
+pub mod fix_testing;
+pub mod js_number;
 pub mod known_rules;
 pub mod panic_guard;
 pub mod pattern;
