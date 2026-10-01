@@ -99,6 +99,28 @@ pub fn match_regex_entry(entry: &str, text: &str) -> Option<bool> {
   Some(compile(entry).is_ok_and(|re| is_match(&re, text)))
 }
 
+/// Stylelint's `matchesStringOrRegExp` for one list entry: an entry written
+/// as a regex literal (`"/^foo/"`) is tested as a regex, any other entry
+/// must equal `text` exactly.
+pub fn matches_entry(entry: &str, text: &str) -> bool {
+  match_regex_entry(entry, text).unwrap_or(entry == text)
+}
+
+/// Whether any entry of a string-or-list option matches `text`, the way
+/// Stylelint's `optionsMatches` reads an option such as `ignoreAtRules`:
+/// the option may be a single string or an array of them, and non-string
+/// entries match nothing.
+pub fn option_matches(option: Option<&serde_json::Value>, text: &str) -> bool {
+  match option {
+    Some(serde_json::Value::String(entry)) => matches_entry(entry, text),
+    Some(serde_json::Value::Array(entries)) => entries
+      .iter()
+      .filter_map(serde_json::Value::as_str)
+      .any(|entry| matches_entry(entry, text)),
+    _ => false,
+  }
+}
+
 /// Secondary options every rule accepts that never hold a pattern.
 const NON_PATTERN_OPTIONS: &[&str] = &["message", "url", "severity"];
 
@@ -218,6 +240,23 @@ mod tests {
     assert!(regex_entry("/^a/").is_some());
     assert!(regex_entry("/[/").is_none());
     assert!(regex_entry("a").is_none());
+  }
+
+  #[test]
+  fn entries_match_as_regex_literals_or_exact_strings() {
+    assert!(matches_entry("/^font/", "font-size"));
+    assert!(matches_entry("/^FONT/i", "font-size"));
+    assert!(matches_entry("color", "color"));
+    assert!(!matches_entry("color", "background-color"));
+    assert!(!matches_entry("Color", "color"));
+
+    let list = serde_json::json!(["include", "/^mix/"]);
+    assert!(option_matches(Some(&list), "include"));
+    assert!(option_matches(Some(&list), "mixin"));
+    assert!(!option_matches(Some(&list), "media"));
+    assert!(option_matches(Some(&serde_json::json!("media")), "media"));
+    assert!(!option_matches(Some(&serde_json::json!(true)), "media"));
+    assert!(!option_matches(None, "media"));
   }
 
   #[test]
