@@ -538,19 +538,34 @@ fn in_parens(token: &Token, features: &mut Vec<Feature>) -> bool {
   true
 }
 
-/// Whether the tokens are a valid `<mf-value>`: a number, dimension,
-/// identifier or function, or a ratio of two numbers or functions.
+/// Whether the tokens are a valid `<mf-value>` to
+/// `@csstools/media-query-list-parser`: a number (a math function counts),
+/// dimension, identifier or `env()`, or a ratio of two numbers.  Any other
+/// function, such as a Sass one, makes the feature general enclosed.
 fn is_mf_value(tokens: &[&Token]) -> bool {
-  let single = |t: &Token| matches!(t.kind, Tok::Number | Tok::Ident | Tok::Function);
+  let number = |t: &Token| t.kind == Tok::Number || is_function_in(t, MATH_FUNCTIONS);
+  let single = |t: &Token| number(t) || t.kind == Tok::Ident || is_function_in(t, &["env"]);
   match tokens {
     [only] => single(only),
-    [a, slash, b] => {
-      slash.kind == Tok::Delim(b'/')
-        && matches!(a.kind, Tok::Number | Tok::Function)
-        && matches!(b.kind, Tok::Number | Tok::Function)
-    }
+    [a, slash, b] => slash.kind == Tok::Delim(b'/') && number(a) && number(b),
     _ => false,
   }
+}
+
+/// The math functions `@csstools/media-query-list-parser` reads as numbers.
+const MATH_FUNCTIONS: &[&str] = &[
+  "abs", "acos", "asin", "atan", "atan2", "calc", "clamp", "cos", "exp", "hypot", "log", "max",
+  "min", "mod", "pow", "rem", "round", "sign", "sin", "sqrt", "tan",
+];
+
+/// Whether `token` is a function whose name (ignoring case) is in `names`.
+fn is_function_in(token: &Token, names: &[&str]) -> bool {
+  token.kind == Tok::Function
+    && token
+      .text
+      .split('(')
+      .next()
+      .is_some_and(|name| names.iter().any(|n| n.eq_ignore_ascii_case(name)))
 }
 
 /// The comparison operator starting at `tokens[i]`, as the number of tokens
@@ -714,6 +729,7 @@ mod tests {
     for css in [
       "@media (min-width: $var) {}",
       "@media (min-width: (124px + 300px)) {}",
+      "@media screen and (max-width: bp($md)) {}",
     ] {
       assert!(
         lint_as(css, Syntax::Scss, context.clone()).is_empty(),
