@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Enforce a specific ordering of properties within declaration blocks.
@@ -47,7 +48,7 @@ struct GroupInfo {
 /// A compiled regex pattern entry from the property order config.
 #[derive(Debug, Clone)]
 struct RegexEntry {
-  pattern: regex::Regex,
+  pattern: std::sync::Arc<pattern::Regex>,
   info: PropertyInfo,
 }
 
@@ -138,7 +139,7 @@ impl Rule for OrderPropertiesOrder {
         config
           .regex_patterns
           .iter()
-          .find(|re| re.pattern.is_match(lookup))
+          .find(|re| pattern::is_match(&re.pattern, lookup))
           .map(|re| &re.info)
       });
 
@@ -628,14 +629,11 @@ fn insert_property_or_regex(
     group_index,
   };
 
-  // Detect regex patterns: strings starting and ending with `/`.
-  if s.starts_with('/') && s.ends_with('/') && s.len() > 2 {
-    let pattern_str = &s[1..s.len() - 1];
-    if let Ok(re) = regex::Regex::new(pattern_str) {
-      regex_patterns.push(RegexEntry { pattern: re, info });
-      return;
-    }
-    // If regex compilation fails, fall through and treat as a literal name.
+  // Detect regex patterns: strings written as `/regex/`.  One that does not
+  // compile (reported as an invalid option) is treated as a literal name.
+  if let Some(re) = pattern::regex_entry(s) {
+    regex_patterns.push(RegexEntry { pattern: re, info });
+    return;
   }
 
   property_map.insert(s.to_ascii_lowercase(), info);

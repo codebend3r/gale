@@ -130,8 +130,13 @@ impl Rule for StylisticBlockOpeningBraceSpaceAfter {
           }
           j += 1;
         }
-        let close_pos = j.saturating_sub(1);
-        let is_single_line = !ctx.source[brace_pos..close_pos.min(len)].contains('\n');
+        // An unclosed block runs to the end of the file, where `j - 1` can
+        // land inside a multibyte character.
+        let close_pos = ctx.source.floor_char_boundary(j.saturating_sub(1).min(len));
+        let is_single_line = !ctx
+          .source_slice(brace_pos, close_pos)
+          .unwrap_or_default()
+          .contains('\n');
 
         let has_space = after < len && bytes[after] == b' ';
         let has_newline = after < len && (bytes[after] == b'\n' || bytes[after] == b'\r');

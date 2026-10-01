@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
@@ -42,9 +42,11 @@ impl Rule for KeyframesNamePattern {
 
     let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
 
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     // Read custom message from secondary options
@@ -71,7 +73,7 @@ impl Rule for KeyframesNamePattern {
       .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
       .unwrap_or(name);
 
-    if !re.is_match(name) {
+    if !pattern::is_match(&re, name) {
       let message = if let Some(tmpl) = custom_message {
         tmpl.replace("${name}", name)
       } else {

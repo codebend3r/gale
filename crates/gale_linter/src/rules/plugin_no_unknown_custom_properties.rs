@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
 use crate::rule::{Rule, RuleContext};
 
@@ -26,31 +25,18 @@ pub struct PluginNoUnknownCustomProperties;
 /// A compiled pattern — either a literal string match or a regex.
 enum AllowPattern {
   Exact(String),
-  Regex(Regex),
+  Regex(std::sync::Arc<crate::pattern::Regex>),
 }
 
 impl AllowPattern {
   /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
   fn from_str(s: &str) -> Self {
-    if let Some(inner) = s.strip_prefix('/').and_then(|s| {
-      if let Some(pos) = s.rfind('/') {
-        Some((&s[..pos], &s[pos + 1..]))
-      } else {
-        None
-      }
-    }) {
-      let (pattern, flags) = inner;
-      let regex_str = if flags.contains('i') {
-        format!("(?i){}", pattern)
-      } else {
-        pattern.to_string()
-      };
-      match Regex::new(&regex_str) {
-        Ok(re) => AllowPattern::Regex(re),
-        Err(_) => AllowPattern::Exact(s.to_string()),
-      }
-    } else {
-      AllowPattern::Exact(s.to_string())
+    // Patterns wrapped in `/` (optionally flagged, like `/…/i`) are regexes.
+    // One that does not compile is reported as an invalid option by the
+    // runner and compared as a literal here.
+    match crate::pattern::regex_entry(s) {
+      Some(re) => AllowPattern::Regex(re),
+      None => AllowPattern::Exact(s.to_string()),
     }
   }
 
@@ -58,7 +44,7 @@ impl AllowPattern {
   fn matches(&self, name: &str) -> bool {
     match self {
       AllowPattern::Exact(s) => name == s,
-      AllowPattern::Regex(re) => re.is_match(name),
+      AllowPattern::Regex(re) => crate::pattern::is_match(re, name),
     }
   }
 }

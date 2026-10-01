@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 use crate::stylelint_version::stylelint_major_version;
 
@@ -131,9 +131,11 @@ impl Rule for CustomPropertyPattern {
     // object (e.g. `["^pattern$", { "message": "..." }]`).
     let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
 
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     // Check for custom message in secondary options
@@ -157,7 +159,7 @@ impl Rule for CustomPropertyPattern {
         // Mirrors Stylelint's isStandardSyntaxProperty check.
         if is_scss && has_complete_scss_interpolation(name) {
           // skip — non-standard syntax
-        } else if !re.is_match(name) {
+        } else if !pattern::is_match(&re, name) {
           let full_name = format!("--{name}");
           let message = build_message(&full_name, custom_message, pattern_str, stylelint_major);
           diags.push(
@@ -177,7 +179,7 @@ impl Rule for CustomPropertyPattern {
             if let Some(name) = prop_name.strip_prefix("--") {
               // Same SCSS interpolation skip as above
               let skip = is_scss && has_complete_scss_interpolation(name);
-              if !skip && !re.is_match(name) {
+              if !skip && !pattern::is_match(&re, name) {
                 // Compute absolute byte offset of the token in the source.
                 let decl_start = decl.span.offset;
                 let decl_end = (decl.span.offset + decl.span.length).min(ctx.source.len());

@@ -1,12 +1,17 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+
+/// Kebab-case, used when the config gives no pattern.
+const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
 /// Enforce a naming pattern for custom media queries.
 ///
-/// Equivalent to Stylelint's `custom-media-pattern` rule.
-/// Default pattern: kebab-case. Detection-only.
+/// Equivalent to Stylelint's `custom-media-pattern` rule.  The primary
+/// option is the pattern the name after `--` must match; without one the
+/// rule falls back to kebab-case.  Detection-only.
 pub struct CustomMediaPattern;
 
 impl Rule for CustomMediaPattern {
@@ -22,8 +27,9 @@ impl Rule for CustomMediaPattern {
     Severity::Warning
   }
 
-  /// Flags an `@custom-media` name that is not kebab-case.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags an `@custom-media` name that does not match the configured
+  /// pattern, at the name itself.
+  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];
     };
@@ -31,53 +37,41 @@ impl Rule for CustomMediaPattern {
       return vec![];
     }
 
+    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
+    };
+
     // @custom-media --name <media-query>
     // The params should start with the custom media name (--name).
-    let params = at.params.trim();
-    let name = params
-      .split_whitespace()
-      .next()
-      .and_then(|s| s.strip_prefix("--"));
-
-    if let Some(name) = name
-      && !is_kebab_case(name)
-    {
-      return vec![
-        Diagnostic::new(
-          self.name(),
-          format!("Expected custom media query name \"--{name}\" to match kebab-case pattern"),
-        )
-        .severity(self.default_severity())
-        .span(Span::new(at.span.offset, at.span.length)),
-      ];
+    let Some(full_name) = at.params.split_whitespace().next() else {
+      return vec![];
+    };
+    let Some(name) = full_name.strip_prefix("--") else {
+      return vec![];
+    };
+    if pattern::is_match(&re, name) {
+      return vec![];
     }
 
-    vec![]
-  }
-}
+    // Point at the name in the source when it can be found there, as
+    // Stylelint does, else at the whole at-rule.
+    let span = ctx
+      .source_slice(at.span.offset, at.span.end())
+      .and_then(|text| text.find(full_name))
+      .map(|at_name| Span::new(at.span.offset + at_name, full_name.len()))
+      .unwrap_or(Span::new(at.span.offset, at.span.length));
 
-/// Matches `^([a-z][a-z0-9]*)(-[a-z0-9]+)*$`
-fn is_kebab_case(name: &str) -> bool {
-  let bytes = name.as_bytes();
-  if bytes.is_empty() || !bytes[0].is_ascii_lowercase() {
-    return false;
+    vec![
+      Diagnostic::new(
+        self.name(),
+        format!("Expected \"{full_name}\" to match pattern \"{pattern_str}\""),
+      )
+      .severity(self.default_severity())
+      .span(span),
+    ]
   }
-
-  let mut i = 1;
-  while i < bytes.len() {
-    if bytes[i] == b'-' {
-      i += 1;
-      if i >= bytes.len() || !(bytes[i].is_ascii_lowercase() || bytes[i].is_ascii_digit()) {
-        return false;
-      }
-    } else if bytes[i].is_ascii_lowercase() || bytes[i].is_ascii_digit() {
-      // ok
-    } else {
-      return false;
-    }
-    i += 1;
-  }
-  true
 }
 
 #[cfg(test)]
@@ -107,7 +101,37 @@ mod tests {
   fn reports_non_kebab_case() {
     let d = CustomMediaPattern.check(&custom_media("--myQuery (min-width: 768px)"), &ctx());
     assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("myQuery"));
+    assert_eq!(
+      d[0].message,
+      "Expected \"--myQuery\" to match pattern \"^[a-z][a-z0-9]*(-[a-z0-9]+)*$\""
+    );
+  }
+
+  #[test]
+  fn uses_the_configured_pattern() {
+    let options = serde_json::json!("^(?!bp-)[a-z-]+$");
+    let source = "@custom-media --bp-small (max-width: 30em);";
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
+      syntax: Syntax::Css,
+      options: Some(&options),
+    };
+    let mut node = custom_media("--bp-small (max-width: 30em)");
+    if let CssNode::AtRule(at) = &mut node {
+      at.span = ParserSpan::new(0, source.len());
+    }
+    let d = CustomMediaPattern.check(&node, &ctx);
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+      d[0].message,
+      "Expected \"--bp-small\" to match pattern \"^(?!bp-)[a-z-]+$\""
+    );
+    // Reported at the name, not the whole at-rule.
+    assert_eq!(d[0].span, Span::new(14, "--bp-small".len()));
+
+    let ok = custom_media("--small (max-width: 30em)");
+    assert!(CustomMediaPattern.check(&ok, &ctx).is_empty());
   }
 
   #[test]

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use globset::{Glob, GlobMatcher};
 use serde::de::Deserializer;
@@ -40,16 +40,6 @@ pub enum Severity {
   Error,
   Warning,
   Off,
-}
-
-/// Output formatter type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum FormatterType {
-  #[default]
-  Text,
-  Json,
-  Compact,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +134,10 @@ pub enum FixMode {
 pub struct GaleConfig {
   pub rules: HashMap<String, RuleConfig>,
   pub ignore_patterns: Vec<String>,
-  pub formatter: FormatterType,
+  /// Stylelint's `formatter`, exactly as the config wrote it.  The CLI
+  /// validates the name (an unknown one is an error) and uses it when no
+  /// `--formatter` flag is given.
+  pub formatter: Option<String>,
   pub overrides: Vec<ResolvedOverride>,
   /// Directory containing the config file.  Used by [`rules_for_file`] to
   /// resolve override glob patterns relative to the config location.
@@ -315,7 +308,7 @@ impl Default for GaleConfig {
     Self {
       rules: HashMap::new(),
       ignore_patterns: Vec::new(),
-      formatter: FormatterType::Text,
+      formatter: None,
       overrides: Vec::new(),
       config_dir: None,
       plugins: Vec::new(),
@@ -360,6 +353,35 @@ where
   })
 }
 
+/// Stands in for an `extends` entry that is not a string: a JavaScript
+/// expression the static config reader could not evaluate (which it turns
+/// into `null`), or an inline config object.  Resolving it fails, so it is
+/// warned about and skipped like any other entry gale cannot find.
+const UNEVALUATED_EXTENDS: &str = "<a JavaScript expression gale cannot evaluate>";
+
+/// Deserialize `extends`: a single entry or an array of them.
+///
+/// Unlike [`string_or_vec`], entries that are not strings do not make the
+/// whole config fail to load; each becomes [`UNEVALUATED_EXTENDS`], so the
+/// user is told an entry was skipped instead of the config being rejected or
+/// silently losing its `extends`.
+fn extends_entries<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  let entry = |value: serde_json::Value| match value {
+    serde_json::Value::String(name) => name,
+    _ => UNEVALUATED_EXTENDS.to_string(),
+  };
+  Ok(
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+      None => None,
+      Some(serde_json::Value::Array(items)) => Some(items.into_iter().map(entry).collect()),
+      Some(other) => Some(vec![entry(other)]),
+    },
+  )
+}
+
 /// What is actually stored in a config file on disk.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -373,7 +395,7 @@ pub struct ConfigFile {
   pub formatter: Option<String>,
   /// List of shared configs / presets to extend (e.g. `"gale:recommended"`).
   /// Accepts a single string or an array of strings.
-  #[serde(default, deserialize_with = "string_or_vec")]
+  #[serde(default, deserialize_with = "extends_entries")]
   pub extends: Option<Vec<String>>,
   /// File-pattern-based overrides (like Stylelint's `overrides` field).
   pub overrides: Option<Vec<ConfigOverride>>,
@@ -442,7 +464,7 @@ pub struct ConfigOverride {
   /// Rules to apply for matching files.
   pub rules: Option<HashMap<String, RuleConfigValue>>,
   /// Shared configs to extend for matching files.
-  #[serde(default, deserialize_with = "string_or_vec")]
+  #[serde(default, deserialize_with = "extends_entries")]
   pub extends: Option<Vec<String>>,
   /// Stylelint's `customSyntax` field — specifies a PostCSS syntax plugin
   /// for non-standard file types (e.g. `postcss-markdown`, `postcss-html`).
@@ -652,7 +674,8 @@ fn has_explicit_severity_in_value(v: &RuleConfigValue) -> bool {
 // ---------------------------------------------------------------------------
 
 /// All rule names that exist in the linter registry.
-/// Kept in sync with `gale_linter::rules::register_all`.
+/// Kept in sync with `gale_linter::rules::register_all`; a test in
+/// `gale_cli`, which sees both crates, fails when the two drift apart.
 const ALL_RULE_NAMES: &[&str] = &[
   "@stylistic/at-rule-name-case",
   "@stylistic/at-rule-name-space-after",
@@ -900,7 +923,9 @@ const ALL_RULE_NAMES: &[&str] = &[
   "selector-max-type",
   "selector-max-universal",
   "selector-nested-pattern",
+  "selector-no-invalid",
   "selector-no-qualifying-type",
+  "selector-no-unmatchable",
   "selector-no-vendor-prefix",
   "selector-not-notation",
   "selector-pseudo-class-allowed-list",
@@ -2259,9 +2284,14 @@ fn extract_braced_object(s: &str) -> Option<String> {
 /// - Trailing commas → removed
 /// - Spread operator entries (`...foo`) → skipped
 fn js_object_to_json(js: &str) -> String {
+  // Step 0: `require('pkg')` and `require.resolve('pkg')` become the string
+  // `'pkg'`, so `extends: require.resolve('some-config')` still names the
+  // config to resolve instead of collapsing to `null`.
+  let s = inline_require_calls(js);
+
   // Step 0a: Replace arrow function expressions with null (before quote
   // conversion so we can still distinguish template literals).
-  let s = replace_arrow_functions(js);
+  let s = replace_arrow_functions(&s);
 
   // Step 0b: Remove method calls on arrays/values (e.g. `.map( require.resolve )`).
   let s = remove_method_calls(&s);
@@ -2536,6 +2566,97 @@ fn concat_adjacent_strings(s: &str) -> String {
   }
 
   result
+}
+
+/// Replace `require('x')` and `require.resolve('x')` with the string literal
+/// `'x'`, keeping its quotes.
+///
+/// Only a call whose sole argument is a plain string literal is rewritten;
+/// anything else (`require(path)`, `require('a' + b)`) is left for the later
+/// steps, which turn it into `null`.
+fn inline_require_calls(s: &str) -> String {
+  let chars: Vec<char> = s.chars().collect();
+  let len = chars.len();
+  let mut result = String::with_capacity(s.len());
+  let mut i = 0;
+  let mut quote: Option<char> = None;
+
+  while i < len {
+    let c = chars[i];
+    if let Some(q) = quote {
+      result.push(c);
+      if c == '\\' && i + 1 < len {
+        result.push(chars[i + 1]);
+        i += 2;
+        continue;
+      }
+      if c == q {
+        quote = None;
+      }
+      i += 1;
+      continue;
+    }
+    if matches!(c, '\'' | '"' | '`') {
+      quote = Some(c);
+      result.push(c);
+      i += 1;
+      continue;
+    }
+
+    let starts_word =
+      i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '$' | '.'));
+    if starts_word && let Some((literal, end)) = require_call_literal(&chars, i) {
+      result.push_str(&literal);
+      i = end;
+      continue;
+    }
+
+    result.push(c);
+    i += 1;
+  }
+
+  result
+}
+
+/// If `chars[start..]` is `require(<string>)` or `require.resolve(<string>)`,
+/// the string literal (with its quotes) and the index just past the `)`.
+fn require_call_literal(chars: &[char], start: usize) -> Option<(String, usize)> {
+  let word = |at: usize, text: &str| {
+    let end = at + text.chars().count();
+    (end <= chars.len() && chars[at..end].iter().copied().eq(text.chars())).then_some(end)
+  };
+  let skip_space = |mut at: usize| {
+    while at < chars.len() && chars[at].is_whitespace() {
+      at += 1;
+    }
+    at
+  };
+
+  let mut i = word(start, "require")?;
+  if let Some(after) = word(i, ".resolve") {
+    i = after;
+  }
+  i = skip_space(i);
+  if chars.get(i) != Some(&'(') {
+    return None;
+  }
+  i = skip_space(i + 1);
+  let quote = *chars.get(i).filter(|c| matches!(c, '\'' | '"' | '`'))?;
+  let literal_start = i;
+  i += 1;
+  while i < chars.len() && chars[i] != quote {
+    if chars[i] == '\\' || (quote == '`' && chars[i] == '$') {
+      // Escapes and template substitutions are more than a plain name.
+      return None;
+    }
+    i += 1;
+  }
+  if i >= chars.len() {
+    return None;
+  }
+  let literal: String = chars[literal_start..=i].iter().collect();
+  i = skip_space(i + 1);
+  (chars.get(i) == Some(&')')).then(|| (literal, i + 1))
 }
 
 /// Replace arrow function expressions with `null`.
@@ -3337,10 +3458,13 @@ fn replace_bare_identifier_values(s: &str) -> String {
       {
         i += 1;
       }
-      let ident = &s[start..i];
+      // `start` and `i` index `chars`, not bytes, so collect rather than
+      // slice `s`: any multibyte character earlier in the config would
+      // otherwise shift the slice or split a character.
+      let ident: String = chars[start..i].iter().collect();
       // Preserve JSON literals.
-      match ident {
-        "true" | "false" | "null" => result.push_str(ident),
+      match ident.as_str() {
+        "true" | "false" | "null" => result.push_str(&ident),
         _ => result.push_str("null"),
       }
       continue;
@@ -3654,6 +3778,35 @@ fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile
   None
 }
 
+/// Warnings already printed this run, so a config that every directory
+/// shares (and that is loaded more than once) warns once.
+static WARNED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Print `message` to stderr unless it was already printed this run.
+fn warn_once(message: String) {
+  let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+  if warned.insert(message.clone()) {
+    eprintln!("{message}");
+  }
+}
+
+/// The warning for an `extends` entry that resolves to nothing.
+fn unresolved_extends_warning(entry: &str, base_dir: &Path) -> String {
+  if entry == UNEVALUATED_EXTENDS {
+    format!(
+      "warning: could not resolve an extends entry in {}: it is not a string \
+       (gale reads JavaScript configs statically), so its rules were skipped",
+      base_dir.display()
+    )
+  } else {
+    format!(
+      "warning: could not resolve extends \"{entry}\" from {} (is it installed?), \
+       so its rules were skipped",
+      base_dir.display()
+    )
+  }
+}
+
 /// Recursively collect rules from a list of `extends` entries, with cycle detection.
 fn collect_rules_from_extends(
   extends: &[String],
@@ -3669,12 +3822,17 @@ fn collect_rules_from_extends(
     }
     visited.insert(preset_name.clone());
 
+    if preset_name == UNEVALUATED_EXTENDS {
+      warn_once(unresolved_extends_warning(preset_name, base_dir));
+      continue;
+    }
+
     if preset_name.starts_with("gale:") {
       // gale: presets are always built-in.
       if let Some(preset_rules) = resolve_preset(preset_name) {
         rules.extend(preset_rules);
       } else {
-        eprintln!("warning: unknown preset '{preset_name}', skipping");
+        warn_once(format!("warning: unknown preset '{preset_name}', skipping"));
       }
     } else {
       // For non-gale presets: try npm/file first, fall back to built-in.
@@ -3761,7 +3919,7 @@ fn collect_rules_from_extends(
         // Do NOT fall back to built-in presets: approximate presets may
         // enable rules the real config would disable, causing thousands
         // of false positives.
-        eprintln!("warning: could not resolve extends '{preset_name}', skipping");
+        warn_once(unresolved_extends_warning(preset_name, base_dir));
       }
     }
   }
@@ -3906,15 +4064,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     ignore_patterns.extend(ignore_files);
   }
 
-  let formatter = raw
-    .formatter
-    .as_deref()
-    .map(|s| match s.to_lowercase().as_str() {
-      "json" => FormatterType::Json,
-      "compact" => FormatterType::Compact,
-      _ => FormatterType::Text,
-    })
-    .unwrap_or_default();
+  let formatter = raw.formatter;
 
   // 3. Resolve overrides.
   //    Extended configs' overrides come first, then the user's own overrides.
@@ -4259,7 +4409,7 @@ mod tests {
     let cfg = GaleConfig::default();
     assert!(cfg.rules.is_empty());
     assert!(cfg.ignore_patterns.is_empty());
-    assert_eq!(cfg.formatter, FormatterType::Text);
+    assert_eq!(cfg.formatter, None);
   }
 
   #[test]
@@ -4304,7 +4454,7 @@ mod tests {
     let cfg = resolve_raw(raw, Path::new("."));
     assert_eq!(cfg.rules.len(), 3);
     assert_eq!(cfg.ignore_patterns.len(), 2);
-    assert_eq!(cfg.formatter, FormatterType::Json);
+    assert_eq!(cfg.formatter.as_deref(), Some("json"));
   }
 
   #[test]
@@ -4321,7 +4471,7 @@ mod tests {
     // block-no-empty is "off" so it gets removed; only color-no-invalid-hex remains.
     assert_eq!(cfg.rules.len(), 1);
     assert!(cfg.rules.contains_key("color-no-invalid-hex"));
-    assert_eq!(cfg.formatter, FormatterType::Compact);
+    assert_eq!(cfg.formatter.as_deref(), Some("compact"));
   }
 
   #[test]
@@ -4338,7 +4488,7 @@ formatter: text
     let cfg = resolve_raw(raw, Path::new("."));
     assert_eq!(cfg.rules.len(), 2);
     assert_eq!(cfg.ignore_patterns.len(), 1);
-    assert_eq!(cfg.formatter, FormatterType::Text);
+    assert_eq!(cfg.formatter.as_deref(), Some("text"));
   }
 
   // -----------------------------------------------------------------------
@@ -5153,6 +5303,85 @@ export default {
     assert!(rules.contains_key("block-no-empty"));
 
     let _ = std::fs::remove_dir_all(&tmp);
+  }
+
+  #[test]
+  fn js_config_require_resolve_extends_names_the_package() {
+    let config_src = r#"
+module.exports = {
+  extends: require.resolve( '@wordpress/stylelint-tools/config' ),
+  plugins: [ require('stylelint-scss') ],
+  rules: { 'block-no-empty': true },
+};
+"#;
+    let raw = parse_js_config(config_src, None).unwrap();
+    assert_eq!(
+      raw.extends,
+      Some(vec!["@wordpress/stylelint-tools/config".to_string()])
+    );
+    assert_eq!(raw.plugins, Some(serde_json::json!(["stylelint-scss"])));
+  }
+
+  #[test]
+  fn extends_entries_that_are_not_strings_are_kept_as_unresolvable() {
+    let config_src = r#"
+module.exports = {
+  extends: [ 'stylelint-config-standard', path.resolve( __dirname, 'base.js' ) ],
+};
+"#;
+    let raw = parse_js_config(config_src, None).unwrap();
+    assert_eq!(
+      raw.extends,
+      Some(vec![
+        "stylelint-config-standard".to_string(),
+        UNEVALUATED_EXTENDS.to_string()
+      ])
+    );
+
+    let json: ConfigFile = serde_json::from_str(r#"{ "extends": null }"#).unwrap();
+    assert_eq!(json.extends, None);
+  }
+
+  #[test]
+  fn unresolved_extends_warnings_name_the_entry() {
+    let dir = Path::new("/project");
+    assert_eq!(
+      unresolved_extends_warning("stylelint-config-missing", dir),
+      "warning: could not resolve extends \"stylelint-config-missing\" from /project \
+       (is it installed?), so its rules were skipped"
+    );
+    assert!(
+      unresolved_extends_warning(UNEVALUATED_EXTENDS, dir)
+        .starts_with("warning: could not resolve an extends entry in /project: it is not a string")
+    );
+  }
+
+  #[test]
+  fn js_config_with_multibyte_text_before_bare_identifiers_parses() {
+    // Bare identifiers are turned into `null` and `true`/`false` kept; the
+    // identifier used to be read back as a byte range from character
+    // indices, so multibyte text earlier in the config made `true` read as
+    // garbage (and the rule silently `null`), or split a character.
+    let config_src = r#"
+module.exports = {
+  rules: {
+    'comment-pattern': [ '^[A-Z]', { message: 'Commentaires en français — “s’il vous plaît”' } ],
+    'block-no-empty': true,
+    'custom-property-pattern': somePattern,
+  },
+};
+"#;
+    let raw = parse_js_config(config_src, None).unwrap();
+    let rules = raw.rules.unwrap();
+    assert!(rules.contains_key("comment-pattern"));
+    assert_eq!(
+      rules.get("block-no-empty"),
+      Some(&RuleConfigValue::Bool(true))
+    );
+    assert_eq!(
+      rules.get("custom-property-pattern"),
+      Some(&RuleConfigValue::Null(None))
+    );
   }
 
   #[test]

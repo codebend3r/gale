@@ -8,6 +8,8 @@ use thiserror::Error;
 
 mod sass_to_scss;
 
+pub use sass_to_scss::SourceMap;
+
 // ---------------------------------------------------------------------------
 // Syntax detection
 // ---------------------------------------------------------------------------
@@ -152,7 +154,13 @@ impl CssNode {
 pub struct ParseResult {
   pub nodes: Vec<CssNode>,
   pub syntax: Syntax,
+  /// The text the node spans point into.  The same as the input except for
+  /// Sass, which is converted to SCSS before parsing.
   pub source: String,
+  /// Maps offsets in [`Self::source`] back to the input, when the two
+  /// differ (Sass).  `None` means offsets already point into the input.
+  #[serde(skip)]
+  pub source_map: Option<SourceMap>,
 }
 
 // ---------------------------------------------------------------------------
@@ -201,14 +209,15 @@ pub fn parse(source: &str, syntax: Syntax) -> Result<ParseResult, ParseError> {
       }
     }
     Syntax::Sass => {
-      // Convert Sass indented syntax to SCSS, then parse as SCSS.
-      // Byte offsets in diagnostics will refer to the converted source,
-      // not the original — acceptable for an initial implementation.
-      let scss_source = sass_to_scss::convert_sass_to_scss(source);
+      // Convert Sass indented syntax to SCSS, then parse as SCSS.  Spans
+      // point into the converted text, which is returned as `source`;
+      // `source_map` translates them back to the Sass.
+      let (scss_source, source_map) = sass_to_scss::convert_sass_to_scss_with_map(source);
       match parse_raffia(&scss_source, Syntax::Scss) {
         Ok(mut result) => {
           result.syntax = Syntax::Sass;
           result.source = scss_source;
+          result.source_map = Some(source_map);
           Ok(result)
         }
         Err(_raffia_err) => {
@@ -218,6 +227,7 @@ pub fn parse(source: &str, syntax: Syntax) -> Result<ParseResult, ParseError> {
             Ok(mut result) => {
               result.syntax = Syntax::Sass;
               result.source = scss_source;
+              result.source_map = Some(source_map);
               Ok(result)
             }
             Err(_) => Err(_raffia_err),
@@ -301,6 +311,7 @@ fn parse_css(source: &str) -> Result<ParseResult, ParseError> {
     nodes,
     syntax: Syntax::Css,
     source: source.to_owned(),
+    source_map: None,
   })
 }
 
@@ -1081,6 +1092,7 @@ fn parse_raffia(source: &str, syntax: Syntax) -> Result<ParseResult, ParseError>
     nodes,
     syntax,
     source: source.to_owned(),
+    source_map: None,
   })
 }
 

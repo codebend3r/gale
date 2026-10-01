@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Specify a pattern for comments.
@@ -34,13 +34,15 @@ impl Rule for CommentPattern {
       None => return vec![],
     };
 
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     let text = comment.text.trim();
-    if !re.is_match(text) {
+    if !pattern::is_match(&re, text) {
       return vec![
         Diagnostic::new(
           self.name(),

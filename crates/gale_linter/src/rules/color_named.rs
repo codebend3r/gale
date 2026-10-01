@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Disallow/require named colors in CSS declarations.
@@ -887,16 +888,12 @@ fn is_non_color_property(prop: &str) -> bool {
 
 /// Check if property should be ignored based on ignoreProperties config.
 fn should_ignore_property(prop: &str, ignore_properties: &[String]) -> bool {
-  for pattern in ignore_properties {
-    if pattern.starts_with('/') && pattern.ends_with('/') {
-      // Regex pattern
-      let regex_str = &pattern[1..pattern.len() - 1];
-      if let Ok(re) = regex::Regex::new(regex_str) {
-        if re.is_match(prop) {
-          return true;
-        }
+  for entry in ignore_properties {
+    if let Some(matched) = pattern::match_regex_entry(entry, prop) {
+      if matched {
+        return true;
       }
-    } else if pattern.eq_ignore_ascii_case(prop) {
+    } else if entry.eq_ignore_ascii_case(prop) {
       return true;
     }
   }

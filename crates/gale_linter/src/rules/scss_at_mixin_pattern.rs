@@ -1,7 +1,7 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
@@ -42,9 +42,11 @@ impl Rule for ScssAtMixinPattern {
     }
 
     let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     // The mixin name is the first word in params (before `(` or whitespace)
@@ -55,7 +57,7 @@ impl Rule for ScssAtMixinPattern {
       return vec![];
     }
 
-    if !re.is_match(mixin_name) {
+    if !pattern::is_match(&re, mixin_name) {
       vec![
         Diagnostic::new(
           self.name(),

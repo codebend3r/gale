@@ -1,6 +1,7 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Specify a list of disallowed SCSS mixin names.
@@ -87,16 +88,12 @@ impl Rule for ScssAtMixinDisallowedList {
 /// Plain strings are compared exactly (case-sensitive).  Entries wrapped in
 /// `/` are treated as regex patterns.
 fn is_disallowed(name: &str, disallowed: &[String]) -> bool {
-  for pattern in disallowed {
-    if pattern.starts_with('/') && pattern.len() > 1 {
-      if let Some(inner) = pattern.strip_prefix('/').and_then(|s| s.strip_suffix('/')) {
-        if let Ok(re) = regex::Regex::new(inner) {
-          if re.is_match(name) {
-            return true;
-          }
-        }
+  for entry in disallowed {
+    if let Some(matched) = pattern::match_regex_entry(entry, name) {
+      if matched {
+        return true;
       }
-    } else if pattern == name {
+    } else if entry == name {
       return true;
     }
   }

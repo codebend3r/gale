@@ -204,7 +204,27 @@ pub struct Diagnostic {
   pub url: Option<String>,
 }
 
+/// The `rule_name` that marks a [`Diagnostic`] as an invalid rule option
+/// rather than a problem in the source.
+///
+/// Rules report a bad option (a pattern that does not compile, say) through
+/// the same `Vec<Diagnostic>` as everything else; the runner moves these into
+/// [`LintResult::invalid_option_warnings`], as Stylelint keeps them apart from
+/// `warnings`.  Build them with [`Diagnostic::invalid_option`].
+pub const INVALID_OPTION: &str = "invalidOption";
+
 impl Diagnostic {
+  /// An invalid-option report carrying Stylelint's wording, e.g.
+  /// `Invalid option value "[" for rule "selector-class-pattern"`.
+  pub fn invalid_option(message: impl Into<String>) -> Self {
+    Self::new(INVALID_OPTION, message).severity(Severity::Error)
+  }
+
+  /// Whether this is an invalid-option report (see [`INVALID_OPTION`]).
+  pub fn is_invalid_option(&self) -> bool {
+    self.rule_name == INVALID_OPTION
+  }
+
   /// Whether this diagnostic is about a `stylelint-disable` comment rather
   /// than a rule violation.
   ///
@@ -215,10 +235,21 @@ impl Diagnostic {
     self.rule_name.starts_with("--report-") || self.rule_name == "reportDisables"
   }
 
+  /// Whether this is Stylelint's `Unknown rule <name>.` report for a
+  /// configured name that is no rule.  Stylelint adds those straight to the
+  /// result, so their text carries no ` (rule-name)` suffix either.
+  pub fn is_unknown_rule(&self) -> bool {
+    self
+      .message
+      .strip_prefix("Unknown rule ")
+      .and_then(|rest| rest.strip_prefix(self.rule_name.as_str()))
+      .is_some_and(|rest| rest.starts_with('.'))
+  }
+
   /// The warning text Stylelint's formatters print: the message with the
-  /// rule name appended, except for comment problems.
+  /// rule name appended, except for comment problems and unknown rules.
   pub fn stylelint_text(&self) -> String {
-    if self.is_comment_problem() {
+    if self.is_comment_problem() || self.is_unknown_rule() {
       self.message.clone()
     } else {
       format!("{} ({})", self.message, self.rule_name)
@@ -293,6 +324,11 @@ pub struct LintResult {
   pub diagnostics: Vec<Diagnostic>,
   /// The original source code of the file.
   pub source: String,
+  /// Stylelint's `invalidOptionWarnings`: one text per invalid rule option
+  /// that applied to this file, such as a pattern that does not compile.
+  /// They are not problems in the source, but they fail the run.
+  #[serde(default)]
+  pub invalid_option_warnings: Vec<String>,
 }
 
 impl LintResult {
@@ -306,12 +342,23 @@ impl LintResult {
       file_path: file_path.into(),
       source: source.into(),
       diagnostics,
+      invalid_option_warnings: Vec::new(),
     }
   }
 
   /// Returns `true` if there are no diagnostics.
   pub fn is_empty(&self) -> bool {
     self.diagnostics.is_empty()
+  }
+
+  /// Stylelint's `errored`: an error-severity problem, or any invalid rule
+  /// option.
+  pub fn errored(&self) -> bool {
+    !self.invalid_option_warnings.is_empty()
+      || self
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
   }
 
   /// Number of diagnostics with the given severity.
@@ -489,6 +536,40 @@ mod tests {
     assert!(
       json.contains("\"url\":\"https://example.com/rule\""),
       "{json}"
+    );
+  }
+
+  #[test]
+  fn invalid_options_make_a_result_errored() {
+    let mut result = LintResult::new("a.css", "a {}", vec![]);
+    assert!(!result.errored());
+    result
+      .invalid_option_warnings
+      .push("Invalid option value \"[\" for rule \"x\"".to_string());
+    assert!(result.errored());
+
+    let marker = Diagnostic::invalid_option("Invalid option value");
+    assert!(marker.is_invalid_option());
+    assert_eq!(marker.severity, Severity::Error);
+  }
+
+  #[test]
+  fn unknown_rule_reports_carry_no_rule_suffix() {
+    let unknown = Diagnostic::new(
+      "block-no-emty",
+      "Unknown rule block-no-emty. Did you mean block-no-empty?",
+    );
+    assert!(unknown.is_unknown_rule());
+    assert_eq!(
+      unknown.stylelint_text(),
+      "Unknown rule block-no-emty. Did you mean block-no-empty?"
+    );
+    // A rule message that merely mentions another name is left alone.
+    let other = Diagnostic::new("some-rule", "Unknown rule other-rule.");
+    assert!(!other.is_unknown_rule());
+    assert_eq!(
+      other.stylelint_text(),
+      "Unknown rule other-rule. (some-rule)"
     );
   }
 

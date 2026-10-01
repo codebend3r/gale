@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Disallow specific property-value pairs.
@@ -231,34 +231,23 @@ impl Rule for DeclarationPropertyValueDisallowedList {
 /// Matches a property name — either exact string or regex pattern.
 enum PropertyMatcher {
   Exact(String),
-  Regex(Regex),
+  Regex(std::sync::Arc<pattern::Regex>),
 }
 
 impl PropertyMatcher {
   /// Builds a matcher: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
-  fn new(pattern: &str) -> Self {
-    if pattern.starts_with('/') && pattern.len() > 1 {
-      if let Some(end) = pattern[1..].rfind('/') {
-        let re_str = &pattern[1..1 + end];
-        let flags = &pattern[2 + end..];
-        let full = if flags.contains('i') {
-          format!("(?i){re_str}")
-        } else {
-          re_str.to_string()
-        };
-        if let Ok(re) = Regex::new(&full) {
-          return Self::Regex(re);
-        }
-      }
+  fn new(entry: &str) -> Self {
+    match pattern::regex_entry(entry) {
+      Some(re) => Self::Regex(re),
+      None => Self::Exact(entry.to_string()),
     }
-    Self::Exact(pattern.to_string())
   }
 
   /// Whether the property matches this pattern.
   fn matches(&self, property: &str) -> bool {
     match self {
       Self::Exact(s) => property == s.as_str(),
-      Self::Regex(re) => re.is_match(property),
+      Self::Regex(re) => pattern::is_match(re, property),
     }
   }
 }
@@ -266,34 +255,23 @@ impl PropertyMatcher {
 /// Matches a value — either exact string or regex pattern.
 enum ValueMatcher {
   Exact(String),
-  Regex(Regex),
+  Regex(std::sync::Arc<pattern::Regex>),
 }
 
 impl ValueMatcher {
   /// Builds a matcher: `/…/` (optionally `i`-flagged) is a regex, else an exact value.
-  fn new(pattern: &str) -> Self {
-    if pattern.starts_with('/') && pattern.len() > 1 {
-      if let Some(end) = pattern[1..].rfind('/') {
-        let re_str = &pattern[1..1 + end];
-        let flags = &pattern[2 + end..];
-        let full = if flags.contains('i') {
-          format!("(?i){re_str}")
-        } else {
-          re_str.to_string()
-        };
-        if let Ok(re) = Regex::new(&full) {
-          return Self::Regex(re);
-        }
-      }
+  fn new(entry: &str) -> Self {
+    match pattern::regex_entry(entry) {
+      Some(re) => Self::Regex(re),
+      None => Self::Exact(entry.to_string()),
     }
-    Self::Exact(pattern.to_string())
   }
 
   /// Whether the value matches this pattern.
   fn matches(&self, value: &str) -> bool {
     match self {
       Self::Exact(s) => value == s.as_str(),
-      Self::Regex(re) => re.is_match(value),
+      Self::Regex(re) => pattern::is_match(re, value),
     }
   }
 }

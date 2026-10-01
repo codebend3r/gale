@@ -1,6 +1,5 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
 use crate::data::is_known_pseudo_class;
 use crate::rule::{Rule, RuleContext};
@@ -622,7 +621,7 @@ fn parse_ignore_list(options: Option<&serde_json::Value>) -> Vec<String> {
 fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
   for pattern in ignore_list {
     if let Some(re) = parse_regex_pattern(pattern) {
-      if re.is_match(name) {
+      if crate::pattern::is_match(&re, name) {
         return true;
       }
     } else if pattern == name {
@@ -633,23 +632,8 @@ fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
 }
 
 /// Compiles a `/…/` or `/…/i` pattern, or `None` if it is not one.
-fn parse_regex_pattern(s: &str) -> Option<Regex> {
-  if let Some(rest) = s.strip_prefix('/') {
-    if let Some(end) = rest.rfind('/') {
-      let pattern = &rest[..end];
-      let flags = &rest[end + 1..];
-      let full_pattern = if flags.contains('i') {
-        format!("(?i){pattern}")
-      } else {
-        pattern.to_string()
-      };
-      Regex::new(&full_pattern).ok()
-    } else {
-      None
-    }
-  } else {
-    None
-  }
+fn parse_regex_pattern(s: &str) -> Option<std::sync::Arc<crate::pattern::Regex>> {
+  crate::pattern::regex_entry(s)
 }
 
 #[cfg(test)]

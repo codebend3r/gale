@@ -81,8 +81,10 @@ fn check_url_schemes(
     let mut content = lower[content_start..content_end].trim();
 
     // Strip quotes
-    if (content.starts_with('"') && content.ends_with('"'))
-      || (content.starts_with('\'') && content.ends_with('\''))
+    // A lone quote (`url(")`) both starts and ends with it: needs two.
+    if content.len() >= 2
+      && ((content.starts_with('"') && content.ends_with('"'))
+        || (content.starts_with('\'') && content.ends_with('\'')))
     {
       content = &content[1..content.len() - 1];
     }

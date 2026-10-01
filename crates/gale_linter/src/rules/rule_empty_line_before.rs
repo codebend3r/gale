@@ -141,10 +141,9 @@ fn parse_secondary(opts: &mut Options, value: &serde_json::Value) {
 /// `"  ;\n  \n  &"` has an empty line before `&` even though the blank
 /// line contains spaces.
 fn has_empty_line_before(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
+  let Some(before) = source.get(..offset).filter(|b| !b.is_empty()) else {
     return false;
-  }
-  let before = &source[..offset];
+  };
 
   // Find the start of the current line (skip back past the indentation
   // leading up to the node).  We want to look at complete lines only.
@@ -194,10 +193,9 @@ fn is_first_style_in_list(nodes: &[CssNode], index: usize) -> bool {
 /// between the opening `{` and this node, the node is NOT first-nested (the
 /// comment is the first child).
 fn is_first_nested_by_source(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
+  let Some(before) = source.get(..offset).filter(|b| !b.is_empty()) else {
     return false;
-  }
-  let before = &source[..offset];
+  };
   let trimmed = before.trim_end();
   trimmed.ends_with('{')
 }
@@ -235,11 +233,11 @@ fn prev_is_single_line_comment(
       }
       // Also verify the text between the comment end and the rule
       // offset contains only whitespace.
-      if comment_end <= rule_offset && comment_end <= source.len() {
-        let between = &source[comment_end..rule_offset.min(source.len())];
-        if between.chars().any(|ch| !ch.is_whitespace()) {
-          return false;
-        }
+      if comment_end <= rule_offset
+        && let Some(between) = source.get(comment_end..rule_offset.min(source.len()))
+        && between.chars().any(|ch| !ch.is_whitespace())
+      {
+        return false;
       }
 
       // SCSS // comments are always single-line.
@@ -249,11 +247,10 @@ fn prev_is_single_line_comment(
       // For block comments, check if they occupy a single line in source.
       let start = c.span.offset;
       let end = (start + c.span.length).min(source.len());
-      if start < source.len() {
-        !source[start..end].contains('\n')
-      } else {
-        false
-      }
+      start < source.len()
+        && source
+          .get(start..end)
+          .is_some_and(|text| !text.contains('\n'))
     }
     _ => false,
   }
@@ -271,10 +268,9 @@ fn prev_is_comment(nodes: &[CssNode], index: usize) -> bool {
 /// This catches both single-line and multi-line block comments (`/** ... */`),
 /// as well as SCSS `//` comments that may not be in the AST.
 fn prev_line_is_comment(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
+  let Some(before) = source.get(..offset).filter(|b| !b.is_empty()) else {
     return false;
-  }
-  let before = &source[..offset];
+  };
   let bytes = before.as_bytes();
   let mut pos = before.len();
 
@@ -311,10 +307,9 @@ fn prev_line_is_comment(source: &str, offset: usize) -> bool {
 /// which considers both `//` comments and single-line `/* … */` block
 /// comments.
 fn prev_line_is_single_line_comment(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
+  let Some(before) = source.get(..offset).filter(|b| !b.is_empty()) else {
     return false;
-  }
-  let before = &source[..offset];
+  };
   let trimmed = before.trim_end_matches([' ', '\t']);
   let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
   let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
@@ -327,10 +322,12 @@ fn prev_line_is_single_line_comment(source: &str, offset: usize) -> bool {
 /// immediately before the offset?  This is used to distinguish multi-line
 /// from single-line comments for `except: ["after-single-line-comment"]`.
 fn prev_is_multi_line_comment_by_source(source: &str, offset: usize) -> bool {
-  if offset < 4 || offset > source.len() {
+  if offset < 4 {
     return false;
   }
-  let before = &source[..offset];
+  let Some(before) = source.get(..offset) else {
+    return false;
+  };
   // Walk backwards past whitespace
   let bytes = before.as_bytes();
   let mut pos = before.len();
@@ -340,8 +337,9 @@ fn prev_is_multi_line_comment_by_source(source: &str, offset: usize) -> bool {
   if pos < 2 {
     return false;
   }
-  // Check for `*/`
-  if &before[pos - 2..pos] == "*/" {
+  // Check for `*/`.  Compared as bytes: `pos` walks backwards over bytes,
+  // so `pos - 2` can land inside a multibyte character.
+  if bytes[..pos].ends_with(b"*/") {
     // Find the matching `/*`
     if let Some(open) = before[..pos - 2].rfind("/*") {
       // Multi-line if contains a newline between /* and */
@@ -368,10 +366,9 @@ fn prev_is_rule(nodes: &[CssNode], index: usize) -> bool {
 /// Source-based check: is the previous meaningful content before `offset`
 /// a closing brace `}` (indicating the rule follows another rule/block)?
 fn prev_is_rule_by_source(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
+  let Some(before) = source.get(..offset).filter(|b| !b.is_empty()) else {
     return false;
-  }
-  let before = &source[..offset];
+  };
   // Walk backwards past whitespace and comments
   let bytes = before.as_bytes();
   let mut pos = before.len();
@@ -401,10 +398,9 @@ fn prev_is_rule_by_source(source: &str, offset: usize) -> bool {
 fn is_rule_multi_line(source: &str, span: &gale_css_parser::Span) -> bool {
   let start = span.offset;
   let end = (start + span.length).min(source.len());
-  if start >= source.len() {
-    return false;
-  }
-  source[start..end].contains('\n')
+  source
+    .get(start..end)
+    .is_some_and(|text| text.contains('\n'))
 }
 
 /// Flags rules whose preceding blank line does not match the option, recursing

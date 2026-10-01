@@ -39,11 +39,11 @@ impl Rule for StylisticSelectorListCommaNewlineAfter {
     let mut diags = Vec::new();
     let sel_offset = rule.span.offset;
 
-    // Find commas in the source text of the selector for accurate spans
-    let sel_source = if sel_offset + selector.len() <= ctx.source.len() {
-      &ctx.source[sel_offset..sel_offset + selector.len()]
-    } else {
-      selector.as_str()
+    // Find commas in the selector as the author wrote it, so spans are
+    // accurate.  The parsed selector may be re-serialised (the CSS parser
+    // normalises whitespace), so its length says nothing about the source.
+    let Some(sel_source) = ctx.selector_source(sel_offset) else {
+      return vec![];
     };
 
     let bytes = sel_source.as_bytes();
@@ -59,6 +59,14 @@ impl Rule for StylisticSelectorListCommaNewlineAfter {
         while i < len && bytes[i] != b'\n' {
           i += 1;
         }
+        continue;
+      }
+
+      // Skip block comments: a comma inside one is not a list separator.
+      if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+        i = sel_source[i + 2..]
+          .find("*/")
+          .map_or(len, |end| i + 2 + end + 2);
         continue;
       }
 

@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
 use crate::rule::{Rule, RuleContext};
 
@@ -25,31 +24,18 @@ pub struct PluginNoUnusedCustomProperties;
 /// A compiled pattern — either a literal string match or a regex.
 enum IgnorePattern {
   Exact(String),
-  Regex(Regex),
+  Regex(std::sync::Arc<crate::pattern::Regex>),
 }
 
 impl IgnorePattern {
   /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
   fn from_str(s: &str) -> Self {
-    if let Some(inner) = s.strip_prefix('/').and_then(|s| {
-      if let Some(pos) = s.rfind('/') {
-        Some((&s[..pos], &s[pos + 1..]))
-      } else {
-        None
-      }
-    }) {
-      let (pattern, flags) = inner;
-      let regex_str = if flags.contains('i') {
-        format!("(?i){}", pattern)
-      } else {
-        pattern.to_string()
-      };
-      match Regex::new(&regex_str) {
-        Ok(re) => IgnorePattern::Regex(re),
-        Err(_) => IgnorePattern::Exact(s.to_string()),
-      }
-    } else {
-      IgnorePattern::Exact(s.to_string())
+    // Patterns wrapped in `/` (optionally flagged, like `/…/i`) are regexes.
+    // One that does not compile is reported as an invalid option by the
+    // runner and compared as a literal here.
+    match crate::pattern::regex_entry(s) {
+      Some(re) => IgnorePattern::Regex(re),
+      None => IgnorePattern::Exact(s.to_string()),
     }
   }
 
@@ -57,7 +43,7 @@ impl IgnorePattern {
   fn matches(&self, name: &str) -> bool {
     match self {
       IgnorePattern::Exact(s) => name == s,
-      IgnorePattern::Regex(re) => re.is_match(name),
+      IgnorePattern::Regex(re) => crate::pattern::is_match(re, name),
     }
   }
 }

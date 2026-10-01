@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 use crate::stylelint_version::stylelint_major_version;
 
@@ -266,25 +267,12 @@ fn strip_vendor_prefix(s: &str) -> &str {
 
 /// Matches `value` against a `/…/` regex pattern, else an exact string.
 fn matches_pattern(value: &str, pattern: &str) -> bool {
-  if pattern.starts_with('/') && pattern.ends_with('/') {
-    let re_str = &pattern[1..pattern.len() - 1];
-    if let Ok(re) = regex::Regex::new(re_str) {
-      re.is_match(value)
-    } else {
-      false
-    }
-  } else {
-    value == pattern
-  }
+  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value == pattern)
 }
 
 /// As the above, but exact strings compare case-insensitively.
 fn matches_pattern_case_insensitive(value: &str, pattern: &str) -> bool {
-  if pattern.starts_with('/') && pattern.ends_with('/') {
-    matches_pattern(value, pattern)
-  } else {
-    value.eq_ignore_ascii_case(pattern)
-  }
+  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
 }
 
 // ---------------------------------------------------------------------------

@@ -143,10 +143,11 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
       while i + 1 < len && !(b[i] == b'*' && b[i + 1] == b'/') {
         i += 1;
       }
-      check_interpolations_only(&source[cs..i], cs, rule, diags);
-      if i + 1 < len {
-        i += 2;
-      }
+      // An unterminated comment runs to the end of the file.
+      let terminated = i + 1 < len;
+      let ce = if terminated { i } else { len };
+      check_interpolations_only(&source[cs.min(ce)..ce], cs, rule, diags);
+      i = if terminated { i + 2 } else { len };
       continue;
     }
     // String literal: check interpolation inside
