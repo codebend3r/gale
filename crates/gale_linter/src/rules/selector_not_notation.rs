@@ -4,7 +4,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Kind, Node, Selector};
 use crate::standard_syntax::is_standard_syntax_selector;
-use crate::style_rules::scan_style_rules;
 
 /// Specify simple or complex notation for `:not()` pseudo-class.
 ///
@@ -41,7 +40,7 @@ impl Rule for SelectorNotNotation {
     };
 
     let mut diags = Vec::new();
-    for rule in scan_style_rules(ctx.source, ctx.syntax) {
+    for rule in &ctx.scanned_rules().style_rules {
       if !rule.prelude.to_ascii_lowercase().contains(":not(")
         || !is_standard_syntax_selector(&rule.prelude)
       {

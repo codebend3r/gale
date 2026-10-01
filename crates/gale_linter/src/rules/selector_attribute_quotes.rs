@@ -4,7 +4,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Escape, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
-use crate::style_rules::scan_style_rules;
 
 /// Require or disallow quotes for attribute values in attribute selectors.
 ///
@@ -34,7 +33,7 @@ impl Rule for SelectorAttributeQuotes {
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let never = ctx.primary_option_str() == Some("never");
     let mut diags = Vec::new();
-    for rule in scan_style_rules(ctx.source, ctx.syntax) {
+    for rule in &ctx.scanned_rules().style_rules {
       if !has_attribute_with_operator(&rule.prelude) || !is_standard_syntax_selector(&rule.prelude)
       {
         continue;

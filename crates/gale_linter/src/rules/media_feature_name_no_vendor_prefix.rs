@@ -4,7 +4,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::autoprefixable;
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::style_rules::scan_at_rules;
 
 /// Disallow vendor prefixes in media feature names.
 ///
@@ -48,7 +47,7 @@ impl Rule for MediaFeatureNameNoVendorPrefix {
       .secondary_options()
       .and_then(|v| v.get("ignoreMediaFeatureNames"));
     let mut diags = Vec::new();
-    for at in scan_at_rules(ctx.source, ctx.syntax) {
+    for at in &ctx.scanned_rules().at_rules {
       if !at.name.eq_ignore_ascii_case("media") || !autoprefixable::media_feature_name(&at.params) {
         continue;
       }

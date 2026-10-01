@@ -6,7 +6,6 @@ use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
-use crate::style_rules::scan_style_rules;
 
 /// Disallow vendor prefixes in selectors.
 ///
@@ -43,7 +42,7 @@ impl Rule for SelectorNoVendorPrefix {
       .secondary_options()
       .and_then(|v| v.get("ignoreSelectors"));
     let mut diags = Vec::new();
-    for rule in scan_style_rules(ctx.source, ctx.syntax) {
+    for rule in &ctx.scanned_rules().style_rules {
       let lower = rule.prelude.to_ascii_lowercase();
       if !PREFIXES.iter().any(|prefix| lower.contains(prefix))
         || !is_standard_syntax_selector(&rule.prelude)

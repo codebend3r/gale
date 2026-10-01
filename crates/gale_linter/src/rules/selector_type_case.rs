@@ -5,7 +5,6 @@ use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Kind, Visit};
 use crate::standard_syntax::is_standard_syntax_selector;
-use crate::style_rules::scan_style_rules;
 
 /// Require lowercase or uppercase for type selectors.
 ///
@@ -103,7 +102,7 @@ impl Rule for SelectorTypeCase {
     let ignore_types = ctx.secondary_options().and_then(|v| v.get("ignoreTypes"));
 
     let mut diags = Vec::new();
-    for rule in scan_style_rules(ctx.source, ctx.syntax) {
+    for rule in &ctx.scanned_rules().style_rules {
       let clean = postcss::strip_comments(&rule.prelude);
       if !starts_a_tag_name(&clean) {
         continue;

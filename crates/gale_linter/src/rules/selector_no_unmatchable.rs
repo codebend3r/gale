@@ -8,7 +8,7 @@ use crate::selector::{
   Pseudo, Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
   walk_pseudos,
 };
-use crate::style_rules::{RawStyleRule, scan_style_rules};
+use crate::style_rules::RawStyleRule;
 
 /// Disallow unmatchable selectors.
 ///
@@ -97,12 +97,13 @@ impl Rule for SelectorNoUnmatchable {
   /// Preludes are read from the source text rather than the parsed AST so
   /// that selectors are seen exactly as written.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let rules = scan_style_rules(ctx.source, ctx.syntax);
+    let scanned = ctx.scanned_rules();
+    let rules = &scanned.style_rules;
     let mut diagnostics = Vec::new();
     // Each rule's resolved selector list, for its nested rules to build on.
     // Parents precede their children, so one pass in document order does.
     let mut resolved: Vec<Option<SelectorList>> = Vec::with_capacity(rules.len());
-    for raw in &rules {
+    for raw in rules {
       let entry = self.check_rule(raw, &resolved, &mut diagnostics);
       resolved.push(entry);
     }
