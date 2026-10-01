@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
-use crate::source_text::{self, WrittenDeclaration};
+use crate::source_text::WrittenDeclaration;
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
@@ -357,7 +357,7 @@ impl Rule for FontFamilyNameQuotes {
       .primary_option_str()
       .unwrap_or("always-where-recommended");
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
+    for &decl in ctx.written_declarations(node).iter() {
       let prop = decl.prop.to_ascii_lowercase();
       if (prop != "font" && prop != "font-family") || !is_standard_syntax_value(decl.value) {
         continue;

@@ -3,7 +3,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
 use crate::rule::{Rule, RuleContext};
-use crate::source_text;
 
 /// Disallow invalid unspaced operators within math functions.
 ///
@@ -60,7 +59,7 @@ impl Rule for FunctionCalcNoUnspacedOperator {
   /// on either side.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
+    for &decl in ctx.written_declarations(node).iter() {
       if !decl.value.contains(['+', '-']) || !mentions_math_function(decl.value) {
         continue;
       }

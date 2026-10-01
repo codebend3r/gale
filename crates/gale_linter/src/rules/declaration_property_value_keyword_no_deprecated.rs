@@ -3,7 +3,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::source_text;
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
@@ -174,7 +173,7 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
       .secondary_options()
       .and_then(|v| v.get("ignoreKeywords"));
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
+    for &decl in ctx.written_declarations(node).iter() {
       if !may_include_keyword(decl.value) {
         continue;
       }

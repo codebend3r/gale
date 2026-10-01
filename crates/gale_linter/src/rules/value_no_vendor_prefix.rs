@@ -4,7 +4,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::autoprefixable;
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::source_text;
 use crate::standard_syntax::is_standard_syntax_property;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
@@ -38,7 +37,7 @@ impl Rule for ValueNoVendorPrefix {
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_values = ctx.secondary_options().and_then(|v| v.get("ignoreValues"));
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
+    for &decl in ctx.written_declarations(node).iter() {
       let lower = decl.value.to_ascii_lowercase();
       if !PREFIXES.iter().any(|prefix| lower.contains(prefix)) {
         continue;
