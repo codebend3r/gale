@@ -248,12 +248,25 @@ impl Diagnostic {
 
   /// The warning text Stylelint's formatters print: the message with the
   /// rule name appended, except for comment problems and unknown rules.
+  ///
+  /// Like Stylelint's `appendRuleName`, a message that already ends with
+  /// `(rule-name)` (a custom `message` written that way) is left as is
+  /// rather than getting the suffix twice.
   pub fn stylelint_text(&self) -> String {
-    if self.is_comment_problem() || self.is_unknown_rule() {
+    if self.is_comment_problem() || self.is_unknown_rule() || self.ends_with_rule_name() {
       self.message.clone()
     } else {
       format!("{} ({})", self.message, self.rule_name)
     }
+  }
+
+  /// Whether the message already ends with `(rule-name)`.
+  fn ends_with_rule_name(&self) -> bool {
+    self
+      .message
+      .strip_suffix(')')
+      .and_then(|rest| rest.strip_suffix(self.rule_name.as_str()))
+      .is_some_and(|rest| rest.ends_with('('))
   }
 
   /// Start building a diagnostic for the given rule.
@@ -570,6 +583,29 @@ mod tests {
     assert_eq!(
       other.stylelint_text(),
       "Unknown rule other-rule. (some-rule)"
+    );
+  }
+
+  #[test]
+  fn stylelint_text_does_not_repeat_a_rule_name_the_message_ends_with() {
+    let custom = Diagnostic::new(
+      "selector-class-pattern",
+      "Selector should be kebab-case (selector-class-pattern)",
+    );
+    assert_eq!(
+      custom.stylelint_text(),
+      "Selector should be kebab-case (selector-class-pattern)"
+    );
+    // Stylelint checks for `(rule-name)` alone, without the space.
+    let tight = Diagnostic::new("block-no-empty", "Empty(block-no-empty)");
+    assert_eq!(tight.stylelint_text(), "Empty(block-no-empty)");
+    // Another rule's name, or the name mid-message, still gets the suffix.
+    let other = Diagnostic::new("block-no-empty", "See (color-named)");
+    assert_eq!(other.stylelint_text(), "See (color-named) (block-no-empty)");
+    let middle = Diagnostic::new("block-no-empty", "(block-no-empty) here");
+    assert_eq!(
+      middle.stylelint_text(),
+      "(block-no-empty) here (block-no-empty)"
     );
   }
 
