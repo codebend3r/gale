@@ -122,12 +122,13 @@ mod tests {
   use gale_css_parser::Syntax;
   use gale_linter_test_helper::*;
 
-  fn ctx() -> RuleContext<'static> {
+  fn ctx<'a>() -> RuleContext<'a> {
     RuleContext {
       file_path: "t.css",
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 

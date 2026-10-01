@@ -6,6 +6,9 @@ use std::rc::Rc;
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity};
 
+use crate::file_cache::FileCache;
+use crate::postcss_tree::PostcssTree;
+
 /// Context passed to each rule when checking a node.
 pub struct RuleContext<'a> {
   /// The path to the file being linted.
@@ -16,6 +19,10 @@ pub struct RuleContext<'a> {
   pub syntax: Syntax,
   /// Per-rule options from the config (e.g. max value, ignore lists).
   pub options: Option<&'a serde_json::Value>,
+  /// What the rules linting this file share, built once per file.  The
+  /// runner always sets it; without one (a rule's own tests, say) every
+  /// accessor such as [`Self::postcss_tree`] builds afresh.
+  pub cache: Option<&'a FileCache<'a>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -80,6 +87,23 @@ impl<'a> RuleContext<'a> {
     let rest = self.source_from(offset)?;
     let end = selector_end(rest, !matches!(self.syntax, Syntax::Css));
     rest.get(..end).map(str::trim_end)
+  }
+
+  /// The file's [`FileCache`], when it was built for this context's source
+  /// and syntax.
+  fn cache(&self) -> Option<&'a FileCache<'a>> {
+    self
+      .cache
+      .filter(|cache| cache.is_for(self.source, self.syntax))
+  }
+
+  /// The source's statements as PostCSS sees them, parsed once per file and
+  /// shared with every other rule that asks.
+  pub fn postcss_tree(&self) -> Rc<PostcssTree<'a>> {
+    match self.cache() {
+      Some(cache) => cache.postcss_tree(),
+      None => Rc::new(PostcssTree::parse(self.source, self.syntax)),
+    }
   }
 }
 
@@ -252,6 +276,7 @@ mod tests {
       source,
       syntax,
       options: None,
+      cache: None,
     }
   }
 
@@ -287,6 +312,34 @@ mod tests {
     // Plain CSS has no line comments, so `//` is just text.
     let css = context("a // b { }", Syntax::Css);
     assert_eq!(css.selector_source(0), Some("a // b"));
+  }
+
+  /// A context with the runner's per-file cache shares one tree between
+  /// rules; one over other text, or without a cache, parses its own.
+  #[test]
+  fn the_tree_comes_from_the_cache_built_for_the_source() {
+    let source = String::from("a { color: red; }");
+    let cache = FileCache::new(&source, Syntax::Css);
+    let ctx = RuleContext {
+      cache: Some(&cache),
+      ..context(&source, Syntax::Css)
+    };
+    assert!(Rc::ptr_eq(&ctx.postcss_tree(), &cache.postcss_tree()));
+
+    let other = source.clone();
+    let elsewhere = RuleContext {
+      cache: Some(&cache),
+      ..context(&other, Syntax::Css)
+    };
+    let tree = elsewhere.postcss_tree();
+    assert!(!Rc::ptr_eq(&tree, &cache.postcss_tree()));
+    assert!(std::ptr::eq(tree.source(), other.as_str()));
+
+    let uncached = context(&source, Syntax::Css);
+    assert!(!Rc::ptr_eq(
+      &uncached.postcss_tree(),
+      &uncached.postcss_tree()
+    ));
   }
 
   /// Calls `per_file` for `options`, counting how often it had to parse.

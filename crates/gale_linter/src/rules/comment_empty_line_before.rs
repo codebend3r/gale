@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::pattern::{self, option_matches};
-use crate::postcss_tree::{NodeKind, PostcssTree};
+use crate::postcss_tree::NodeKind;
 use crate::rule::{Rule, RuleContext};
 
 /// Require or disallow an empty line before comments.
@@ -41,7 +41,7 @@ impl Rule for CommentEmptyLineBefore {
     let option = |name: &str| secondary.and_then(|s| s.get(name));
     let except = |name: &str| option_matches(option("except"), name);
     let ignore = |name: &str| option_matches(option("ignore"), name);
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -126,6 +126,7 @@ mod tests {
       source,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     CommentEmptyLineBefore
       .check_root(&[], &ctx)

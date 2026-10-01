@@ -13,6 +13,7 @@ pub mod data;
 pub mod disables;
 pub mod embedded;
 pub mod empty_lines;
+pub mod file_cache;
 #[cfg(test)]
 pub mod fix_testing;
 pub mod js_number;

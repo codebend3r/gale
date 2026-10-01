@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::postcss_tree::{NodeKind, PostcssTree};
+use crate::postcss_tree::NodeKind;
 use crate::rule::{Rule, RuleContext};
 use crate::stylelint_version::installed_at_least;
 
@@ -62,7 +62,7 @@ impl Rule for CommentWhitespaceInside {
   /// Checks every comment node in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let never = ctx.primary_option_str() == Some("never");
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
       let node = &tree.nodes[i];
@@ -261,6 +261,7 @@ mod tests {
       source,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     CommentWhitespaceInside
       .check_root(&[], &ctx)

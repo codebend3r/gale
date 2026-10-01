@@ -87,6 +87,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -135,6 +136,7 @@ mod tests {
       source: "//\n// \n",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     // Empty double-slash comment
     let node = CssNode::Comment(gale_css_parser::Comment {
@@ -164,6 +166,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = CssNode::Comment(Comment {
       is_line: false,

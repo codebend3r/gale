@@ -266,6 +266,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -322,6 +323,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&options),
+      cache: None,
     };
 
     // @mixin { .a { .b { .c { .d { .e {} } } } } }
@@ -386,6 +388,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&options),
+      cache: None,
     };
 
     // .top { .nested { color: red; } }  -- depth 1 exceeds max 0
@@ -420,6 +423,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&options),
+      cache: None,
     };
 
     // .a { .b { @media { .c {} } } }
@@ -475,6 +479,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&options),
+      cache: None,
     };
 
     // .a { &:hover { .b {} } }

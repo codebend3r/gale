@@ -72,7 +72,7 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
     };
     let ignore_properties = secondary.and_then(|s| s.get("ignoreProperties"));
 
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut checker = Checker {
       rule: self,
       tree: &tree,
@@ -811,6 +811,7 @@ mod tests {
       source,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     DeclarationBlockNoDuplicateProperties
       .check_root(&[], &ctx)

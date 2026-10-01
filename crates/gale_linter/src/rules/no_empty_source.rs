@@ -48,6 +48,7 @@ mod tests {
       source: "   \n  ",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
@@ -62,6 +63,7 @@ mod tests {
       source: "a { color: red; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let nodes = vec![CssNode::Style(gale_css_parser::StyleRule {
       selector: "a".to_string(),

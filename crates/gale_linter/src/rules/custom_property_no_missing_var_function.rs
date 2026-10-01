@@ -219,6 +219,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     CustomPropertyNoMissingVarFunction
       .check_root(&parsed.nodes, &ctx)
@@ -245,6 +246,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let d = CustomPropertyNoMissingVarFunction.check_root(&parsed.nodes, &ctx);
     assert_eq!(d.len(), 1);

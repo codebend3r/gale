@@ -45,7 +45,7 @@ impl Rule for KeyframeSelectorNotation {
       Some("percentage-unless-within-keyword-only-block") => Notation::PercentageUnlessKeywordOnly,
       _ => return Vec::new(),
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for (index, at_rule) in tree.nodes.iter().enumerate() {

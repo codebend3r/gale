@@ -798,6 +798,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -870,6 +871,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       NoDescendingSpecificity
@@ -959,6 +961,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -1136,6 +1139,7 @@ mod tests {
       source,
       syntax: Syntax::Less,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &less_context);
     assert_eq!(

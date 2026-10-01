@@ -159,6 +159,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(options),
+      cache: None,
     }
   }
 

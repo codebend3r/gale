@@ -170,6 +170,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -283,6 +284,7 @@ mod tests {
       source,
       syntax,
       options: options.as_ref(),
+      cache: None,
     };
     NoInvalidPositionDeclaration
       .check_root(&parsed.nodes, &ctx)

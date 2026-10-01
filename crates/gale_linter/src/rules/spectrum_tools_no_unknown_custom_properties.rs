@@ -499,6 +499,7 @@ mod tests {
       source: ".a { color: var(--unknown); }",
       syntax: gale_css_parser::Syntax::Css,
       options: None,
+      cache: None,
     };
     let parsed = gale_css_parser::parse(ctx.source, gale_css_parser::Syntax::Css).unwrap();
     let diags = rule.check_root(&parsed.nodes, &ctx);

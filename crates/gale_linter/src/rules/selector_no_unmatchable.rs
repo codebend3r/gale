@@ -501,6 +501,7 @@ mod tests {
       source: css,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     let index = SourceLineIndex::build(css);
     SelectorNoUnmatchable
