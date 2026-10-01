@@ -362,6 +362,13 @@ fn find_font_family_start_in_source(
       i += 1;
     }
 
+    if i == token_start {
+      // A separator with no token before it (the `,` in `bold, serif`, or
+      // a stray `;`): step over it, or this loop would never advance.
+      i += 1;
+      continue;
+    }
+
     let token = &region[token_start..i];
     let lower = token.to_ascii_lowercase();
 
@@ -733,6 +740,24 @@ mod tests {
       span: ParserSpan::new(0, value.len() + property.len() + 20),
       ..Default::default()
     })
+  }
+
+  #[test]
+  fn font_shorthand_scan_steps_over_separators_without_a_size() {
+    // A `,` or `;` before any size token used to stop the scan from
+    // advancing at all, hanging the whole run.
+    for value in ["bold, serif", "italic;", ", Arial", "bold 中, serif"] {
+      assert_eq!(
+        find_font_family_start_in_source(value, 0, value.len()),
+        None,
+        "{value}"
+      );
+    }
+    let value = "bold, 12px Arial";
+    assert_eq!(
+      find_font_family_start_in_source(value, 0, value.len()),
+      Some(value.find("Arial").unwrap())
+    );
   }
 
   #[test]

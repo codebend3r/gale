@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
@@ -38,9 +38,11 @@ impl Rule for SelectorClassPattern {
     // Options may be a plain string "^pattern$" or an array ["^pattern$", { secondary }].
     let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
 
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     let mut diags = Vec::new();
@@ -81,7 +83,7 @@ impl Rule for SelectorClassPattern {
       cursor = part_start + trimmed_part.len();
 
       for (class, class_byte_offset) in extract_class_names_with_offsets(trimmed_part) {
-        if !re.is_match(&class) {
+        if !pattern::is_match(&re, &class) {
           let offset = selector_start + part_start + class_byte_offset;
           let msg = if is_kebab_case_pattern(pattern_str) {
             format!("Expected class selector \".{class}\" to be kebab-case")

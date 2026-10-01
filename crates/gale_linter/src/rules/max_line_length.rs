@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Warn when a line exceeds a configurable maximum number of characters.
@@ -39,10 +41,11 @@ impl Rule for MaxLineLength {
       .map(|v| v as usize)
       .unwrap_or(DEFAULT_MAX_LENGTH);
 
-    // Read ignorePattern from secondary options.
-    let ignore_patterns = build_ignore_patterns(context);
-
+    // Read ignorePattern from secondary options.  A pattern that does not
+    // compile is reported as an invalid option.
     let mut diags = Vec::new();
+    let ignore_patterns = build_ignore_patterns(self.name(), context, &mut diags);
+
     let mut offset = 0;
 
     for (line_num, line) in context.source.split('\n').enumerate() {
@@ -51,7 +54,10 @@ impl Rule for MaxLineLength {
       let char_count = visible.chars().count();
       if char_count > max_length {
         // Check if the line matches any ignore pattern
-        if !ignore_patterns.is_empty() && ignore_patterns.iter().any(|re| re.is_match(visible)) {
+        if ignore_patterns
+          .iter()
+          .any(|re| pattern::is_match(re, visible))
+        {
           offset += line.len() + 1;
           continue;
         }
@@ -76,8 +82,14 @@ impl Rule for MaxLineLength {
   }
 }
 
-/// Build compiled regex patterns from the `ignorePattern` secondary option.
-fn build_ignore_patterns(context: &RuleContext) -> Vec<Regex> {
+/// Build compiled regex patterns from the `ignorePattern` secondary option,
+/// pushing an invalid-option report onto `invalid` for each that does not
+/// compile.
+fn build_ignore_patterns(
+  rule_name: &str,
+  context: &RuleContext,
+  invalid: &mut Vec<Diagnostic>,
+) -> Vec<Arc<pattern::Regex>> {
   let secondary = match context.secondary_options() {
     Some(v) => v,
     None => return Vec::new(),
@@ -101,16 +113,14 @@ fn build_ignore_patterns(context: &RuleContext) -> Vec<Regex> {
 
   pattern_strings
     .into_iter()
-    .filter_map(|s| {
-      // Stylelint accepts patterns wrapped in slashes like "/https?://.*/".
-      // Strip the surrounding slashes to get the raw regex.
-      let trimmed = s.trim();
-      let regex_str = if trimmed.starts_with('/') && trimmed.ends_with('/') && trimmed.len() > 1 {
-        &trimmed[1..trimmed.len() - 1]
-      } else {
-        trimmed
-      };
-      Regex::new(regex_str).ok()
+    // Stylelint accepts both a raw regex and one wrapped in slashes like
+    // "/https?://.*/"; `pattern::for_rule` understands either.
+    .filter_map(|s| match pattern::for_rule(rule_name, s.trim()) {
+      Ok(re) => Some(re),
+      Err(report) => {
+        invalid.push(report);
+        None
+      }
     })
     .collect()
 }

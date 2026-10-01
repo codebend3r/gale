@@ -144,9 +144,12 @@ function parseJsonOutput(jsonString) {
       ...(w.url !== undefined ? { url: w.url } : {}),
     })),
     deprecations: [],
-    invalidOptionWarnings: [],
+    invalidOptionWarnings: (entry.invalidOptionWarnings || []).map((w) => ({ text: w.text })),
     parseErrors: [],
-    errored: (entry.warnings || []).some((w) => w.severity === "error"),
+    errored:
+      entry.errored ??
+      ((entry.warnings || []).some((w) => w.severity === "error") ||
+        (entry.invalidOptionWarnings || []).length > 0),
     ignored: false,
   }));
 }

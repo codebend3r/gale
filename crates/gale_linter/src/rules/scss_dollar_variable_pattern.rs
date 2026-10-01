@@ -1,8 +1,8 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 use std::collections::HashSet;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
@@ -43,9 +43,11 @@ impl Rule for ScssDollarVariablePattern {
     }
 
     let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     let secondary = ctx.secondary_options();
@@ -95,7 +97,7 @@ impl ScssDollarVariablePattern {
   fn walk(
     &self,
     node: &CssNode,
-    re: &Regex,
+    re: &pattern::Regex,
     pattern_str: &str,
     inside_at_rule: bool,
     inside_block: bool,
@@ -133,7 +135,7 @@ impl ScssDollarVariablePattern {
           return;
         }
 
-        if !re.is_match(var_name) {
+        if !pattern::is_match(&re, var_name) {
           let message = custom_message
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());

@@ -10,6 +10,8 @@ use tracing::debug;
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
+use gale_linter::known_rules::{self, RuleSupport};
+use gale_linter::panic_guard;
 use gale_linter::{LintRunner, RuleRegistry};
 
 // ---------------------------------------------------------------------------
@@ -24,10 +26,18 @@ use gale_linter::{LintRunner, RuleRegistry};
 ///
 /// `line_start_byte` is the byte offset where the line begins and `byte_col` is
 /// the number of bytes from that start (0-indexed).
+///
+/// An offset that lands inside a multibyte character (a rule bug) is pulled
+/// back to the start of that character rather than panicking.
 fn byte_col_to_utf16(source: &str, line_start_byte: usize, byte_col: usize) -> u32 {
-  let end = (line_start_byte + byte_col).min(source.len());
-  let slice = &source[line_start_byte..end];
-  slice.chars().map(|ch| ch.len_utf16() as u32).sum()
+  let start = source.floor_char_boundary(line_start_byte.min(source.len()));
+  let end = source.floor_char_boundary((line_start_byte + byte_col).min(source.len()));
+  source
+    .get(start..end.max(start))
+    .unwrap_or_default()
+    .chars()
+    .map(|ch| ch.len_utf16() as u32)
+    .sum()
 }
 
 /// Convert a byte span in `source` to an LSP range (0-indexed lines, UTF-16
@@ -200,18 +210,53 @@ impl GaleLspServer {
       .unwrap_or_else(|_| uri.to_string());
 
     let syntax = detect_syntax(&file_path);
-    runner.lint_source(source, &file_path, syntax).diagnostics
+    let result = runner.lint_source(source, &file_path, syntax);
+    // An invalid rule option (a pattern that does not compile, say) is not
+    // a problem in the document, but the editor is the only place to say so:
+    // show it at the top of the file.
+    let mut diagnostics: Vec<GaleDiagnostic> = result
+      .invalid_option_warnings
+      .into_iter()
+      .map(GaleDiagnostic::invalid_option)
+      .collect();
+    diagnostics.extend(result.diagnostics);
+    diagnostics
   }
 
   /// Lint source text, remember it for code actions, and publish
   /// diagnostics to the client.
+  ///
+  /// Linting and the position conversion run inside a panic guard (which
+  /// depends on panics unwinding, see [`panic_guard`]): a document that
+  /// trips a bug is published with one internal-error diagnostic instead of
+  /// taking the server down.
   async fn lint_and_publish(&self, uri: Url, source: &str) {
-    let diagnostics = self.lint(&uri, source);
-    let line_index = SourceLineIndex::build(source);
-    let lsp_diagnostics = diagnostics
-      .iter()
-      .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
-      .collect();
+    let linted = panic_guard::catch(|| {
+      let diagnostics = self.lint(&uri, source);
+      let line_index = SourceLineIndex::build(source);
+      let lsp_diagnostics: Vec<tower_lsp::lsp_types::Diagnostic> = diagnostics
+        .iter()
+        .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
+        .collect();
+      (diagnostics, lsp_diagnostics)
+    });
+    let (diagnostics, lsp_diagnostics) = linted.unwrap_or_else(|caught| {
+      let diag = tower_lsp::lsp_types::Diagnostic {
+        range: Range::default(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(
+          gale_linter::runner::INTERNAL_ERROR_RULE.to_string(),
+        )),
+        source: Some("gale".to_string()),
+        message: format!(
+          "Internal error while linting this file: {}. This is a bug in gale; please report it at {}",
+          caught.describe(),
+          panic_guard::ISSUES_URL
+        ),
+        ..Default::default()
+      };
+      (Vec::new(), vec![diag])
+    });
 
     self
       .documents
@@ -322,7 +367,38 @@ impl LanguageServer for GaleLspServer {
 
     // Build the lint runner once.
     let runner = Self::build_runner(&config, has_config_file);
+    // Rules gale has not implemented, and rules Stylelint has removed, are
+    // skipped; say so once, as the CLI does.  Names that are no rule at all
+    // show up as `Unknown rule` diagnostics in each document instead.
+    let mut not_implemented: Vec<&str> = Vec::new();
+    let mut removed: Vec<&str> = Vec::new();
+    for (name, rule) in &config.rules {
+      if rule.severity == Some(gale_config::Severity::Off) {
+        continue;
+      }
+      match known_rules::classify(runner.registry(), name) {
+        RuleSupport::NotImplemented => not_implemented.push(name),
+        RuleSupport::Removed => removed.push(name),
+        RuleSupport::Implemented | RuleSupport::Unknown => {}
+      }
+    }
     *self.runner.write().unwrap_or_else(|e| e.into_inner()) = Some(runner);
+    for (mut names, why) in [
+      (not_implemented, "gale does not support these rules yet"),
+      (removed, "these rules were removed from Stylelint"),
+    ] {
+      if names.is_empty() {
+        continue;
+      }
+      names.sort_unstable();
+      self
+        .client
+        .log_message(
+          MessageType::WARNING,
+          format!("{why}, so they were skipped: {}", names.join(", ")),
+        )
+        .await;
+    }
 
     Ok(InitializeResult {
       capabilities: ServerCapabilities {
@@ -378,11 +454,12 @@ impl LanguageServer for GaleLspServer {
       .await;
   }
 
-  /// Offers quick fixes for the fixable diagnostics under the cursor.
+  /// Offers quick fixes for the fixable diagnostics under the cursor.  A
+  /// panic while building them yields no actions rather than a dead server.
   async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-    Ok(Some(
-      self.quick_fixes(&params.text_document.uri, &params.range),
-    ))
+    let actions = panic_guard::catch(|| self.quick_fixes(&params.text_document.uri, &params.range))
+      .unwrap_or_default();
+    Ok(Some(actions))
   }
 
   /// Re-lints on save, using the notification's text or re-reading the file.
@@ -434,6 +511,16 @@ mod tests {
 
     let range = span_to_range(source, &line_index, Span::new(23, 1));
     assert_eq!(range.start, Position::new(1, 4));
+  }
+
+  #[test]
+  fn span_to_range_survives_offsets_inside_a_multibyte_character() {
+    // `é` is two bytes; offsets 6 and 7 fall inside and past it.
+    let source = "a { b: é; }\n";
+    let line_index = SourceLineIndex::build(source);
+    let range = span_to_range(source, &line_index, Span::new(8, 40));
+    assert_eq!(range.start, Position::new(0, 7));
+    assert_eq!(byte_col_to_utf16(source, 0, 8), 7);
   }
 
   #[test]

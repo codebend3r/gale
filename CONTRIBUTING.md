@@ -67,9 +67,15 @@ Gale has a well-defined process for adding lint rules:
 1. Create `crates/gale_linter/src/rules/your_rule_name.rs` implementing the `Rule` trait
 2. Add `pub mod your_rule_name;` to `crates/gale_linter/src/rules/mod.rs`
 3. Register the rule in `register_all()` in the same file
-4. Add the rule name to `ALL_RULE_NAMES` in `crates/gale_config/src/lib.rs`
+4. Add the rule name to `ALL_RULE_NAMES` in `crates/gale_config/src/lib.rs` (a test in `gale_cli` fails if the two lists drift apart)
 5. If appropriate, add it to `RECOMMENDED_ERROR_RULES` or `RECOMMENDED_WARNING_RULES`
 6. Include tests in a `#[cfg(test)] mod tests` block inside the rule file
+
+A few habits keep a rule from failing on real input:
+
+- **Slice the source with `ctx.source_slice` / `ctx.source_from`**, which return `None` instead of panicking when an offset lands inside a multibyte character. Offsets built from parsed text (a re-serialised selector's length, say) do not always line up with what the author wrote; `ctx.selector_source` gives a style rule's selector as written.
+- **Compile option patterns with `crate::pattern`**: `pattern::for_rule` for a `*-pattern` primary option (it returns the invalid-option report to hand back when the pattern does not compile), and `pattern::regex_entry` / `pattern::match_regex_entry` for `/regex/` entries in lists. Patterns are JavaScript regexes, lookaround included, and are compiled once and cached.
+- **A panic is not the end of the run.** The runner catches it and reports an `Internal error` problem naming the rule, so one bad file does not hide the rest. This relies on panics unwinding: do not set `panic = "abort"` in a Cargo profile. `GALE_DEBUG_PANIC=<rule-name>` makes a rule panic on any file containing `gale-debug-panic`, to exercise the guard. `crates/gale_linter/tests/multibyte_no_panic.rs` lints sample files with multibyte characters inserted throughout, with every rule enabled.
 
 ## Differential testing
 

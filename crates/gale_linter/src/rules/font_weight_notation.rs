@@ -113,12 +113,15 @@ fn find_token_offset(value: &str, token: &str) -> Option<usize> {
 
 /// Given a declaration, find the byte offset in the source where the value
 /// begins (after the `:` and any whitespace).
+///
+/// Falls back to `decl_offset` when the property's end is past the source or
+/// inside a multibyte character (the parsed property need not be the exact
+/// text the author wrote).
 fn find_value_offset(source: &str, decl_offset: usize, property_len: usize) -> usize {
   let start = decl_offset + property_len;
-  if start >= source.len() {
+  let Some(rest) = source.get(start..).filter(|rest| !rest.is_empty()) else {
     return decl_offset;
-  }
-  let rest = &source[start..];
+  };
   let mut off = 0;
   let bytes = rest.as_bytes();
   while off < bytes.len() && (bytes[off] == b':' || bytes[off].is_ascii_whitespace()) {
@@ -214,21 +217,25 @@ impl FontWeightNotation {
       .unwrap_or(false);
 
     let prop_lower = decl.property.to_ascii_lowercase();
+    if prop_lower != "font-weight" && prop_lower != "font" {
+      return;
+    }
 
-    // Use source text when available for accurate positions and values.
-    let (raw_value, value_offset) = if !ctx.source.is_empty() {
-      let vo = find_value_offset(ctx.source, decl.span.offset, decl.property.len());
+    // Use source text when available for accurate positions and values,
+    // falling back to the parsed value when the source cannot be read at
+    // the computed offset.
+    let vo = find_value_offset(ctx.source, decl.span.offset, decl.property.len());
+    let in_source = ctx.source_from(vo).map(|rest| {
       // Find end of value (semicolon or closing brace)
-      let rest = &ctx.source[vo..];
-      let end = rest
-        .find([';', '}'])
-        .map(|i| vo + i)
-        .unwrap_or(vo + rest.len());
-      let raw = ctx.source[vo..end].trim().to_string();
-      (raw, vo)
-    } else {
-      let vo = decl.span.offset + decl.property.len() + 2;
-      (decl.value.clone(), vo)
+      let end = rest.find([';', '}']).unwrap_or(rest.len());
+      rest[..end].trim().to_string()
+    });
+    let (raw_value, value_offset) = match in_source {
+      Some(raw) if !ctx.source.is_empty() => (raw, vo),
+      _ => (
+        decl.value.clone(),
+        decl.span.offset + decl.property.len() + 2,
+      ),
     };
 
     let clean_value = strip_comments(&raw_value);

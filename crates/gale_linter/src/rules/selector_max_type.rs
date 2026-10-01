@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Limit the number of type selectors in a selector.
@@ -33,7 +34,7 @@ struct Config {
 
 enum IgnorePattern {
   Exact(String),
-  Regex(String), // stored without leading/trailing `/`
+  Regex(std::sync::Arc<pattern::Regex>),
 }
 
 impl Config {
@@ -70,12 +71,9 @@ impl Config {
         arr
           .iter()
           .filter_map(|v| v.as_str())
-          .map(|s| {
-            if s.starts_with('/') && s.ends_with('/') && s.len() > 2 {
-              IgnorePattern::Regex(s[1..s.len() - 1].to_string())
-            } else {
-              IgnorePattern::Exact(s.to_string())
-            }
+          .map(|s| match pattern::regex_entry(s) {
+            Some(re) => IgnorePattern::Regex(re),
+            None => IgnorePattern::Exact(s.to_string()),
           })
           .collect()
       })
@@ -102,10 +100,7 @@ impl Config {
           }
         }
         IgnorePattern::Regex(re) => {
-          // Simple regex support: only `^prefix` patterns
-          if let Some(prefix) = re.strip_prefix('^')
-            && type_name.starts_with(prefix)
-          {
+          if pattern::is_match(re, type_name) {
             return true;
           }
         }

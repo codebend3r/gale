@@ -23,11 +23,11 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | CSS | Lint plain `.css` files | ✅ | ✅ |
 | SCSS | Lint `.scss` files | ✅ Built in, no plugin needed | ✅ Via `postcss-scss` custom syntax |
 | Less | Lint `.less` files | ✅ Built in, no plugin needed | ✅ Via `postcss-less` custom syntax |
-| Sass indented syntax | Lint `.sass` files | ⚠️ Converted to SCSS internally; reported line/column drift from the original file | ✅ Via `postcss-sass` custom syntax |
-| CSS-in-JS | Lint styles embedded in JS/TS (styled-components, etc.) | ❌ Files are skipped | ✅ Via `postcss-styled-syntax` and similar |
-| HTML / Vue / Svelte | Lint `<style>` blocks in markup | ❌ Files are skipped | ✅ Via `postcss-html` |
-| Markdown | Lint fenced CSS code blocks | ❌ Files are skipped | ✅ Via `postcss-markdown` |
-| `customSyntax` config key | Choose a parser per file pattern | ⚠️ Accepts `postcss`, `postcss-scss`, `postcss-sass`, `postcss-less`; other values skip the matching files | ✅ Any PostCSS syntax package |
+| Sass indented syntax | Lint `.sass` files | ⚠️ Converted to SCSS internally; problems are mapped back to the `.sass` file, but `--fix` does not change it | ✅ Via `postcss-sass` custom syntax |
+| CSS-in-JS | Lint styles embedded in JS/TS (styled-components, etc.) | ❌ Matched files are skipped with a warning | ✅ Via `postcss-styled-syntax` and similar |
+| HTML / Vue / Svelte / Astro | Lint `<style>` blocks in markup | ❌ Matched files are skipped with a warning | ✅ Via `postcss-html` |
+| Markdown | Lint fenced CSS code blocks | ❌ Matched files are skipped with a warning | ✅ Via `postcss-markdown` |
+| `customSyntax` config key | Choose a parser per file pattern | ⚠️ Accepts `postcss`, `postcss-scss`, `postcss-sass`, `postcss-less`; other values skip the matching files with a warning | ✅ Any PostCSS syntax package |
 | CSS nesting | Parse and lint nested style rules | ✅ | ✅ |
 | Parse-error recovery | Keep linting after a syntax error | ✅ | ✅ Reports `parseErrors` |
 
@@ -54,7 +54,11 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `reportDisables` secondary option | Forbid disabling a rule inline | ✅ | ✅ |
 | Warning message wording | Exact v17 message text | ⚠️ Positions and rule IDs match; some strings still use v15/v16 phrasing | ✅ |
 | Rule deprecation warnings | Report use of deprecated rules | ❌ Always empty in output | ✅ `deprecations` |
-| Invalid option warnings | Report malformed rule options | ❌ Always empty in output | ✅ `invalidOptionWarnings` |
+| Invalid option warnings | Report malformed rule options | ⚠️ Regular expressions that do not compile; other malformed options are not validated | ✅ `invalidOptionWarnings` |
+| JavaScript regular expressions in options | Lookahead, lookbehind and backreferences in `*-pattern` and `/regex/` list options | ✅ | ✅ |
+| Unknown rule names | A configured name that is no rule fails the run | ✅ `Unknown rule <name>.` with "Did you mean" suggestions | ✅ |
+| Rules a project's plugins or older Stylelint provide | Configured rules the linter does not implement | ⚠️ Skipped with one warning per run | ✅ Run by the plugin or that Stylelint version |
+| Crash isolation | A bug in one rule does not stop the run | ✅ Reported as an `Internal error` problem on the file; everything else still lints | ❌ The run fails |
 
 ## Configuration
 
@@ -69,7 +73,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Config discovery | Walk up from the working directory to find a config | ✅ | ✅ |
 | `--config` / `configFile` | Point at an explicit config file | ✅ | ✅ |
 | `--config-basedir` | Base directory for resolving relative `extends` and plugins | ❌ | ✅ |
-| `extends` shareable configs | Extend configs from npm packages in `node_modules/` | ✅ | ✅ |
+| `extends` shareable configs | Extend configs from npm packages in `node_modules/` | ✅ Entries that do not resolve are skipped with a warning | ✅ |
 | `extends` relative paths | Extend another config file by path | ✅ | ✅ |
 | Recursive `extends` with cycle detection | Chains of shared configs | ✅ | ✅ |
 | Built-in `stylelint-config-*` equivalents | `recommended`, `standard`, `recommended-scss`, `standard-scss` without installing them | ✅ | ❌ Must be installed from npm |
@@ -87,6 +91,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `reportDescriptionlessDisables` config key | Enable from config | ✅ | ✅ |
 | `reportUnscopedDisables` config key | Report disable comments that name no rule | ✅ | ✅ |
 | `allowEmptyInput` / `cache` / `cacheLocation` / `fix` / `quiet` config keys | Set CLI behaviour from config | ✅ A CLI flag still wins | ✅ |
+| `formatter` config key | Pick the output format from config | ✅ `--formatter` still wins; an unknown name is an error | ✅ |
 | `languageOptions` | Extend known at-rules, properties, types, and CSS-wide keywords | ❌ | ✅ |
 | `computeEditInfo` | Include fix edit ranges in warnings | ❌ | ✅ |
 | `validate` | Toggle rule-option validation | ❌ | ✅ |
@@ -139,10 +144,10 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `--init` | Generate a starter config | ✅ | ❌ |
 | `--lsp` | Start the language server | ✅ | ❌ |
 | `--version` / `--help` | Standard CLI help | ✅ | ✅ |
-| Exit code `2` on lint problems | Error-severity problems or an exceeded `--max-warnings` | ✅ | ✅ |
+| Exit code `2` on lint problems | Error-severity problems, invalid rule options, or an exceeded `--max-warnings` | ✅ | ✅ |
 | Exit code `1` when no files match | Empty input is a fatal error unless allowed | ✅ | ✅ |
 | Exit code `64` for usage errors | Unknown flag, unknown formatter | ✅ | ✅ |
-| Exit code `78` for config errors | A config file that cannot be loaded | ✅ | ✅ Also invalid rule options |
+| Exit code `78` for config errors | A config file that cannot be loaded | ✅ Also an unknown `formatter` in the config | ✅ |
 
 ## Output formatters
 
@@ -156,7 +161,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `unix` | `file:line:col: message [rule]` | ✅ | ✅ |
 | `github` | GitHub Actions annotations | ❌ Removed in v17 | ❌ Removed in v17 |
 | Custom formatter module | Any exported function | ❌ | ✅ `--custom-formatter` |
-| Unknown formatter rejected | Typo in `--formatter` is an error, not a silent fallback | ✅ | ✅ |
+| Unknown formatter rejected | Typo in `--formatter` or the `formatter` config key is an error, not a silent fallback | ✅ | ✅ |
 
 ## Autofix
 

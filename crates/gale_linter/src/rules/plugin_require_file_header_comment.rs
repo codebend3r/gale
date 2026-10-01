@@ -1,6 +1,5 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
-use regex::Regex;
 
 use crate::rule::{Rule, RuleContext};
 
@@ -21,39 +20,26 @@ pub struct PluginRequireFileHeaderComment;
 
 /// A compiled pattern for matching comment text.
 enum HeaderPattern {
-  Regex(Regex),
+  Regex(std::sync::Arc<crate::pattern::Regex>),
   Literal(String),
 }
 
 impl HeaderPattern {
   /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else a substring.
   fn from_str(s: &str) -> Self {
-    if let Some(inner) = s.strip_prefix('/').and_then(|s| {
-      if let Some(pos) = s.rfind('/') {
-        Some((&s[..pos], &s[pos + 1..]))
-      } else {
-        None
-      }
-    }) {
-      let (pattern, flags) = inner;
-      let regex_str = if flags.contains('i') {
-        format!("(?i){}", pattern)
-      } else {
-        pattern.to_string()
-      };
-      match Regex::new(&regex_str) {
-        Ok(re) => HeaderPattern::Regex(re),
-        Err(_) => HeaderPattern::Literal(s.to_string()),
-      }
-    } else {
-      HeaderPattern::Literal(s.to_string())
+    // Patterns wrapped in `/` (optionally flagged, like `/…/i`) are regexes.
+    // One that does not compile is reported as an invalid option by the
+    // runner and compared as a literal here.
+    match crate::pattern::regex_entry(s) {
+      Some(re) => HeaderPattern::Regex(re),
+      None => HeaderPattern::Literal(s.to_string()),
     }
   }
 
   /// Whether the comment text matches this pattern.
   fn matches(&self, text: &str) -> bool {
     match self {
-      HeaderPattern::Regex(re) => re.is_match(text),
+      HeaderPattern::Regex(re) => crate::pattern::is_match(re, text),
       HeaderPattern::Literal(s) => text.contains(s.as_str()),
     }
   }
