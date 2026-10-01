@@ -8,11 +8,20 @@
  * Requires a working gale binary (either in npm/bin/ or on PATH).
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { lint, formatters, resolveConfig, createPlugin } from "./index.mjs";
 
 const require = createRequire(import.meta.url);
+
+// Tests that lint from another directory need a binary path that does not
+// depend on the working directory.
+if (process.env.GALE_BINARY?.includes("/")) {
+  process.env.GALE_BINARY = resolve(process.env.GALE_BINARY);
+}
 
 let passed = 0;
 let failed = 0;
@@ -237,6 +246,66 @@ async function testCommonJsEntry() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8: lint({ code, codeFilename: "x.vue" }) lints the style blocks
+// ---------------------------------------------------------------------------
+
+const VUE_CODE =
+  '<template><p style="margin: 0px">x</p></template>\n<style>\n.a { color: #ffffff; }\n</style>\n';
+const VUE_RULES = { "color-hex-length": "short", "length-zero-no-unit": true };
+
+async function testLintVueCode() {
+  section("Test 8: lint({ code, codeFilename: 'x.vue' })");
+
+  try {
+    const result = await lint({ code: VUE_CODE, codeFilename: "x.vue", config: { rules: VUE_RULES } });
+    const warnings = result.results[0]?.warnings ?? [];
+    const found = warnings.map((w) => `${w.line}:${w.column} ${w.rule}`);
+    assert(
+      JSON.stringify(found) === JSON.stringify(["1:30 length-zero-no-unit", "3:13 color-hex-length"]),
+      `warnings sit at their place in the file (got ${JSON.stringify(found)})`,
+    );
+
+    const fixed = await lint({
+      code: VUE_CODE,
+      codeFilename: "x.vue",
+      config: { rules: VUE_RULES },
+      fix: true,
+    });
+    assert(
+      fixed.code ===
+        '<template><p style="margin: 0">x</p></template>\n<style>\n.a { color: #fff; }\n</style>\n',
+      `fixed code is the whole file with its styles fixed (got ${JSON.stringify(fixed.code)})`,
+    );
+  } catch (err) {
+    fail(`ERROR: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: lint({ files: ["**/*.vue"] }) finds and lints Vue files
+// ---------------------------------------------------------------------------
+
+async function testLintVueFiles() {
+  section("Test 9: lint({ files: ['**/*.vue'] })");
+
+  const dir = mkdtempSync(join(tmpdir(), "gale-api-"));
+  try {
+    writeFileSync(join(dir, "App.vue"), VUE_CODE);
+    writeFileSync(join(dir, "notes.md"), "# not linted\n");
+    const result = await lint({ files: ["**/*.vue"], cwd: dir, config: { rules: VUE_RULES } });
+
+    assert(result.results.length === 1, `one file linted (got ${result.results.length})`);
+    assert(result.results[0]?.source.endsWith("App.vue"), "the Vue file is the one linted");
+    assert(result.results[0]?.warnings.length === 2, "both of its problems are reported");
+    assert(result.errored === true, "the run is errored");
+  } catch (err) {
+    fail(`ERROR: ${err.message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Run all tests
 // ---------------------------------------------------------------------------
 
@@ -248,6 +317,8 @@ async function main() {
   await testCreatePlugin();
   await testLinterResultShape();
   await testCommonJsEntry();
+  await testLintVueCode();
+  await testLintVueFiles();
 
   console.log(`\n${passed} passed, ${failed} failed (Node ${process.versions.node})`);
 
