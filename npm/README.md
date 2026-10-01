@@ -2,7 +2,7 @@
 
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
-100x-400x faster. Same config. Zero migration.
+Typically 10-100x faster than Stylelint. Same config. Zero migration.
 
 > **Compatibility:** Gale targets **Stylelint v17** semantics.
 

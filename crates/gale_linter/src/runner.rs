@@ -8,7 +8,7 @@ use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::RuleRegistry;
-use crate::rule::{Rule, RuleContext, secondary_options_of};
+use crate::rule::{PerFileOptions, Rule, RuleContext, secondary_options_of};
 
 // ---------------------------------------------------------------------------
 // Inline disable-comment support
@@ -704,10 +704,15 @@ fn debug_panic(rule_name: &str, source: &str) {
 }
 
 /// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
+///
+/// Read once per process rather than once per file.
 fn perf_enabled() -> bool {
-  std::env::var("GALE_DEBUG_PERF")
-    .map(|v| v == "1")
-    .unwrap_or(false)
+  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+  *ENABLED.get_or_init(|| {
+    std::env::var("GALE_DEBUG_PERF")
+      .map(|v| v == "1")
+      .unwrap_or(false)
+  })
 }
 
 /// The main lint runner that applies enabled rules to parsed CSS.
@@ -923,13 +928,14 @@ impl LintRunner {
 
   /// [`Self::lint_source`] without the file-level panic guard.
   fn lint_source_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
     }
 
     let t0 = Instant::now();
-    let parse_result = match parse(source, syntax) {
+    let mut parse_result = match parse(source, syntax) {
       Ok(result) => result,
       Err(err) => {
         let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
@@ -941,6 +947,9 @@ impl LintRunner {
     if debug {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
+    // The walk below is the tree's last use, so it takes the nodes; `finish`
+    // needs only the source map.
+    let nodes = std::mem::take(&mut parse_result.nodes);
     // Rules read the text the parser saw, which for Sass is the converted
     // SCSS that every node span points into.  `finish` maps the spans back.
     let text = parse_result.source.as_str();
@@ -963,7 +972,7 @@ impl LintRunner {
 
     // Run document-level checks (check_root).
     let t1 = Instant::now();
-    run.check_root(&parse_result.nodes, debug);
+    run.check_root(&nodes, debug);
     if debug {
       eprintln!(
         "[perf] check_root total: {:.3}s",
@@ -973,7 +982,7 @@ impl LintRunner {
 
     // Walk each top-level node for per-node checks.
     let t2 = Instant::now();
-    for node in &parse_result.nodes {
+    for node in nodes {
       run.walk(node);
     }
     if debug {
@@ -1078,13 +1087,14 @@ impl LintRunner {
     rule_options: &HashMap<String, serde_json::Value>,
     rule_severities: &HashMap<String, Severity>,
   ) -> LintResult {
+    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
     }
 
     let t0 = Instant::now();
-    let parse_result = match parse(source, syntax) {
+    let mut parse_result = match parse(source, syntax) {
       Ok(result) => result,
       Err(err) => {
         let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
@@ -1096,6 +1106,9 @@ impl LintRunner {
     if debug {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
+    // The walk below is the tree's last use, so it takes the nodes; `finish`
+    // needs only the source map.
+    let nodes = std::mem::take(&mut parse_result.nodes);
     // Rules read the text the parser saw, which for Sass is the converted
     // SCSS that every node span points into.  `finish` maps the spans back.
     let text = parse_result.source.as_str();
@@ -1133,7 +1146,7 @@ impl LintRunner {
     );
 
     let t1 = Instant::now();
-    run.check_root(&parse_result.nodes, debug);
+    run.check_root(&nodes, debug);
     if debug {
       eprintln!(
         "[perf] check_root total: {:.3}s",
@@ -1142,7 +1155,7 @@ impl LintRunner {
     }
 
     let t2 = Instant::now();
-    for node in &parse_result.nodes {
+    for node in nodes {
       run.walk(node);
     }
     if debug {
@@ -1228,7 +1241,7 @@ impl LintRunner {
   }
 
   /// The registered rules behind `names`, and the names the registry does
-  /// not know (in one pass, as the registry lookup is a linear scan).
+  /// not know.
   fn resolve_rules<'r>(&'r self, names: &'r [String]) -> (Vec<&'r dyn Rule>, Vec<&'r str>) {
     let mut active = Vec::with_capacity(names.len());
     let mut missing = Vec::new();
@@ -1478,31 +1491,41 @@ impl<'a> RuleRun<'a> {
   }
 
   /// Recursively walk the AST, invoking each rule's `check` on every node.
-  fn walk(&mut self, node: &CssNode) {
+  ///
+  /// Takes the node by value: each rule sees a node with its whole subtree
+  /// before the walk moves the children out to visit them, so nested style
+  /// rules are wrapped as nodes without copying their subtrees.
+  fn walk(&mut self, node: CssNode) {
+    let offset = node.span().offset;
     for index in 0..self.rules.len() {
       if self.failed[index] {
         continue;
       }
       let rule = self.rules[index];
       let context = self.context(self.node_options[index]);
-      let outcome = panic_guard::catch(|| rule.check(node, &context));
-      self.record(index, outcome, node.span().offset);
+      let outcome = panic_guard::catch(|| rule.check(&node, &context));
+      self.record(index, outcome, offset);
     }
 
     // Recurse into children based on node type.
     match node {
       CssNode::Style(style_rule) => {
-        for child in &style_rule.children {
-          self.walk(&CssNode::Style(child.clone()));
+        let gale_css_parser::StyleRule {
+          children,
+          nested_at_rules,
+          ..
+        } = style_rule;
+        for child in children {
+          self.walk(CssNode::Style(child));
         }
         // Walk at-rules nested inside the style rule (e.g. @include,
         // @if/@else, @media) so lint rules can inspect their contents.
-        for at_node in &style_rule.nested_at_rules {
+        for at_node in nested_at_rules {
           self.walk(at_node);
         }
       }
       CssNode::AtRule(at_rule) => {
-        for child in &at_rule.children {
+        for child in at_rule.children {
           self.walk(child);
         }
       }

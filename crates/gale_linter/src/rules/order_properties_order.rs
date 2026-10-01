@@ -4,7 +4,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Rule, RuleContext, per_file};
 
 /// Enforce a specific ordering of properties within declaration blocks.
 ///
@@ -89,9 +89,11 @@ impl Rule for OrderPropertiesOrder {
       return vec![];
     };
 
-    let config = match parse_config(ctx) {
-      Some(c) => c,
-      None => return vec![],
+    // The order list can run to hundreds of properties; build the lookup
+    // tables once per file rather than once per style rule.
+    let parsed = per_file(self.name(), ctx.options, || parse_config(ctx));
+    let Some(config) = parsed.as_ref() else {
+      return vec![];
     };
 
     let mut diagnostics = Vec::new();

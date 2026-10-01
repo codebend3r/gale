@@ -6,7 +6,7 @@
 [![CI](https://github.com/codebend3r/gale/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/codebend3r/gale/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **10-50x faster** on real projects.
+Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **10-100x faster** on real projects.
 
 One line change in your `package.json`. No config migration.
 
@@ -14,31 +14,34 @@ One line change in your `package.json`. No config migration.
 
 ## Benchmarks
 
-Real-world benchmarks using [hyperfine](https://github.com/sharkdp/hyperfine) (10 runs, 3 warmup) on an Apple M1 Max, generated on 2026-09-11 by `./benchmarks/benchmark.sh` and recorded in [benchmarks/results.md](benchmarks/results.md). Each repo uses its own Stylelint config. Results vary by machine -- run the script to reproduce on yours.
+Real-world benchmarks using [hyperfine](https://github.com/sharkdp/hyperfine) (10 runs, 3 warmup) on an Apple M1 Max, generated on 2026-10-01 by `./benchmarks/benchmark.sh` and recorded in [benchmarks/results.md](benchmarks/results.md). Each repo uses its own Stylelint config, and every run starts with a cold cache. Load averages (1, 5 and 15 minute) were 12.07 6.15 4.63 at the start and 21.90 31.76 30.73 at the end, from unrelated jobs on the machine. Results vary by machine -- run the script to reproduce on yours.
 
 | Repository | Files | Stylelint | Gale | Speedup |
 |------------|------:|----------:|-----:|--------:|
-| [GOV.UK Frontend](https://github.com/alphagov/govuk-frontend) | 326 | 4.816s | 0.029s | **166x** |
-| [Fundamental Styles](https://github.com/SAP/fundamental-styles) | 392 | 6.800s | 0.121s | **56x** |
-| [Mattermost](https://github.com/mattermost/mattermost) | 564 | 6.085s | 0.115s | **53x** |
-| [Joomla](https://github.com/joomla/joomla-cms) | 169 | 1.556s | 0.034s | **46x** |
-| [freeCodeCamp](https://github.com/freeCodeCamp/freeCodeCamp) | 91 | 0.978s | 0.026s | **38x** |
-| [wp-calypso](https://github.com/Automattic/wp-calypso) | 2,051 | 23.167s | 0.676s | **34x** |
-| [Bootstrap](https://github.com/twbs/bootstrap) | 99 | 2.798s | 0.088s | **32x** |
-| [Angular Components](https://github.com/angular/components) | 627 | 3.028s | 0.112s | **27x** |
-| [rsuite](https://github.com/rsuite/rsuite) | 207 | 3.801s | 0.160s | **24x** |
-| [Carbon](https://github.com/carbon-design-system/carbon) | 1,263 | 4.389s | 0.195s | **22x** |
-| [PatternFly](https://github.com/patternfly/patternfly) | 213 | 6.653s | 0.313s | **21x** |
-| [Spectrum CSS](https://github.com/adobe/spectrum-css) | 236 | 4.304s | 0.260s | **17x** |
-| [Gutenberg](https://github.com/wordpress/gutenberg) | 729 | 2.835s | 0.172s | **16x** |
-| [JupyterLab](https://github.com/jupyterlab/jupyterlab) | 211 | 2.920s | 0.178s | **16x** |
-| [Discourse](https://github.com/discourse/discourse) | 377 | 2.899s | 0.191s | **15x** |
-| [Grafana](https://github.com/grafana/grafana) | 10 | 0.722s | 0.051s | **14x** |
-| [Material UI](https://github.com/mui/material-ui) | 39 | 0.646s | 0.053s | **12x** |
-| [Mastodon](https://github.com/mastodon/mastodon) | 36 | 3.216s | 0.268s | **12x** |
-| [SLDS](https://github.com/salesforce-ux/design-system) | 446 | 2.641s | 0.229s | **12x** |
-| [Primer CSS](https://github.com/primer/css) | 113 | 2.215s | 0.236s | **9x** |
-| [Docusaurus](https://github.com/facebook/docusaurus) | 116 | 0.213s | 0.032s | **7x** |
+| [Fundamental Styles](https://github.com/SAP/fundamental-styles) | 392 | 6.080s | 0.050s | **122x** |
+| [Spectrum CSS](https://github.com/adobe/spectrum-css) | 236 | 5.458s | 0.053s | **103x** |
+| [PatternFly](https://github.com/patternfly/patternfly) | 213 | 6.245s | 0.063s | **99x** |
+| [Mattermost](https://github.com/mattermost/mattermost) | 564 | 7.063s | 0.073s | **97x** |
+| [Discourse](https://github.com/discourse/discourse) | 377 | 3.685s | 0.039s | **94x** |
+| [rsuite](https://github.com/rsuite/rsuite) | 207 | 3.470s | 0.037s | **94x** |
+| [Joomla](https://github.com/joomla/joomla-cms) | 169 | 1.739s | 0.023s | **76x** |
+| [Angular Components](https://github.com/angular/components) | 627 | 3.508s | 0.047s | **75x** |
+| [JupyterLab](https://github.com/jupyterlab/jupyterlab) | 211 | 2.760s | 0.042s | **66x** |
+| [Bootstrap](https://github.com/twbs/bootstrap) | 99 | 2.308s | 0.040s | **58x** |
+| [freeCodeCamp](https://github.com/freeCodeCamp/freeCodeCamp) | 91 | 0.835s | 0.015s | **56x** |
+| [wp-calypso](https://github.com/Automattic/wp-calypso) | 2,051 | 23.903s | 0.459s | **52x** |
+| [Mastodon](https://github.com/mastodon/mastodon) | 36 | 3.195s | 0.066s | **48x** |
+| [SLDS](https://github.com/salesforce-ux/design-system) | 446 | 2.336s | 0.049s | **48x** |
+| [Carbon](https://github.com/carbon-design-system/carbon) | 1,263 | 4.678s | 0.135s | **35x** |
+| [Gutenberg](https://github.com/wordpress/gutenberg) | 729 | 5.090s | 0.219s | **23x** |
+| [Material UI](https://github.com/mui/material-ui) | 39 | 0.709s | 0.051s | **14x** |
+| [Primer CSS](https://github.com/primer/css) | 113 | 1.809s | 0.155s | **12x** |
+| [Grafana](https://github.com/grafana/grafana) | 10 | 0.619s | 0.055s | **11x** |
+| [GOV.UK Frontend](https://github.com/alphagov/govuk-frontend) | 326 | - | fails | - |
+| [Docusaurus](https://github.com/facebook/docusaurus) | 116 | fails | fails | - |
+
+- GOV.UK Frontend: Gale cannot load the repo's JavaScript config yet (exit 78), so it is not timed.
+- Docusaurus: neither Stylelint nor Gale can load the repo's config in this checkout (both exit 78), so it is not timed.
 
 ## Parity with Stylelint
 

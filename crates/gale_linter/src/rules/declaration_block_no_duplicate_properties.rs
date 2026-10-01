@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Rule, RuleContext, per_file};
 
 /// Disallow duplicate properties within declaration blocks.
 ///
@@ -40,49 +40,16 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
       return vec![];
     }
 
-    // Check for ignore options
-    let ignore_list: Vec<String> = ctx
-      .options
-      .and_then(|v| v.get("ignore"))
-      .and_then(|v| {
-        if let Some(arr) = v.as_array() {
-          Some(
-            arr
-              .iter()
-              .filter_map(|item| item.as_str().map(|s| s.to_string()))
-              .collect(),
-          )
-        } else if let Some(s) = v.as_str() {
-          Some(vec![s.to_string()])
-        } else {
-          None
-        }
-      })
-      .unwrap_or_default();
-
-    let ignore_consecutive = ignore_list.iter().any(|s| s == "consecutive-duplicates");
-    let ignore_diff_values = ignore_list
-      .iter()
-      .any(|s| s == "consecutive-duplicates-with-different-values");
-    let ignore_diff_syntaxes = ignore_list
-      .iter()
-      .any(|s| s == "consecutive-duplicates-with-different-syntaxes");
-    let ignore_prefixless_same = ignore_list
-      .iter()
-      .any(|s| s == "consecutive-duplicates-with-same-prefixless-values");
-
-    // Parse ignoreProperties option (supports strings and regex patterns like "/background-/")
-    let ignore_properties: Vec<PropertyMatcher> = ctx
-      .options
-      .and_then(|v| v.get("ignoreProperties"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(PropertyMatcher::from_pattern))
-          .collect()
-      })
-      .unwrap_or_default();
+    let options = per_file(self.name(), ctx.options, || {
+      IgnoreOptions::parse(ctx.options)
+    });
+    let IgnoreOptions {
+      consecutive: ignore_consecutive,
+      diff_values: ignore_diff_values,
+      diff_syntaxes: ignore_diff_syntaxes,
+      prefixless_same: ignore_prefixless_same,
+      ..
+    } = *options;
 
     let is_preprocessor = matches!(
       ctx.syntax,
@@ -166,9 +133,11 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
       }
 
       // Skip properties matching ignoreProperties patterns
-      if ignore_properties
-        .iter()
-        .any(|m| m.matches(&lower_prop, prop))
+      if options.ignore_names.iter().any(|name| *name == lower_prop)
+        || options
+          .ignore_patterns
+          .iter()
+          .any(|m| m.matches(&lower_prop, prop))
       {
         decls.push(DeclInfo {
           property: prop.clone(),
@@ -354,6 +323,67 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
     }
 
     diagnostics
+  }
+}
+
+/// The rule's `ignore` and `ignoreProperties` options, read once per file.
+struct IgnoreOptions {
+  /// `ignore: ["consecutive-duplicates"]`.
+  consecutive: bool,
+  /// `ignore: ["consecutive-duplicates-with-different-values"]`.
+  diff_values: bool,
+  /// `ignore: ["consecutive-duplicates-with-different-syntaxes"]`.
+  diff_syntaxes: bool,
+  /// `ignore: ["consecutive-duplicates-with-same-prefixless-values"]`.
+  prefixless_same: bool,
+  /// Plain `ignoreProperties` names, lowercased.
+  ignore_names: Vec<String>,
+  /// Matchers for the `ignoreProperties` entries written as regex literals
+  /// (`/regex/flags`).
+  ignore_patterns: Vec<PropertyMatcher>,
+}
+
+impl IgnoreOptions {
+  /// Reads the options; `ignore` may be a single string or an array.
+  fn parse(options: Option<&serde_json::Value>) -> Self {
+    let ignore_list: Vec<String> = options
+      .and_then(|v| v.get("ignore"))
+      .and_then(|v| {
+        if let Some(arr) = v.as_array() {
+          Some(
+            arr
+              .iter()
+              .filter_map(|item| item.as_str().map(|s| s.to_string()))
+              .collect(),
+          )
+        } else {
+          v.as_str().map(|s| vec![s.to_string()])
+        }
+      })
+      .unwrap_or_default();
+    let has = |flag: &str| ignore_list.iter().any(|s| s == flag);
+
+    let mut ignore_names = Vec::new();
+    let mut ignore_patterns = Vec::new();
+    let entries = options
+      .and_then(|v| v.get("ignoreProperties"))
+      .and_then(|v| v.as_array());
+    for pattern in entries.into_iter().flatten().filter_map(|v| v.as_str()) {
+      if crate::pattern::split_literal(pattern).is_some() {
+        ignore_patterns.push(PropertyMatcher::from_pattern(pattern));
+      } else {
+        ignore_names.push(pattern.to_ascii_lowercase());
+      }
+    }
+
+    Self {
+      consecutive: has("consecutive-duplicates"),
+      diff_values: has("consecutive-duplicates-with-different-values"),
+      diff_syntaxes: has("consecutive-duplicates-with-different-syntaxes"),
+      prefixless_same: has("consecutive-duplicates-with-same-prefixless-values"),
+      ignore_names,
+      ignore_patterns,
+    }
   }
 }
 
@@ -1126,6 +1156,47 @@ mod tests {
       "width"
     ));
     assert!(!is_equal_value_syntaxes("100%", "fit-content", "width"));
+  }
+
+  #[test]
+  fn ignore_properties_takes_names_and_regexes() {
+    let rule = DeclarationBlockNoDuplicateProperties;
+    let decl = |property: &str, offset: usize| Declaration {
+      property: property.to_string(),
+      value: "x".to_string(),
+      span: ParserSpan::new(offset, 5),
+      important: false,
+    };
+    let node = CssNode::Style(StyleRule {
+      selector: "a".to_string(),
+      declarations: vec![
+        decl("color", 10),
+        decl("color", 20),
+        decl("background-color", 30),
+        decl("background-color", 40),
+        decl("margin", 50),
+        decl("margin", 60),
+        decl("/[/", 70),
+        decl("/[/", 80),
+      ],
+      span: ParserSpan::new(0, 100),
+      ..Default::default()
+    });
+    // Names match case-insensitively, `/…/` is a regex, and a `/…/` that
+    // does not compile is matched as a plain name.
+    let opts = serde_json::json!({ "ignoreProperties": ["COLOR", "/^back/", "/[/"] });
+    let ctx = RuleContext {
+      file_path: "test.css",
+      source: "",
+      syntax: Syntax::Css,
+      options: Some(&opts),
+    };
+    let _file = crate::rule::PerFileOptions::begin();
+    for _ in 0..2 {
+      let diags = rule.check(&node, &ctx);
+      let flagged: Vec<usize> = diags.iter().map(|d| d.span.offset).collect();
+      assert_eq!(flagged, vec![50]);
+    }
   }
 
   #[test]

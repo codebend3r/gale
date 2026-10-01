@@ -1,40 +1,45 @@
+use std::collections::HashMap;
+
 use crate::rule::Rule;
 use crate::rules;
 
 /// A collection of registered lint rules.
 pub struct RuleRegistry {
   rules: Vec<Box<dyn Rule>>,
+  /// Position in `rules` of the first rule registered under each name, so
+  /// lookups by name are constant time rather than a scan of every rule.
+  by_name: HashMap<&'static str, usize>,
 }
 
 impl RuleRegistry {
   /// Create an empty registry.
   pub fn new() -> Self {
-    Self { rules: Vec::new() }
+    Self {
+      rules: Vec::new(),
+      by_name: HashMap::new(),
+    }
   }
 
   /// Register a rule in the registry.
   pub fn register(&mut self, rule: Box<dyn Rule>) {
+    // The first rule registered under a name wins, as it did when lookups
+    // scanned the list in order.
+    self.by_name.entry(rule.name()).or_insert(self.rules.len());
     self.rules.push(rule);
   }
 
   /// Look up a rule by name, including deprecated Stylelint rule name aliases.
   pub fn get(&self, name: &str) -> Option<&dyn Rule> {
     self
-      .rules
-      .iter()
-      .find(|r| r.name() == name)
-      .map(|r| &**r)
+      .by_name
+      .get(name)
       .or_else(|| {
         // Try deprecated rule name → @stylistic/ alias.
         // Stylelint moved these rules to the @stylistic plugin but
         // still accepts the old names for backward compatibility.
-        let aliased = resolve_deprecated_alias(name)?;
-        self
-          .rules
-          .iter()
-          .find(|r| r.name() == aliased)
-          .map(|r| &**r)
+        self.by_name.get(resolve_deprecated_alias(name)?)
       })
+      .map(|&i| &*self.rules[i])
   }
 
   /// Return a slice of all registered rules.
@@ -183,5 +188,56 @@ mod tests {
     let registry = RuleRegistry::default();
     assert!(registry.get("block-no-empty").is_some());
     assert!(registry.get("nonexistent-rule").is_none());
+  }
+
+  #[test]
+  fn lookup_resolves_deprecated_aliases() {
+    let registry = RuleRegistry::default();
+    assert_eq!(
+      registry.get("indentation").map(|r| r.name()),
+      Some("@stylistic/indentation")
+    );
+    assert_eq!(
+      registry.get("@stylistic/indentation").map(|r| r.name()),
+      Some("@stylistic/indentation")
+    );
+  }
+
+  #[test]
+  fn every_registered_rule_is_found_under_its_own_name() {
+    let registry = RuleRegistry::default();
+    for rule in registry.all() {
+      let found = registry.get(rule.name()).expect("registered rule");
+      assert_eq!(found.name(), rule.name());
+    }
+  }
+
+  /// A rule that only differs from another by its description.
+  struct Named(&'static str);
+
+  impl Rule for Named {
+    fn name(&self) -> &'static str {
+      "duplicate-name"
+    }
+
+    fn description(&self) -> &'static str {
+      self.0
+    }
+
+    fn default_severity(&self) -> gale_diagnostics::Severity {
+      gale_diagnostics::Severity::Error
+    }
+  }
+
+  #[test]
+  fn the_first_rule_registered_under_a_name_wins() {
+    let mut registry = RuleRegistry::new();
+    registry.register(Box::new(Named("first")));
+    registry.register(Box::new(Named("second")));
+    assert_eq!(
+      registry.get("duplicate-name").map(|r| r.description()),
+      Some("first")
+    );
+    assert_eq!(registry.all().len(), 2);
   }
 }

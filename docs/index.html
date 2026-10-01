@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Gale - An extremely fast CSS linter, written in Rust</title>
-<meta name="description" content="Drop-in replacement for Stylelint. ~100x faster. 250 built-in rules, SCSS/Less support, autofix, LSP server. Zero config migration.">
+<meta name="description" content="Drop-in replacement for Stylelint. ~58x faster. 250 built-in rules, SCSS/Less support, autofix, LSP server. Zero config migration.">
 <meta property="og:title" content="Gale - Extremely fast CSS linter">
-<meta property="og:description" content="Drop-in replacement for Stylelint, written in Rust. ~100x faster on real-world repos.">
+<meta property="og:description" content="Drop-in replacement for Stylelint, written in Rust. ~58x faster on real-world repos.">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -201,7 +201,7 @@ footer a:hover{color:var(--fg)}
 <section class="stats fade-in">
   <div class="stats-row">
     <div class="stat">
-      <div class="num" data-count="100">~100x</div>
+      <div class="num" data-count="58">~58x</div>
       <div class="label">faster (median)</div>
     </div>
     <div class="stat">
@@ -213,7 +213,7 @@ footer a:hover{color:var(--fg)}
       <div class="label">repos tested</div>
     </div>
     <div class="stat">
-      <div class="num">7,672</div>
+      <div class="num">8,022</div>
       <div class="label">files validated</div>
     </div>
   </div>
@@ -221,182 +221,240 @@ footer a:hover{color:var(--fg)}
 
 <section class="benchmark fade-in" id="benchmark">
   <div class="section-label">Performance &amp; Compatibility</div>
-  <h2>Tested on 16 real-world repos</h2>
+  <h2>Tested on 21 real-world repos</h2>
   <p class="desc">Benchmarked with <a href="https://github.com/sharkdp/hyperfine">hyperfine</a> (10 runs, 3 warmup). Output validated against Stylelint on every file.</p>
 
   <div class="repo-grid">
     <!-- Benchmarked repos (sorted by speedup) -->
-    <a href="https://github.com/carbon-design-system/carbon" class="repo-card" data-speedup="399">
+    <a href="https://github.com/SAP/fundamental-styles" class="repo-card" data-speedup="122">
       <div class="repo-header">
-        <span class="repo-name">Carbon</span>
-        <span class="repo-speedup">399x</span>
+        <span class="repo-name">Fundamental Styles</span>
+        <span class="repo-speedup">122x</span>
       </div>
       <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 1,116 files</span>
-        <span>8.767s &rarr; 0.022s</span>
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 392 files</span>
+        <span>6.080s &rarr; 0.050s</span>
       </div>
       <div class="repo-bar-track"><div class="repo-bar-fill" data-width="100"></div></div>
     </a>
 
-    <a href="https://github.com/patternfly/patternfly" class="repo-card" data-speedup="353">
-      <div class="repo-header">
-        <span class="repo-name">PatternFly</span>
-        <span class="repo-speedup">353x</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 204 files</span>
-        <span>5.298s &rarr; 0.015s</span>
-      </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="88"></div></div>
-    </a>
-
-    <a href="https://github.com/adobe/spectrum-css" class="repo-card" data-speedup="268">
+    <a href="https://github.com/adobe/spectrum-css" class="repo-card" data-speedup="103">
       <div class="repo-header">
         <span class="repo-name">Spectrum CSS</span>
-        <span class="repo-speedup">268x</span>
+        <span class="repo-speedup">103x</span>
       </div>
       <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 241 files</span>
-        <span>2.952s &rarr; 0.011s</span>
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 236 files</span>
+        <span>5.458s &rarr; 0.053s</span>
       </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="67"></div></div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="85"></div></div>
     </a>
 
-    <a href="https://github.com/alphagov/govuk-frontend" class="repo-card" data-speedup="147">
+    <a href="https://github.com/patternfly/patternfly" class="repo-card" data-speedup="99">
       <div class="repo-header">
-        <span class="repo-name">GOV.UK Frontend</span>
-        <span class="repo-speedup">147x</span>
+        <span class="repo-name">PatternFly</span>
+        <span class="repo-speedup">99x</span>
       </div>
       <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 163 files</span>
-        <span>1.614s &rarr; 0.011s</span>
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 213 files</span>
+        <span>6.245s &rarr; 0.063s</span>
       </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="37"></div></div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="81"></div></div>
     </a>
 
-    <a href="https://github.com/twbs/bootstrap" class="repo-card" data-speedup="143">
+    <a href="https://github.com/mattermost/mattermost" class="repo-card" data-speedup="97">
+      <div class="repo-header">
+        <span class="repo-name">Mattermost</span>
+        <span class="repo-speedup">97x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 564 files</span>
+        <span>7.063s &rarr; 0.073s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="80"></div></div>
+    </a>
+
+    <a href="https://github.com/discourse/discourse" class="repo-card" data-speedup="94">
+      <div class="repo-header">
+        <span class="repo-name">Discourse</span>
+        <span class="repo-speedup">94x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 377 files</span>
+        <span>3.685s &rarr; 0.039s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="78"></div></div>
+    </a>
+
+    <a href="https://github.com/rsuite/rsuite" class="repo-card" data-speedup="94">
+      <div class="repo-header">
+        <span class="repo-name">rsuite</span>
+        <span class="repo-speedup">94x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 207 files</span>
+        <span>3.470s &rarr; 0.037s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="77"></div></div>
+    </a>
+
+    <a href="https://github.com/joomla/joomla-cms" class="repo-card" data-speedup="76">
+      <div class="repo-header">
+        <span class="repo-name">Joomla</span>
+        <span class="repo-speedup">76x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 169 files</span>
+        <span>1.739s &rarr; 0.023s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="62"></div></div>
+    </a>
+
+    <a href="https://github.com/angular/components" class="repo-card" data-speedup="75">
+      <div class="repo-header">
+        <span class="repo-name">Angular Components</span>
+        <span class="repo-speedup">75x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 627 files</span>
+        <span>3.508s &rarr; 0.047s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="61"></div></div>
+    </a>
+
+    <a href="https://github.com/jupyterlab/jupyterlab" class="repo-card" data-speedup="66">
+      <div class="repo-header">
+        <span class="repo-name">JupyterLab</span>
+        <span class="repo-speedup">66x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 211 files</span>
+        <span>2.760s &rarr; 0.042s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="54"></div></div>
+    </a>
+
+    <a href="https://github.com/twbs/bootstrap" class="repo-card" data-speedup="58">
       <div class="repo-header">
         <span class="repo-name">Bootstrap</span>
-        <span class="repo-speedup">143x</span>
+        <span class="repo-speedup">58x</span>
       </div>
       <div class="repo-meta">
         <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 99 files</span>
-        <span>1.569s &rarr; 0.011s</span>
+        <span>2.308s &rarr; 0.040s</span>
       </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="36"></div></div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="47"></div></div>
     </a>
 
-    <a href="https://github.com/primer/css" class="repo-card" data-speedup="129">
+    <a href="https://github.com/freeCodeCamp/freeCodeCamp" class="repo-card" data-speedup="56">
+      <div class="repo-header">
+        <span class="repo-name">freeCodeCamp</span>
+        <span class="repo-speedup">56x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 91 files</span>
+        <span>0.835s &rarr; 0.015s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="46"></div></div>
+    </a>
+
+    <a href="https://github.com/Automattic/wp-calypso" class="repo-card" data-speedup="52">
+      <div class="repo-header">
+        <span class="repo-name">wp-calypso</span>
+        <span class="repo-speedup">52x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 2,051 files</span>
+        <span>23.903s &rarr; 0.459s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="43"></div></div>
+    </a>
+
+    <a href="https://github.com/mastodon/mastodon" class="repo-card" data-speedup="48">
+      <div class="repo-header">
+        <span class="repo-name">Mastodon</span>
+        <span class="repo-speedup">48x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 36 files</span>
+        <span>3.195s &rarr; 0.066s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="40"></div></div>
+    </a>
+
+    <a href="https://github.com/salesforce-ux/design-system" class="repo-card" data-speedup="48">
+      <div class="repo-header">
+        <span class="repo-name">Salesforce SLDS</span>
+        <span class="repo-speedup">48x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 446 files</span>
+        <span>2.336s &rarr; 0.049s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="39"></div></div>
+    </a>
+
+    <a href="https://github.com/carbon-design-system/carbon" class="repo-card" data-speedup="35">
+      <div class="repo-header">
+        <span class="repo-name">Carbon</span>
+        <span class="repo-speedup">35x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 1,263 files</span>
+        <span>4.678s &rarr; 0.135s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="29"></div></div>
+    </a>
+
+    <a href="https://github.com/wordpress/gutenberg" class="repo-card" data-speedup="23">
+      <div class="repo-header">
+        <span class="repo-name">Gutenberg</span>
+        <span class="repo-speedup">23x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 729 files</span>
+        <span>5.090s &rarr; 0.219s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="19"></div></div>
+    </a>
+
+    <a href="https://github.com/mui/material-ui" class="repo-card" data-speedup="14">
+      <div class="repo-header">
+        <span class="repo-name">Material UI</span>
+        <span class="repo-speedup">14x</span>
+      </div>
+      <div class="repo-meta">
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 39 files</span>
+        <span>0.709s &rarr; 0.051s</span>
+      </div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="11"></div></div>
+    </a>
+
+    <a href="https://github.com/primer/css" class="repo-card" data-speedup="12">
       <div class="repo-header">
         <span class="repo-name">Primer CSS</span>
-        <span class="repo-speedup">129x</span>
+        <span class="repo-speedup">12x</span>
       </div>
       <div class="repo-meta">
         <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 113 files</span>
-        <span>1.285s &rarr; 0.010s</span>
+        <span>1.809s &rarr; 0.155s</span>
       </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="32"></div></div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="10"></div></div>
     </a>
 
-    <a href="https://github.com/wordpress/gutenberg" class="repo-card" data-speedup="112">
+    <a href="https://github.com/grafana/grafana" class="repo-card" data-speedup="11">
       <div class="repo-header">
-        <span class="repo-name">Gutenberg</span>
-        <span class="repo-speedup">112x</span>
+        <span class="repo-name">Grafana</span>
+        <span class="repo-speedup">11x</span>
       </div>
       <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 775 files</span>
-        <span>4.715s &rarr; 0.042s</span>
+        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 10 files</span>
+        <span>0.619s &rarr; 0.055s</span>
       </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="28"></div></div>
-    </a>
-
-    <a href="https://github.com/Automattic/wp-calypso" class="repo-card" data-speedup="101">
-      <div class="repo-header">
-        <span class="repo-name">wp-calypso</span>
-        <span class="repo-speedup">101x</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 2,238 files</span>
-        <span>13.223s &rarr; 0.131s</span>
-      </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="25"></div></div>
-    </a>
-
-    <a href="https://github.com/angular/components" class="repo-card" data-speedup="88">
-      <div class="repo-header">
-        <span class="repo-name">Angular Components</span>
-        <span class="repo-speedup">88x</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 620 files</span>
-        <span>1.843s &rarr; 0.021s</span>
-      </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="22"></div></div>
-    </a>
-
-    <a href="https://github.com/discourse/discourse" class="repo-card" data-speedup="69">
-      <div class="repo-header">
-        <span class="repo-name">Discourse</span>
-        <span class="repo-speedup">69x</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 355 files</span>
-        <span>1.438s &rarr; 0.021s</span>
-      </div>
-      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="17"></div></div>
+      <div class="repo-bar-track"><div class="repo-bar-fill" data-width="9"></div></div>
     </a>
 
     <!-- Validated-only repos (no benchmark, just parity tested) -->
-    <a href="https://github.com/mattermost/mattermost" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Mattermost</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 494 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/facebook/docusaurus" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Docusaurus</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 212 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/freeCodeCamp/freeCodeCamp" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">freeCodeCamp</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 88 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/mui/material-ui" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Material UI</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 43 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/grafana/grafana" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Grafana</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 12 files</span>
-      </div>
-    </a>
-
     <a href="https://github.com/elastic/eui" class="repo-card">
       <div class="repo-header">
         <span class="repo-name">Elastic EUI</span>
@@ -404,26 +462,6 @@ footer a:hover{color:var(--fg)}
       </div>
       <div class="repo-meta">
         <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 4 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/mastodon/mastodon" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Mastodon</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 67 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/jupyterlab/jupyterlab" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">JupyterLab</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 210 files</span>
       </div>
     </a>
 
@@ -436,29 +474,9 @@ footer a:hover{color:var(--fg)}
         <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 145 files</span>
       </div>
     </a>
-
-    <a href="https://github.com/joomla/joomla-cms" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Joomla</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 169 files</span>
-      </div>
-    </a>
-
-    <a href="https://github.com/salesforce-ux/design-system" class="repo-card">
-      <div class="repo-header">
-        <span class="repo-name">Salesforce SLDS</span>
-        <span class="repo-validated"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> validated</span>
-      </div>
-      <div class="repo-meta">
-        <span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg> 446 files</span>
-      </div>
-    </a>
   </div>
 
-  <p class="note">7,672 files validated across 21 repos. <a href="https://github.com/codebend3r/gale/tree/main/benchmarks">Reproduce these results</a></p>
+  <p class="note">8,022 files validated across 21 repos. <a href="https://github.com/codebend3r/gale/tree/main/benchmarks">Reproduce these results</a></p>
 </section>
 
 <section class="features fade-in" id="features">
