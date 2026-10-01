@@ -332,6 +332,39 @@ impl<'a> PostcssTree<'a> {
       && self.start_line(prev) == self.end_line(prev)
   }
 
+  /// The source ranges to delete so the text reads as PostCSS prints the
+  /// tree after `node.remove()`.
+  ///
+  /// That is the node with its `raws.before`.  PostCSS prints a `;` after
+  /// every declaration and blockless at-rule but the last non-comment node
+  /// of a block, which gets one only when the block's last statement had one
+  /// (`raws.semicolon`).  So when the node removed is that last statement
+  /// and has no `;`, the one ending the statement that takes its place goes
+  /// too.  Ranges come in source order and never overlap.
+  pub fn removal_ranges(&self, i: usize) -> Vec<Range<usize>> {
+    let node = &self.nodes[i];
+    let mut ranges = vec![node.before.start.min(node.start)..node.end];
+    let siblings = self.siblings(i);
+    let is_statement = |s: usize| self.nodes[s].kind != NodeKind::Comment;
+    let last = siblings.iter().rposition(|&s| is_statement(s));
+    if last.map(|l| siblings[l]) != Some(i) || self.text(i).ends_with(';') {
+      return ranges;
+    }
+    let previous = siblings[..node.index.min(siblings.len())]
+      .iter()
+      .rev()
+      .find(|&&s| is_statement(s));
+    if let Some(&prev) = previous {
+      let p = &self.nodes[prev];
+      let prints_semicolon =
+        p.kind == NodeKind::Decl || (p.kind == NodeKind::AtRule && p.children.is_none());
+      if prints_semicolon && self.text(prev).ends_with(';') {
+        ranges.insert(0, p.end - 1..p.end);
+      }
+    }
+    ranges
+  }
+
   /// Stylelint's `isAfterBlock`: the previous sibling is a rule or at-rule.
   pub fn is_after_block(&self, i: usize) -> bool {
     self
@@ -1758,6 +1791,26 @@ mod tests {
     assert!(tree.nodes[kids[1]].inline);
     assert_eq!(tree.text(kids[1]), "// c");
     assert_eq!(tree.nodes[kids[2]].name, "color");
+  }
+
+  #[test]
+  fn removal_ranges_keep_the_semicolons_postcss_prints() {
+    let source = "a { color: red; top: 0; left: 1px }";
+    let tree = PostcssTree::parse(source, Syntax::Css);
+    let kids = tree.nodes[tree.root[0]].children.clone().unwrap();
+    let removed = |i: usize| {
+      let mut text = source.to_string();
+      for range in tree.removal_ranges(i).into_iter().rev() {
+        text.replace_range(range, "");
+      }
+      text
+    };
+    assert_eq!(removed(kids[0]), "a { top: 0; left: 1px }");
+    assert_eq!(removed(kids[2]), "a { color: red; top: 0 }");
+    let source = "a { color: red; /* c */ top: 0; }";
+    let tree = PostcssTree::parse(source, Syntax::Css);
+    let kids = tree.nodes[tree.root[0]].children.clone().unwrap();
+    assert_eq!(tree.removal_ranges(kids[2]), vec![23..31]);
   }
 
   #[test]
