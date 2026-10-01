@@ -39,6 +39,17 @@ pub struct ValueNode<'a> {
   /// Byte offset of the node in the parsed text.  For a divider this is
   /// where the whitespace before it starts, as in `postcss-value-parser`.
   pub source_index: usize,
+  /// Byte offset just past the node (`sourceEndIndex`).  A divider's end
+  /// includes the whitespace after it.
+  pub source_end_index: usize,
+  /// The quote a string is written with.
+  pub quote: Option<char>,
+  /// Whitespace before a divider, or after a function's `(`.
+  pub before: &'a str,
+  /// Whitespace after a divider, or before a function's `)`.
+  pub after: &'a str,
+  /// Whether a string, comment or function runs to the end of the input.
+  pub unclosed: bool,
   /// A function's arguments; empty for every other kind.
   pub nodes: Vec<ValueNode<'a>>,
 }
@@ -58,6 +69,43 @@ impl ValueNode<'_> {
   pub fn is_slash(&self) -> bool {
     self.kind == NodeKind::Div && self.value == "/"
   }
+
+  /// Whether this is a function named `name`, ignoring ASCII case.
+  pub fn is_function_named(&self, name: &str) -> bool {
+    self.is_function() && self.value.eq_ignore_ascii_case(name)
+  }
+
+  /// The node as text, as `postcss-value-parser`'s `stringify` prints it.
+  pub fn to_css(&self) -> String {
+    match self.kind {
+      NodeKind::Word | NodeKind::Space | NodeKind::UnicodeRange => self.value.to_string(),
+      NodeKind::String => {
+        let quote = self.quote.map(String::from).unwrap_or_default();
+        let close = if self.unclosed { "" } else { quote.as_str() };
+        format!("{quote}{}{close}", self.value)
+      }
+      NodeKind::Comment => {
+        let close = if self.unclosed { "" } else { "*/" };
+        format!("/*{}{close}", self.value)
+      }
+      NodeKind::Div => format!("{}{}{}", self.before, self.value, self.after),
+      NodeKind::Function => {
+        let close = if self.unclosed { "" } else { ")" };
+        format!(
+          "{}({}{}{}{close}",
+          self.value,
+          self.before,
+          stringify(&self.nodes),
+          self.after
+        )
+      }
+    }
+  }
+}
+
+/// `nodes` as text, as `postcss-value-parser`'s `stringify` prints them.
+pub fn stringify(nodes: &[ValueNode<'_>]) -> String {
+  nodes.iter().map(ValueNode::to_css).collect()
 }
 
 /// What the parser's `parent` variable holds: nothing before the first
@@ -93,15 +141,12 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
   let at = |i: usize| bytes.get(i).copied();
   // `stack[0]` holds the root's nodes; each open function pushes its own
   // node, whose arguments collect in `nodes`.
-  let mut stack: Vec<ValueNode<'_>> = vec![ValueNode {
-    kind: NodeKind::Function,
-    value: "",
-    source_index: 0,
-    nodes: Vec::new(),
-  }];
+  let mut stack: Vec<ValueNode<'_>> = vec![leaf(NodeKind::Function, "", 0, 0)];
   let mut parent = Parent::Unset;
   let mut name = "";
   let mut before_len = 0usize;
+  // Whitespace before the `)` about to close a function.
+  let mut after = "";
   let mut pos = 0usize;
 
   while pos < max {
@@ -120,8 +165,13 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         .is_some_and(|n| n.kind == NodeKind::Div);
       if following == Some(b')') && balanced {
         // Kept as the function's `after`.
+        after = &input[pos..next];
       } else if after_div {
         // Kept as the divider's `after`.
+        if let Some(div) = stack.last_mut().and_then(|frame| frame.nodes.last_mut()) {
+          div.after = &input[pos..next];
+          div.source_end_index = next;
+        }
       } else if following == Some(b',')
         || following == Some(b':')
         || (following == Some(b'/')
@@ -130,7 +180,10 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
       {
         before_len = next - pos;
       } else {
-        push(&mut stack, leaf(NodeKind::Space, &input[pos..next], pos));
+        push(
+          &mut stack,
+          leaf(NodeKind::Space, &input[pos..next], pos, next),
+        );
       }
       pos = next;
     } else if code == b'\'' || code == b'"' {
@@ -153,10 +206,15 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         }
       };
       let end = close.unwrap_or(max);
-      push(
-        &mut stack,
-        leaf(NodeKind::String, &input[pos + 1..end], pos),
+      let mut string = leaf(
+        NodeKind::String,
+        &input[pos + 1..end],
+        pos,
+        close.map_or(max, |c| c + 1),
       );
+      string.quote = Some(code as char);
+      string.unclosed = close.is_none();
+      push(&mut stack, string);
       pos = close.map_or(max, |c| c + 1);
     } else if code == b'/' && at(pos + 1) == Some(b'*') {
       // A comment.  The search for `*/` starts at the `*`, so `/*/`
@@ -164,21 +222,32 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
       let close = input[pos + 1..].find("*/").map(|offset| pos + 1 + offset);
       let end = close.unwrap_or(max);
       let text = input.get(pos + 2..end).unwrap_or("");
-      push(&mut stack, leaf(NodeKind::Comment, text, pos));
+      let mut comment = leaf(NodeKind::Comment, text, pos, close.map_or(max, |c| c + 2));
+      comment.unclosed = close.is_none();
+      push(&mut stack, comment);
       pos = close.map_or(max, |c| c + 2);
     } else if (code == b'/' || code == b'*') && parent.is_calc() {
       // An operator inside `calc()`.
       push(
         &mut stack,
-        leaf(NodeKind::Word, &input[pos..pos + 1], pos - before_len),
+        leaf(
+          NodeKind::Word,
+          &input[pos..pos + 1],
+          pos - before_len,
+          pos + 1,
+        ),
       );
       pos += 1;
     } else if code == b'/' || code == b',' || code == b':' {
       // A divider; whitespace before it was saved in `before_len`.
-      push(
-        &mut stack,
-        leaf(NodeKind::Div, &input[pos..pos + 1], pos - before_len),
+      let mut div = leaf(
+        NodeKind::Div,
+        &input[pos..pos + 1],
+        pos - before_len,
+        pos + 1,
       );
+      div.before = &input[pos - before_len..pos];
+      push(&mut stack, div);
       before_len = 0;
       pos += 1;
     } else if code == b'(' {
@@ -212,36 +281,46 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         while content_end > open + 1 && bytes[content_end - 1] <= b' ' {
           content_end -= 1;
         }
-        let mut nodes = Vec::new();
+        let mut function = leaf(
+          NodeKind::Function,
+          name,
+          function_start,
+          close.map_or(max, |c| c + 1),
+        );
+        function.before = &input[open + 1..next];
+        function.unclosed = close.is_none();
         if content_end > pos {
-          nodes.push(leaf(NodeKind::Word, &input[pos..content_end], pos));
+          function.nodes.push(leaf(
+            NodeKind::Word,
+            &input[pos..content_end],
+            pos,
+            content_end,
+          ));
         }
         if close.is_none() && content_end < end {
-          nodes.push(leaf(NodeKind::Space, &input[content_end..end], content_end));
+          function.nodes.push(leaf(
+            NodeKind::Space,
+            &input[content_end..end],
+            content_end,
+            end,
+          ));
+        } else if content_end > open + 1 {
+          function.after = &input[content_end..end];
         }
-        push(
-          &mut stack,
-          ValueNode {
-            kind: NodeKind::Function,
-            value: name,
-            source_index: function_start,
-            nodes,
-          },
-        );
+        push(&mut stack, function);
         pos = close.map_or(max, |c| c + 1);
       } else {
-        stack.push(ValueNode {
-          kind: NodeKind::Function,
-          value: name,
-          source_index: function_start,
-          nodes: Vec::new(),
-        });
+        let mut function = leaf(NodeKind::Function, name, function_start, open + 1);
+        function.before = &input[open + 1..next];
+        stack.push(function);
         parent = Parent::Function(name);
       }
       name = "";
     } else if code == b')' && balanced {
       pos += 1;
-      let done = stack.pop().expect("open function");
+      let mut done = stack.pop().expect("open function");
+      done.source_end_index = pos;
+      done.after = std::mem::take(&mut after);
       stack.last_mut().expect("root frame").nodes.push(done);
       parent = match stack.last() {
         Some(frame) if stack.len() > 1 => Parent::Function(frame.value),
@@ -279,9 +358,9 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
       if at(next) == Some(b'(') {
         name = token;
       } else if is_unicode_range(token) {
-        push(&mut stack, leaf(NodeKind::UnicodeRange, token, pos));
+        push(&mut stack, leaf(NodeKind::UnicodeRange, token, pos, end));
       } else {
-        push(&mut stack, leaf(NodeKind::Word, token, pos));
+        push(&mut stack, leaf(NodeKind::Word, token, pos, end));
       }
       pos = end.max(pos + 1);
     }
@@ -289,7 +368,9 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
 
   // Close any functions left open.
   while stack.len() > 1 {
-    let done = stack.pop().expect("open function");
+    let mut done = stack.pop().expect("open function");
+    done.unclosed = true;
+    done.source_end_index = max;
     stack.last_mut().expect("root frame").nodes.push(done);
   }
   stack.pop().map(|root| root.nodes).unwrap_or_default()
@@ -313,12 +394,23 @@ fn push<'a>(stack: &mut [ValueNode<'a>], node: ValueNode<'a>) {
   }
 }
 
-/// A node without children.
-fn leaf(kind: NodeKind, value: &str, source_index: usize) -> ValueNode<'_> {
+/// A node spanning `source_index..source_end_index`, without children or
+/// any of the optional parts.
+fn leaf(
+  kind: NodeKind,
+  value: &str,
+  source_index: usize,
+  source_end_index: usize,
+) -> ValueNode<'_> {
   ValueNode {
     kind,
     value,
     source_index,
+    source_end_index,
+    quote: None,
+    before: "",
+    after: "",
+    unclosed: false,
     nodes: Vec::new(),
   }
 }
@@ -447,6 +539,40 @@ mod tests {
       !n.is_function()
     });
     assert_eq!(words, vec!["a", " ", "f", " ", "c"]);
+  }
+
+  #[test]
+  fn records_ends_quotes_and_spacing() {
+    let nodes = parse("'a' , f( x ) url( y )");
+    assert_eq!((nodes[0].source_index, nodes[0].source_end_index), (0, 3));
+    assert_eq!(nodes[0].quote, Some('\''));
+    assert_eq!(nodes[1].kind, NodeKind::Div);
+    assert_eq!((nodes[1].before, nodes[1].after), (" ", " "));
+    assert_eq!((nodes[1].source_index, nodes[1].source_end_index), (3, 6));
+    let f = &nodes[2];
+    assert_eq!((f.before, f.after), (" ", " "));
+    assert_eq!((f.source_index, f.source_end_index), (6, 12));
+    let url = &nodes[4];
+    assert_eq!((url.before, url.after), (" ", " "));
+    assert_eq!(url.source_end_index, 21);
+    assert!(parse("f(a")[0].unclosed);
+    assert!(parse("'a")[0].unclosed);
+  }
+
+  #[test]
+  fn stringify_round_trips() {
+    for input in [
+      "1px solid red",
+      "a , b / c",
+      "url( x.png )",
+      "fn( a, \"b\" ) /* c */",
+      "calc(1px + 2px)",
+      "\"unclosed",
+      "f(unclosed",
+      "url(unclosed ",
+    ] {
+      assert_eq!(stringify(&parse(input)), input, "{input}");
+    }
   }
 
   #[test]
