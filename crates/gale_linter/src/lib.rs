@@ -18,6 +18,7 @@ pub mod selector;
 pub mod source_text;
 pub mod style_rules;
 pub mod stylelint_version;
+pub mod value_parser;
 
 pub use registry::RuleRegistry;
 pub use rule::{Rule, RuleContext};
