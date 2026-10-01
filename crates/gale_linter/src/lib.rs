@@ -8,6 +8,7 @@
 
 pub mod custom_message;
 pub mod data;
+pub mod embedded;
 pub mod empty_lines;
 pub mod known_rules;
 pub mod panic_guard;
