@@ -147,27 +147,19 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn allows_newline_after_at_rule_semicolon() {
     let source = "@import url(\"foo.css\");\na { }";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx(source));
+    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_missing_newline_after_at_rule_semicolon() {
     let source = "@import url(\"foo.css\"); a { }";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx(source));
+    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -191,7 +183,7 @@ mod tests {
   #[test]
   fn allows_eof_after_semicolon() {
     let source = "@charset \"UTF-8\";";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx(source));
+    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 }

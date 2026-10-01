@@ -255,23 +255,15 @@ impl Rule for StylisticDeclarationColonNewlineAfter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn always_multi_line_allows_single_line_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; }";
-    let d = StylisticDeclarationColonNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticDeclarationColonNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -279,7 +271,8 @@ mod tests {
   fn always_multi_line_reports_multiline_value_without_newline_after_colon() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url()\n    no-repeat; }";
-    let d = StylisticDeclarationColonNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticDeclarationColonNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -288,7 +281,8 @@ mod tests {
   fn always_multi_line_allows_newline_after_colon_for_multiline_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background:\n    url() no-repeat; }";
-    let d = StylisticDeclarationColonNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticDeclarationColonNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -296,7 +290,8 @@ mod tests {
   fn always_reports_missing_newline() {
     let opt = serde_json::json!("always");
     let source = "a { color: red; }";
-    let d = StylisticDeclarationColonNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticDeclarationColonNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
   }
 
@@ -304,7 +299,8 @@ mod tests {
   fn always_allows_newline_after_colon() {
     let opt = serde_json::json!("always");
     let source = "a { color:\n  red; }";
-    let d = StylisticDeclarationColonNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticDeclarationColonNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 }

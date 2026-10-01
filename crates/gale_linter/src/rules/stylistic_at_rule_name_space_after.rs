@@ -159,32 +159,13 @@ impl Rule for StylisticAtRuleNameSpaceAfter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn allows_space_after_at_rule_name() {
     let source = "@media screen { }";
-    let d = StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx(source));
+    let d = StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -192,7 +173,8 @@ mod tests {
   fn reports_missing_space_after_at_rule_name() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media(min-width: 100px) { }";
-    let d = StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d =
+      StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -200,7 +182,7 @@ mod tests {
   #[test]
   fn allows_charset() {
     let source = "@charset \"UTF-8\";";
-    let d = StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx(source));
+    let d = StylisticAtRuleNameSpaceAfter.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 }

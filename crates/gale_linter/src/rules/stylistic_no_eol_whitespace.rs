@@ -100,29 +100,20 @@ impl Rule for StylisticNoEolWhitespace {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn allows_no_trailing_whitespace() {
     let source = "a {\n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx(source));
+    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_trailing_spaces() {
     let source = "a {  \n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx(source));
+    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("end-of-line whitespace"));
   }
@@ -130,14 +121,14 @@ mod tests {
   #[test]
   fn reports_trailing_tab() {
     let source = "a {\t\n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx(source));
+    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_lines() {
     let source = "a { \n  color: red; \n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx(source));
+    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 2);
   }
 }
