@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern::{self, Regex};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext, per_file};
+use crate::rule::{Rule, RuleContext, per_run};
 use crate::stylelint_order::{
   blocks, comments_after_node, comments_before_node, is_allowed_to_process,
   is_standard_syntax_property, js_sort, reorder_edit, split_array_settings,
@@ -418,7 +418,7 @@ impl Rule for OrderOrder {
 
   /// Checks the order of the nodes in every block of the document.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let parsed = per_file(self.name(), ctx.options, || Config::parse(ctx.options));
+    let parsed = per_run(self.name(), ctx.options, || Config::parse(ctx.options));
     let Some(config) = parsed.as_ref() else {
       return vec![];
     };

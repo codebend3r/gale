@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::empty_lines::newline_of;
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext, per_file};
+use crate::rule::{Rule, RuleContext, per_run};
 use crate::stylelint_order::{
   blocks, comments_after_declaration, comments_before_declaration, is_allowed_to_process,
   is_property, is_shorthand, js_sort, normalized_property, reorder_edit, split_array_settings,
@@ -264,8 +264,8 @@ impl Rule for OrderPropertiesOrder {
   /// block of the document.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     // The order list can run to hundreds of properties; build the lookup
-    // tables once per file.
-    let parsed = per_file(self.name(), ctx.options, || Config::parse(ctx.options));
+    // tables once per run.
+    let parsed = per_run(self.name(), ctx.options, || Config::parse(ctx.options));
     let Some(config) = parsed.as_ref() else {
       return vec![];
     };
