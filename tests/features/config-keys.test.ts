@@ -188,3 +188,45 @@ describe("cache and cacheLocation config keys", () => {
     expect(project.exists(".gale_cache")).toBe(false);
   });
 });
+
+describe("extends config key", () => {
+  test("warns once about each entry it cannot resolve", () => {
+    const project = makeProject({
+      "stylelint.config.js": `module.exports = {
+  extends: [
+    require.resolve('@wordpress/stylelint-tools/config'),
+    'stylelint-config-not-installed',
+  ],
+  rules: { 'block-no-empty': true },
+};
+`,
+      "a.css": EMPTY_BLOCK,
+      "nested/b.css": EMPTY_BLOCK,
+    });
+
+    const result = runGale(["a.css", "nested/b.css"], { cwd: project.dir });
+
+    const warnings = result.stderr.split("\n").filter((l) => l.startsWith("warning:"));
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('could not resolve extends "@wordpress/stylelint-tools/config"');
+    expect(warnings[1]).toContain('could not resolve extends "stylelint-config-not-installed"');
+    // The config's own rules still apply.
+    expect(result.exitCode).toBe(2);
+  });
+
+  test("warns about an entry that is not a string", () => {
+    const project = makeProject({
+      "stylelint.config.js": `module.exports = {
+  extends: [ path.join( __dirname, 'base.js' ) ],
+  rules: { 'block-no-empty': true },
+};
+`,
+      "a.css": EMPTY_BLOCK,
+    });
+
+    const result = runGale(["a.css"], { cwd: project.dir });
+    expect(result.stderr).toContain("could not resolve an extends entry");
+    expect(result.stderr).toContain("it is not a string");
+    expect(result.exitCode).toBe(2);
+  });
+});
