@@ -7,6 +7,7 @@
 )]
 
 pub mod autoprefixable;
+pub mod css_tokenizer;
 pub mod custom_message;
 pub mod data;
 pub mod known_rules;
