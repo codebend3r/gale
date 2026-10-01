@@ -1,14 +1,20 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::selector::postcss::{self, Kind, Node, Selector};
+use crate::standard_syntax::is_standard_syntax_selector;
+use crate::style_rules::scan_style_rules;
 
 /// Specify simple or complex notation for `:not()` pseudo-class.
 ///
 /// Equivalent to Stylelint's `selector-not-notation` rule.
 ///
-/// - `"complex"` (default): prefer list arguments — flag chained `:not(.a):not(.b)`.
-/// - `"simple"`: prefer chained notation — flag list arguments like `:not(.a, .b)`.
+/// - `"complex"` (default): prefer list arguments — flag chained
+///   `:not(.a):not(.b)`; the fix merges the chain into `:not(.a, .b)`.
+/// - `"simple"`: prefer chained notation — flag `:not()` whose argument is a
+///   list or anything but one simple selector; the fix splits a list of
+///   simple selectors into `:not(.a):not(.b)`.
 pub struct SelectorNotNotation;
 
 impl Rule for SelectorNotNotation {
@@ -24,225 +30,298 @@ impl Rule for SelectorNotNotation {
     Severity::Warning
   }
 
-  /// Flags `:not()` written in the notation the option forbids. Interpolated
-  /// selectors are skipped as unresolvable.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
+  /// Flags `:not()` written in the notation the option forbids, in every
+  /// style rule's selector as written. Interpolated selectors are skipped.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let simple = ctx.primary_option_str() == Some("simple");
+    let message = if simple {
+      "Expected simple :not() pseudo-class notation"
+    } else {
+      "Expected complex :not() pseudo-class notation"
     };
-    // Skip selectors with SCSS/Less interpolation — the final selector is
-    // unknown until compilation, so checking notation is meaningless.
-    if rule.selector.contains("#{") || rule.selector.contains("@{") {
-      return vec![];
-    }
 
-    let mode = ctx.primary_option_str().unwrap_or("complex");
-    let lower = rule.selector.to_ascii_lowercase();
-
-    match mode {
-      "simple" => {
-        if has_list_not(&lower) {
-          vec![Diagnostic::new(
-                        self.name(),
-                        format!(
-                            "Expected :not() pseudo-class to have a single simple selector, not a list in \"{}\"",
-                            rule.selector
-                        ),
-                    )
-                    .severity(self.default_severity())
-                    .span(Span::new(rule.span.offset, rule.span.length))]
-        } else {
-          vec![]
-        }
-      }
-      // "complex" or any other value
-      _ => {
-        if has_chained_not(&lower) {
-          vec![Diagnostic::new(
-                        self.name(),
-                        format!(
-                            "Expected :not() pseudo-class with list argument instead of chained :not() in \"{}\"",
-                            rule.selector
-                        ),
-                    )
-                    .severity(self.default_severity())
-                    .span(Span::new(rule.span.offset, rule.span.length))]
-        } else {
-          vec![]
-        }
-      }
-    }
-  }
-}
-
-/// Check if the selector contains chained `:not(...)` pseudo-classes, e.g. `:not(.a):not(.b)`.
-fn has_chained_not(selector: &str) -> bool {
-  let pattern = ":not(";
-  let mut search_from = 0;
-  let mut last_end: Option<usize> = None;
-
-  while let Some(pos) = selector[search_from..].find(pattern) {
-    let abs_pos = search_from + pos;
-    let args_start = abs_pos + pattern.len();
-
-    // Find the matching closing paren (handle nested parens).
-    let mut depth = 1;
-    let mut i = args_start;
-    let bytes = selector.as_bytes();
-    while i < bytes.len() && depth > 0 {
-      if bytes[i] == b'(' {
-        depth += 1;
-      } else if bytes[i] == b')' {
-        depth -= 1;
-      }
-      i += 1;
-    }
-
-    if depth == 0 {
-      // `i` is one past the closing paren.
-      if let Some(prev_end) = last_end
-        && abs_pos == prev_end
+    let mut diags = Vec::new();
+    for rule in scan_style_rules(ctx.source, ctx.syntax) {
+      if !rule.prelude.to_ascii_lowercase().contains(":not(")
+        || !is_standard_syntax_selector(&rule.prelude)
       {
-        return true;
+        continue;
       }
-      last_end = Some(i);
+      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+        continue;
+      };
+      postcss::walk(&selectors, &mut |visit| {
+        let not = visit.node;
+        if !is_not(not) {
+          return;
+        }
+        let fix = if simple {
+          let list = not.args.as_ref().map_or(&[][..], |a| &a.selectors[..]);
+          if is_simple(list) {
+            return;
+          }
+          simple_fix(ctx.source, visit.siblings, visit.index, list)
+        } else {
+          let Some(prev) = visit.prev().filter(|prev| is_not(prev)) else {
+            return;
+          };
+          // The first report of a chain carries the fix for the whole chain.
+          let chain_start = visit.index - 1;
+          let starts_chain = chain_start == 0 || !is_not(&visit.siblings[chain_start - 1]);
+          if starts_chain {
+            complex_fix(ctx.source, prev, &visit.siblings[visit.index..])
+          } else {
+            None
+          }
+        };
+        let mut diag = Diagnostic::new(self.name(), message)
+          .severity(self.default_severity())
+          .span(Span::from_range(not.start, not.end));
+        if let Some(fix) = fix {
+          diag = diag.fix(fix);
+        }
+        diags.push(diag);
+      });
     }
-
-    search_from = abs_pos + 1;
+    diags
   }
-  false
 }
 
-/// Check if any `:not(...)` contains a selector list (comma-separated arguments).
-fn has_list_not(selector: &str) -> bool {
-  let pattern = ":not(";
-  let mut search_from = 0;
+/// Whether a node is the `:not()` pseudo-class.
+fn is_not(node: &Node) -> bool {
+  is_pseudo_class(node) && node.value.eq_ignore_ascii_case(":not")
+}
 
-  while let Some(pos) = selector[search_from..].find(pattern) {
-    let abs_pos = search_from + pos;
-    let args_start = abs_pos + pattern.len();
+/// Whether a pseudo is a pseudo-class, as postcss-selector-parser tells:
+/// not `::name`, nor one of the four legacy single-colon pseudo-elements.
+fn is_pseudo_class(node: &Node) -> bool {
+  node.kind == Kind::Pseudo
+    && !node.value.starts_with("::")
+    && ![":before", ":after", ":first-letter", ":first-line"]
+      .iter()
+      .any(|legacy| node.value.eq_ignore_ascii_case(legacy))
+}
 
-    // Find the matching closing paren (handle nested parens).
-    let mut depth = 1;
-    let mut i = args_start;
-    let bytes = selector.as_bytes();
-    while i < bytes.len() && depth > 0 {
-      if bytes[i] == b'(' {
-        depth += 1;
-      } else if bytes[i] == b')' {
-        depth -= 1;
-      }
-      i += 1;
-    }
+/// Stylelint's `isSimpleSelector`: a pseudo-class, attribute, class,
+/// universal, id or type selector.
+fn is_simple_selector(node: &Node) -> bool {
+  is_pseudo_class(node)
+    || matches!(
+      node.kind,
+      Kind::Attribute | Kind::Class | Kind::Universal | Kind::Id | Kind::Tag
+    )
+}
 
-    if depth == 0 {
-      // Check the content between the parens for a comma at depth 0.
-      let content = &selector[args_start..i - 1];
-      let mut inner_depth = 0;
-      for &b in content.as_bytes() {
-        if b == b'(' {
-          inner_depth += 1;
-        } else if b == b')' {
-          inner_depth -= 1;
-        } else if b == b',' && inner_depth == 0 {
-          return true;
-        }
-      }
-    }
-
-    search_from = abs_pos + 1;
+/// Stylelint's `isSimple`: an argument of at most one simple selector that
+/// is not itself `:not()`.
+fn is_simple(list: &[Selector]) -> bool {
+  match list {
+    [] => true,
+    [only] => match only.nodes.as_slice() {
+      [] => true,
+      [first] => is_simple_selector(first) && !is_not(first),
+      _ => false,
+    },
+    _ => false,
   }
-  false
+}
+
+/// A selector of a `:not()` argument as the fixes print it: from its first
+/// node, without the whitespace before it, to its last, keeping whitespace
+/// after the last node when there is more than one (postcss-selector-parser
+/// only resets the first node's spacing).  `None` for an empty selector.
+fn selector_text<'a>(source: &'a str, selector: &Selector) -> Option<&'a str> {
+  let first = selector.nodes.first()?;
+  let last = selector.nodes.last()?;
+  let mut end = last.end;
+  if selector.nodes.len() > 1 {
+    let rest = source.get(end..)?;
+    end += rest.len() - rest.trim_start().len();
+  }
+  source.get(first.start..end)
+}
+
+/// The fix for `"simple"`: keep the first simple selector in this `:not()`
+/// and add a `:not()` for each other one after the chain of `:not()`s this
+/// one starts.  Only a list whose selectors are all single nodes, or whose
+/// second selector is empty, can be split.
+fn simple_fix(source: &str, siblings: &[Node], index: usize, list: &[Selector]) -> Option<Fix> {
+  let second = list.get(1)?;
+  if !(second.nodes.is_empty() || list.iter().all(|s| s.nodes.len() == 1)) {
+    return None;
+  }
+  let not = &siblings[index];
+  let simple: Vec<&str> = list
+    .iter()
+    .filter(|s| s.nodes.first().is_some_and(is_simple_selector))
+    .map(|s| selector_text(source, s))
+    .collect::<Option<_>>()?;
+  let (first, rest) = simple.split_first()?;
+  let chain_end = siblings[index..]
+    .iter()
+    .take_while(|n| is_not(n))
+    .last()
+    .unwrap_or(not);
+  let mut edits = vec![Edit::new(
+    Span::from_range(not.start, not.end),
+    format!("{}({first})", not.value),
+  )];
+  if !rest.is_empty() {
+    // Each added `:not()` is a clone of the chain's last one, whitespace
+    // after it (before a `,` or `)`) included.
+    let after = source.get(chain_end.end..).unwrap_or("");
+    let space = &after[..after.len() - after.trim_start().len()];
+    let trailing = if after[space.len()..].starts_with([',', ')']) {
+      space
+    } else {
+      ""
+    };
+    let added: String = rest
+      .iter()
+      .map(|s| format!("{}({s}){trailing}", chain_end.value))
+      .collect();
+    edits.push(Edit::new(
+      Span::new(chain_end.end + trailing.len(), 0),
+      added,
+    ));
+  }
+  Some(Fix::new(
+    "Split the :not() list into chained :not()s",
+    edits,
+  ))
+}
+
+/// The fix for `"complex"`: merge `first` and the chain of `:not()`s after
+/// it (`chain`) into one `:not()` with a selector list.  None when `first`'s
+/// argument is empty, as Stylelint leaves that alone.
+fn complex_fix(source: &str, first: &Node, chain: &[Node]) -> Option<Fix> {
+  let head = first.args.as_ref()?.selectors.first()?;
+  if head.nodes.is_empty() {
+    return None;
+  }
+  let mut items = Vec::new();
+  let mut last = first;
+  for not in std::iter::once(first).chain(chain.iter().take_while(|n| is_not(n))) {
+    for selector in &not.args.as_ref()?.selectors {
+      items.push(selector_text(source, selector)?);
+    }
+    last = not;
+  }
+  Some(Fix::new(
+    "Merge the chained :not()s into one",
+    vec![Edit::new(
+      Span::from_range(first.start, last.end),
+      format!("{}({})", first.value, items.join(", ")),
+    )],
+  ))
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "selector-not-notation".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
+  }
+
+  #[test]
+  fn simple_splits_lists_of_simple_selectors() {
+    let simple = serde_json::json!("simple");
+    assert_eq!(
+      fix("p, img:not(a\n, div) {}", simple.clone()),
+      "p, img:not(a):not(div) {}"
+    );
+    assert_eq!(
+      fix(":not(.bar, .baz) .qux :not(.foo) {}", simple.clone()),
+      ":not(.bar):not(.baz) .qux :not(.foo) {}"
+    );
+    assert_eq!(fix(":not(a ,) {}", simple.clone()), ":not(a) {}");
+    assert_eq!(
+      fix(":not(a, b) , p {}", simple.clone()),
+      ":not(a) :not(b) , p {}"
+    );
+    let warnings = lint("p, :not(a, div) {}", simple.clone());
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(
+      warnings[0].message,
+      "Expected simple :not() pseudo-class notation"
+    );
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (3, 12));
+  }
+
+  #[test]
+  fn simple_reports_but_cannot_fix_other_arguments() {
+    let simple = serde_json::json!("simple");
+    for css in [
+      ":not(:not()) {}",
+      ":not(::before) {}",
+      ":not(:first-line) {}",
+      ":not(a.foo) {}",
+    ] {
+      let warnings = lint(css, simple.clone());
+      assert_eq!(warnings.len(), 1, "{css}");
+      assert!(warnings[0].fix.is_none(), "{css}");
+    }
+    for css in [
+      ":not() {}",
+      ":not( a ) {}",
+      ":nOt(a) {}",
+      ":not([title]) {}",
+    ] {
+      assert!(lint(css, simple.clone()).is_empty(), "{css}");
     }
   }
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
-
-  // --- "complex" mode (default) ---
-
   #[test]
-  fn complex_reports_chained_not() {
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a):not(.b)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("chained :not()"));
+  fn complex_merges_chains() {
+    let complex = serde_json::json!("complex");
+    assert_eq!(
+      fix(":not( .foo ,:hover ):not(a,div) {}", complex.clone()),
+      ":not(.foo, :hover, a, div) {}"
+    );
+    assert_eq!(
+      fix("a:not(b):not(c):not(d) {}", complex.clone()),
+      "a:not(b, c, d) {}"
+    );
+    for css in [
+      ":not()::after {}",
+      ":not(a, div) {}",
+      ":not(a).foo:not(:empty) {}",
+    ] {
+      assert!(lint(css, complex.clone()).is_empty(), "{css}");
+    }
   }
 
   #[test]
-  fn complex_allows_list_not() {
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a, .b)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn complex_allows_single_not() {
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  // --- "simple" mode ---
-
-  #[test]
-  fn simple_allows_chained_not() {
-    let opt = serde_json::json!("simple");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opt),
-    };
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a):not(.b)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn simple_reports_list_not() {
-    let opt = serde_json::json!("simple");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opt),
-    };
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a, .b)"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("single simple selector"));
-  }
-
-  #[test]
-  fn simple_allows_single_not() {
-    let opt = serde_json::json!("simple");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opt),
-    };
-    let d = SelectorNotNotation.check(&style_with_selector(":not(.a)"), &ctx);
-    assert!(d.is_empty());
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["simple", { "disableFix": true }]);
+    assert_eq!(lint(":not(a, b) {}", options.clone()).len(), 1);
+    assert_eq!(fix(":not(a, b) {}", options), ":not(a, b) {}");
   }
 }
