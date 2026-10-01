@@ -2,6 +2,8 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::source_text;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Enforces hex color length.
 ///
@@ -26,6 +28,10 @@ impl Rule for ColorHexLength {
 
   /// Flags hex colors that could be shortened under "short", or expanded under
   /// "long", and offers the rewritten value as a fix.
+  ///
+  /// Like Stylelint, it looks only at whole words of the value as written:
+  /// hex digits inside strings, comments and `url()` are not colors, and the
+  /// fix keeps the case of the digits it keeps.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -34,115 +40,82 @@ impl Rule for ColorHexLength {
     };
 
     // Primary option: "short" (default) or "long".
-    let mode = ctx.primary_option_str().unwrap_or("short");
+    let long = ctx.primary_option_str() == Some("long");
 
     let mut diags = Vec::new();
-    for decl in &decls {
-      // Search the source within the declaration span for hex colors.
-      let decl_start = decl.span.offset;
-      let decl_end = decl_start + decl.span.length;
-      let search_area = if decl_end <= ctx.source.len() && decl_start < decl_end {
-        &ctx.source[decl_start..decl_end]
-      } else {
-        &decl.value
-      };
-
-      for (rel_offset, hex) in find_hex_colors_with_offset(search_area) {
-        let abs_offset = if decl_end <= ctx.source.len() && decl_start < decl_end {
-          decl_start + rel_offset
-        } else {
-          decl_start
-        };
-
-        match mode {
-          "long" => {
-            if can_expand(&hex) {
-              let expanded = expand(&hex);
-              diags.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{hex}\" to be \"{expanded}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(abs_offset, hex.len()))
-                .fix(Fix::new(
-                  format!("Expand to \"{expanded}\""),
-                  vec![Edit::new(Span::new(abs_offset, hex.len()), &expanded)],
-                )),
-              );
-            }
-          }
-          _ => {
-            // "short" mode (default)
-            if can_shorten(&hex) {
-              let shortened = shorten(&hex);
-              diags.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{hex}\" to be \"{shortened}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(abs_offset, hex.len()))
-                .fix(Fix::new(
-                  format!("Shorten to \"{shortened}\""),
-                  vec![Edit::new(Span::new(abs_offset, hex.len()), &shortened)],
-                )),
-              );
-            }
-          }
-        }
+    for decl in decls {
+      if decl.span.length == 0 {
+        continue;
       }
+      let Some((value, value_start)) = source_text::declaration_value(ctx.source, decl) else {
+        continue;
+      };
+      if !value.contains('#') {
+        continue;
+      }
+      let nodes = value_parser::parse(value);
+      value_parser::walk(&nodes, &mut |node: &ValueNode| {
+        if node.is_function_named("url") {
+          return false;
+        }
+        if node.kind != NodeKind::Word || !is_valid_hex(node.value) {
+          return true;
+        }
+        let hex = node.value;
+        let expected = if long {
+          if !can_expand(hex) {
+            return true;
+          }
+          expand(hex)
+        } else {
+          if !can_shorten(hex) {
+            return true;
+          }
+          shorten(hex)
+        };
+        let span = Span::new(value_start + node.source_index, hex.len());
+        let verb = if long { "Expand" } else { "Shorten" };
+        diags.push(
+          Diagnostic::new(
+            self.name(),
+            format!("Expected \"{hex}\" to be \"{expected}\""),
+          )
+          .severity(self.default_severity())
+          .span(span)
+          .fix(Fix::new(
+            format!("{verb} to \"{expected}\""),
+            vec![Edit::new(span, &expected)],
+          )),
+        );
+        true
+      });
     }
     diags
   }
 }
 
-/// Find hex colors and their byte offsets within the given string.
-fn find_hex_colors_with_offset(value: &str) -> Vec<(usize, String)> {
-  let mut colors = Vec::new();
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-  while i < len {
-    if bytes[i] == b'#' {
-      let start = i;
-      i += 1;
-      while i < len && (bytes[i] as char).is_ascii_hexdigit() {
-        i += 1;
-      }
-      if i > start + 1 {
-        colors.push((start, value[start..i].to_string()));
-      }
-    } else {
-      i += 1;
-    }
-  }
-  colors
+/// Whether `word` is a hex color as Stylelint's `isValidHex` sees it: `#`
+/// followed by 3, 4, 6 or 8 hex digits.
+fn is_valid_hex(word: &str) -> bool {
+  word.strip_prefix('#').is_some_and(|digits| {
+    matches!(digits.len(), 3 | 4 | 6 | 8) && digits.bytes().all(|b| b.is_ascii_hexdigit())
+  })
 }
 
-/// Check if a 6-digit hex can be shortened to 3, or 8-digit to 4.
+/// Check if a 6-digit hex can be shortened to 3, or 8-digit to 4.  Digits
+/// compare case-insensitively.
 fn can_shorten(hex: &str) -> bool {
-  let digits: Vec<char> = hex[1..].chars().map(|c| c.to_ascii_lowercase()).collect();
-  match digits.len() {
-    6 => digits[0] == digits[1] && digits[2] == digits[3] && digits[4] == digits[5],
-    8 => {
-      digits[0] == digits[1]
-        && digits[2] == digits[3]
-        && digits[4] == digits[5]
-        && digits[6] == digits[7]
-    }
-    _ => false,
-  }
+  let digits = hex[1..].to_ascii_lowercase();
+  let digits = digits.as_bytes();
+  matches!(digits.len(), 6 | 8) && digits.chunks(2).all(|pair| pair[0] == pair[1])
 }
 
-/// Collapses a 6- or 8-digit hex to its 3- or 4-digit form.
+/// Collapses a 6- or 8-digit hex to its 3- or 4-digit form, keeping the
+/// first digit of each pair as written (`#FfaAFF` becomes `#FaF`).
 fn shorten(hex: &str) -> String {
-  let digits: Vec<char> = hex[1..].chars().map(|c| c.to_ascii_lowercase()).collect();
-  match digits.len() {
-    6 => format!("#{}{}{}", digits[0], digits[2], digits[4]),
-    8 => format!("#{}{}{}{}", digits[0], digits[2], digits[4], digits[6]),
-    _ => hex.to_string(),
-  }
+  let mut short = String::from("#");
+  short.extend(hex[1..].chars().step_by(2));
+  short
 }
 
 /// Check if a 3-digit hex can be expanded to 6, or 4-digit to 8.
@@ -151,96 +124,103 @@ fn can_expand(hex: &str) -> bool {
   matches!(digits, 3 | 4)
 }
 
-/// Doubles each digit of a 3- or 4-digit hex to its 6- or 8-digit form.
+/// Doubles each digit of a 3- or 4-digit hex to its 6- or 8-digit form,
+/// keeping its case (`#Ffa` becomes `#FFffaa`).
 fn expand(hex: &str) -> String {
-  let digits: Vec<char> = hex[1..].chars().collect();
-  match digits.len() {
-    3 => format!(
-      "#{}{}{}{}{}{}",
-      digits[0], digits[0], digits[1], digits[1], digits[2], digits[2]
-    ),
-    4 => format!(
-      "#{}{}{}{}{}{}{}{}",
-      digits[0], digits[0], digits[1], digits[1], digits[2], digits[2], digits[3], digits[3]
-    ),
-    _ => hex.to_string(),
+  let mut long = String::from("#");
+  for c in hex[1..].chars() {
+    long.push(c);
+    long.push(c);
   }
+  long
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "color-hex-length".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
     }
-  }
-
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+    current
   }
 
   #[test]
-  fn reports_shortenable_6_digit_hex() {
-    let d = ColorHexLength.check(&style_with_value("#ffffff"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("#fff"));
-  }
-
-  #[test]
-  fn reports_shortenable_8_digit_hex() {
-    // #ff00ffaa → all pairs match (ff, 00, ff, aa) → can shorten to #f0fa
-    let d = ColorHexLength.check(&style_with_value("#ff00ffaa"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("#f0fa"));
-    // #aabbccdd → can shorten to #abcd
-    let d = ColorHexLength.check(&style_with_value("#aabbccdd"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("#abcd"));
-  }
-
-  #[test]
-  fn allows_non_shortenable_8_digit_hex() {
-    // #f100ffaa — f1 pair doesn't match
-    assert!(
-      ColorHexLength
-        .check(&style_with_value("#f100ffaa"), &ctx())
-        .is_empty()
+  fn shortens_keeping_the_case_of_the_kept_digits() {
+    let short = serde_json::json!("short");
+    assert_eq!(
+      fix("a { color: #FFFFFF; }", short.clone()),
+      "a { color: #FFF; }"
     );
-    // #ffff01ff — 01 pair doesn't match
-    assert!(
-      ColorHexLength
-        .check(&style_with_value("#ffff01ff"), &ctx())
-        .is_empty()
+    assert_eq!(
+      fix("a { color: #FfaAFF; }", short.clone()),
+      "a { color: #FaF; }"
     );
+    assert_eq!(
+      fix("a { something: #fff, #aba, #00ffAAaa; }", short.clone()),
+      "a { something: #fff, #aba, #0fAa; }"
+    );
+    let warnings = lint("a { color: #FFFFFF; }", short);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].message, "Expected \"#FFFFFF\" to be \"#FFF\"");
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (11, 7));
   }
 
   #[test]
-  fn allows_non_shortenable_hex() {
-    assert!(
-      ColorHexLength
-        .check(&style_with_value("#f0f0f0"), &ctx())
-        .is_empty()
+  fn expands_keeping_the_case_of_each_digit() {
+    let long = serde_json::json!("long");
+    assert_eq!(
+      fix("a { color: #Ffa; }", long.clone()),
+      "a { color: #FFffaa; }"
     );
-    assert!(
-      ColorHexLength
-        .check(&style_with_value("#fff"), &ctx())
-        .is_empty()
+    assert_eq!(fix("a { color: #0a0a; }", long), "a { color: #00aa00aa; }");
+  }
+
+  #[test]
+  fn ignores_hex_inside_strings_comments_and_urls() {
+    for css in [
+      "a::before { content: \"#ABABAB\"; }",
+      "a { color: white /* #FFFFFF */; }",
+      "a { background: url(somefile.swvg#abcdef)}",
+      "a { color: #ffffffa; }",
+      "a { color: #f0f0f0 #fffa; }",
+    ] {
+      assert!(lint(css, serde_json::json!("short")).is_empty(), "{css}");
+    }
+    assert!(lint("a { b: url(x.svg#abc) }", serde_json::json!("long")).is_empty());
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["short", { "disableFix": true }]);
+    assert_eq!(lint("a { color: #FFFFFF; }", options.clone()).len(), 1);
+    assert_eq!(
+      fix("a { color: #FFFFFF; }", options),
+      "a { color: #FFFFFF; }"
     );
   }
 }
