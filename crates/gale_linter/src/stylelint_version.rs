@@ -18,6 +18,12 @@ pub fn appends_rule_name_to_custom_messages() -> bool {
   installed_version().is_none_or(|version| version >= (16, 25))
 }
 
+/// Whether the installed Stylelint is `major.minor` or newer.  Without an
+/// installed Stylelint the current behaviour is assumed.
+pub fn installed_at_least(major: u32, minor: u32) -> bool {
+  installed_version().is_none_or(|version| version >= (major, minor))
+}
+
 /// The `(major, minor)` version of the installed Stylelint, found once per
 /// process, or `None` when there is none.
 fn installed_version() -> Option<(u32, u32)> {
