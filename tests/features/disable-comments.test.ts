@@ -72,6 +72,48 @@ describe("disable ranges are whole lines", () => {
   });
 });
 
+describe("stylelint-enable", () => {
+  const HEX = { "color-no-invalid-hex": true, "block-no-empty": true };
+
+  test("a plain enable turns a rule disabled by name back on", () => {
+    const source = [
+      "/* stylelint-disable color-no-invalid-hex */",
+      "a { color: #ab; }",
+      "/* stylelint-enable */",
+      "a { color: #ab; }",
+      "",
+    ].join("\n");
+    expect(lines({ "a.css": source }, "a.css", HEX)).toEqual(["4 color-no-invalid-hex"]);
+  });
+
+  test("enabling one rule under a blanket disable leaves the others off", () => {
+    const source = [
+      "/* stylelint-disable */",
+      "a {}",
+      "/* stylelint-enable color-no-invalid-hex */",
+      "b { color: #ab; }",
+      "c {}",
+      "",
+    ].join("\n");
+    expect(lines({ "a.css": source }, "a.css", HEX)).toEqual(["4 color-no-invalid-hex"]);
+  });
+
+  test("a plain enable in a later style block ends a named disable", () => {
+    const vue = [
+      "<style>",
+      "/* stylelint-disable block-no-empty */",
+      "a {}",
+      "</style>",
+      "<style>",
+      "/* stylelint-enable */",
+      "b {}",
+      "</style>",
+      "",
+    ].join("\n");
+    expect(lines({ "App.vue": vue }, "App.vue")).toEqual(["7 block-no-empty"]);
+  });
+});
+
 describe("// comments", () => {
   test("are commands in SCSS and Less", () => {
     const source = "// stylelint-disable-next-line block-no-empty\na {}\nb {}\n";
