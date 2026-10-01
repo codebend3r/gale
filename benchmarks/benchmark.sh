@@ -30,6 +30,14 @@ if [ -d "$DIFF_CLONES_DIR" ]; then
 else
   CLONES_DIR="$SCRIPT_DIR/.repos"
 fi
+# Set by --cache-dir: where both linters keep their caches (see cache_file).
+CACHE_DIR=""
+
+# The 1, 5 and 15 minute load averages, as `uptime` prints them.
+load_average() {
+  uptime | sed -E 's/.*load averages?: //'
+}
+LOAD_AT_START="$(load_average)"
 RESULTS_FILE="$SCRIPT_DIR/results.md"
 GALE_BIN="$PROJECT_DIR/target/release/gale"
 
@@ -187,16 +195,47 @@ lint_ok() {
 # instead of timing it: exit 0 for the two lint statuses, 1 for anything else.
 LINT_STATUS_CHECK='case $? in 0|2) ;; *) exit 1 ;; esac'
 
+# The cache file one linter uses on one repo under --cache-dir, or nothing.
+#
+# Some repos turn the cache on in their config (spectrum-css). Pointed at a
+# file that is deleted before every run, the linters run cold, as on any
+# other repo, and never write a cache into the clone.
+cache_file() {
+  if [ -n "$CACHE_DIR" ]; then
+    echo "$CACHE_DIR/$1-$2.cache"
+  fi
+}
+
 # Time one linter command with hyperfine, writing its JSON export. Fails when
-# any run of the command fails.
+# any run of the command fails. With a cache file, it is deleted before every
+# run and the command is pointed at it.
 time_linter() {
-  local label="$1" command="$2" json="$3"
+  local label="$1" command="$2" json="$3" cache="${4:-}"
+  local prepare=()
+  if [ -n "$cache" ]; then
+    command="$command --cache-location '$cache'"
+    prepare=(--prepare "rm -f '$cache'")
+  fi
   hyperfine \
     --warmup "$WARMUP" \
     --min-runs "$MIN_RUNS" \
+    ${prepare[@]+"${prepare[@]}"} \
     --export-json "$json" \
     --command-name "$label" \
     "$command >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log; $LINT_STATUS_CHECK"
+}
+
+# Run one linter once with JSON output, starting from an empty cache under
+# --cache-dir. Usage: run_once <cache-file|""> <stdout> <stderr> <dir> <cmd...>
+run_once() {
+  local cache="$1" out="$2" err="$3" dir="$4"
+  shift 4
+  local cache_args=()
+  if [ -n "$cache" ]; then
+    rm -f "$cache"
+    cache_args=(--cache-location "$cache")
+  fi
+  (cd "$dir" && "$@" --formatter json ${cache_args[@]+"${cache_args[@]}"}) >"$out" 2>"$err"
 }
 
 # Mean time in seconds from a hyperfine JSON export, or N/A.
@@ -332,10 +371,14 @@ run_benchmark_for_repo() {
   # load finishes quickly and would otherwise be published as a speedup.
   info "Validating both linters run successfully..."
 
-  local check_out="$SCRIPT_DIR/.check-${name}.out" check_err="$SCRIPT_DIR/.check-${name}.err"
+  local check_out="$SCRIPT_DIR/.benchmark-check-${name}.out"
+  local check_err="$SCRIPT_DIR/.benchmark-check-${name}.err"
+  local stylelint_cache gale_cache
+  stylelint_cache=$(cache_file "$name" stylelint)
+  gale_cache=$(cache_file "$name" gale)
   local stylelint_status=0 gale_status=0
-  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json) \
-    >"$check_out" 2>"$check_err" || stylelint_status=$?
+  run_once "$stylelint_cache" "$check_out" "$check_err" "$work_dir" \
+    "$stylelint_bin" "$glob_pattern" || stylelint_status=$?
   if ! lint_ok "$stylelint_status"; then
     warn "Stylelint failed on $name (exit $stylelint_status). Not timing this repo:"
     tail -5 "$check_err" | sed 's/^/    /'
@@ -344,8 +387,8 @@ run_benchmark_for_repo() {
     return 0
   fi
 
-  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json) \
-    >"$check_out" 2>"$check_err" || gale_status=$?
+  run_once "$gale_cache" "$check_out" "$check_err" "$work_dir" \
+    "$GALE_BIN" "$glob_pattern" || gale_status=$?
   if ! lint_ok "$gale_status"; then
     warn "Gale failed on $name (exit $gale_status). Not timing this repo:"
     tail -5 "$check_err" | sed 's/^/    /'
@@ -362,12 +405,12 @@ run_benchmark_for_repo() {
 
   local stylelint_json="$SCRIPT_DIR/.hyperfine-${name}-stylelint.json"
   local gale_json="$SCRIPT_DIR/.hyperfine-${name}-gale.json"
-  if ! time_linter stylelint "cd $work_dir && $stylelint_bin '$glob_pattern'" "$stylelint_json"; then
+  if ! time_linter stylelint "cd $work_dir && $stylelint_bin '$glob_pattern'" "$stylelint_json" "$stylelint_cache"; then
     warn "A timed Stylelint run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
     echo "$name|$file_count|FAIL (timed run)|-|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
   fi
-  if ! time_linter gale "cd $work_dir && $GALE_BIN '$glob_pattern'" "$gale_json"; then
+  if ! time_linter gale "cd $work_dir && $GALE_BIN '$glob_pattern'" "$gale_json" "$gale_cache"; then
     warn "A timed Gale run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
     echo "$name|$file_count|-|FAIL (timed run)|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
@@ -415,10 +458,10 @@ run_parity_test() {
   local gale_err="$SCRIPT_DIR/.parity-gale-${name}.stderr"
 
   local stylelint_status=0 gale_status=0
-  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json) \
-    >"$stylelint_tmp" 2>"$stylelint_err" || stylelint_status=$?
-  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json) \
-    >"$gale_tmp" 2>"$gale_err" || gale_status=$?
+  run_once "$(cache_file "$name" stylelint)" "$stylelint_tmp" "$stylelint_err" "$work_dir" \
+    "$stylelint_bin" "$glob_pattern" || stylelint_status=$?
+  run_once "$(cache_file "$name" gale)" "$gale_tmp" "$gale_err" "$work_dir" \
+    "$GALE_BIN" "$glob_pattern" || gale_status=$?
 
   # A failed run has no result to compare; an empty one would count every
   # warning of the other linter as a mismatch.
@@ -630,6 +673,7 @@ generate_results() {
 
 > Generated on $date_str
 > System: $(uname -s) $(uname -m) | $(uname -r)
+> Load average: $LOAD_AT_START at the start, $(load_average) at the end
 > Node: $(node --version 2>/dev/null || echo 'N/A') | Rust: $(rustc --version 2>/dev/null | cut -d' ' -f2 || echo 'N/A')
 
 ## Performance
@@ -700,6 +744,9 @@ usage() {
   echo "  --skip-build    Skip building Gale (use existing binary)"
   echo "  --skip-parity   Skip the parity/correctness test"
   echo "  --clean         Remove cloned repos and start fresh"
+  echo "  --repos-dir DIR Use (or clone into) DIR instead of the default clone directory"
+  echo "  --cache-dir DIR Keep both linters' caches in DIR, emptied before every run,"
+  echo "                  so runs are cold and nothing is written into the clones"
   echo ""
   echo "Prerequisites: cargo, node (>=18), hyperfine, git, python3"
 }
@@ -708,6 +755,7 @@ main() {
   local skip_build=0
   local skip_parity=0
   local clean=0
+  local repos_dir=0
   local selected_repos=()
 
   while [[ $# -gt 0 ]]; do
@@ -716,6 +764,8 @@ main() {
       --skip-build) skip_build=1 ;;
       --skip-parity) skip_parity=1 ;;
       --clean)      clean=1 ;;
+      --repos-dir)  CLONES_DIR="$(cd "${2:?--repos-dir needs a directory}" && pwd)"; repos_dir=1; shift ;;
+      --cache-dir)  mkdir -p "${2:?--cache-dir needs a directory}"; CACHE_DIR="$(cd "$2" && pwd)"; shift ;;
       -*)           error "Unknown option: $1" ;;
       *)            selected_repos+=("$1") ;;
     esac
@@ -731,7 +781,10 @@ main() {
   # Prerequisites
   check_prereqs
 
-  # Clean if requested
+  # Clean if requested. Never delete a directory the caller pointed at.
+  if [ "$clean" -eq 1 ] && [ "$repos_dir" -eq 1 ]; then
+    error "--clean would delete the --repos-dir directory; refusing"
+  fi
   if [ "$clean" -eq 1 ]; then
     info "Cleaning cloned repos..."
     rm -rf "$CLONES_DIR"
