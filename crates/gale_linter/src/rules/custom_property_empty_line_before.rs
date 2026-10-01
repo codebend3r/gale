@@ -389,8 +389,9 @@ fn is_after_custom_property(source: &str, offset: usize) -> bool {
     }
     // The previous non-empty, non-comment line ends with `;` — this is the
     // end of a declaration. It may be a multi-line value; scan back to the
-    // start of that declaration to check if it's a custom property.
-    if stripped.ends_with(';') {
+    // start of that declaration to check if it's a custom property.  A line
+    // that itself starts with a property name is the whole declaration.
+    if stripped.ends_with(';') && !starts_with_property(stripped) {
       while i > 0 {
         i -= 1;
         let s = lines[i].trim();
@@ -416,6 +417,16 @@ fn is_after_custom_property(source: &str, offset: usize) -> bool {
     return false;
   }
   false
+}
+
+/// Whether `line` starts with a standard property name and its `:`, as the
+/// first line of a declaration does (`scroll-padding-block: 1px;`).
+fn starts_with_property(line: &str) -> bool {
+  let name = line
+    .bytes()
+    .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+    .count();
+  name > 0 && !line.starts_with('-') && line[name..].trim_start().starts_with(':')
 }
 
 /// Check if preceded by a block (a rule or at-rule ending with `}`).
@@ -553,6 +564,20 @@ mod tests {
     let d = CustomPropertyEmptyLineBefore.check(&node, &make_ctx_with_options(src, &opts));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected"));
+  }
+
+  #[test]
+  fn a_declaration_using_custom_properties_is_no_custom_property() {
+    // mastodon: the line before is a plain declaration whose value uses
+    // `var(--...)`, after two custom properties.
+    let source = "a {\n  --header-height: 80px;\n  --footer-height: 200px;\n\n  scroll-padding-block: var(--header-height) var(--footer-height);\n\n  --navigation-background-color: red;\n}\n";
+    let offset = source.find("--navigation").unwrap();
+    assert!(!is_after_custom_property(source, offset));
+    let multiline = "a {\n  --a: 1px;\n  --b:\n    2px\n    3px;\n  --c: 0;\n}\n";
+    assert!(is_after_custom_property(
+      multiline,
+      multiline.find("--c").unwrap()
+    ));
   }
 
   #[test]
