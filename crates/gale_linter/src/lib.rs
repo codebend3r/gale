@@ -15,6 +15,7 @@ pub mod rule;
 pub mod rules;
 pub mod runner;
 pub mod selector;
+pub mod source_text;
 pub mod style_rules;
 pub mod stylelint_version;
 
