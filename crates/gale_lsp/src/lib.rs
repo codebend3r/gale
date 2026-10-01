@@ -9,7 +9,9 @@ use tracing::debug;
 
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
+use gale_css_parser::embedded::HostLanguage;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
+use gale_linter::embedded::{HostOptions, lint_host};
 use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::panic_guard;
 use gale_linter::{LintRunner, RuleRegistry};
@@ -198,6 +200,9 @@ impl GaleLspServer {
   }
 
   /// Lint source text (sync part), returning Gale's own diagnostics.
+  ///
+  /// A Vue, Svelte, Astro or HTML document is linted one style block at a
+  /// time, with every diagnostic (and fix) placed in the document.
   fn lint(&self, uri: &Url, source: &str) -> Vec<GaleDiagnostic> {
     let runner_guard = self.runner.read().unwrap_or_else(|e| e.into_inner());
     let Some(runner) = runner_guard.as_ref() else {
@@ -209,8 +214,16 @@ impl GaleLspServer {
       .map(|p| p.display().to_string())
       .unwrap_or_else(|_| uri.to_string());
 
-    let syntax = detect_syntax(&file_path);
-    let result = runner.lint_source(source, &file_path, syntax);
+    let result = match HostLanguage::from_path(&file_path) {
+      Some(host) => lint_host(
+        source,
+        &file_path,
+        host,
+        HostOptions::default(),
+        |text, syntax| runner.lint_source(text, &file_path, syntax),
+      ),
+      None => runner.lint_source(source, &file_path, detect_syntax(&file_path)),
+    };
     // An invalid rule option (a pattern that does not compile, say) is not
     // a problem in the document, but the editor is the only place to say so:
     // show it at the top of the file.
