@@ -31,71 +31,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test
+  # Caching: every Rust job restores a cache keyed by what it builds (shared-key)
+  # rather than by job id, and only runs on main save it. Pull requests can read
+  # main's caches, so they start warm instead of compiling every dependency cold.
+
+  checks:
+    name: Format, clippy, and Rust tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Clippy's check build and the debug test build.
+          shared-key: debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Check the hook config
-        # A malformed lefthook.yml silently skips local checks, so catch it here.
-        run: bunx lefthook validate
-
-      - name: Build release
-        # test:api and test:features both run the release binary.
-        run: bun run build:release
-
-      - name: Run the full test suite
-        # cargo tests, npm API tests, and bun feature tests.
-        run: bun run test
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Run clippy
-        # The same command as the pre-commit hook: every target, warnings denied.
-        run: bun run lint
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - uses: oven-sh/setup-bun@v2
+      # Each check below runs even if an earlier one failed, so one run reports
+      # every problem instead of the first.
 
       - name: Check formatting
         run: bun run fmt:check
 
-  build-binary:
-    name: Build binary for the npm package
+      - name: Check the hook config
+        # A malformed lefthook.yml silently skips local checks, so catch it here.
+        if: ${{ !cancelled() }}
+        run: bunx lefthook validate
+
+      - name: Clippy
+        # The same command as the pre-commit hook: every target, warnings denied.
+        if: ${{ !cancelled() }}
+        run: bun run lint
+
+      - name: Rust tests
+        if: ${{ !cancelled() }}
+        run: bun run test:rust
+
+  build:
+    # The one release build in CI. The jobs that need the binary download it
+    # rather than compiling it again.
+    name: Release build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -104,6 +89,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Also restored by the compatibility workflow, which builds the same binary.
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -116,9 +105,42 @@ jobs:
           path: target/release/gale
           if-no-files-found: error
 
+  feature-tests:
+    name: API and feature tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release
+
+      - name: Restore the executable bit
+        # Artifacts do not keep file modes.
+        run: chmod +x target/release/gale
+
+      - name: API tests
+        run: bun run test:api
+
+      - name: Feature tests
+        if: ${{ !cancelled() }}
+        run: bun run test:features
+
   npm-package:
     name: npm package (Node ${{ matrix.node }})
-    needs: build-binary
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -153,7 +175,7 @@ jobs:
     # One stable check to require in branch protection, and a verdict in the
     # run summary. Skipped only when the whole run is cancelled.
     name: CI result
-    needs: [test, clippy, fmt, build-binary, npm-package]
+    needs: [checks, build, feature-tests, npm-package]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
