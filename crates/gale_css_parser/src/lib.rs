@@ -6,8 +6,10 @@ use raffia::pos::Spanned as RaffiaSpanned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod decl_spans;
 mod sass_to_scss;
 
+use decl_spans::{ProtoDeclaration, assign_spans, find_declaration_span, locate_declarations};
 pub use sass_to_scss::SourceMap;
 
 // ---------------------------------------------------------------------------
@@ -674,112 +676,27 @@ fn convert_style_rule(
   // non-important declarations, which would assign wrong byte offsets if
   // we processed them sequentially (non-important first, important second).
   //
-  // Strategy: convert all declarations without spans first, find all
-  // property occurrences in source, determine which are important from
-  // source text, then match important/non-important proto-decls correctly.
-  let mut proto_decls: Vec<(String, String, bool)> = Vec::new(); // (property, value, important)
-  for decl in &style.declarations.declarations {
-    let (d, _) = convert_property(decl, false, source, search_start, search_end);
-    proto_decls.push((d.property, d.value, false));
-  }
-  for decl in &style.declarations.important_declarations {
-    let (d, _) = convert_property(decl, true, source, search_start, search_end);
-    proto_decls.push((d.property, d.value, true));
-  }
-
-  // Find all property-name occurrences in source text, in order.
-  let total_decls = proto_decls.len();
-  let mut spans_in_order: Vec<Span> = Vec::with_capacity(total_decls);
-  let mut sf = search_start;
-  // We need to find `total_decls` declaration spans
-  // Collect all unique property names to search for
-  let mut prop_names: Vec<String> = proto_decls.iter().map(|(p, _, _)| p.clone()).collect();
-  prop_names.sort();
-  prop_names.dedup();
-
-  // Find all declarations by scanning source for any known property name
-  let mut found_count = 0;
-  while found_count < total_decls && sf < search_end {
-    // Try to find the next declaration starting from sf
-    let mut best_span = Span::empty();
-    let mut best_offset = usize::MAX;
-    for pname in &prop_names {
-      let span = find_declaration_span(source, sf, search_end, pname);
-      if span.length > 0 && span.offset < best_offset {
-        best_offset = span.offset;
-        best_span = span;
-      }
-    }
-    if best_span.length == 0 {
-      break;
-    }
-    spans_in_order.push(best_span);
-    sf = best_span.offset + best_span.length;
-    found_count += 1;
-  }
-
-  // Now match each span to the right proto_decl. Check if the source text
-  // at each span contains "!important" to determine which proto_decl it
-  // should be matched with.
-  let mut matched: Vec<bool> = vec![false; proto_decls.len()];
-  let mut declarations = Vec::new();
-
-  for span in &spans_in_order {
-    let span_text = source
-      .get(span.offset..(span.offset + span.length).min(source.len()))
-      .unwrap_or("");
-    let is_important_in_source =
-      span_text.contains("!important") || span_text.contains("! important");
-
-    // Extract the property name from the span
-    let span_lower = span_text.to_ascii_lowercase();
-    let span_prop = span_lower.split(':').next().unwrap_or("").trim();
-
-    // Find the first unmatched proto_decl with matching property AND importance
-    let mut found_idx = None;
-    for (i, (prop, _, important)) in proto_decls.iter().enumerate() {
-      if !matched[i]
-        && prop.to_ascii_lowercase() == span_prop
-        && *important == is_important_in_source
-      {
-        found_idx = Some(i);
-        break;
-      }
-    }
-
-    // Fallback: match by property name only (if importance check fails)
-    if found_idx.is_none() {
-      for (i, (prop, _, _)) in proto_decls.iter().enumerate() {
-        if !matched[i] && prop.to_ascii_lowercase() == span_prop {
-          found_idx = Some(i);
-          break;
-        }
-      }
-    }
-
-    if let Some(idx) = found_idx {
-      matched[idx] = true;
-      let (ref prop, ref value, important) = proto_decls[idx];
-      declarations.push(Declaration {
-        property: prop.clone(),
-        value: value.clone(),
-        span: *span,
+  // Strategy: lower all declarations without spans first, find the
+  // property occurrences in source order in one pass, then pair each span
+  // with the declaration of that property whose importance matches the
+  // source text.
+  let mut protos: Vec<ProtoDeclaration> = Vec::new();
+  for (list, important) in [
+    (&style.declarations.declarations, false),
+    (&style.declarations.important_declarations, true),
+  ] {
+    for decl in list {
+      let (property, value) = property_name_and_value(decl);
+      protos.push(ProtoDeclaration {
+        property,
+        value,
         important,
       });
     }
   }
-
-  // Add any unmatched declarations (shouldn't happen normally)
-  for (i, (prop, value, important)) in proto_decls.iter().enumerate() {
-    if !matched[i] {
-      declarations.push(Declaration {
-        property: prop.clone(),
-        value: value.clone(),
-        span: Span::empty(),
-        important: *important,
-      });
-    }
-  }
+  let properties: Vec<String> = protos.iter().map(|p| p.property.clone()).collect();
+  let (spans_in_order, mut sf) = locate_declarations(source, search_start, search_end, &properties);
+  let mut declarations = assign_spans(source, &spans_in_order, protos);
 
   // Nested rules: extract nested style rules as children, and also pull
   // declarations out of NestedDeclarations nodes (lightningcss puts
@@ -820,15 +737,9 @@ fn convert_style_rule(
   }
 }
 
-/// Lowers one declaration, restoring its vendor prefix and locating it in the
-/// source. Returns the declaration and the offset to resume searching from.
-fn convert_property(
-  prop: &lightningcss::properties::Property,
-  important: bool,
-  source: &str,
-  search_from: usize,
-  search_end: usize,
-) -> (Declaration, usize) {
+/// A declaration's property name, with its vendor prefix restored, and its
+/// serialized value.
+fn property_name_and_value(prop: &lightningcss::properties::Property) -> (String, String) {
   let prop_id = prop.property_id();
   let base_name = prop_id.name();
   // Reconstruct the full property name including vendor prefix.
@@ -845,6 +756,19 @@ fn convert_property(
     base_name.to_owned()
   };
   let value = prop.value_to_css_string(po()).unwrap_or_default();
+  (property_name, value)
+}
+
+/// Lowers one declaration, restoring its vendor prefix and locating it in the
+/// source. Returns the declaration and the offset to resume searching from.
+fn convert_property(
+  prop: &lightningcss::properties::Property,
+  important: bool,
+  source: &str,
+  search_from: usize,
+  search_end: usize,
+) -> (Declaration, usize) {
+  let (property_name, value) = property_name_and_value(prop);
 
   // Find the declaration in the source text for accurate byte offsets.
   let span = find_declaration_span(source, search_from, search_end, &property_name);
@@ -863,52 +787,6 @@ fn convert_property(
     },
     next_search,
   )
-}
-
-/// Search for a CSS declaration (`property-name: ...;` or `property-name: ... }`)
-/// in the source text between `from` and `to`, returning its span.
-fn find_declaration_span(source: &str, from: usize, to: usize, property: &str) -> Span {
-  let area = source.get(from..to.min(source.len())).unwrap_or("");
-  let lower_area = area.to_ascii_lowercase();
-  let lower_prop = property.to_ascii_lowercase();
-
-  // Search for the property name followed by `:` (a CSS declaration).
-  // A simple `find` would match property names inside selectors (e.g.
-  // "border" in ".foo-border"), so we require the match to be followed
-  // by optional whitespace and then a colon.
-  let mut search_from = 0;
-  loop {
-    let rel_idx = match lower_area[search_from..].find(&lower_prop) {
-      Some(i) => search_from + i,
-      None => return Span::empty(),
-    };
-
-    let after_name = rel_idx + lower_prop.len();
-    // Check that the property name is followed by optional whitespace + ':'
-    let rest_of_area = &lower_area[after_name..];
-    let trimmed = rest_of_area.trim_start();
-    let is_declaration = trimmed.starts_with(':');
-
-    // Also ensure the match isn't in the middle of a longer identifier
-    // (e.g. "border" in "flex-border" or "border-radius")
-    let preceded_by_ident = rel_idx > 0 && {
-      let prev = lower_area.as_bytes()[rel_idx - 1];
-      prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_'
-    };
-
-    if is_declaration && !preceded_by_ident {
-      let abs_start = from + rel_idx;
-      let after_prop = abs_start + property.len();
-      let rest = &source[after_prop..to.min(source.len())];
-      let decl_end = rest
-        .find(';')
-        .map(|i| after_prop + i + 1)
-        .unwrap_or_else(|| rest.find('}').map(|i| after_prop + i).unwrap_or(after_prop));
-      return Span::new(abs_start, decl_end - abs_start);
-    }
-
-    search_from = after_name;
-  }
 }
 
 /// Extract child nodes (declarations) from an unknown at-rule's block body.
@@ -2049,5 +1927,151 @@ fn test_custom_property_spans() {
     );
   } else {
     panic!("expected StyleRule");
+  }
+}
+
+#[cfg(test)]
+mod scaling_tests {
+  use super::*;
+  use std::time::{Duration, Instant};
+
+  /// A `:root` block declaring `n` custom properties.
+  fn root_block(n: usize) -> String {
+    let mut css = String::from(":root {\n");
+    for i in 0..n {
+      css.push_str(&format!(
+        "  --color-token-{i}: rgb({} {} {} / 50%);\n",
+        i % 256,
+        i * 7 % 256,
+        i * 13 % 256
+      ));
+    }
+    css.push_str("}\n");
+    css
+  }
+
+  /// The fastest of `runs` parses of `css`.
+  fn best_parse_time(css: &str, runs: usize) -> Duration {
+    (0..runs)
+      .map(|_| {
+        let start = Instant::now();
+        let result = parse(css, Syntax::Css).unwrap();
+        assert_eq!(result.nodes.len(), 1);
+        start.elapsed()
+      })
+      .min()
+      .unwrap()
+  }
+
+  #[test]
+  fn large_custom_property_blocks_parse_in_linear_time() {
+    // Locating each declaration used to search the rest of the block once
+    // per property name, so a block of `n` custom properties cost O(n^3):
+    // 1,000 of them took six seconds in a release build.  Parse on a
+    // separate thread so a regression fails at the deadline instead of
+    // hanging the suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+      let small = best_parse_time(&root_block(1_000), 5);
+      let large = best_parse_time(&root_block(4_000), 3);
+      let huge = best_parse_time(&root_block(5_000), 1);
+      let _ = tx.send((small, large, huge));
+    });
+    let (small, large, huge) = rx
+      .recv_timeout(Duration::from_secs(60))
+      .expect("parsing 1,000-5,000 custom properties took over a minute");
+
+    // Linear growth makes 4x the declarations cost about 4x; quadratic
+    // would be 16x and the old cubic search 64x.
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
+    assert!(
+      ratio < 10.0,
+      "4,000 declarations took {ratio:.1}x as long as 1,000 ({large:?} vs {small:?})"
+    );
+    // Generous enough for an unoptimized build on a busy CI runner.
+    assert!(
+      huge < Duration::from_secs(5),
+      "5,000 declarations took {huge:?}"
+    );
+  }
+
+  /// `(property, important, source text of its span)` for each declaration.
+  fn spans_of<'a>(css: &'a str, rule: &'a StyleRule) -> Vec<(&'a str, bool, &'a str)> {
+    rule
+      .declarations
+      .iter()
+      .map(|d| {
+        (
+          d.property.as_str(),
+          d.important,
+          &css[d.span.offset..d.span.offset + d.span.length],
+        )
+      })
+      .collect()
+  }
+
+  #[test]
+  fn declaration_spans_keep_the_textual_search_results() {
+    // The search is textual: it does not skip comments or strings.  These
+    // results are what Gale has always reported, quirks included, and the
+    // single-pass search must reproduce them exactly.
+    let css = concat!(
+      ".a {\n",
+      "  /* color: green; */ color: red;\n",
+      "  content: \"x\";\n",
+      "  &:hover { color: blue; }\n",
+      "  margin: 0 !important;\n",
+      "  --Token: { a: b };\n",
+      "}\n",
+    );
+    let result = parse(css, Syntax::Css).unwrap();
+    let CssNode::Style(rule) = &result.nodes[0] else {
+      panic!("expected a style rule");
+    };
+    assert_eq!(
+      spans_of(css, rule),
+      vec![
+        // The commented-out declaration is found first, which leaves the
+        // second `color` occurrence to use up `content`'s turn.
+        ("color", false, "color: green;"),
+        ("content", false, ""),
+        ("--Token", false, "--Token: { a: b };"),
+        // Declarations after a nested rule are searched for one at a time
+        // from the end of the previous one, normal before important.
+        ("margin", true, ""),
+      ]
+    );
+    assert_eq!(
+      spans_of(css, &rule.children[0]),
+      vec![("color", false, "color: blue;")]
+    );
+
+    let css = concat!(
+      ".a {\n",
+      "  color: red !important;\n",
+      "  content: \"a;b\";\n",
+      "  COLOR: blue;\n",
+      "  background: url(data:image/png;base64,AAA=);\n",
+      "  --x: { y: z };\n",
+      "  border-color: red;\n",
+      "  border: 0;\n",
+      "}\n",
+    );
+    let result = parse(css, Syntax::Css).unwrap();
+    let CssNode::Style(rule) = &result.nodes[0] else {
+      panic!("expected a style rule");
+    };
+    assert_eq!(
+      spans_of(css, rule),
+      vec![
+        ("color", true, "color: red !important;"),
+        ("content", false, "content: \"a;"),
+        ("color", false, "COLOR: blue;"),
+        ("background", false, "background: url(data:image/png;"),
+        ("--x", false, "--x: { y: z };"),
+        ("border-color", false, "border-color: red;"),
+        ("border", false, "border: 0;"),
+      ]
+    );
   }
 }
