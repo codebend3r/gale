@@ -1,121 +1,405 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use std::sync::Arc;
 
-use crate::rule::{Rule, RuleContext};
+use gale_css_parser::CssNode;
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+
+use crate::pattern::{self, Regex};
+use crate::postcss_tree::{NodeKind, PostcssTree};
+use crate::rule::{Rule, RuleContext, per_file};
+use crate::stylelint_order::{
+  blocks, comments_after_node, comments_before_node, is_allowed_to_process,
+  is_standard_syntax_property, js_sort, reorder_edit, split_array_settings,
+};
 
 /// Specify the order of content within declaration blocks.
 ///
-/// Equivalent to stylelint-order's `order/order` rule.
+/// Equivalent to stylelint-order's `order/order` rule, autofix included.
+/// The primary option is an array of keywords (`custom-properties`,
+/// `dollar-variables`, `at-variables`, `declarations`, `rules`, `at-rules`,
+/// `less-mixins`) and patterns (`{ type: "rule", selector, name }`, `{ type:
+/// "at-rule", name, parameter, hasBlock }`), written as `[[...]]`, `[[...],
+/// { unspecified }]` or as a bare `[...]`.  `unspecified` is `top`,
+/// `bottom` or `ignore` (the default).
 ///
-/// The primary option is an array of content type keywords (or objects with
-/// a `"type"` key). Supported keywords:
-///
-/// - `"custom-properties"` — CSS custom properties (`--*`)
-/// - `"dollar-variables"` — SCSS variables (`$*`)
-/// - `"declarations"` — standard CSS declarations
-/// - `"at-rules"` — at-rules nested inside a block (not yet supported due to
-///   AST limitations; reserved for future use)
-/// - `"rules"` — nested style rules
-///
-/// The rule checks that within each style rule, content items appear in the
-/// order specified. Items whose type is not listed in the config are ignored.
+/// Every rule, at-rule and SCSS nested property with children is checked
+/// over the [`PostcssTree`] of the source.  The fix sorts the block as
+/// postcss-sorting does: comments travel with the node they belong to,
+/// anything the order does not mention goes to the bottom, and the last
+/// declaration ends with a `;`.
 pub struct OrderOrder;
 
-/// The kind of content item found inside a style rule block.
+/// A `rule` pattern.
+#[derive(Debug, Clone)]
+struct RulePattern {
+  position: usize,
+  description: String,
+  selector: Option<Arc<Regex>>,
+}
+
+/// An `at-rule` pattern.
+#[derive(Debug, Clone)]
+struct AtRulePattern {
+  position: usize,
+  description: String,
+  name: Option<String>,
+  parameter: Option<Arc<Regex>>,
+  has_block: Option<bool>,
+}
+
+/// Where nodes missing from the order go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContentKind {
-  CustomProperty,
-  DollarVariable,
-  Declaration,
-  Rule,
+enum Unspecified {
+  Top,
+  Bottom,
+  Ignore,
 }
 
-/// A content item with its kind and source position.
-struct ContentItem {
-  kind: ContentKind,
-  /// Byte offset for ordering.
-  offset: usize,
-  /// Span for diagnostic reporting.
-  span: Span,
+/// The rule's options, read once per file: stylelint-order's
+/// `createOrderInfo` and postcss-sorting's `createExpectedOrder`.
+struct Config {
+  /// Keyword to its position and description.
+  keywords: Vec<(String, usize, &'static str)>,
+  rules: Vec<RulePattern>,
+  at_rules: Vec<AtRulePattern>,
+  unspecified: Unspecified,
 }
 
-impl OrderOrder {
-  /// Parse the expected content-type order from options.
-  ///
-  /// Returns a vec of `ContentKind` values in the expected order.
-  /// Returns `None` if options are missing or invalid.
-  fn parse_order(options: Option<&serde_json::Value>) -> Option<Vec<ContentKind>> {
-    let arr = options?.as_array()?;
-    let mut order = Vec::new();
+/// What the order says about one node.
+#[derive(Debug, Clone, Copy)]
+struct OrderData<'c> {
+  /// The expected position, `None` for an unspecified node.
+  position: Option<usize>,
+  /// The pattern's description, or `None` to describe the node itself.
+  description: Option<&'c str>,
+}
 
-    for item in arr {
-      let keyword = match item {
-        serde_json::Value::String(s) => s.as_str(),
-        serde_json::Value::Object(obj) => obj.get("type").and_then(|v| v.as_str()).unwrap_or(""),
-        _ => continue,
+impl Config {
+  /// Read the options, or `None` when they are not valid (Stylelint then
+  /// reports the options and skips the rule).
+  fn parse(options: Option<&serde_json::Value>) -> Option<Self> {
+    let (primary, secondary) = split_array_settings(options);
+    let items = primary?.as_array()?;
+    if !items.iter().all(is_valid_item) {
+      return None;
+    }
+    let unspecified = match secondary.and_then(|s| s.get("unspecified")) {
+      None => Unspecified::Ignore,
+      Some(value) => match value.as_str()? {
+        "top" => Unspecified::Top,
+        "bottom" => Unspecified::Bottom,
+        "ignore" => Unspecified::Ignore,
+        _ => return None,
+      },
+    };
+    let mut config = Self {
+      keywords: Vec::new(),
+      rules: Vec::new(),
+      at_rules: Vec::new(),
+      unspecified,
+    };
+    for (index, item) in items.iter().enumerate() {
+      let position = index + 1;
+      let kind = match item {
+        serde_json::Value::String(keyword) if keyword == "rules" => "rule",
+        serde_json::Value::String(keyword) if keyword == "at-rules" => "at-rule",
+        serde_json::Value::String(keyword) => {
+          config.keywords.retain(|(k, _, _)| k != keyword);
+          config
+            .keywords
+            .push((keyword.clone(), position, keyword_description(keyword)));
+          continue;
+        }
+        other => other.get("type").and_then(|t| t.as_str()).unwrap_or(""),
       };
-
-      match keyword {
-        "custom-properties" => order.push(ContentKind::CustomProperty),
-        "dollar-variables" => order.push(ContentKind::DollarVariable),
-        "declarations" => order.push(ContentKind::Declaration),
-        "rules" => order.push(ContentKind::Rule),
-        // "at-rules" is recognized but not enforceable due to AST
-        // structure — at-rules nested in style blocks are not exposed
-        // as children in the current parser. Silently skip.
+      let string = |key: &str| {
+        item
+          .get(key)
+          .and_then(|v| v.as_str())
+          .filter(|s| !s.is_empty())
+      };
+      match kind {
+        "rule" => config.rules.push(RulePattern {
+          position,
+          description: rule_description(item),
+          selector: string("selector").and_then(compile),
+        }),
+        "at-rule" => config.at_rules.push(AtRulePattern {
+          position,
+          description: at_rule_description(item),
+          name: string("name").map(str::to_string),
+          parameter: string("parameter").and_then(compile),
+          has_block: item.get("hasBlock").and_then(|v| v.as_bool()),
+        }),
         _ => {}
       }
     }
-
-    if order.is_empty() { None } else { Some(order) }
+    Some(config)
   }
 
-  /// Collect all content items from a style rule, sorted by source offset.
-  fn collect_items(rule: &gale_css_parser::StyleRule) -> Vec<ContentItem> {
-    let mut items = Vec::new();
+  /// The position and description the order gives `node`.  `for_fixer`
+  /// follows postcss-sorting, which knows no `less-mixins` and so sorts a
+  /// Less mixin call as an at-rule.
+  fn order_data(&self, tree: &PostcssTree, node: usize, for_fixer: bool) -> OrderData<'_> {
+    let n = &tree.nodes[node];
+    let keyword = |name: &str| {
+      let entry = self.keywords.iter().find(|(k, _, _)| k == name);
+      OrderData {
+        position: entry.map(|e| e.1),
+        description: entry.map(|e| e.2).or(Some(keyword_description(name))),
+      }
+    };
+    match n.kind {
+      NodeKind::AtRule if n.variable => keyword("at-variables"),
+      NodeKind::AtRule if n.mixin && !for_fixer => keyword("less-mixins"),
+      NodeKind::Decl => {
+        if n.name.starts_with("--") {
+          keyword("custom-properties")
+        } else if n.name.starts_with('$') {
+          keyword("dollar-variables")
+        } else if is_standard_syntax_property(&n.name) {
+          keyword("declarations")
+        } else {
+          OrderData {
+            position: None,
+            description: Some("undefined"),
+          }
+        }
+      }
+      NodeKind::Rule => {
+        let mut best: Option<&RulePattern> = None;
+        let mut max = 0;
+        for rule in &self.rules {
+          let priority = match &rule.selector {
+            None => 1,
+            Some(selector) if pattern::is_match(selector, &n.name) => 2,
+            Some(_) => 0,
+          };
+          if priority > max {
+            max = priority;
+            best = Some(rule);
+          }
+        }
+        match best {
+          Some(rule) => OrderData {
+            position: Some(rule.position),
+            description: Some(&rule.description),
+          },
+          None => OrderData {
+            position: None,
+            description: None,
+          },
+        }
+      }
+      NodeKind::AtRule => {
+        let has_block = n.children.as_ref().is_some_and(|c| !c.is_empty());
+        let mut best: Option<&AtRulePattern> = None;
+        let mut max = 0;
+        for at_rule in &self.at_rules {
+          let priority = at_rule_priority(at_rule, &n.name, &n.params, has_block);
+          if priority > max {
+            max = priority;
+            best = Some(at_rule);
+          }
+        }
+        match best {
+          Some(at_rule) => OrderData {
+            position: Some(at_rule.position),
+            description: Some(&at_rule.description),
+          },
+          None => OrderData {
+            position: None,
+            description: None,
+          },
+        }
+      }
+      NodeKind::Comment => OrderData {
+        position: None,
+        description: None,
+      },
+    }
+  }
+}
 
-    for decl in &rule.declarations {
-      let kind = if decl.property.starts_with("--") {
-        ContentKind::CustomProperty
-      } else if decl.property.starts_with('$') {
-        ContentKind::DollarVariable
-      } else {
-        ContentKind::Declaration
+/// stylelint-order's `validatePrimaryOption` for one item.
+fn is_valid_item(item: &serde_json::Value) -> bool {
+  match item {
+    serde_json::Value::String(keyword) => matches!(
+      keyword.as_str(),
+      "custom-properties"
+        | "dollar-variables"
+        | "at-variables"
+        | "declarations"
+        | "rules"
+        | "at-rules"
+        | "less-mixins"
+    ),
+    serde_json::Value::Object(object) => {
+      let non_empty_string = |key: &str| {
+        object
+          .get(key)
+          .and_then(|v| v.as_str())
+          .is_some_and(|s| !s.is_empty())
       };
-
-      items.push(ContentItem {
-        kind,
-        offset: decl.span.offset,
-        span: Span::new(decl.span.offset, decl.span.length),
-      });
+      match object.get("type").and_then(|t| t.as_str()) {
+        Some("at-rule") => {
+          if object.contains_key("parameter") && !object.contains_key("name") {
+            return false;
+          }
+          // Like stylelint-order, the last option checked decides.
+          let mut valid = true;
+          if let Some(has_block) = object.get("hasBlock") {
+            valid = has_block.is_boolean();
+          }
+          if object.contains_key("name") {
+            valid = non_empty_string("name");
+          }
+          if object.contains_key("parameter") {
+            valid = non_empty_string("parameter");
+          }
+          valid
+        }
+        Some("rule") => {
+          let mut valid = true;
+          if object.contains_key("selector") {
+            valid = non_empty_string("selector");
+          }
+          if valid && object.contains_key("name") {
+            valid = non_empty_string("name");
+          }
+          valid
+        }
+        _ => false,
+      }
     }
-
-    for child in &rule.children {
-      items.push(ContentItem {
-        kind: ContentKind::Rule,
-        offset: child.span.offset,
-        span: Span::new(child.span.offset, child.span.length),
-      });
-    }
-
-    items.sort_by_key(|item| item.offset);
-    items
+    _ => false,
   }
+}
 
-  /// Map a `ContentKind` to its position in the expected order.
-  /// Returns `None` if the kind is not in the order (and should be ignored).
-  fn kind_position(kind: ContentKind, order: &[ContentKind]) -> Option<usize> {
-    order.iter().position(|k| *k == kind)
+/// A `selector` or `parameter` option as a regex: a `/regex/flags` string
+/// (how a JavaScript `RegExp` reaches Gale), or a string `new RegExp()` is
+/// given.
+fn compile(source: &str) -> Option<Arc<Regex>> {
+  pattern::regex_entry(source).or_else(|| pattern::compile(source).ok())
+}
+
+/// stylelint-order's `calcAtRulePatternPriority`.
+fn at_rule_priority(pattern: &AtRulePattern, name: &str, params: &str, has_block: bool) -> u32 {
+  let mut priority = 0;
+  if pattern.has_block == Some(has_block) {
+    priority += 10_010;
   }
-
-  /// The plural label used for this content kind in messages.
-  fn kind_label(kind: ContentKind) -> &'static str {
-    match kind {
-      ContentKind::CustomProperty => "custom properties",
-      ContentKind::DollarVariable => "dollar variables",
-      ContentKind::Declaration => "declarations",
-      ContentKind::Rule => "rules",
+  if pattern.name.as_deref() == Some(name) {
+    priority += 10_100;
+  }
+  if let Some(parameter) = &pattern.parameter {
+    // A blockless at-rule without params tests `undefined`.
+    let text = if params.is_empty() {
+      "undefined"
+    } else {
+      params
+    };
+    if pattern::is_match(parameter, text) {
+      priority += 11_100;
     }
+  }
+  // stylelint-order checks for `paremeter` here, so a pattern with only a
+  // parameter still counts as one without name and hasBlock.
+  if pattern.has_block.is_none() && pattern.name.is_none() {
+    priority = 1;
+  }
+  if pattern.has_block.is_some() && pattern.name.is_some() && priority < 20_000 {
+    priority = 0;
+  }
+  if pattern.name.is_some() && pattern.parameter.is_some() && priority < 21_100 {
+    priority = 0;
+  }
+  if pattern.name.is_some()
+    && pattern.parameter.is_some()
+    && pattern.has_block.is_some()
+    && priority < 30_000
+  {
+    priority = 0;
+  }
+  priority
+}
+
+/// stylelint-order's description of a keyword.
+fn keyword_description(keyword: &str) -> &'static str {
+  match keyword {
+    "custom-properties" => "custom property",
+    "dollar-variables" => "$-variable",
+    "at-variables" => "@-variable",
+    "less-mixins" => "Less mixin",
+    "declarations" => "declaration",
+    _ => "undefined",
+  }
+}
+
+/// stylelint-order's description of a `rule` pattern.
+fn rule_description(item: &serde_json::Value) -> String {
+  let mut text = "rule".to_string();
+  if let Some(name) = item
+    .get("name")
+    .and_then(|n| n.as_str())
+    .filter(|n| !n.is_empty())
+  {
+    text.push_str(&format!(" \"{name}\""));
+  } else if let Some(selector) = item
+    .get("selector")
+    .and_then(|s| s.as_str())
+    .filter(|s| !s.is_empty())
+  {
+    text.push_str(&format!(" with selector matching \"{selector}\""));
+  }
+  text
+}
+
+/// stylelint-order's description of an `at-rule` pattern.
+fn at_rule_description(item: &serde_json::Value) -> String {
+  let mut text = match item
+    .get("name")
+    .and_then(|n| n.as_str())
+    .filter(|n| !n.is_empty())
+  {
+    Some(name) => format!("@{name}"),
+    None => "at-rule".to_string(),
+  };
+  if let Some(parameter) = item
+    .get("parameter")
+    .and_then(|p| p.as_str())
+    .filter(|p| !p.is_empty())
+  {
+    text.push_str(&format!(" \"{parameter}\""));
+  }
+  if let Some(has_block) = item.get("hasBlock") {
+    if has_block.as_bool() == Some(true) {
+      text.push_str(" with a block");
+    } else {
+      text = format!("blockless {text}");
+    }
+  }
+  text
+}
+
+/// The description stylelint-order gives a node no pattern matches.
+fn node_description(tree: &PostcssTree, node: usize) -> String {
+  let n = &tree.nodes[node];
+  match n.kind {
+    NodeKind::Rule if n.name.is_empty() => "rule".to_string(),
+    NodeKind::Rule => format!("rule with selector matching \"{}\"", n.name),
+    NodeKind::AtRule => {
+      let mut text = format!("@{}", n.name);
+      if !n.params.is_empty() {
+        text.push_str(&format!(" \"{}\"", n.params));
+      }
+      if n.children.as_ref().is_some_and(|c| !c.is_empty()) {
+        text.push_str(" with a block");
+      } else {
+        text = format!("blockless {text}");
+      }
+      text
+    }
+    _ => "undefined".to_string(),
   }
 }
 
@@ -132,297 +416,304 @@ impl Rule for OrderOrder {
     Severity::Warning
   }
 
-  /// Flags a block whose content kinds appear out of the configured order. Kinds
-  /// the config does not list are ignored.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
+  /// Checks the order of the nodes in every block of the document.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let parsed = per_file(self.name(), ctx.options, || Config::parse(ctx.options));
+    let Some(config) = parsed.as_ref() else {
       return vec![];
     };
+    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let mut diags = Vec::new();
+    for (block, children) in blocks(&tree) {
+      self.check_block(&tree, config, block, children, &mut diags);
+    }
+    diags
+  }
+}
 
-    let order = match Self::parse_order(ctx.options) {
-      Some(o) => o,
-      None => return vec![],
-    };
-
-    let items = Self::collect_items(rule);
-    let mut diagnostics = Vec::new();
-
-    let mut last_order_pos: Option<usize> = None;
-    let mut last_kind: Option<ContentKind> = None;
-
-    for item in &items {
-      if let Some(pos) = Self::kind_position(item.kind, &order) {
-        if let Some(prev_pos) = last_order_pos
-          && pos < prev_pos
-        {
-          let prev_label = Self::kind_label(last_kind.unwrap());
-          let cur_label = Self::kind_label(item.kind);
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected {cur_label} to come before {prev_label}"),
-            )
-            .severity(self.default_severity())
-            .span(item.span),
-          );
-        }
-        last_order_pos = Some(pos);
-        last_kind = Some(item.kind);
+impl OrderOrder {
+  /// stylelint-order's `checkNode`: report every node that comes before
+  /// one the order puts ahead of it, each with the fix that sorts the
+  /// whole block.
+  fn check_block(
+    &self,
+    tree: &PostcssTree,
+    config: &Config,
+    block: usize,
+    children: &[usize],
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    let mut seen: Vec<(usize, OrderData)> = Vec::new();
+    let mut problems = Vec::new();
+    for &child in children {
+      if tree.nodes[child].kind == NodeKind::Comment {
+        continue;
+      }
+      let data = config.order_data(tree, child, false);
+      seen.push((child, data));
+      let Some(&(previous, previous_data)) = seen.len().checked_sub(2).map(|i| &seen[i]) else {
+        continue;
+      };
+      let mut prior = (previous, previous_data);
+      if previous_data.position.is_none()
+        && let Some(&found) = seen[..seen.len() - 1]
+          .iter()
+          .rev()
+          .find(|(_, d)| d.position.is_some())
+      {
+        prior = found;
+      }
+      if !is_correct_order(prior.1.position, data.position, config.unspecified) {
+        problems.push((child, data, prior.0, prior.1));
       }
     }
-
-    diagnostics
+    if problems.is_empty() {
+      return;
+    }
+    let edit = if is_allowed_to_process(tree, block) {
+      sort_edit(tree, config, children)
+    } else {
+      None
+    };
+    for (child, data, prior, prior_data) in problems {
+      let describe = |node: usize, data: OrderData| {
+        data
+          .description
+          .map_or_else(|| node_description(tree, node), str::to_string)
+      };
+      let message = format!(
+        "Expected {} to come before {}",
+        describe(child, data),
+        describe(prior, prior_data)
+      );
+      let n = &tree.nodes[child];
+      let mut diag = Diagnostic::new(self.name(), message)
+        .severity(self.default_severity())
+        .span(Span::from_range(n.start, n.end.max(n.start)));
+      if let Some(edit) = &edit {
+        diag = diag.fix(Fix::new("Sort the block", vec![edit.clone()]));
+      }
+      diags.push(diag);
+    }
   }
+}
+
+/// stylelint-order's `checkOrder` for `order/order`.
+fn is_correct_order(first: Option<usize>, second: Option<usize>, unspecified: Unspecified) -> bool {
+  match (first, second) {
+    (Some(a), Some(b)) => a <= b,
+    (None, None) => true,
+    _ => match unspecified {
+      Unspecified::Ignore => true,
+      Unspecified::Top => first.is_none(),
+      Unspecified::Bottom => second.is_none(),
+    },
+  }
+}
+
+/// One node of postcss-sorting's list to sort.
+struct SortItem {
+  node: usize,
+  position: f64,
+  initial_index: f64,
+}
+
+/// postcss-sorting's `sortNode` for the block holding `children`: the edit
+/// that sorts it (and ends its last declaration with `;`), if it changes
+/// anything.
+fn sort_edit(tree: &PostcssTree, config: &Config, children: &[usize]) -> Option<Edit> {
+  let mut items: Vec<SortItem> = Vec::new();
+  let mut captured = vec![false; tree.nodes.len()];
+  for (index, &child) in children.iter().enumerate() {
+    if tree.nodes[child].kind == NodeKind::Comment {
+      continue;
+    }
+    let position = config
+      .order_data(tree, child, true)
+      .position
+      .map_or(f64::INFINITY, |p| p as f64);
+    let before = comments_before_node(tree, child);
+    let after = comments_after_node(tree, child);
+    let mut initial = index as f64;
+    let mut before_items: Vec<SortItem> = before
+      .iter()
+      .rev()
+      .map(|&c| {
+        initial -= 0.0001;
+        SortItem {
+          node: c,
+          position,
+          initial_index: initial,
+        }
+      })
+      .collect();
+    before_items.reverse();
+    let mut initial = index as f64;
+    let after_items: Vec<SortItem> = after
+      .iter()
+      .map(|&c| {
+        initial += 0.0001;
+        SortItem {
+          node: c,
+          position,
+          initial_index: initial,
+        }
+      })
+      .collect();
+    for item in before_items.iter().chain(&after_items) {
+      captured[item.node] = true;
+    }
+    items.extend(before_items);
+    items.push(SortItem {
+      node: child,
+      position,
+      initial_index: index as f64,
+    });
+    items.extend(after_items);
+  }
+  // processLastComments: comments that belong to no node sort last.
+  for (index, &child) in children.iter().enumerate() {
+    if tree.nodes[child].kind == NodeKind::Comment && !captured[child] {
+      items.push(SortItem {
+        node: child,
+        position: f64::INFINITY,
+        initial_index: index as f64,
+      });
+    }
+  }
+  js_sort(&mut items, |a, b| {
+    if a.position != b.position {
+      a.position - b.position
+    } else {
+      a.initial_index - b.initial_index
+    }
+  });
+  let order: Vec<usize> = items.iter().map(|item| item.node).collect();
+  reorder_edit(tree, children, &order, true)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use crate::empty_lines::fix_with;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  fn ctx_with_options(options: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(options),
+  /// The messages for `source` in `syntax` with `options`.
+  fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
+      syntax,
+      options: Some(&options),
+    };
+    OrderOrder
+      .check_root(&[], &ctx)
+      .into_iter()
+      .map(|d| d.message)
+      .collect()
+  }
+
+  /// `source` fixed with the rule set to `options`.
+  fn fix(source: &str, syntax: Syntax, options: serde_json::Value) -> String {
+    fix_with("order/order", options, source, syntax)
+  }
+
+  #[test]
+  fn reads_both_option_shapes() {
+    let source = "a { display: none; --width: 10px; }";
+    for options in [
+      json!([["custom-properties", "declarations"]]),
+      json!(["custom-properties", "declarations"]),
+      json!([["custom-properties", "declarations"], { "unspecified": "ignore" }]),
+    ] {
+      assert_eq!(
+        messages(source, Syntax::Css, options),
+        vec!["Expected custom property to come before declaration"]
+      );
     }
-  }
-
-  fn ctx_no_options() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
-  }
-
-  fn make_decl(property: &str, value: &str, offset: usize, length: usize) -> Declaration {
-    Declaration {
-      property: property.to_string(),
-      value: value.to_string(),
-      span: ParserSpan::new(offset, length),
-      important: false,
-    }
+    assert!(
+      messages(
+        source,
+        Syntax::Css,
+        json!([["custom-properties", "nonsense"]])
+      )
+      .is_empty()
+    );
   }
 
   #[test]
-  fn no_options_no_diagnostics() {
-    let rule = OrderOrder;
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("--my-var", "10px", 19, 16),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_no_options());
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn correct_order_custom_props_before_declarations() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["custom-properties", "declarations"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("--my-var", "10px", 4, 16),
-        make_decl("display", "block", 21, 14),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn wrong_order_declarations_before_custom_props() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["custom-properties", "declarations"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("--my-var", "10px", 19, 16),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("custom properties"));
-    assert!(diags[0].message.contains("declarations"));
-  }
-
-  #[test]
-  fn dollar_variables_before_declarations() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["dollar-variables", "custom-properties", "declarations"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("$my-var", "10px", 4, 14),
-        make_decl("--color", "red", 19, 13),
-        make_decl("display", "block", 33, 14),
-      ],
-      span: ParserSpan::new(0, 50),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn dollar_variables_out_of_order() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["dollar-variables", "custom-properties", "declarations"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("$my-var", "10px", 19, 14),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("dollar variables"));
-  }
-
-  #[test]
-  fn rules_after_declarations() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["declarations", "rules"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![make_decl("display", "block", 4, 14)],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![make_decl("color", "red", 30, 10)],
-        span: ParserSpan::new(19, 25),
-        ..Default::default()
-      }],
-      span: ParserSpan::new(0, 50),
-
-      nested_at_rules: Vec::new(),
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn rules_before_declarations_wrong() {
-    let rule = OrderOrder;
-    let options = serde_json::json!(["declarations", "rules"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![make_decl("display", "block", 30, 14)],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![make_decl("color", "red", 10, 10)],
-        span: ParserSpan::new(4, 25),
-        ..Default::default()
-      }],
-      span: ParserSpan::new(0, 50),
-
-      nested_at_rules: Vec::new(),
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    // The declaration at offset 30 comes after the nested rule at offset 4 in source,
-    // but in the expected order declarations should come before rules.
-    // Actually: the nested rule is at offset 4, declaration at offset 30.
-    // In the config, declarations should come before rules.
-    // In the source, rule(4) comes before declaration(30).
-    // So declaration(30) is fine — it comes after the rule in source but
-    // wait, the rule at offset 4 has order-pos 1 ("rules"),
-    // and declaration at offset 30 has order-pos 0 ("declarations").
-    // Since 0 < 1 and last_order_pos was 1, this triggers a diagnostic.
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("declarations"));
-    assert!(diags[0].message.contains("rules"));
-  }
-
-  #[test]
-  fn object_syntax_for_content_types() {
-    let rule = OrderOrder;
-    let options = serde_json::json!([
-        { "type": "custom-properties" },
-        { "type": "declarations" },
-        { "type": "rules" }
-    ]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("--color", "red", 4, 13),
-        make_decl("display", "block", 18, 14),
-      ],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![],
-        span: ParserSpan::new(33, 15),
-        ..Default::default()
-      }],
-      span: ParserSpan::new(0, 50),
-
-      nested_at_rules: Vec::new(),
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn unspecified_kinds_are_ignored() {
-    let rule = OrderOrder;
-    // Only specifying declarations — custom properties are not in the list
-    // and should be ignored regardless of position.
-    let options = serde_json::json!(["declarations"]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("--my-var", "10px", 19, 16),
-        make_decl("color", "red", 36, 10),
-      ],
-      span: ParserSpan::new(0, 50),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn full_order_correct() {
-    let rule = OrderOrder;
-    let options = serde_json::json!([
-      "dollar-variables",
+  fn reports_nodes_out_of_order() {
+    let order = json!([[
       "custom-properties",
+      "dollar-variables",
       "declarations",
-      "rules"
-    ]);
-    let node = CssNode::Style(StyleRule {
-      selector: ".card".to_string(),
-      declarations: vec![
-        make_decl("$size", "10px", 10, 13),
-        make_decl("--color", "blue", 24, 14),
-        make_decl("display", "flex", 39, 13),
-      ],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![],
-        span: ParserSpan::new(53, 15),
-        ..Default::default()
-      }],
-      span: ParserSpan::new(0, 70),
+      "rules",
+      "at-rules"
+    ]]);
+    assert_eq!(
+      messages(
+        "div { a { color: blue; } color: tomato; }",
+        Syntax::Scss,
+        order.clone()
+      ),
+      vec!["Expected declaration to come before rule"]
+    );
+    assert!(
+      messages(
+        "a { --w: 1px; $h: 2px; /* c */ display: none; span {} @media (x) {} }",
+        Syntax::Scss,
+        order
+      )
+      .is_empty()
+    );
+    let mixins = json!([["less-mixins", "rules"]]);
+    assert_eq!(
+      messages("a { span {} .mixin(); }", Syntax::Less, mixins).len(),
+      1
+    );
+  }
 
-      nested_at_rules: Vec::new(),
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
+  #[test]
+  fn at_rule_and_rule_patterns() {
+    let at_rules = json!([[
+      { "type": "at-rule", "name": "include", "hasBlock": true },
+      { "type": "at-rule", "name": "include" },
+      { "type": "at-rule", "hasBlock": true },
+      { "type": "at-rule", "name": "include", "parameter": "media" },
+      { "type": "at-rule", "name": "include", "parameter": "media", "hasBlock": true }
+    ]]);
+    assert_eq!(
+      fix(
+        "a {\n  @include media('palm') {\n    display: block;\n  }\n  @include media('desk');\n}",
+        Syntax::Scss,
+        at_rules
+      ),
+      "a {\n  @include media('desk');\n  @include media('palm') {\n    display: block;\n  }\n}"
+    );
+    let rules = json!([[{ "type": "rule", "selector": "^a" }, { "type": "rule", "selector": "/^&/" }, { "type": "rule" }]]);
+    assert_eq!(
+      fix("a { a {} &:hover {} abbr {} span {} }", Syntax::Scss, rules),
+      "a { a {} abbr {} &:hover {} span {} }"
+    );
+  }
+
+  #[test]
+  fn fix_moves_comments_and_unspecified_nodes() {
+    let order = json!([["custom-properties", "declarations"], { "unspecified": "bottom" }]);
+    assert_eq!(
+      fix(
+        "a {\n  $w: 5px;\n  /* c */\n  display: none\n}",
+        Syntax::Scss,
+        order
+      ),
+      "a {\n  /* c */\n  display: none;\n  $w: 5px;\n}"
+    );
+    // The fixer always sends unspecified nodes to the bottom, so with
+    // `unspecified: "top"` this cannot be fixed.
+    let top = json!([["custom-properties", "declarations"], { "unspecified": "top" }]);
+    let source = "a {\n  display: none;\n  $width: 5px;\n}";
+    assert_eq!(messages(source, Syntax::Scss, top.clone()).len(), 1);
+    assert_eq!(fix(source, Syntax::Scss, top), source);
   }
 }
