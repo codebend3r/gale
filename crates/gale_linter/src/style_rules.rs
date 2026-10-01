@@ -34,23 +34,47 @@ pub struct RawAtRule {
   pub has_block: bool,
 }
 
+/// The style rules and at-rules of a stylesheet, as written, from one scan
+/// of its source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScannedRules {
+  /// Every style rule prelude, as [`scan_style_rules`] finds them.
+  pub style_rules: Vec<RawStyleRule>,
+  /// Every at-rule, as [`scan_at_rules`] finds them.
+  pub at_rules: Vec<RawAtRule>,
+}
+
+/// Find every style rule prelude and every at-rule in `source` in one pass.
+///
+/// Rules get this for the file they lint from
+/// [`RuleContext::scanned_rules`](crate::rule::RuleContext::scanned_rules),
+/// which scans once per file for all of them.
+pub fn scan(source: &str, syntax: Syntax) -> ScannedRules {
+  let mut scanned = ScannedRules::default();
+  scanner(source, syntax).scan_block(
+    0,
+    source.len(),
+    None,
+    false,
+    &mut scanned.style_rules,
+    &mut scanned.at_rules,
+  );
+  scanned
+}
+
 /// Find every style rule prelude in `source`, in document order.
 ///
 /// Keyframe selectors such as `from` and `50%` are not style rules and are
 /// left out, as is anything nested under them.
 pub fn scan_style_rules(source: &str, syntax: Syntax) -> Vec<RawStyleRule> {
-  let mut out = Vec::new();
-  scanner(source, syntax).scan_block(0, source.len(), None, false, &mut out, &mut Vec::new());
-  out
+  scan(source, syntax).style_rules
 }
 
 /// Find every at-rule in `source` that has a block or ends with `;`, nested
 /// ones included, in document order.  Unlike the parsed AST, this sees
 /// at-rules nested in plain CSS style rules.
 pub fn scan_at_rules(source: &str, syntax: Syntax) -> Vec<RawAtRule> {
-  let mut at_rules = Vec::new();
-  scanner(source, syntax).scan_block(0, source.len(), None, false, &mut Vec::new(), &mut at_rules);
-  at_rules
+  scan(source, syntax).at_rules
 }
 
 /// A scanner over `source`.

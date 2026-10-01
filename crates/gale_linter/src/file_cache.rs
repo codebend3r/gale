@@ -25,6 +25,7 @@ use std::rc::Rc;
 use gale_css_parser::Syntax;
 
 use crate::postcss_tree::PostcssTree;
+use crate::style_rules::{self, ScannedRules};
 
 /// The artifacts shared by every rule linting one file.
 ///
@@ -37,6 +38,8 @@ pub struct FileCache<'a> {
   syntax: Syntax,
   /// The statements as PostCSS sees them.
   postcss_tree: OnceCell<Rc<PostcssTree<'a>>>,
+  /// The style rules and at-rules as written.
+  scanned_rules: OnceCell<Rc<ScannedRules>>,
 }
 
 impl<'a> FileCache<'a> {
@@ -46,6 +49,7 @@ impl<'a> FileCache<'a> {
       source,
       syntax,
       postcss_tree: OnceCell::new(),
+      scanned_rules: OnceCell::new(),
     }
   }
 
@@ -69,6 +73,13 @@ impl<'a> FileCache<'a> {
   pub fn postcss_tree(&self) -> Rc<PostcssTree<'a>> {
     shared(&self.postcss_tree, || {
       PostcssTree::parse(self.source, self.syntax)
+    })
+  }
+
+  /// The file's style rules and at-rules as written, scanned on first use.
+  pub fn scanned_rules(&self) -> Rc<ScannedRules> {
+    shared(&self.scanned_rules, || {
+      style_rules::scan(self.source, self.syntax)
     })
   }
 
@@ -136,6 +147,24 @@ mod tests {
     assert!(Rc::ptr_eq(&tree, &cache.postcss_tree()));
     assert_eq!(tree.nodes.len(), 3);
     assert_eq!(tree.source(), source);
+  }
+
+  /// One scan finds the style rules and the at-rules, and is shared.
+  #[test]
+  fn the_rules_are_scanned_once_per_cache() {
+    let source = "@media x { a {} }\nb { @include y; }\n";
+    let cache = FileCache::new(source, Syntax::Scss);
+    let scanned = cache.scanned_rules();
+    assert!(Rc::ptr_eq(&scanned, &cache.scanned_rules()));
+    assert_eq!(*scanned, style_rules::scan(source, Syntax::Scss));
+    let preludes: Vec<&str> = scanned
+      .style_rules
+      .iter()
+      .map(|r| r.prelude.as_str())
+      .collect();
+    assert_eq!(preludes, ["a", "b"]);
+    let at_rules: Vec<&str> = scanned.at_rules.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(at_rules, ["media", "include"]);
   }
 
   /// `is_for` matches the very same text and syntax only.

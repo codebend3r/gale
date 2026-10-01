@@ -2,7 +2,6 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
-use crate::style_rules::scan_at_rules;
 
 /// Specify context or prefix notation for media feature ranges.
 ///
@@ -57,7 +56,7 @@ impl Rule for MediaFeatureRangeNotation {
   /// every `@media` query as written (nested ones included).
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for at in scan_at_rules(ctx.source, ctx.syntax) {
+    for at in &ctx.scanned_rules().at_rules {
       if at.name.eq_ignore_ascii_case("media") {
         self.check_params(&at.params, at.params_offset, ctx, &mut diags);
       }

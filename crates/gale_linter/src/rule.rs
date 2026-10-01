@@ -8,6 +8,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
 use crate::postcss_tree::PostcssTree;
+use crate::style_rules::{self, ScannedRules};
 
 /// Context passed to each rule when checking a node.
 pub struct RuleContext<'a> {
@@ -103,6 +104,15 @@ impl<'a> RuleContext<'a> {
     match self.cache() {
       Some(cache) => cache.postcss_tree(),
       None => Rc::new(PostcssTree::parse(self.source, self.syntax)),
+    }
+  }
+
+  /// The source's style rule preludes and at-rules as written, scanned once
+  /// per file and shared with every other rule that asks.
+  pub fn scanned_rules(&self) -> Rc<ScannedRules> {
+    match self.cache() {
+      Some(cache) => cache.scanned_rules(),
+      None => Rc::new(style_rules::scan(self.source, self.syntax)),
     }
   }
 }
@@ -314,10 +324,10 @@ mod tests {
     assert_eq!(css.selector_source(0), Some("a // b"));
   }
 
-  /// A context with the runner's per-file cache shares one tree between
-  /// rules; one over other text, or without a cache, parses its own.
+  /// A context with the runner's per-file cache shares its artifacts
+  /// between rules; one over other text, or without a cache, builds its own.
   #[test]
-  fn the_tree_comes_from_the_cache_built_for_the_source() {
+  fn artifacts_come_from_the_cache_built_for_the_source() {
     let source = String::from("a { color: red; }");
     let cache = FileCache::new(&source, Syntax::Css);
     let ctx = RuleContext {
@@ -325,6 +335,7 @@ mod tests {
       ..context(&source, Syntax::Css)
     };
     assert!(Rc::ptr_eq(&ctx.postcss_tree(), &cache.postcss_tree()));
+    assert!(Rc::ptr_eq(&ctx.scanned_rules(), &cache.scanned_rules()));
 
     let other = source.clone();
     let elsewhere = RuleContext {
@@ -334,6 +345,10 @@ mod tests {
     let tree = elsewhere.postcss_tree();
     assert!(!Rc::ptr_eq(&tree, &cache.postcss_tree()));
     assert!(std::ptr::eq(tree.source(), other.as_str()));
+    assert!(!Rc::ptr_eq(
+      &elsewhere.scanned_rules(),
+      &cache.scanned_rules()
+    ));
 
     let uncached = context(&source, Syntax::Css);
     assert!(!Rc::ptr_eq(

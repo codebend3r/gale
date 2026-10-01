@@ -7,7 +7,7 @@ use crate::selector::nesting::{resolve_nested, resolve_nested_list};
 use crate::selector::{
   Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
 };
-use crate::style_rules::{RawStyleRule, scan_style_rules};
+use crate::style_rules::RawStyleRule;
 use crate::stylelint_version::stylelint_major_version;
 
 /// Limit the number of attribute selectors in a selector.
@@ -178,12 +178,13 @@ impl Rule for SelectorMaxAttribute {
     };
     let v17 = stylelint_major_version() >= 17;
 
-    let rules = scan_style_rules(ctx.source, ctx.syntax);
+    let scanned = ctx.scanned_rules();
+    let rules = &scanned.style_rules;
     let mut diags = Vec::new();
     // Each rule's selectors resolved against its ancestors, for its nested
     // rules to build on.  Parents precede their children in `rules`.
     let mut resolved: Vec<Option<SelectorList>> = Vec::with_capacity(rules.len());
-    for raw in &rules {
+    for raw in rules {
       let own = is_standard_syntax_selector(&raw.prelude)
         .then(|| parse_selector_list(&raw.prelude).ok())
         .flatten();
@@ -221,6 +222,7 @@ impl Rule for SelectorMaxAttribute {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style_rules::scan_style_rules;
   use gale_css_parser::Syntax;
 
   /// The messages for `source` with `options`, counted the Stylelint 17

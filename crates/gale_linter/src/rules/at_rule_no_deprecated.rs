@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::style_rules::{RawAtRule, scan_at_rules};
+use crate::style_rules::RawAtRule;
 
 /// Stylelint's `deprecatedAtKeywords`.
 const DEPRECATED_AT_RULES: &[&str] = &["document", "nest", "viewport"];
@@ -33,7 +33,7 @@ impl Rule for AtRuleNoDeprecated {
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore = ctx.secondary_options().and_then(|v| v.get("ignoreAtRules"));
     let mut diags = Vec::new();
-    for at in scan_at_rules(ctx.source, ctx.syntax) {
+    for at in &ctx.scanned_rules().at_rules {
       let lower = at.name.to_ascii_lowercase();
       if !DEPRECATED_AT_RULES.contains(&lower.as_str())
         || !is_standard_syntax_at_rule(&at)
