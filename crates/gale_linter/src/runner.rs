@@ -1738,6 +1738,24 @@ mod tests {
   }
 
   #[test]
+  fn sass_with_multibyte_text_lints_with_every_rule() {
+    let src = "// héllo wörld ünïcödé\n.foo\n  content: \"→ ✓ ★\"\n  color: red\n  .bar\n    margin: 0 0 0 0\n    font-family: Ärial\n\n.baz\n  color: #FFF\n";
+    let registry = RuleRegistry::default();
+    let all: Vec<String> = registry
+      .all()
+      .iter()
+      .map(|r| r.name().to_string())
+      .collect();
+    let runner = LintRunner::new(registry, all);
+    let result = runner.lint_source(src, "test.sass", Syntax::Sass);
+    for d in &result.diagnostics {
+      assert!(!d.message.starts_with("Internal error"), "{}", d.message);
+      assert!(src.is_char_boundary(d.span.offset), "{d:?}");
+      assert!(src.is_char_boundary(d.span.end()), "{d:?}");
+    }
+  }
+
+  #[test]
   fn malformed_scss_does_not_silently_swallow() {
     // Malformed SCSS should either produce lint diagnostics (via
     // the lightningcss fallback) or a parse-error diagnostic. It

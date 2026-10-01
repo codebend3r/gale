@@ -122,7 +122,14 @@ impl Rule for CommentEmptyLineBefore {
         };
         i = comment_end;
 
-        let comment_text = &source[comment_start + 2..comment_end.saturating_sub(2)];
+        // An unterminated comment runs to the end of the file, so there is no
+        // `*/` to drop; `/*/` is too short to have one either.
+        let text_end = if source[comment_start + 2..comment_end].ends_with("*/") {
+          comment_end - 2
+        } else {
+          comment_end
+        };
+        let comment_text = source.get(comment_start + 2..text_end).unwrap_or("");
 
         // Skip stylelint/gale command comments
         if ignore_stylelint_commands && is_stylelint_command(comment_text) {

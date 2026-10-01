@@ -82,8 +82,10 @@ fn check_value(
         }
         // Extract url content, stripping quotes.
         let content = lower[after_paren..close].trim();
-        let unquoted = if (content.starts_with('"') && content.ends_with('"'))
-          || (content.starts_with('\'') && content.ends_with('\''))
+        // A lone quote (`url(")`) both starts and ends with it: needs two.
+        let unquoted = if content.len() >= 2
+          && ((content.starts_with('"') && content.ends_with('"'))
+            || (content.starts_with('\'') && content.ends_with('\'')))
         {
           &content[1..content.len() - 1]
         } else {

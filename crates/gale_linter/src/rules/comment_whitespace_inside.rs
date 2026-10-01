@@ -38,13 +38,12 @@ impl Rule for CommentWhitespaceInside {
     let length = comment.span.length;
 
     // Extract the raw comment text from the source to get the full `/* ... */`
-    if offset + length > ctx.source.len() {
+    let Some(raw) = ctx.source_slice(offset, offset + length) else {
       return vec![];
-    }
-    let raw = &ctx.source[offset..offset + length];
+    };
 
-    // Must be a block comment wrapped in /* */
-    if !raw.starts_with("/*") || !raw.ends_with("*/") {
+    // Must be a block comment wrapped in /* */ (and `/*/` is not one).
+    if raw.len() < 4 || !raw.starts_with("/*") || !raw.ends_with("*/") {
       return vec![];
     }
 
