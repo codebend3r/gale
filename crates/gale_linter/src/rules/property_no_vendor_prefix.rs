@@ -76,12 +76,15 @@ impl Rule for PropertyNoVendorPrefix {
           None
         };
 
-        let mut diag = Diagnostic::new(
-          self.name(),
-          format!("Unexpected vendor-prefixed property \"{}\"", decl.property),
-        )
-        .severity(self.default_severity())
-        .span(Span::new(decl.span.offset, decl.span.length));
+        // Stylelint 15 and older word the message differently.
+        let message = if crate::stylelint_version::stylelint_major_version() >= 16 {
+          format!("Unexpected vendor-prefixed property \"{}\"", decl.property)
+        } else {
+          format!("Unexpected vendor-prefix \"{}\"", decl.property)
+        };
+        let mut diag = Diagnostic::new(self.name(), message)
+          .severity(self.default_severity())
+          .span(Span::new(decl.span.offset, decl.span.length));
 
         if let Some(f) = fix {
           diag = diag.fix(f);
