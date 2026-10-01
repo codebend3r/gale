@@ -103,14 +103,38 @@ impl Palette {
   }
 }
 
+/// Stylelint's `Invalid Option: <text>` lines, one per distinct invalid
+/// option across all results, followed by a blank line; empty when there are
+/// none.
+fn invalid_options_section(results: &[LintResult], paint: Palette) -> String {
+  let mut seen: Vec<&str> = Vec::new();
+  for text in results.iter().flat_map(|r| &r.invalid_option_warnings) {
+    if !seen.contains(&text.as_str()) {
+      seen.push(text);
+    }
+  }
+  if seen.is_empty() {
+    return String::new();
+  }
+  let mut out = String::new();
+  for text in seen {
+    out.push_str(&paint.red("Invalid Option: "));
+    out.push_str(text);
+    out.push('\n');
+  }
+  out.push('\n');
+  out
+}
+
 impl Formatter for TextFormatter {
-  /// Groups warnings under an underlined file header and appends a
+  /// Lists invalid options first, as Stylelint does, then groups warnings
+  /// under an underlined file header and appends a
   /// `N problems (E errors, W warnings)` summary.
   fn format(&self, results: &[LintResult]) -> String {
     let paint = Palette {
       enabled: self.color,
     };
-    let mut output = String::new();
+    let mut output = invalid_options_section(results, paint);
     let mut total_errors: usize = 0;
     let mut total_warnings: usize = 0;
 
@@ -184,11 +208,17 @@ struct JsonResult {
   source: String,
   deprecations: Vec<serde_json::Value>,
   #[serde(rename = "invalidOptionWarnings")]
-  invalid_option_warnings: Vec<serde_json::Value>,
+  invalid_option_warnings: Vec<JsonInvalidOption>,
   #[serde(rename = "parseErrors")]
   parse_errors: Vec<serde_json::Value>,
   errored: bool,
   warnings: Vec<JsonWarning>,
+}
+
+/// One entry of Stylelint's `invalidOptionWarnings`.
+#[derive(Serialize)]
+struct JsonInvalidOption {
+  text: String,
 }
 
 #[derive(Serialize)]
@@ -239,17 +269,16 @@ impl Formatter for JsonFormatter {
           })
           .collect();
 
-        let errored = result
-          .diagnostics
-          .iter()
-          .any(|d| d.severity == Severity::Error);
-
         JsonResult {
           source: result.file_path.clone(),
           deprecations: Vec::new(),
-          invalid_option_warnings: Vec::new(),
+          invalid_option_warnings: result
+            .invalid_option_warnings
+            .iter()
+            .map(|text| JsonInvalidOption { text: text.clone() })
+            .collect(),
           parse_errors: Vec::new(),
-          errored,
+          errored: result.errored(),
           warnings,
         }
       })
@@ -574,6 +603,49 @@ mod tests {
     }
     // The sample is a warning, not an error.
     assert_eq!(entry["errored"], serde_json::json!(false));
+  }
+
+  /// Two files that both carry the same invalid option, and no problems.
+  fn results_with_invalid_option() -> Vec<LintResult> {
+    let text = "Invalid option value \"[\" for rule \"selector-class-pattern\": bad";
+    ["a.css", "b.css"]
+      .into_iter()
+      .map(|path| {
+        let mut result = LintResult::new(path, "a {}", vec![]);
+        result.invalid_option_warnings.push(text.to_string());
+        result
+      })
+      .collect()
+  }
+
+  #[test]
+  fn json_lists_invalid_options_and_marks_the_result_errored() {
+    let output = JsonFormatter.format(&results_with_invalid_option());
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+      parsed[0]["invalidOptionWarnings"],
+      serde_json::json!([{
+        "text": "Invalid option value \"[\" for rule \"selector-class-pattern\": bad"
+      }])
+    );
+    assert_eq!(parsed[0]["errored"], serde_json::json!(true));
+    assert_eq!(parsed[0]["warnings"], serde_json::json!([]));
+  }
+
+  #[test]
+  fn text_lists_each_invalid_option_once_before_the_problems() {
+    let output = TextFormatter { color: false }.format(&results_with_invalid_option());
+    assert_eq!(
+      output,
+      "Invalid Option: Invalid option value \"[\" for rule \"selector-class-pattern\": bad\n\n"
+    );
+
+    let mut mixed = sample_results();
+    mixed.extend(results_with_invalid_option());
+    let output = TextFormatter { color: false }.format(&mixed);
+    assert!(output.starts_with("Invalid Option: "), "{output}");
+    assert_eq!(output.matches("Invalid Option: ").count(), 1);
+    assert!(output.contains("Unexpected empty block"));
   }
 
   #[test]

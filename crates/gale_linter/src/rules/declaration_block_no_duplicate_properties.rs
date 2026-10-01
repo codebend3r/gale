@@ -360,20 +360,15 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
 /// Pattern matcher for ignoreProperties - supports plain strings and regex-like "/pattern/"
 enum PropertyMatcher {
   Exact(String),
-  Regex(regex::Regex),
+  Regex(std::sync::Arc<crate::pattern::Regex>),
 }
 
 impl PropertyMatcher {
   /// Builds a matcher: `/…/` is a regex, anything else an exact lowercase name.
   fn from_pattern(pattern: &str) -> Self {
-    if pattern.starts_with('/') && pattern.ends_with('/') && pattern.len() > 2 {
-      let re_str = &pattern[1..pattern.len() - 1];
-      match regex::Regex::new(re_str) {
-        Ok(re) => PropertyMatcher::Regex(re),
-        Err(_) => PropertyMatcher::Exact(pattern.to_ascii_lowercase()),
-      }
-    } else {
-      PropertyMatcher::Exact(pattern.to_ascii_lowercase())
+    match crate::pattern::regex_entry(pattern) {
+      Some(re) => PropertyMatcher::Regex(re),
+      None => PropertyMatcher::Exact(pattern.to_ascii_lowercase()),
     }
   }
 
@@ -381,7 +376,9 @@ impl PropertyMatcher {
   fn matches(&self, lower_prop: &str, original_prop: &str) -> bool {
     match self {
       PropertyMatcher::Exact(s) => lower_prop == s,
-      PropertyMatcher::Regex(re) => re.is_match(original_prop) || re.is_match(lower_prop),
+      PropertyMatcher::Regex(re) => {
+        crate::pattern::is_match(re, original_prop) || crate::pattern::is_match(re, lower_prop)
+      }
     }
   }
 }

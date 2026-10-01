@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Limit the number of values in a declaration for specific properties.
@@ -101,14 +102,9 @@ fn find_matching_limit(prop: &str, limits: &HashMap<String, usize>) -> Option<us
     return Some(max);
   }
   // Check regex patterns (keys starting and ending with `/`)
-  for (pattern, &max) in limits {
-    if pattern.starts_with('/') && pattern.ends_with('/') {
-      let re_str = &pattern[1..pattern.len() - 1];
-      if let Ok(re) = regex::Regex::new(re_str) {
-        if re.is_match(prop) {
-          return Some(max);
-        }
-      }
+  for (key, &max) in limits {
+    if pattern::match_regex_entry(key, prop) == Some(true) {
+      return Some(max);
     }
   }
   None

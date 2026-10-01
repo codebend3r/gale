@@ -1274,11 +1274,7 @@ pub fn run() -> Result<()> {
     // `files` pattern AND its `ignoreFiles` pattern.  Return an empty
     // result so we don't produce false positives.
     if config.is_file_ignored_by_override(file_path) {
-      return LintResult {
-        file_path: file_path.to_string(),
-        diagnostics: Vec::new(),
-        source: source.to_string(),
-      };
+      return LintResult::new(file_path, source, Vec::new());
     }
     let effective_rules = config.rules_for_file(file_path);
     let file_enabled: Vec<String> = effective_rules
@@ -1520,10 +1516,13 @@ pub fn run() -> Result<()> {
             lint_file(&runner, &source, &file_path, syntax, &config, has_overrides)
           };
 
-          // Update cache with the new result.
+          // Update cache with the new result.  A file with an invalid
+          // option is not clean either: Stylelint never caches a result
+          // that errored.
           {
             let mut cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
-            cache.record(file_path, content_hash, result.diagnostics.len());
+            let problems = result.diagnostics.len() + result.invalid_option_warnings.len();
+            cache.record(file_path, content_hash, problems);
           }
 
           Some(result)
@@ -1712,8 +1711,13 @@ pub fn run() -> Result<()> {
     process::exit(EXIT_LINT_PROBLEM);
   }
 
-  // Lint problems exit 2, as in Stylelint.
-  if total_errors > 0 {
+  // Lint problems exit 2, as in Stylelint, and so does an invalid rule
+  // option (Stylelint marks the result errored).
+  if total_errors > 0
+    || results
+      .iter()
+      .any(|r| !r.invalid_option_warnings.is_empty())
+  {
     process::exit(EXIT_LINT_PROBLEM);
   }
 

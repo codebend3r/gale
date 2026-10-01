@@ -30,8 +30,11 @@ export interface LintResult {
   warnings: Warning[];
   /** Always empty: Gale reports no deprecations. */
   deprecations: unknown[];
-  /** Always empty: Gale does not validate rule options. */
-  invalidOptionWarnings: unknown[];
+  /**
+   * Rule options Gale could not use, such as a pattern that does not compile.
+   * Any entry makes the result `errored`.
+   */
+  invalidOptionWarnings: { text: string }[];
   /** Always empty: parse errors surface as `parse-error` warnings. */
   parseErrors: unknown[];
   errored: boolean;

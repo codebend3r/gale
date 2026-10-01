@@ -210,7 +210,17 @@ impl GaleLspServer {
       .unwrap_or_else(|_| uri.to_string());
 
     let syntax = detect_syntax(&file_path);
-    runner.lint_source(source, &file_path, syntax).diagnostics
+    let result = runner.lint_source(source, &file_path, syntax);
+    // An invalid rule option (a pattern that does not compile, say) is not
+    // a problem in the document, but the editor is the only place to say so:
+    // show it at the top of the file.
+    let mut diagnostics: Vec<GaleDiagnostic> = result
+      .invalid_option_warnings
+      .into_iter()
+      .map(GaleDiagnostic::invalid_option)
+      .collect();
+    diagnostics.extend(result.diagnostics);
+    diagnostics
   }
 
   /// Lint source text, remember it for code actions, and publish

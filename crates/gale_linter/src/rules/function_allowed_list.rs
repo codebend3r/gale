@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Only allow specified CSS functions.
@@ -56,13 +58,13 @@ impl Rule for FunctionAllowedList {
 
     // Separate plain names from regex patterns
     let mut plain_names: Vec<String> = Vec::new();
-    let mut regex_patterns: Vec<Regex> = Vec::new();
+    let mut regex_patterns: Vec<Arc<pattern::Regex>> = Vec::new();
 
     for val in &allowed_values {
-      if val.starts_with('/') && val.ends_with('/') && val.len() > 2 {
-        // It's a regex pattern
-        let pattern = &val[1..val.len() - 1];
-        if let Ok(re) = Regex::new(pattern) {
+      if pattern::split_literal(val).is_some() {
+        // It's a regex pattern; one that does not compile is reported as an
+        // invalid option and allows nothing.
+        if let Some(re) = pattern::regex_entry(val) {
           regex_patterns.push(re);
         }
       } else {
@@ -117,7 +119,11 @@ impl Rule for FunctionAllowedList {
 }
 
 /// Exact name or regex match only — no prefix stripping, no case folding.
-fn is_function_allowed(fname: &str, plain_names: &[String], regex_patterns: &[Regex]) -> bool {
+fn is_function_allowed(
+  fname: &str,
+  plain_names: &[String],
+  regex_patterns: &[Arc<pattern::Regex>],
+) -> bool {
   // Strict matching: exact string match or regex pattern match only.
   // No vendor prefix stripping, no implicit case-insensitive matching.
   if plain_names.iter().any(|n| n == fname) {
@@ -125,7 +131,7 @@ fn is_function_allowed(fname: &str, plain_names: &[String], regex_patterns: &[Re
   }
 
   for re in regex_patterns {
-    if re.is_match(fname) {
+    if pattern::is_match(re, fname) {
       return true;
     }
   }
@@ -138,7 +144,7 @@ fn find_disallowed_functions(
   value: &str,
   base_offset: usize,
   plain_names: &[String],
-  regex_patterns: &[Regex],
+  regex_patterns: &[Arc<pattern::Regex>],
   rule: &FunctionAllowedList,
   diags: &mut Vec<Diagnostic>,
 ) {

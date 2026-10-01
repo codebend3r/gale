@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
-use regex::Regex;
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
@@ -36,9 +36,11 @@ impl Rule for ContainerNamePattern {
       .and_then(|v| v.as_str())
       .unwrap_or(DEFAULT_PATTERN);
 
-    let re = match Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // A pattern that does not compile is reported as an invalid option,
+    // as Stylelint does, rather than silently switching the rule off.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     match node {
@@ -48,7 +50,7 @@ impl Rule for ContainerNamePattern {
           let prop = decl.property.to_ascii_lowercase();
           if prop == "container-name" {
             for name in extract_container_names(&decl.value) {
-              if !re.is_match(&name) {
+              if !pattern::is_match(&re, &name) {
                 diags.push(
                   Diagnostic::new(
                     self.name(),
@@ -88,7 +90,7 @@ impl Rule for ContainerNamePattern {
         if lower == "none" || lower == "inherit" || lower == "initial" || lower == "unset" {
           return vec![];
         }
-        if !re.is_match(name) {
+        if !pattern::is_match(&re, name) {
           return vec![
             Diagnostic::new(
               self.name(),

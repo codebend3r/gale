@@ -2,6 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_unit;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 pub struct UnitNoUnknown;
@@ -233,26 +234,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 
 /// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
-  if pattern.starts_with('/') {
-    if let Some(inner) = pattern.strip_prefix('/') {
-      if let Some(inner) = inner.strip_suffix("/i") {
-        let re_str = format!("(?i){}", inner);
-        if let Ok(re) = regex::Regex::new(&re_str) {
-          return re.is_match(value);
-        }
-        return false;
-      }
-      if let Some(inner) = inner.strip_suffix('/') {
-        if let Ok(re) = regex::Regex::new(inner) {
-          return re.is_match(value);
-        }
-        return false;
-      }
-    }
-    false
-  } else {
-    value.eq_ignore_ascii_case(pattern)
-  }
+  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
 }
 
 /// Normalises a string or array-of-strings option into a `Vec`.

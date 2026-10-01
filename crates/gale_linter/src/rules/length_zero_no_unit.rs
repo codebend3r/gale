@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Reports units on zero lengths (e.g. `0px` → `0`).
@@ -135,26 +136,7 @@ fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
 
 /// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
 fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
-  if pattern.starts_with('/') {
-    if let Some(inner) = pattern.strip_prefix('/') {
-      if let Some(inner) = inner.strip_suffix("/i") {
-        let re_str = format!("(?i){}", inner);
-        if let Ok(re) = regex::Regex::new(&re_str) {
-          return re.is_match(value);
-        }
-        return false;
-      }
-      if let Some(inner) = inner.strip_suffix('/') {
-        if let Ok(re) = regex::Regex::new(inner) {
-          return re.is_match(value);
-        }
-        return false;
-      }
-    }
-    false
-  } else {
-    value.eq_ignore_ascii_case(pattern)
-  }
+  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
 }
 
 /// Whether any `ignoreFunctions` pattern matches this function name.

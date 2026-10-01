@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Require an empty line before comments (except first-nested).
@@ -144,17 +145,11 @@ impl Rule for CommentEmptyLineBefore {
         if !ignore_comment_patterns.is_empty() {
           let trimmed_comment = comment_text.trim();
           let should_ignore = ignore_comment_patterns.iter().any(|pat| {
-            let re_str = if pat.starts_with('/') && pat.ends_with('/') {
-              &pat[1..pat.len() - 1]
-            } else {
-              pat.as_str()
-            };
-            // Try as regex first; if it's not a valid regex or doesn't
-            // look like one, fall back to exact match.
-            if let Ok(re) = regex::Regex::new(re_str) {
-              re.is_match(trimmed_comment)
-            } else {
-              trimmed_comment == pat
+            // Try as regex first (`/regex/` or a bare pattern); if it does
+            // not compile, fall back to exact match.
+            match pattern::compile(pat) {
+              Ok(re) => pattern::is_match(&re, trimmed_comment),
+              Err(_) => trimmed_comment == pat,
             }
           });
           if should_ignore {

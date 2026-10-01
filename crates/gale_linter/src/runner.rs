@@ -6,6 +6,7 @@ use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
+use crate::pattern;
 use crate::registry::RuleRegistry;
 use crate::rule::{Rule, RuleContext, secondary_options_of};
 
@@ -981,6 +982,7 @@ impl LintRunner {
     let RuleRun {
       mut diagnostics,
       failures,
+      invalid_options,
       ..
     } = run;
 
@@ -1031,7 +1033,8 @@ impl LintRunner {
 
     let t5 = Instant::now();
     let unknown = self.unknown_rule_problems(&missing, source, file_path);
-    let result = finish(file_path, source, &parse_result, diagnostics, unknown);
+    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
+    result.invalid_option_warnings = invalid_options;
     if debug {
       eprintln!("[perf] sort: {:.3}s", t5.elapsed().as_secs_f64());
       eprintln!("[perf] total diagnostics: {}", result.diagnostics.len());
@@ -1148,6 +1151,7 @@ impl LintRunner {
     let RuleRun {
       mut diagnostics,
       mut failures,
+      invalid_options,
       ..
     } = run;
 
@@ -1218,7 +1222,9 @@ impl LintRunner {
     diagnostics.extend(failures);
 
     let unknown = self.unknown_rule_problems(&missing, source, file_path);
-    finish(file_path, source, &parse_result, diagnostics, unknown)
+    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
+    result.invalid_option_warnings = invalid_options;
+    result
   }
 
   /// The registered rules behind `names`, and the names the registry does
@@ -1369,6 +1375,8 @@ struct RuleRun<'a> {
   /// One internal-error problem per rule that panicked.  Kept apart from
   /// `diagnostics` so disables and severity overrides never touch them.
   failures: Vec<Diagnostic>,
+  /// Texts of the invalid-option reports the rules returned, each once.
+  invalid_options: Vec<String>,
 }
 
 impl<'a> RuleRun<'a> {
@@ -1381,7 +1389,7 @@ impl<'a> RuleRun<'a> {
     source: &'a str,
     syntax: Syntax,
   ) -> Self {
-    Self {
+    let mut run = Self {
       rules,
       root_options,
       node_options,
@@ -1391,6 +1399,25 @@ impl<'a> RuleRun<'a> {
       failed: vec![false; rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
+      invalid_options: Vec::new(),
+    };
+    run.validate_patterns();
+    run
+  }
+
+  /// Report every regex literal in the rules' options that does not
+  /// compile, so a broken `ignore*: ["/[a-z/"]` entry is an invalid option
+  /// rather than an entry that silently matches nothing.
+  fn validate_patterns(&mut self) {
+    for (index, rule) in self.rules.iter().enumerate() {
+      let options = [self.root_options[index], self.node_options[index]];
+      for value in options.into_iter().flatten() {
+        for invalid in pattern::invalid_options(rule.name(), value) {
+          if !self.invalid_options.contains(&invalid.message) {
+            self.invalid_options.push(invalid.message);
+          }
+        }
+      }
     }
   }
 
@@ -1405,9 +1432,20 @@ impl<'a> RuleRun<'a> {
   }
 
   /// Keep what rule `index` returned, or record its panic and retire it.
+  ///
+  /// Invalid-option reports are set aside: a rule may return the same one
+  /// for every node it sees, and they are not problems in the source.
   fn record(&mut self, index: usize, outcome: Result<Vec<Diagnostic>, Caught>, offset: usize) {
     match outcome {
-      Ok(mut found) => self.diagnostics.append(&mut found),
+      Ok(found) => {
+        for diag in found {
+          if !diag.is_invalid_option() {
+            self.diagnostics.push(diag);
+          } else if !self.invalid_options.contains(&diag.message) {
+            self.invalid_options.push(diag.message);
+          }
+        }
+      }
       Err(caught) => {
         self.failed[index] = true;
         let offset = clamp_to_char_boundary(self.source, offset);
@@ -1507,6 +1545,52 @@ mod tests {
     let runner = LintRunner::new(registry, vec![]);
     let result = runner.lint_source("a { }", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
+  }
+
+  // -- Invalid pattern options --
+
+  #[test]
+  fn a_lookahead_pattern_works() {
+    let runner = runner_with_options(
+      "selector-class-pattern",
+      serde_json::json!("^(?!js-)[a-z-]+$"),
+    );
+    let result = runner.lint_source(".card {}\n.js-card {}\n", "test.css", Syntax::Css);
+    assert!(result.invalid_option_warnings.is_empty());
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert!(result.diagnostics[0].message.contains("js-card"));
+  }
+
+  #[test]
+  fn a_pattern_that_does_not_compile_is_an_invalid_option_once_per_file() {
+    let runner = runner_with_options("selector-class-pattern", serde_json::json!("^[a-z"));
+    let result = runner.lint_source(".a {}\n.b {}\n", "test.css", Syntax::Css);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.invalid_option_warnings.len(), 1);
+    assert!(
+      result.invalid_option_warnings[0]
+        .starts_with("Invalid option value \"^[a-z\" for rule \"selector-class-pattern\": "),
+      "{:?}",
+      result.invalid_option_warnings
+    );
+    assert!(result.errored());
+  }
+
+  #[test]
+  fn a_broken_list_entry_is_an_invalid_option() {
+    let runner = runner_with_options(
+      "color-named",
+      serde_json::json!(["never", { "ignoreProperties": ["/[broken/"] }]),
+    );
+    let result = runner.lint_source("a { color: red; }\n", "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1, "the rule still runs");
+    assert_eq!(
+      result.invalid_option_warnings.len(),
+      1,
+      "{:?}",
+      result.invalid_option_warnings
+    );
+    assert!(result.invalid_option_warnings[0].contains("\"/[broken/\""));
   }
 
   // -- Unknown rule names --

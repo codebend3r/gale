@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, SourceLineIndex, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Disallow duplicate selectors within a stylesheet.
@@ -184,17 +185,9 @@ fn collect_selectors(
         // Check ignoreSelectors: skip if any selector part matches an ignore pattern
         let should_ignore = !ignore_selectors.is_empty()
           && expanded.iter().any(|sel| {
-            ignore_selectors.iter().any(|pattern| {
-              if pattern.starts_with('/') && pattern.ends_with('/') {
-                // Regex pattern
-                let re_str = &pattern[1..pattern.len() - 1];
-                regex::Regex::new(re_str)
-                  .map(|re| re.is_match(sel))
-                  .unwrap_or(false)
-              } else {
-                sel == pattern
-              }
-            })
+            ignore_selectors
+              .iter()
+              .any(|entry| pattern::match_regex_entry(entry, sel).unwrap_or_else(|| sel == entry))
           });
         if is_standard && expanded_is_standard && !expanded.is_empty() && !should_ignore {
           let normalized_key = normalize_expanded(&expanded);

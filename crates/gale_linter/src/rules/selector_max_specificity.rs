@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Limit the specificity of selectors.
@@ -47,7 +48,7 @@ struct Config {
 
 enum IgnorePattern {
   Exact(String),
-  Regex(String),
+  Regex(std::sync::Arc<pattern::Regex>),
 }
 
 impl Config {
@@ -68,12 +69,9 @@ impl Config {
         arr
           .iter()
           .filter_map(|v| v.as_str())
-          .map(|s| {
-            if s.starts_with('/') && s.ends_with('/') && s.len() > 2 {
-              IgnorePattern::Regex(s[1..s.len() - 1].to_string())
-            } else {
-              IgnorePattern::Exact(s.to_string())
-            }
+          .map(|s| match pattern::regex_entry(s) {
+            Some(re) => IgnorePattern::Regex(re),
+            None => IgnorePattern::Exact(s.to_string()),
           })
           .collect()
       })
@@ -100,15 +98,9 @@ impl Config {
           }
         }
         IgnorePattern::Regex(re) => {
-          // Simple regex: prefix match with ^
+          // Try the pattern with and without the leading colon.
           let to_check = format!(":{pseudo_name}");
-          if let Some(prefix) = re.strip_prefix('^')
-            && (to_check.starts_with(prefix) || pseudo_name.starts_with(prefix))
-          {
-            return true;
-          }
-          // Simple contains check for non-anchored patterns
-          if to_check.contains(re.as_str()) || pseudo_name.contains(re.as_str()) {
+          if pattern::is_match(re, &to_check) || pattern::is_match(re, pseudo_name) {
             return true;
           }
         }

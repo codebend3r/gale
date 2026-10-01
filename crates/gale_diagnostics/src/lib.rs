@@ -204,7 +204,27 @@ pub struct Diagnostic {
   pub url: Option<String>,
 }
 
+/// The `rule_name` that marks a [`Diagnostic`] as an invalid rule option
+/// rather than a problem in the source.
+///
+/// Rules report a bad option (a pattern that does not compile, say) through
+/// the same `Vec<Diagnostic>` as everything else; the runner moves these into
+/// [`LintResult::invalid_option_warnings`], as Stylelint keeps them apart from
+/// `warnings`.  Build them with [`Diagnostic::invalid_option`].
+pub const INVALID_OPTION: &str = "invalidOption";
+
 impl Diagnostic {
+  /// An invalid-option report carrying Stylelint's wording, e.g.
+  /// `Invalid option value "[" for rule "selector-class-pattern"`.
+  pub fn invalid_option(message: impl Into<String>) -> Self {
+    Self::new(INVALID_OPTION, message).severity(Severity::Error)
+  }
+
+  /// Whether this is an invalid-option report (see [`INVALID_OPTION`]).
+  pub fn is_invalid_option(&self) -> bool {
+    self.rule_name == INVALID_OPTION
+  }
+
   /// Whether this diagnostic is about a `stylelint-disable` comment rather
   /// than a rule violation.
   ///
@@ -304,6 +324,11 @@ pub struct LintResult {
   pub diagnostics: Vec<Diagnostic>,
   /// The original source code of the file.
   pub source: String,
+  /// Stylelint's `invalidOptionWarnings`: one text per invalid rule option
+  /// that applied to this file, such as a pattern that does not compile.
+  /// They are not problems in the source, but they fail the run.
+  #[serde(default)]
+  pub invalid_option_warnings: Vec<String>,
 }
 
 impl LintResult {
@@ -317,12 +342,23 @@ impl LintResult {
       file_path: file_path.into(),
       source: source.into(),
       diagnostics,
+      invalid_option_warnings: Vec::new(),
     }
   }
 
   /// Returns `true` if there are no diagnostics.
   pub fn is_empty(&self) -> bool {
     self.diagnostics.is_empty()
+  }
+
+  /// Stylelint's `errored`: an error-severity problem, or any invalid rule
+  /// option.
+  pub fn errored(&self) -> bool {
+    !self.invalid_option_warnings.is_empty()
+      || self
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
   }
 
   /// Number of diagnostics with the given severity.
@@ -501,6 +537,20 @@ mod tests {
       json.contains("\"url\":\"https://example.com/rule\""),
       "{json}"
     );
+  }
+
+  #[test]
+  fn invalid_options_make_a_result_errored() {
+    let mut result = LintResult::new("a.css", "a {}", vec![]);
+    assert!(!result.errored());
+    result
+      .invalid_option_warnings
+      .push("Invalid option value \"[\" for rule \"x\"".to_string());
+    assert!(result.errored());
+
+    let marker = Diagnostic::invalid_option("Invalid option value");
+    assert!(marker.is_invalid_option());
+    assert_eq!(marker.severity, Severity::Error);
   }
 
   #[test]

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Only allow specified values for specific media feature names.
@@ -52,16 +53,9 @@ impl Rule for MediaFeatureNameValueAllowedList {
     for (feature, value) in extract_media_features(&at_rule.params) {
       if let Some(allowed_values) = allowed_map.get(&feature) {
         let value_trimmed = value.trim();
-        let is_allowed = allowed_values.iter().any(|pattern| {
-          if let Some(regex_body) = pattern.strip_prefix('/').and_then(|s| s.strip_suffix('/')) {
-            // Treat as regex pattern.
-            regex::Regex::new(regex_body)
-              .map(|re| re.is_match(value_trimmed))
-              .unwrap_or(false)
-          } else {
-            // Exact match (strict).
-            pattern == value_trimmed
-          }
+        let is_allowed = allowed_values.iter().any(|entry| {
+          // A `/regex/` entry, or else an exact (strict) match.
+          pattern::match_regex_entry(entry, value_trimmed).unwrap_or_else(|| entry == value_trimmed)
         });
 
         if !is_allowed {

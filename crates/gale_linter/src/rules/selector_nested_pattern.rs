@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Specify a pattern for the selectors of rules nested within rules.
@@ -35,10 +36,11 @@ impl Rule for SelectorNestedPattern {
       None => return vec![],
     };
 
-    // Use fancy_regex to support lookaheads/lookbehinds (e.g. "^(?!.*&[-_])")
-    let re = match fancy_regex::Regex::new(pattern_str) {
-      Ok(r) => r,
-      Err(_) => return vec![],
+    // Lookaheads/lookbehinds (e.g. "^(?!.*&[-_])") are supported, and a
+    // pattern that does not compile is reported as an invalid option.
+    let re = match pattern::for_rule(self.name(), pattern_str) {
+      Ok(re) => re,
+      Err(invalid) => return vec![invalid],
     };
 
     let mut diags = Vec::new();
@@ -51,7 +53,7 @@ impl Rule for SelectorNestedPattern {
 fn check_nested_selectors(
   rule: &SelectorNestedPattern,
   style: &gale_css_parser::StyleRule,
-  re: &fancy_regex::Regex,
+  re: &pattern::Regex,
   pattern_str: &str,
   diags: &mut Vec<Diagnostic>,
 ) {
@@ -63,7 +65,7 @@ fn check_nested_selectors(
       if sel.is_empty() {
         continue;
       }
-      if !re.is_match(sel).unwrap_or(false) {
+      if !pattern::is_match(re, sel) {
         diags.push(
           Diagnostic::new(
             rule.name(),
