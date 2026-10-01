@@ -162,9 +162,9 @@ function parseJsonOutput(jsonString) {
  * Lint CSS files or code, returning a Stylelint-compatible `LinterResult`.
  *
  * @param {object} options
- * @param {string|string[]} [options.files]        - Glob pattern(s) for files to lint
- * @param {string}          [options.code]         - CSS code string to lint instead of files
- * @param {string}          [options.codeFilename] - Virtual filename for `code` (for syntax detection)
+ * @param {string|string[]} [options.files]        - Glob pattern(s) for files to lint (style sheets, or Vue, Svelte, Astro and HTML files)
+ * @param {string}          [options.code]         - Source to lint instead of files
+ * @param {string}          [options.codeFilename] - Virtual filename for `code`; `x.vue` lints the styles embedded in it
  * @param {object}          [options.config]       - Inline config object
  * @param {string}          [options.configFile]   - Path to config file
  * @param {boolean|string}  [options.fix]          - Enable autofix (true, "strict", or "lax")
