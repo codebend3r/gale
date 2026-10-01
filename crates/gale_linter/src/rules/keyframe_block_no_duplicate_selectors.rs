@@ -64,15 +64,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_duplicate_keyframe_selectors() {
@@ -117,7 +109,7 @@ mod tests {
         }),
       ],
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
@@ -147,7 +139,7 @@ mod tests {
         }),
       ],
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -160,7 +152,7 @@ mod tests {
       span: ParserSpan::new(0, 40),
       children: vec![],
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -169,7 +161,7 @@ mod tests {
     let css = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
     let result = gale_css_parser::parse(css, Syntax::Css).expect("should parse CSS");
     let rule = KeyframeBlockNoDuplicateSelectors;
-    let ctx = make_context();
+    let ctx = ctx();
     let mut all_diags = Vec::new();
     for node in &result.nodes {
       all_diags.extend(rule.check(node, &ctx));

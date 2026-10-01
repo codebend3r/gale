@@ -630,69 +630,47 @@ fn media_feature(block: &Token, inner: &[&Token]) -> Option<Feature> {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "media-feature-range-notation".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, options.clone());
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "media-feature-range-notation";
 
   #[test]
   fn context_rewrites_prefixed_features() {
     let context = serde_json::json!("context");
     assert_eq!(
-      fix("@media not print, ( min-width  : 1px ) {}", context.clone()),
+      fix(
+        RULE,
+        context.clone(),
+        "@media not print, ( min-width  : 1px ) {}",
+        Syntax::Css
+      ),
       "@media not print, ( width  >= 1px ) {}"
     );
     assert_eq!(
       fix(
+        RULE,
+        context.clone(),
         "@media (min-width: 1px)\n  and (max-width: 2px)\n  and (width: 3px) {}",
-        context.clone()
+        Syntax::Css
       ),
       "@media (width >= 1px)\n  and (width <= 2px)\n  and (width = 3px) {}"
     );
     assert_eq!(
       fix(
+        RULE,
+        context.clone(),
         "@media (min-width: 1px) and (not (max-width: 2px)), (MIN-WIDTH: 3px) {}",
-        context.clone()
+        Syntax::Css
       ),
       "@media (width >= 1px) and (not (width <= 2px)), (MIN-WIDTH: 3px) {}"
     );
-    let warnings = lint_as(
+    let warnings = lint(
+      RULE,
+      context,
       "@media screen and (min-width: 1px) {}",
       Syntax::Css,
-      context,
     );
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (18, 16));
@@ -702,8 +680,10 @@ mod tests {
   fn reads_media_rules_nested_in_style_rules() {
     assert_eq!(
       fix(
+        RULE,
+        serde_json::json!("context"),
         "a { @media (min-width: 1px) { b: c } }",
-        serde_json::json!("context")
+        Syntax::Css
       ),
       "a { @media (width >= 1px) { b: c } }"
     );
@@ -721,7 +701,7 @@ mod tests {
       "@media (pointer: fine) {}",
     ] {
       assert!(
-        lint_as(css, Syntax::Css, context.clone()).is_empty(),
+        lint(RULE, context.clone(), css, Syntax::Css).is_empty(),
         "{css}"
       );
     }
@@ -731,14 +711,16 @@ mod tests {
       "@media screen and (max-width: bp($md)) {}",
     ] {
       assert!(
-        lint_as(css, Syntax::Scss, context.clone()).is_empty(),
+        lint(RULE, context.clone(), css, Syntax::Scss).is_empty(),
         "{css}"
       );
     }
     assert_eq!(
       fix(
+        RULE,
+        context,
         "@media (min-width: calc(1px)), (min-aspect-ratio: 16/9) {}",
-        context
+        Syntax::Css
       ),
       "@media (width >= calc(1px)), (aspect-ratio >= 16/9) {}"
     );
@@ -748,33 +730,43 @@ mod tests {
   fn prefix_reports_ranges_without_fixing_them() {
     let prefix = serde_json::json!("prefix");
     for css in ["@media (width >= 1px) {}", "@media (1px < width <= 2px) {}"] {
-      let warnings = lint_as(css, Syntax::Css, prefix.clone());
+      let warnings = lint(RULE, prefix.clone(), css, Syntax::Css);
       assert_eq!(warnings.len(), 1, "{css}");
       assert!(warnings[0].fix.is_none(), "{css}");
     }
-    assert!(lint_as("@media (min-width: 1px) {}", Syntax::Css, prefix).is_empty());
+    assert!(lint(RULE, prefix, "@media (min-width: 1px) {}", Syntax::Css).is_empty());
   }
 
   #[test]
   fn exact_values_flip_with_except() {
     let prefix = serde_json::json!(["prefix", { "except": ["exact-value"] }]);
     assert_eq!(
-      fix("@media (width: 1px), (width: 2px) {}", prefix.clone()),
+      fix(
+        RULE,
+        prefix.clone(),
+        "@media (width: 1px), (width: 2px) {}",
+        Syntax::Css
+      ),
       "@media (width = 1px), (width = 2px) {}"
     );
-    assert!(lint_as("@media (width = 1px) {}", Syntax::Css, prefix).is_empty());
+    assert!(lint(RULE, prefix, "@media (width = 1px) {}", Syntax::Css).is_empty());
     let context = serde_json::json!(["context", { "except": ["exact-value"] }]);
-    let warnings = lint_as("@media (1px = width) {}", Syntax::Css, context.clone());
+    let warnings = lint(
+      RULE,
+      context.clone(),
+      "@media (1px = width) {}",
+      Syntax::Css,
+    );
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].fix.is_none());
-    assert!(lint_as("@media (width: 1px) {}", Syntax::Css, context).is_empty());
+    assert!(lint(RULE, context, "@media (width: 1px) {}", Syntax::Css).is_empty());
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["context", { "disableFix": true }]);
     let css = "@media (min-width: 1px) {}";
-    assert_eq!(lint_as(css, Syntax::Css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

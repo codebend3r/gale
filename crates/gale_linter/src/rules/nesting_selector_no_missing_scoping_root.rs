@@ -171,27 +171,9 @@ impl Rule for NestingSelectorNoMissingScopingRoot {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_options(opts: &'static serde_json::Value) -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx_with_options};
 
   fn style(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -295,7 +277,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("&.#{$class} .source")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx_with_options(opts));
+    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
     assert!(d.is_empty(), "expected no diagnostics, got: {:?}", d);
   }
 
@@ -310,7 +292,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("& .child")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx_with_options(opts));
+    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
     assert_eq!(d.len(), 1);
   }
 
@@ -325,7 +307,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("& .bar")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx_with_options(opts));
+    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
     assert!(
       d.is_empty(),
       "case-insensitive match should suppress diagnostic"

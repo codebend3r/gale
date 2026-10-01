@@ -164,15 +164,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_declaration_inside_media() {

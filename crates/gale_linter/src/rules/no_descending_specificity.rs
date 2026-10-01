@@ -792,15 +792,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_descending_specificity() {
@@ -830,7 +822,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("to come before selector"));
   }
@@ -853,7 +845,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(
       diags.is_empty(),
       "different last compound selectors should not be compared"
@@ -912,7 +904,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -1032,7 +1024,7 @@ mod tests {
 
     // Same structure in plain CSS SHOULD compare nested children
     // (both share last compound `.bar`)
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert_eq!(diags.len(), 1, "plain CSS should compare nested children");
   }
 

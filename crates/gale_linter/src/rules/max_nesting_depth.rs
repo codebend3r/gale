@@ -260,15 +260,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn make_decl() -> Declaration {
     Declaration {

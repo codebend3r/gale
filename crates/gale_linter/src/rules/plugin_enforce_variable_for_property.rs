@@ -198,15 +198,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
   use serde_json::json;
 
-  fn ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_options;
 
   fn style_with_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
