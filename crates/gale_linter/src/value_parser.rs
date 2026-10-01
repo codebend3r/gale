@@ -376,6 +376,45 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
   stack.pop().map(|root| root.nodes).unwrap_or_default()
 }
 
+/// `postcss-value-parser`'s `unit`: split a word that starts like a number
+/// into the number and whatever follows it (`"10px"` into `("10", "px")`),
+/// or `None` when it does not start like one.
+pub fn unit(value: &str) -> Option<(&str, &str)> {
+  let bytes = value.as_bytes();
+  let digit = |i: usize| bytes.get(i).is_some_and(u8::is_ascii_digit);
+  let starts_like_number = match bytes.first()? {
+    b'+' | b'-' => digit(1) || (bytes.get(1) == Some(&b'.') && digit(2)),
+    b'.' => digit(1),
+    b => b.is_ascii_digit(),
+  };
+  if !starts_like_number {
+    return None;
+  }
+  let mut pos = 0;
+  if matches!(bytes[0], b'+' | b'-') {
+    pos += 1;
+  }
+  while digit(pos) {
+    pos += 1;
+  }
+  if bytes.get(pos) == Some(&b'.') && digit(pos + 1) {
+    pos += 2;
+    while digit(pos) {
+      pos += 1;
+    }
+  }
+  if matches!(bytes.get(pos), Some(b'e' | b'E')) {
+    let signed = matches!(bytes.get(pos + 1), Some(b'+' | b'-'));
+    if digit(pos + 1) || (signed && digit(pos + 2)) {
+      pos += if signed { 3 } else { 2 };
+      while digit(pos) {
+        pos += 1;
+      }
+    }
+  }
+  Some((&value[..pos], &value[pos..]))
+}
+
 /// Call `visit` on every node, depth first.  Like `postcss-value-parser`'s
 /// `walk`, a function's arguments are skipped when `visit` returns `false`
 /// for it.
@@ -557,6 +596,19 @@ mod tests {
     assert_eq!(url.source_end_index, 21);
     assert!(parse("f(a")[0].unclosed);
     assert!(parse("'a")[0].unclosed);
+  }
+
+  #[test]
+  fn unit_splits_numbers_from_their_units() {
+    assert_eq!(unit("10px"), Some(("10", "px")));
+    assert_eq!(unit("-.5em"), Some(("-.5", "em")));
+    assert_eq!(unit("1e3"), Some(("1e3", "")));
+    assert_eq!(unit("1e+3x"), Some(("1e+3", "x")));
+    assert_eq!(unit("1ex"), Some(("1", "ex")));
+    assert_eq!(unit("50%"), Some(("50", "%")));
+    assert_eq!(unit("px"), None);
+    assert_eq!(unit("-x"), None);
+    assert_eq!(unit(""), None);
   }
 
   #[test]
