@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::js::parse_js_config;
-use crate::{ConfigError, ConfigFile, GaleConfig, resolve_raw};
+use crate::resolve::resolve_raw;
+use crate::{ConfigError, ConfigFile, GaleConfig};
 
 /// Well-known config file names in priority order.
 const CONFIG_FILENAMES: &[&str] = &[
