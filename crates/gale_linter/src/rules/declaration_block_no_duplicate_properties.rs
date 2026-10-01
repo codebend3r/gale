@@ -51,13 +51,6 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
       ..
     } = *options;
 
-    // Regex entries of ignoreProperties come from the shared pattern cache.
-    let ignore_patterns: Vec<PropertyMatcher> = options
-      .ignore_patterns
-      .iter()
-      .map(|pattern| PropertyMatcher::from_pattern(pattern))
-      .collect();
-
     let is_preprocessor = matches!(
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
@@ -141,7 +134,10 @@ impl Rule for DeclarationBlockNoDuplicateProperties {
 
       // Skip properties matching ignoreProperties patterns
       if options.ignore_names.iter().any(|name| *name == lower_prop)
-        || ignore_patterns.iter().any(|m| m.matches(&lower_prop, prop))
+        || options
+          .ignore_patterns
+          .iter()
+          .any(|m| m.matches(&lower_prop, prop))
       {
         decls.push(DeclInfo {
           property: prop.clone(),
@@ -342,9 +338,9 @@ struct IgnoreOptions {
   prefixless_same: bool,
   /// Plain `ignoreProperties` names, lowercased.
   ignore_names: Vec<String>,
-  /// `ignoreProperties` entries written as regex literals (`/regex/flags`),
-  /// verbatim.
-  ignore_patterns: Vec<String>,
+  /// Matchers for the `ignoreProperties` entries written as regex literals
+  /// (`/regex/flags`).
+  ignore_patterns: Vec<PropertyMatcher>,
 }
 
 impl IgnoreOptions {
@@ -374,7 +370,7 @@ impl IgnoreOptions {
       .and_then(|v| v.as_array());
     for pattern in entries.into_iter().flatten().filter_map(|v| v.as_str()) {
       if crate::pattern::split_literal(pattern).is_some() {
-        ignore_patterns.push(pattern.to_string());
+        ignore_patterns.push(PropertyMatcher::from_pattern(pattern));
       } else {
         ignore_names.push(pattern.to_ascii_lowercase());
       }
