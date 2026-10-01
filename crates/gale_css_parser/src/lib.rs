@@ -6,6 +6,7 @@ use raffia::pos::Spanned as RaffiaSpanned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod embedded;
 mod sass_to_scss;
 
 pub use sass_to_scss::SourceMap;
