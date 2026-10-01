@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use gale_linter::rules::Preset;
 use globset::{Glob, GlobMatcher};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -712,170 +713,24 @@ fn all_rule_names() -> impl Iterator<Item = &'static str> {
     .map(|entry| entry.rule.name())
 }
 
+/// The names of the built-in rules the rule table puts in `preset`, in
+/// registration order.
+fn rules_in(preset: Preset) -> impl Iterator<Item = &'static str> {
+  gale_linter::rules::RULES
+    .iter()
+    .filter(move |entry| entry.presets.contains(&preset))
+    .map(|entry| entry.rule.name())
+}
+
 /// The rule names that make up `gale:recommended`, error rules first.
 ///
 /// Exposed so other crates (the LSP) can fall back to the same default set
 /// instead of inventing their own.
 pub fn recommended_rule_names() -> Vec<&'static str> {
-  RECOMMENDED_ERROR_RULES
-    .iter()
-    .chain(RECOMMENDED_WARNING_RULES.iter())
-    .copied()
+  rules_in(Preset::GaleError)
+    .chain(rules_in(Preset::GaleWarning))
     .collect()
 }
-
-/// Rules enabled at **error** severity in `gale:recommended`.
-const RECOMMENDED_ERROR_RULES: &[&str] = &[
-  "block-no-empty",
-  "color-no-invalid-hex",
-  "declaration-block-no-duplicate-properties",
-  "declaration-block-no-duplicate-custom-properties",
-  "font-family-no-duplicate-names",
-  "no-duplicate-at-import-rules",
-  "no-duplicate-selectors",
-  "no-empty-source",
-  "property-no-unknown",
-  "selector-pseudo-class-no-unknown",
-  "selector-pseudo-element-no-unknown",
-  "selector-type-no-unknown",
-  "unit-no-unknown",
-  "no-descending-specificity",
-  "keyframe-block-no-duplicate-selectors",
-];
-
-/// Rules enabled at **warning** severity in `gale:recommended`.
-const RECOMMENDED_WARNING_RULES: &[&str] = &[
-  "color-hex-length",
-  "color-hex-case",
-  "length-zero-no-unit",
-  "declaration-no-important",
-  "selector-pseudo-element-colon-notation",
-  "no-invalid-double-slash-comments",
-  "function-name-case",
-  "shorthand-property-no-redundant-values",
-  "at-rule-no-vendor-prefix",
-  "property-no-vendor-prefix",
-  "value-no-vendor-prefix",
-  "value-keyword-case",
-  "function-url-quotes",
-  "number-max-precision",
-];
-
-/// Rules enabled at **warning** severity in `stylelint-config-recommended`.
-///
-/// These mirror the official `stylelint-config-recommended` package, filtered
-/// to only include rules that Gale has implemented.
-const STYLELINT_RECOMMENDED_RULES: &[&str] = &[
-  "annotation-no-unknown",
-  "at-rule-descriptor-no-unknown",
-  "at-rule-descriptor-value-no-unknown",
-  "at-rule-no-deprecated",
-  "at-rule-no-unknown",
-  "at-rule-prelude-no-invalid",
-  "block-no-empty",
-  "comment-no-empty",
-  "custom-property-no-missing-var-function",
-  "declaration-block-no-duplicate-custom-properties",
-  "declaration-block-no-duplicate-properties",
-  "declaration-block-no-shorthand-property-overrides",
-  "declaration-property-value-keyword-no-deprecated",
-  "declaration-property-value-no-unknown",
-  "font-family-no-duplicate-names",
-  "font-family-no-missing-generic-family-keyword",
-  "function-calc-no-unspaced-operator",
-  "function-no-unknown",
-  "keyframe-block-no-duplicate-selectors",
-  "keyframe-declaration-no-important",
-  "media-feature-name-no-unknown",
-  "media-feature-name-value-no-unknown",
-  "media-query-no-invalid",
-  "media-type-no-deprecated",
-  "named-grid-areas-no-invalid",
-  "nesting-selector-no-missing-scoping-root",
-  "no-descending-specificity",
-  "no-duplicate-at-import-rules",
-  "no-duplicate-selectors",
-  "no-empty-source",
-  "no-invalid-double-slash-comments",
-  "no-invalid-position-at-import-rule",
-  "no-invalid-position-declaration",
-  "no-irregular-whitespace",
-  "property-no-deprecated",
-  "property-no-unknown",
-  "selector-anb-no-unmatchable",
-  "selector-pseudo-class-no-unknown",
-  "selector-pseudo-element-no-unknown",
-  "selector-type-no-unknown",
-  "string-no-newline",
-  "syntax-string-no-invalid",
-];
-
-/// Additional rules that `stylelint-config-standard` adds on top of
-/// `stylelint-config-recommended`.  All enabled at warning severity.
-///
-/// Filtered to only include rules that Gale has implemented.
-const STYLELINT_STANDARD_EXTRA_RULES: &[&str] = &[
-  "alpha-value-notation",
-  "at-rule-empty-line-before",
-  "at-rule-no-vendor-prefix",
-  "block-no-redundant-nested-style-rules",
-  "color-function-alias-notation",
-  "color-function-notation",
-  "color-hex-length",
-  "comment-empty-line-before",
-  "comment-whitespace-inside",
-  "container-name-pattern",
-  "custom-media-pattern",
-  "custom-property-empty-line-before",
-  "custom-property-pattern",
-  "declaration-block-no-redundant-longhand-properties",
-  "declaration-block-single-line-max-declarations",
-  "declaration-empty-line-before",
-  "font-family-name-quotes",
-  "function-name-case",
-  "function-url-quotes",
-  "hue-degree-notation",
-  "import-notation",
-  "keyframe-selector-notation",
-  "keyframes-name-pattern",
-  "layer-name-pattern",
-  "length-zero-no-unit",
-  "lightness-notation",
-  "media-feature-name-no-vendor-prefix",
-  "media-feature-range-notation",
-  "number-max-precision",
-  "property-no-vendor-prefix",
-  "rule-empty-line-before",
-  "selector-attribute-quotes",
-  "selector-class-pattern",
-  "selector-id-pattern",
-  "selector-no-vendor-prefix",
-  "selector-not-notation",
-  "selector-pseudo-element-colon-notation",
-  "selector-type-case",
-  "shorthand-property-no-redundant-values",
-  "value-keyword-case",
-  "value-no-vendor-prefix",
-];
-
-/// SCSS-specific rules enabled by `stylelint-config-recommended-scss`.
-const SCSS_RECOMMENDED_RULES: &[&str] = &[
-  "scss/at-extend-no-missing-placeholder",
-  "scss/at-if-no-null",
-  "scss/at-rule-no-unknown",
-  "scss/comment-no-empty",
-  "scss/declaration-nested-properties-no-divided-groups",
-  "scss/dollar-variable-no-missing-interpolation",
-  "scss/function-quote-no-quoted-strings-inside",
-  "scss/function-unquote-no-unquoted-strings-inside",
-  "scss/load-no-partial-leading-underscore",
-  "scss/load-partial-extension",
-  "scss/no-duplicate-mixins",
-  "scss/no-global-function-names",
-  "scss/operator-no-newline-after",
-  "scss/operator-no-newline-before",
-  "scss/operator-no-unspaced",
-];
 
 /// Resolve a built-in preset name into a map of rule configurations.
 ///
@@ -884,7 +739,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
   match name {
     "gale:recommended" => {
       let mut rules = HashMap::new();
-      for &rule in RECOMMENDED_ERROR_RULES {
+      for rule in rules_in(Preset::GaleError) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -893,7 +748,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
           },
         );
       }
-      for &rule in RECOMMENDED_WARNING_RULES {
+      for rule in rules_in(Preset::GaleWarning) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -919,7 +774,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
     }
     "stylelint-config-recommended" => {
       let mut rules = HashMap::new();
-      for &rule in STYLELINT_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::Recommended) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -953,7 +808,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
     }
     "stylelint-config-recommended-scss" => {
       let mut rules = HashMap::new();
-      for &rule in STYLELINT_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::Recommended) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -980,7 +835,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
         );
       }
       // Enable SCSS-specific rules from stylelint-config-recommended-scss
-      for &rule in SCSS_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::RecommendedScss) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -994,7 +849,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
     "stylelint-config-standard" => {
       // Standard extends recommended, then adds extra rules.
       let mut rules = HashMap::new();
-      for &rule in STYLELINT_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::Recommended) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -1003,7 +858,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
           },
         );
       }
-      for &rule in STYLELINT_STANDARD_EXTRA_RULES {
+      for rule in rules_in(Preset::Standard) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -1063,7 +918,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
     "stylelint-config-standard-scss" => {
       // Standard-SCSS extends standard, then disables rules that conflict with SCSS.
       let mut rules = HashMap::new();
-      for &rule in STYLELINT_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::Recommended) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -1072,7 +927,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
           },
         );
       }
-      for &rule in STYLELINT_STANDARD_EXTRA_RULES {
+      for rule in rules_in(Preset::Standard) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -1143,7 +998,7 @@ pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
         );
       }
       // Enable SCSS-specific rules (inherited from recommended-scss)
-      for &rule in SCSS_RECOMMENDED_RULES {
+      for rule in rules_in(Preset::RecommendedScss) {
         rules.insert(
           rule.to_string(),
           RuleConfig {
@@ -4370,10 +4225,7 @@ formatter: text
   fn resolve_recommended_preset() {
     let preset = resolve_preset("gale:recommended").unwrap();
     // Should contain all error + warning rules.
-    assert_eq!(
-      preset.len(),
-      RECOMMENDED_ERROR_RULES.len() + RECOMMENDED_WARNING_RULES.len()
-    );
+    assert_eq!(preset.len(), recommended_rule_names().len());
     // Spot-check severities.
     assert_eq!(preset["block-no-empty"].severity, Some(Severity::Error));
     assert_eq!(preset["color-hex-length"].severity, Some(Severity::Warning));
@@ -4452,10 +4304,7 @@ formatter: text
     // Should have all recommended rules.
     assert!(cfg.rules.contains_key("block-no-empty"));
     assert!(cfg.rules.contains_key("color-hex-length"));
-    assert_eq!(
-      cfg.rules.len(),
-      RECOMMENDED_ERROR_RULES.len() + RECOMMENDED_WARNING_RULES.len()
-    );
+    assert_eq!(cfg.rules.len(), recommended_rule_names().len());
   }
 
   #[test]
