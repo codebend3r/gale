@@ -661,6 +661,22 @@ mod tests {
   }
 
   #[test]
+  fn json_columns_count_utf16_units() {
+    // Stylelint's columns are JavaScript string indices: the emoji before
+    // the block takes two, `é` one.
+    let source = "a::before { content: \"😀é\"; } b {}\n";
+    let at = source.rfind("{}").unwrap();
+    let diag = Diagnostic::new("block-no-empty", "Unexpected empty block")
+      .severity(Severity::Error)
+      .span(Span::new(at, 2));
+    let output = JsonFormatter.format(&[LintResult::new("a.css", source, vec![diag])]);
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let warning = &parsed[0]["warnings"][0];
+    assert_eq!(warning["column"], 33);
+    assert_eq!(warning["endColumn"], 35);
+  }
+
+  #[test]
   fn compact_formatter_output() {
     let formatter = CompactFormatter;
     let output = formatter.format(&sample_results());
