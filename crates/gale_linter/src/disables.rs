@@ -134,18 +134,35 @@ fn same_rule(a: &str, b: &str) -> bool {
 // Ranges
 // ---------------------------------------------------------------------------
 
-/// Where a range's comment is, for the reports about it: the offset of the
-/// comment (PostCSS's `range.node`).
+/// The PostCSS node a range comes from (Stylelint's `range.node`), which
+/// reports about the comment point at: the comment itself (with the `//`
+/// comments merged into it), or the rule, at-rule or declaration whose
+/// selector, params or value holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DirectiveNode {
-  /// Offset of the comment.
+  /// Offset of the node's first character.
   pub start: usize,
+  /// Offset of its last character (PostCSS's `source.end`).
+  pub last: usize,
+  /// Offset just past its last character.
+  pub end: usize,
 }
 
 impl DirectiveNode {
-  /// The span reports about the comment point at.
+  /// The node spanning `start..end` of `text`, at offset `base` of the
+  /// reported coordinates.
+  fn new(text: &str, start: usize, end: usize, base: usize) -> Self {
+    Self {
+      start: base + start,
+      last: base + last_char(text, start, end),
+      end: base + end,
+    }
+  }
+
+  /// The span reports about the comment point at: from the node's first
+  /// character to its last, which Stylelint gives as the warning's end.
   fn span(&self) -> Span {
-    Span::new(self.start, 0)
+    Span::from_range(self.start, self.last.max(self.start))
   }
 }
 
@@ -239,8 +256,8 @@ impl DisabledRanges {
 pub(crate) struct DirectiveError {
   /// Stylelint's message, e.g. `No rules have been disabled`.
   pub message: String,
-  /// Offset of the comment.
-  pub start: usize,
+  /// The node of the rejected comment.
+  pub node: DirectiveNode,
 }
 
 /// One configuration comment, ready to apply.
@@ -346,7 +363,7 @@ impl<'l> Collector<'l> {
     if self.error.is_none() {
       self.error = Some(DirectiveError {
         message,
-        start: self.ranges.nodes[node].start,
+        node: self.ranges.nodes[node],
       });
     }
   }
@@ -559,29 +576,18 @@ fn directives(
         merged_until = merged;
         found.push(directive);
       }
-      NodeKind::Rule => {
+      NodeKind::Rule | NodeKind::AtRule | NodeKind::Decl => {
         let header_end = node.block_open.unwrap_or(node.end);
-        comments_in_node(
-          &tree, node.start, header_end, syntax, base, &line, &mut found,
-        );
-      }
-      NodeKind::AtRule => {
-        let header_end = node.block_open.unwrap_or(node.end);
-        let after_name = (node.start + 1 + node.name.len()).min(header_end);
-        comments_in_node(
-          &tree, after_name, header_end, syntax, base, &line, &mut found,
-        );
-      }
-      NodeKind::Decl => {
-        let header_end = node.block_open.unwrap_or(node.end);
-        let after_prop = if text[node.start..].starts_with(node.name.as_str()) {
-          (node.start + node.name.len()).min(header_end)
-        } else {
-          node.start
+        let header_start = match node.kind {
+          NodeKind::AtRule => node.start + 1 + node.name.len(),
+          NodeKind::Decl if text[node.start..].starts_with(node.name.as_str()) => {
+            node.start + node.name.len()
+          }
+          _ => node.start,
         };
-        comments_in_node(
-          &tree, after_prop, header_end, syntax, base, &line, &mut found,
-        );
+        let owner = DirectiveNode::new(text, node.start, node.end, base);
+        let header = header_start.min(header_end)..header_end;
+        comments_in_node(&tree, header, owner, syntax, &line, &mut found);
       }
     }
   }
@@ -643,9 +649,7 @@ fn comment_directive(
   }
   let directive = Directive {
     text,
-    node: DirectiveNode {
-      start: base + node.start,
-    },
+    node: DirectiveNode::new(tree.source(), node.start, end, base),
     start_line: line(node.start),
     end_line: line(last_char(tree.source(), node.start, end)),
   };
@@ -661,21 +665,21 @@ fn last_char(text: &str, start: usize, end: usize) -> usize {
     .map_or(start, |(at, _)| start + at)
 }
 
-/// Stylelint's `checkCommentsInNode`: the comments in `start..end` of the
-/// tree's source, a node's selector, params or value.  Block comments
-/// count everywhere, `//` ones in SCSS only; strings and `url()` are
-/// skipped.
+/// Stylelint's `checkCommentsInNode`: the comments in `header` of the
+/// tree's source, a node's selector, params or value, each belonging to
+/// `owner`, the node that holds them.  Block comments count everywhere,
+/// `//` ones in SCSS only; strings and `url()` are skipped.
 fn comments_in_node(
   tree: &PostcssTree,
-  start: usize,
-  end: usize,
+  header: std::ops::Range<usize>,
+  owner: DirectiveNode,
   syntax: Syntax,
-  base: usize,
   line: &dyn Fn(usize) -> usize,
   found: &mut Vec<Directive>,
 ) {
   let source = tree.source();
-  let Some(part) = source.get(start..end) else {
+  let start = header.start;
+  let Some(part) = source.get(header) else {
     return;
   };
   let inline_comments = matches!(syntax, Syntax::Scss | Syntax::Sass);
@@ -695,9 +699,7 @@ fn comments_in_node(
         let comment_end = i + 2 + close + 2;
         found.push(Directive {
           text: part[i + 2..comment_end - 2].trim().to_string(),
-          node: DirectiveNode {
-            start: base + start + i,
-          },
+          node: owner,
           start_line: line(start + i),
           end_line: line(start + comment_end - 1),
         });
@@ -709,9 +711,7 @@ fn comments_in_node(
           .map_or(part.len(), |n| i + n);
         found.push(Directive {
           text: part[i + 2..comment_end].trim().to_string(),
-          node: DirectiveNode {
-            start: base + start + i,
-          },
+          node: owner,
           start_line: line(start + i),
           end_line: line(last_char(part, i, comment_end) + start),
         });
@@ -1150,6 +1150,45 @@ mod tests {
       Syntax::Css,
     );
     assert_eq!(ranges, vec![open("all", 2), open("a", 1), open("a", 2)]);
+  }
+
+  /// The nodes the ranges of `text` point at, as the text each spans.
+  fn node_texts(text: &str, syntax: Syntax) -> Vec<String> {
+    let index = SourceLineIndex::build(text);
+    let line_of = |offset: usize| index.line(offset);
+    let mut collector = Collector::new(&line_of);
+    collector.scan(text, syntax, 0);
+    let (ranges, _) = collector.finish();
+    ranges
+      .nodes
+      .iter()
+      .map(|node| {
+        assert_eq!(text[node.last..node.end].chars().count(), 1);
+        text[node.start..node.end].to_string()
+      })
+      .collect()
+  }
+
+  #[test]
+  fn ranges_point_at_the_node_that_holds_the_comment() {
+    assert_eq!(
+      node_texts(
+        "/* stylelint-disable a */\nb {\n  c: /* stylelint-disable-line d */ e;\n}\n",
+        Syntax::Css
+      ),
+      vec![
+        "/* stylelint-disable a */",
+        "c: /* stylelint-disable-line d */ e;"
+      ]
+    );
+    // Merged `//` comments are one node.
+    assert_eq!(
+      node_texts(
+        "// stylelint-disable-next-line a\n// -- why\nb {}\n",
+        Syntax::Scss
+      ),
+      vec!["// stylelint-disable-next-line a\n// -- why"]
+    );
   }
 
   #[test]
