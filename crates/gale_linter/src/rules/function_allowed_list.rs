@@ -181,18 +181,9 @@ fn find_disallowed_functions(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_options(options: Option<serde_json::Value>) -> RuleContext<'static> {
-    let opts: Option<&'static serde_json::Value> = options.map(|v| &*Box::leak(Box::new(v)));
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: opts,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_options;
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {

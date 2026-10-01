@@ -346,64 +346,47 @@ fn is_css_whitespace(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "function-url-quotes".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "function-url-quotes";
 
   #[test]
   fn always_adds_double_quotes_inside_the_parentheses() {
     let always = serde_json::json!("always");
     assert_eq!(
-      fix("@import url( foo.css );", always.clone()),
+      fix(RULE, always.clone(), "@import url( foo.css );", Syntax::Css),
       "@import url( \"foo.css\" );"
     );
     assert_eq!(
-      fix("@import url(foo\\ .css);", always.clone()),
+      fix(
+        RULE,
+        always.clone(),
+        "@import url(foo\\ .css);",
+        Syntax::Css
+      ),
       "@import url(\"foo\\ .css\");"
     );
     assert_eq!(
       fix(
+        RULE,
+        always.clone(),
         "@font-face { font-family: 'foo'; src: url(foo.ttf); }",
-        always.clone()
+        Syntax::Css
       ),
       "@font-face { font-family: 'foo'; src: url(\"foo.ttf\"); }"
     );
     assert_eq!(
       fix(
+        RULE,
+        always.clone(),
         "a { b: url(data:image/png;base64,abc), image-set(url(a.png) 1x) }",
-        always.clone()
+        Syntax::Css
       ),
       "a { b: url(\"data:image/png;base64,abc\"), image-set(url(\"a.png\") 1x) }"
     );
-    let warnings = lint("a { cursor: url( foo.png ); }", always);
+    let warnings = lint(RULE, always, "a { cursor: url( foo.png ); }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (17, 8));
   }
@@ -412,15 +395,30 @@ mod tests {
   fn never_removes_quotes_unless_the_url_needs_them() {
     let never = serde_json::json!("never");
     assert_eq!(
-      fix("@import URL( 'foo.css' );", never.clone()),
+      fix(
+        RULE,
+        never.clone(),
+        "@import URL( 'foo.css' );",
+        Syntax::Css
+      ),
       "@import URL( foo.css );"
     );
     assert_eq!(
-      fix("@document url(\"http://www.w3.org/\");", never.clone()),
+      fix(
+        RULE,
+        never.clone(),
+        "@document url(\"http://www.w3.org/\");",
+        Syntax::Css
+      ),
       "@document url(http://www.w3.org/);"
     );
     assert_eq!(
-      fix("a { b: url( \"a\\ b\" ) }", never.clone()),
+      fix(
+        RULE,
+        never.clone(),
+        "a { b: url( \"a\\ b\" ) }",
+        Syntax::Css
+      ),
       "a { b: url( a\\ b ) }"
     );
     for css in [
@@ -430,15 +428,18 @@ mod tests {
       "a { b: url(\"'foo'\") }",
       "a { b: url('foo.svg' crossorigin(anonymous)) }",
     ] {
-      assert!(lint(css, never.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, never.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn except_empty_inverts_the_option_for_empty_urls() {
     let options = serde_json::json!(["never", { "except": ["empty"] }]);
-    assert!(lint("a { b: url(\"\") }", options.clone()).is_empty());
-    assert_eq!(lint("a { b: url() }", options).len(), 1);
+    assert!(lint(RULE, options.clone(), "a { b: url(\"\") }", Syntax::Css).is_empty());
+    assert_eq!(lint(RULE, options, "a { b: url() }", Syntax::Css).len(), 1);
   }
 
   #[test]
@@ -449,14 +450,23 @@ mod tests {
       "@import url($variable + 'foo.css');",
       "a { b: url(#{$a}/b.png) }",
     ] {
-      assert!(lint(css, always.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, always.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["always", { "disableFix": true }]);
-    assert_eq!(lint("a { b: url(x) }", options.clone()).len(), 1);
-    assert_eq!(fix("a { b: url(x) }", options), "a { b: url(x) }");
+    assert_eq!(
+      lint(RULE, options.clone(), "a { b: url(x) }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, "a { b: url(x) }", Syntax::Css),
+      "a { b: url(x) }"
+    );
   }
 }

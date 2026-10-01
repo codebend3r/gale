@@ -702,69 +702,68 @@ fn edits_of(container: &Container, end: usize) -> Vec<(usize, usize, String)> {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
   use super::mentions_math_function;
-  use crate::{LintRunner, RuleRegistry};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "function-calc-no-unspaced-operator".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
+  use crate::testing::{fix, lint};
 
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, serde_json::json!(true));
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "function-calc-no-unspaced-operator";
 
   #[test]
   fn spaces_operators_hidden_in_tokens() {
     assert_eq!(
-      fix("a { top: calc(2px+1px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: calc(2px+1px); }",
+        Syntax::Css
+      ),
       "a { top: calc(2px + 1px); }"
     );
     assert_eq!(
-      fix("a { top: calc(1px- 2px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: calc(1px- 2px); }",
+        Syntax::Css
+      ),
       "a { top: calc(1px - 2px); }"
     );
     assert_eq!(
-      fix("a { padding: calc(1px+2px-3px-4px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { padding: calc(1px+2px-3px-4px); }",
+        Syntax::Css
+      ),
       "a { padding: calc(1px + 2px - 3px - 4px); }"
     );
     assert_eq!(
-      fix("a { top: rgb(from red calc(r+1) calc(g-+2) calc(clamp(10px+2px, g+2, none))); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: rgb(from red calc(r+1) calc(g-+2) calc(clamp(10px+2px, g+2, none))); }",
+        Syntax::Css
+      ),
       "a { top: rgb(from red calc(r + 1) calc(g - +2) calc(clamp(10px + 2px, g + 2, none))); }"
     );
     assert_eq!(
-      fix("a { top: calc(1.50px-2px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: calc(1.50px-2px); }",
+        Syntax::Css
+      ),
       "a { top: calc(1.5px - 2px); }"
     );
     assert_eq!(
-      fix("a { padding: calc(1\\23 - 2px) calc(1\\23 a- 2px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { padding: calc(1\\23 - 2px) calc(1\\23 a- 2px); }",
+        Syntax::Css
+      ),
       "a { padding: calc(1\\23  - 2px) calc(1\\23 a - 2px); }"
     );
   }
@@ -772,21 +771,37 @@ mod tests {
   #[test]
   fn normalises_whitespace_around_operators() {
     assert_eq!(
-      fix("a { top: calc(1px +\t-1px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: calc(1px +\t-1px); }",
+        Syntax::Css
+      ),
       "a { top: calc(1px + -1px); }"
     );
     assert_eq!(
-      fix("a { top: calc(1px  + 2px); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: calc(1px  + 2px); }",
+        Syntax::Css
+      ),
       "a { top: calc(1px + 2px); }"
     );
     assert_eq!(
-      fix("a { padding: calc(1rem +  \t\r\n  1em); }"),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { padding: calc(1rem +  \t\r\n  1em); }",
+        Syntax::Css
+      ),
       "a { padding: calc(1rem +\r\n  1em); }"
     );
-    let warnings = lint_as(
+    let warnings = lint(
+      RULE,
+      serde_json::json!(true),
       "a { top: calc(1px +2px); }",
       Syntax::Css,
-      serde_json::json!(true),
     );
     assert_eq!(warnings.len(), 1);
     assert_eq!(
@@ -839,15 +854,16 @@ mod tests {
       "a { padding: 0 /* calc(1px+2px) */ 0; }",
     ] {
       assert!(
-        lint_as(css, Syntax::Css, serde_json::json!(true)).is_empty(),
+        lint(RULE, serde_json::json!(true), css, Syntax::Css).is_empty(),
         "{css}"
       );
     }
     assert!(
-      lint_as(
+      lint(
+        RULE,
+        serde_json::json!(true),
         "a { top: calc(100% - #{$foo}); }",
-        Syntax::Scss,
-        serde_json::json!(true)
+        Syntax::Scss
       )
       .is_empty()
     );
@@ -857,7 +873,7 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     let css = "a { top: calc(1px+ 2px); }";
-    let warnings = lint_as(css, Syntax::Css, options);
+    let warnings = lint(RULE, options, css, Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].fix.is_none());
   }

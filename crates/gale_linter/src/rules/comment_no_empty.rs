@@ -81,15 +81,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_empty_comment() {
@@ -99,7 +91,7 @@ mod tests {
       text: "/* */".to_string(),
       span: ParserSpan::new(0, 5),
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected empty comment");
   }
@@ -112,7 +104,7 @@ mod tests {
       text: "/**/".to_string(),
       span: ParserSpan::new(0, 4),
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
   }
 
@@ -124,7 +116,7 @@ mod tests {
       text: "/* hello */".to_string(),
       span: ParserSpan::new(0, 11),
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 

@@ -59,27 +59,9 @@ impl Rule for CommentPattern {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  fn ctx_with_options(options: serde_json::Value) -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(Box::leak(Box::new(options))),
-      cache: None,
-    }
-  }
-
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_options};
 
   fn comment_node(text: &str) -> CssNode {
     CssNode::Comment(Comment {

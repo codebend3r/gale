@@ -64,15 +64,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, CssNode, Span, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, less_ctx, scss_ctx};
 
   fn at(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -119,26 +111,6 @@ mod tests {
         .check(&at("-webkit-keyframes"), &ctx())
         .is_empty()
     );
-  }
-
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn less_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.less",
-      source: "",
-      syntax: Syntax::Less,
-      options: None,
-      cache: None,
-    }
   }
 
   #[test]

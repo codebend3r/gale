@@ -60,17 +60,9 @@ impl Rule for BlockNoRedundantNestedStyleRules {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn style_with_children(selector: &str, children: Vec<StyleRule>) -> CssNode {
     CssNode::Style(StyleRule {

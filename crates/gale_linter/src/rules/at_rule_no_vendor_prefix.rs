@@ -89,15 +89,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as CssAtRule, Span as ParserSpan, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn at_rule(name: &str) -> CssNode {
     CssNode::AtRule(CssAtRule {

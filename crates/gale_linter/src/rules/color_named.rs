@@ -1211,17 +1211,9 @@ fn hwb_to_rgb(h: f64, w: f64, b: f64) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx<'a>() -> RuleContext<'a> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn style_with_decl(property: &str, value: &str) -> (CssNode, String) {
     let source = format!("a {{ {property}: {value}; }}");
