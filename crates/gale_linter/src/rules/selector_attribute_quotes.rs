@@ -156,68 +156,36 @@ fn is_valid_identifier(ident: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "selector-attribute-quotes".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, options.clone());
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "selector-attribute-quotes";
 
   #[test]
   fn always_wraps_values_in_double_quotes() {
     let always = serde_json::json!("always");
     assert_eq!(
-      fix("a[ title=flower ] { }", always.clone()),
+      fix(RULE, always.clone(), "a[ title=flower ] { }", Syntax::Css),
       "a[ title=\"flower\" ] { }"
     );
     assert_eq!(
-      fix("[class ^= top] { }", always.clone()),
+      fix(RULE, always.clone(), "[class ^= top] { }", Syntax::Css),
       "[class ^= \"top\"] { }"
     );
     assert_eq!(
-      fix("[frame=hsides i] { }", always.clone()),
+      fix(RULE, always.clone(), "[frame=hsides i] { }", Syntax::Css),
       "[frame=\"hsides\" i] { }"
     );
     assert_eq!(
-      fix("[href=te\\'s\\\"t] { }", always.clone()),
+      fix(RULE, always.clone(), "[href=te\\'s\\\"t] { }", Syntax::Css),
       "[href=\"te's\\\"t\"] { }"
     );
     assert_eq!(
-      fix("[href=\\'test\\'] { }", always.clone()),
+      fix(RULE, always.clone(), "[href=\\'test\\'] { }", Syntax::Css),
       "[href=\"'test'\"] { }"
     );
-    let warnings = lint_as("a[title=flower] { }", Syntax::Css, always);
+    let warnings = lint(RULE, always, "a[title=flower] { }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].message, "Expected quotes around \"flower\"");
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (8, 6));
@@ -227,42 +195,61 @@ mod tests {
   fn never_unwraps_values_that_are_identifiers() {
     let never = serde_json::json!("never");
     assert_eq!(
-      fix("a[target=\"_blank\"] { }", never.clone()),
+      fix(RULE, never.clone(), "a[target=\"_blank\"] { }", Syntax::Css),
       "a[target=_blank] { }"
     );
     assert_eq!(
-      fix("[frame='hsides' i] { }", never.clone()),
+      fix(RULE, never.clone(), "[frame='hsides' i] { }", Syntax::Css),
       "[frame=hsides i] { }"
     );
     assert_eq!(
-      fix("[frame='hsides'i] { }", never.clone()),
+      fix(RULE, never.clone(), "[frame='hsides'i] { }", Syntax::Css),
       "[frame=hsides i] { }"
     );
     assert_eq!(
-      fix("[href='te\\'s\\'t'] { }", never.clone()),
+      fix(RULE, never.clone(), "[href='te\\'s\\'t'] { }", Syntax::Css),
       "[href=te\\'s\\'t] { }"
     );
     assert_eq!(
-      fix("a[target=\"_blank\"], /* comment */ a { }", never.clone()),
+      fix(
+        RULE,
+        never.clone(),
+        "a[target=\"_blank\"], /* comment */ a { }",
+        Syntax::Css
+      ),
       "a[target=_blank], /* comment */ a { }"
     );
     for css in ["[href=\"te'st\"] { }", "[a=\"1x\"] { }", "[a=\"b c\"] { }"] {
-      assert!(lint_as(css, Syntax::Css, never.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, never.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn skips_valueless_and_interpolated_selectors() {
     let always = serde_json::json!("always");
-    assert!(lint_as("[title] { }", Syntax::Css, always.clone()).is_empty());
-    assert!(lint_as("[class=#{$variable}] { }", Syntax::Scss, always.clone()).is_empty());
-    assert!(lint_as("[class=@{variable}] { }", Syntax::Less, always).is_empty());
+    assert!(lint(RULE, always.clone(), "[title] { }", Syntax::Css).is_empty());
+    assert!(
+      lint(
+        RULE,
+        always.clone(),
+        "[class=#{$variable}] { }",
+        Syntax::Scss
+      )
+      .is_empty()
+    );
+    assert!(lint(RULE, always, "[class=@{variable}] { }", Syntax::Less).is_empty());
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["always", { "disableFix": true }]);
-    assert_eq!(lint_as("[a=b] { }", Syntax::Css, options.clone()).len(), 1);
-    assert_eq!(fix("[a=b] { }", options), "[a=b] { }");
+    assert_eq!(
+      lint(RULE, options.clone(), "[a=b] { }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(fix(RULE, options, "[a=b] { }", Syntax::Css), "[a=b] { }");
   }
 }
