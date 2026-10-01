@@ -355,14 +355,61 @@ impl<'a> PostcssTree<'a> {
       .rev()
       .find(|&&s| is_statement(s));
     if let Some(&prev) = previous {
-      let p = &self.nodes[prev];
-      let prints_semicolon =
-        p.kind == NodeKind::Decl || (p.kind == NodeKind::AtRule && p.children.is_none());
-      if prints_semicolon && self.text(prev).ends_with(';') {
-        ranges.insert(0, p.end - 1..p.end);
+      let end = self.nodes[prev].end;
+      if self.takes_semicolon(prev) && self.text(prev).ends_with(';') {
+        ranges.insert(0, end - 1..end);
       }
     }
     ranges
+  }
+
+  /// Whether PostCSS prints a `;` after the node when it is followed by
+  /// another statement: declarations and blockless at-rules.  (SCSS nested
+  /// properties print their block instead, and a rule keeps the `;` of its
+  /// own, `raws.ownSemicolon`, inside its text.)
+  fn takes_semicolon(&self, i: usize) -> bool {
+    let node = &self.nodes[i];
+    matches!(node.kind, NodeKind::Decl | NodeKind::AtRule) && node.children.is_none()
+  }
+
+  /// What PostCSS prints for the children of a block after they are taken
+  /// out and appended again in `order` (`removeAll()` then `append()`):
+  /// each node with its own `raws.before`, and a `;` after every
+  /// declaration and blockless at-rule except the last statement, which
+  /// gets one only when `semicolon` (the block's `raws.semicolon`,
+  /// [`Node::semicolon`]) is set.
+  ///
+  /// The text runs from the first child's `raws.before` to the end of the
+  /// last child, the span [`Self::children_span`] gives for the block.
+  pub fn print_children(&self, order: &[usize], semicolon: bool) -> String {
+    let last_statement = order
+      .iter()
+      .rposition(|&c| self.nodes[c].kind != NodeKind::Comment);
+    let mut out = String::new();
+    for (position, &child) in order.iter().enumerate() {
+      let node = &self.nodes[child];
+      // A `*` or `_` hack sits in both `raws.before` and the node's span.
+      let before_end = node.before.end.min(node.start);
+      out.push_str(self.source.get(node.before.start..before_end).unwrap_or(""));
+      let text = self.text(child);
+      if self.takes_semicolon(child) {
+        out.push_str(text.strip_suffix(';').unwrap_or(text));
+        if Some(position) != last_statement || semicolon {
+          out.push(';');
+        }
+      } else {
+        out.push_str(text);
+      }
+    }
+    out
+  }
+
+  /// The source span of a block's children: from the first child's
+  /// `raws.before` to the end of the last child.
+  pub fn children_span(&self, children: &[usize]) -> Option<Range<usize>> {
+    let first = &self.nodes[*children.first()?];
+    let last = &self.nodes[*children.last()?];
+    Some(first.before.start.min(first.start)..last.end)
   }
 
   /// Stylelint's `isAfterBlock`: the previous sibling is a rule or at-rule.
@@ -506,7 +553,7 @@ pub fn has_interpolation(text: &str) -> bool {
 /// Whether `open`, then at least one character, then `close` appear in
 /// `text`.  Without `dot_all` the characters may not include line breaks
 /// (JavaScript's `.`).
-fn has_delimited(text: &str, open: &str, close: char, dot_all: bool) -> bool {
+pub(crate) fn has_delimited(text: &str, open: &str, close: char, dot_all: bool) -> bool {
   text.match_indices(open).any(|(at, _)| {
     let rest = &text[at + open.len()..];
     let mut chars = rest.char_indices();

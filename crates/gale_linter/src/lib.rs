@@ -28,6 +28,7 @@ pub mod selector;
 pub mod source_text;
 pub mod standard_syntax;
 pub mod style_rules;
+pub mod stylelint_order;
 pub mod stylelint_version;
 pub mod value_parser;
 
