@@ -103,16 +103,26 @@ impl Rule for FunctionCalcNoUnspacedOperator {
   }
 }
 
-/// Stylelint's `mayIncludeRegexes.mathFunction`: a math function name, at
-/// a word boundary, followed by `(`.
+/// Stylelint's `mayIncludeRegexes.mathFunction`: a math function name, in
+/// any case, at a word boundary, followed by `(`.
+///
+/// Runs on every declaration value holding a `+` or `-`, so it looks for
+/// the names before each `(` in place rather than lower-casing the value
+/// and building a pattern per name.
 fn mentions_math_function(value: &str) -> bool {
-  let lower = value.to_ascii_lowercase();
-  let bytes = lower.as_bytes();
-  MATH_FUNCTIONS.iter().any(|name| {
-    lower
-      .match_indices(&format!("{name}("))
-      .any(|(i, _)| i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
-  })
+  let bytes = value.as_bytes();
+  let at_word_start = |start: usize| {
+    start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+  };
+  (0..bytes.len())
+    .filter(|&open| bytes[open] == b'(')
+    .any(|open| {
+      MATH_FUNCTIONS.iter().any(|name| {
+        open.checked_sub(name.len()).is_some_and(|start| {
+          bytes[start..open].eq_ignore_ascii_case(name.as_bytes()) && at_word_start(start)
+        })
+      })
+    })
 }
 
 /// Stylelint's `tokenizeDeclarationValue`: tokenize, split dimensions whose
@@ -697,6 +707,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use gale_diagnostics::apply_fixes;
 
+  use super::mentions_math_function;
   use crate::{LintRunner, RuleRegistry};
 
   /// Lint `css` as `syntax` with only this rule enabled, configured with
@@ -783,6 +794,36 @@ mod tests {
       "Expected single space after \"+\" operator"
     );
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (18, 1));
+  }
+
+  /// A math function name counts in any case, after anything but a word
+  /// character, and only right before `(`.
+  #[test]
+  fn finds_math_functions_like_stylelints_pattern() {
+    for value in [
+      "calc(1px+2px)",
+      "CaLc(1px)",
+      "-webkit-calc(1px)",
+      "1px -min(2px, 3px)",
+      "calc-size(auto, size)",
+      "var(--a) max(1px,2px)",
+      "é clamp(1px, 2px, 3px)",
+      "#{$a}round(1.5)",
+    ] {
+      assert!(mentions_math_function(value), "{value}");
+    }
+    for value in [
+      "xcalc(1px)",
+      "my_calc(1px)",
+      "calc (1px)",
+      "translate(-1px)",
+      "min-width",
+      "(calc)",
+      "size(1px)",
+      "",
+    ] {
+      assert!(!mentions_math_function(value), "{value}");
+    }
   }
 
   #[test]
