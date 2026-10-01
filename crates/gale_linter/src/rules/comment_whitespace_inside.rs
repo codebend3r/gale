@@ -59,9 +59,6 @@ impl Rule for CommentWhitespaceInside {
         continue;
       }
       let raw = tree.text(i);
-      if disables_rule_from_its_line(&node.name, self.name()) {
-        continue;
-      }
       for (problem, start, end) in problems(raw, never) {
         let fix = Fix::new(
           "Fix the whitespace inside the comment",
@@ -80,26 +77,6 @@ impl Rule for CommentWhitespaceInside {
     }
     diags
   }
-}
-
-/// Whether the comment text is a `stylelint-disable` (or `gale-disable`)
-/// command that turns `rule` off, with every rule or by name.
-///
-/// Stylelint disables a rule from the command's own line on, so it never
-/// reports the command comment itself.  Gale's disabled ranges start after
-/// the comment, so the rule skips it instead.  `-line` commands already
-/// cover their line, and Stylelint does report `-next-line` ones.
-fn disables_rule_from_its_line(text: &str, rule: &str) -> bool {
-  ["stylelint-disable", "gale-disable"].iter().any(|command| {
-    let Some(rest) = text.strip_prefix(command) else {
-      return false;
-    };
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-      return false;
-    }
-    let rules = rest.split("--").next().unwrap_or("").trim();
-    rules.is_empty() || rules.split(',').any(|name| name.trim() == rule)
-  })
 }
 
 /// The problems in the comment `raw` (`/* ... */`), each with the byte range
@@ -310,27 +287,35 @@ mod tests {
 
   #[test]
   fn leaves_disable_commands_for_this_rule_alone() {
-    assert!(messages("/* stylelint-disable */\na {}", Syntax::Css, "never").is_empty());
-    assert!(
-      messages(
-        "/*stylelint-disable comment-whitespace-inside -- why*/\na {}",
-        Syntax::Css,
-        "always"
+    // Stylelint disables from the command's own line, so the runner drops
+    // the problems in the comment itself.
+    let linted = |source: &str, option: &str| {
+      let mut options = std::collections::HashMap::new();
+      options.insert(
+        "comment-whitespace-inside".to_string(),
+        serde_json::json!(option),
+      );
+      crate::LintRunner::with_options(
+        crate::RuleRegistry::default(),
+        vec!["comment-whitespace-inside".to_string()],
+        options,
       )
-      .is_empty()
+      .lint_source(source, "t.css", Syntax::Css)
+      .diagnostics
+      .len()
+    };
+    assert_eq!(linted("/* stylelint-disable */\na {}", "never"), 0);
+    assert_eq!(
+      linted(
+        "/*stylelint-disable comment-whitespace-inside -- why*/\na {}",
+        "always"
+      ),
+      0
     );
     // Other rules' disables and next-line disables are reported.
+    assert_eq!(linted("/* stylelint-disable foo */", "never"), 2);
     assert_eq!(
-      messages("/* stylelint-disable foo */", Syntax::Css, "never").len(),
-      2
-    );
-    assert_eq!(
-      messages(
-        "/* stylelint-disable-next-line */\na {}",
-        Syntax::Css,
-        "never"
-      )
-      .len(),
+      linted("/* stylelint-disable-next-line */\na {}", "never"),
       2
     );
   }
