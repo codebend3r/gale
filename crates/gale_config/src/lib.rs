@@ -2825,12 +2825,9 @@ fn replace_arrow_functions(s: &str) -> String {
           template_content
         };
 
-        // Escape double quotes in content
-        let escaped = standardized.replace('"', "\\\"");
-
-        // Emit as JSON double-quoted string
+        // Emit as a JSON string with the template's value.
         result.push('"');
-        result.push_str(&escaped);
+        result.push_str(&js_string_body_to_json(&standardized));
         result.push('"');
       } else {
         // Skip the arrow function body.
@@ -3070,122 +3067,117 @@ fn remove_method_calls(s: &str) -> String {
   result
 }
 
-/// Convert single-quoted strings to double-quoted strings.
-/// Handles escaping: internal `'` becomes `\'` → `"` becomes itself,
-/// and internal unescaped `"` gets escaped.
-fn convert_single_to_double_quotes(s: &str) -> String {
-  let mut result = String::with_capacity(s.len());
-  let mut chars = s.chars().peekable();
-  let mut in_double_quote = false;
-  let mut escape_next = false;
-
+/// The body of a JavaScript string literal (the text between its quotes or
+/// backticks, escapes and all) rewritten as the body of a JSON string with
+/// the same value.
+///
+/// JavaScript allows what JSON does not: raw line breaks and tabs in a
+/// template literal, escapes such as `` \` ``, `\'`, `\$`, `\x41`, `\v`
+/// and `\u{1F600}`, line continuations, and needless escapes like `\d`.
+/// Each becomes its JSON equivalent; an unescaped `"` gets a backslash.
+fn js_string_body_to_json(body: &str) -> String {
+  let mut out = String::with_capacity(body.len() + 8);
+  let mut chars = body.chars().peekable();
   while let Some(c) = chars.next() {
-    if escape_next {
-      result.push(c);
-      escape_next = false;
-      continue;
-    }
-
-    // Convert template literals (backtick strings) to double-quoted
-    // strings, same as single quotes.  Template literals in config files
-    // are virtually always plain strings without `${...}` interpolation.
-    if c == '`' && !in_double_quote {
-      result.push('"');
-      // Collect until closing backtick.
-      loop {
-        match chars.next() {
-          None => break,
-          Some('\\') => {
-            if let Some(ec) = chars.next() {
-              if ec == '`' {
-                result.push('`');
-              } else {
-                result.push('\\');
-                result.push(ec);
-              }
-            }
-          }
-          Some('`') => {
-            result.push('"');
-            break;
-          }
-          Some('"') => {
-            // Escape inner double quotes.
-            result.push('\\');
-            result.push('"');
-          }
-          Some(ch) => result.push(ch),
+    match c {
+      '\\' => match chars.next() {
+        None => out.push_str("\\\\"),
+        Some(escaped @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => {
+          out.push('\\');
+          out.push(escaped);
         }
-      }
-      continue;
-    }
-
-    if c == '\\' && in_double_quote {
-      result.push(c);
-      escape_next = true;
-      continue;
-    }
-
-    if c == '"' && !in_double_quote {
-      // Not inside a double-quoted string, not starting one unless context says so
-      // Check if we're about to start a double-quoted string
-      in_double_quote = true;
-      result.push('"');
-      continue;
-    }
-
-    if c == '"' && in_double_quote {
-      in_double_quote = false;
-      result.push('"');
-      continue;
-    }
-
-    if in_double_quote {
-      if c == '\\' {
-        escape_next = true;
-      }
-      result.push(c);
-      continue;
-    }
-
-    // Outside any string context
-    if c == '\'' {
-      // Start of single-quoted string — collect until closing '
-      result.push('"');
-      loop {
-        match chars.next() {
-          None => break,
-          Some('\\') => {
-            // Next char is escaped
-            if let Some(ec) = chars.next() {
-              if ec == '\'' {
-                // Escaped single quote — just emit the quote
-                result.push('\'');
-              } else {
-                result.push('\\');
-                result.push(ec);
-              }
-            }
-          }
-          Some('\'') => {
-            // End of single-quoted string
-            result.push('"');
-            break;
-          }
-          Some('"') => {
-            // Unescaped double quote inside single-quoted string — escape it
-            result.push('\\');
-            result.push('"');
-          }
-          Some(ch) => result.push(ch),
+        Some('v') => out.push_str("\\u000b"),
+        Some('0') if !chars.peek().is_some_and(char::is_ascii_digit) => {
+          out.push_str("\\u0000");
         }
-      }
-      continue;
+        Some('x') => {
+          let hex: String = chars.by_ref().take(2).collect();
+          match u32::from_str_radix(&hex, 16) {
+            Ok(code) if hex.len() == 2 => out.push_str(&format!("\\u{code:04x}")),
+            _ => out.push_str(&hex),
+          }
+        }
+        Some('u') if chars.peek() == Some(&'{') => {
+          chars.next();
+          let hex: String = chars.by_ref().take_while(|&h| h != '}').collect();
+          match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            Some(decoded) => push_json_char(&mut out, decoded),
+            None => out.push_str(&hex),
+          }
+        }
+        Some('u') => out.push_str("\\u"),
+        // A line continuation: the backslash and line break vanish.
+        Some('\r') => {
+          if chars.peek() == Some(&'\n') {
+            chars.next();
+          }
+        }
+        Some('\n' | '\u{2028}' | '\u{2029}') => {}
+        // Any other escaped character stands for itself (`\'`, `` \` ``).
+        Some(other) => push_json_char(&mut out, other),
+      },
+      other => push_json_char(&mut out, other),
     }
-
-    result.push(c);
   }
+  out
+}
 
+/// Append `c` to a JSON string body, escaping it if JSON requires.
+fn push_json_char(out: &mut String, c: char) {
+  match c {
+    '"' => out.push_str("\\\""),
+    '\\' => out.push_str("\\\\"),
+    '\n' => out.push_str("\\n"),
+    '\r' => out.push_str("\\r"),
+    '\t' => out.push_str("\\t"),
+    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+    c => out.push(c),
+  }
+}
+
+/// The body of the JavaScript string literal opening at `chars[start]`
+/// (a `'`, `"` or backtick), and the index just past its closing quote.  An
+/// unterminated literal runs to the end.
+fn js_string_literal(chars: &[char], start: usize) -> (String, usize) {
+  let quote = chars[start];
+  let mut i = start + 1;
+  let mut body = String::new();
+  while i < chars.len() && chars[i] != quote {
+    if chars[i] == '\\' && i + 1 < chars.len() {
+      body.push(chars[i]);
+      i += 1;
+    }
+    body.push(chars[i]);
+    i += 1;
+  }
+  (body, (i + 1).min(chars.len()))
+}
+
+/// Rewrite every JavaScript string literal (single-quoted, double-quoted or
+/// template) as a JSON string with the same value; see
+/// [`js_string_body_to_json`].
+fn convert_single_to_double_quotes(s: &str) -> String {
+  let chars: Vec<char> = s.chars().collect();
+  let mut result = String::with_capacity(s.len());
+  let mut i = 0;
+  while i < chars.len() {
+    match chars[i] {
+      // Every string form becomes a JSON string with the same value.
+      // Template literals in config files are virtually always plain
+      // strings; a `${...}` in one is kept as written.
+      '\'' | '"' | '`' => {
+        let (body, next) = js_string_literal(&chars, i);
+        result.push('"');
+        result.push_str(&js_string_body_to_json(&body));
+        result.push('"');
+        i = next;
+      }
+      c => {
+        result.push(c);
+        i += 1;
+      }
+    }
+  }
   result
 }
 
@@ -5524,6 +5516,70 @@ module.exports = {
       }
       other => panic!("Expected array, got {:?}", other),
     }
+  }
+
+  /// The secondary option `key` of rule `rule` in a parsed JS config.
+  fn secondary_string(raw: &ConfigFile, rule: &str, key: &str) -> String {
+    match raw.rules.as_ref().unwrap().get(rule).unwrap() {
+      RuleConfigValue::Array(arr) => arr[1]
+        .as_object()
+        .unwrap()
+        .get(key)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string(),
+      other => panic!("Expected array, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn js_config_multiline_template_literal() {
+    // docusaurus's `.stylelintrc.js`: a copyright header spanning lines.
+    let js = "module.exports = {\n  rules: {\n    'docusaurus/copyright-header': [\n      true,\n      {\n        header: `*\n * Copyright (c) Facebook, Inc. and its affiliates.\n *\n * This source code is licensed under the MIT license.`,\n      },\n    ],\n  },\n};\n";
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(
+      secondary_string(&raw, "docusaurus/copyright-header", "header"),
+      "*\n * Copyright (c) Facebook, Inc. and its affiliates.\n *\n * This source code is licensed under the MIT license."
+    );
+  }
+
+  #[test]
+  fn js_config_message_function_with_escaped_backticks() {
+    // govuk-frontend's `stylelint.config.js`.
+    let js = r#"
+module.exports = {
+  rules: {
+    'custom-property-pattern': [
+      '^_?([a-z][a-z0-9]*)(-[a-z0-9]+)*$',
+      {
+        message: (name) =>
+          `Expected custom property name "${name}" to be kebab-case, possibly starting with an \`_\` if it is private`
+      }
+    ]
+  }
+}
+"#;
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(
+      secondary_string(&raw, "custom-property-pattern", "message"),
+      "Expected custom property name \"${name}\" to be kebab-case, possibly starting with an `_` if it is private"
+    );
+  }
+
+  #[test]
+  fn js_string_escapes_become_json_escapes() {
+    assert_eq!(js_string_body_to_json(r"it\'s"), "it's");
+    assert_eq!(js_string_body_to_json(r#"say "hi""#), r#"say \"hi\""#);
+    assert_eq!(
+      js_string_body_to_json(r"\x41\u0042\u{43}\v"),
+      r"\u0041\u0042C\u000b"
+    );
+    assert_eq!(js_string_body_to_json("a\\\nb\tc"), r"ab\tc");
+    assert_eq!(js_string_body_to_json(r"\d\$\\"), r"d$\\");
+    let js = "module.exports = { rules: { 'a': ['x', { message: \"it\\'s \\x41\" }] } }";
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(secondary_string(&raw, "a", "message"), "it's A");
   }
 
   // -----------------------------------------------------------------------
