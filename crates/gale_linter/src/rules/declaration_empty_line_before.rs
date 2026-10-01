@@ -101,18 +101,13 @@ fn is_after_standard_declaration(tree: &PostcssTree, i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     DeclarationEmptyLineBefore
       .check_root(&[], &ctx)
       .into_iter()
@@ -200,7 +195,7 @@ mod tests {
   #[test]
   fn fix_adds_and_removes_empty_lines() {
     assert_eq!(
-      fix_with(
+      fix(
         "declaration-empty-line-before",
         serde_json::json!(["always", { "except": ["first-nested"] }]),
         "a {\n\n  color: red;\n  top: 0; /* c */\n  left: 0;\n}",
@@ -209,7 +204,7 @@ mod tests {
       "a {\n  color: red;\n\n  top: 0; /* c */\n\n  left: 0;\n}"
     );
     assert_eq!(
-      fix_with(
+      fix(
         "declaration-empty-line-before",
         serde_json::json!("never"),
         "a {\r\n  color: red;\r\n\r\n  top: 0;\r\n}",
@@ -222,7 +217,7 @@ mod tests {
   #[test]
   fn fix_keeps_prop_hacks_attached() {
     assert_eq!(
-      fix_with(
+      fix(
         "declaration-empty-line-before",
         serde_json::json!("always"),
         "a {\n  color: red;\n  *zoom: 1;\n}",

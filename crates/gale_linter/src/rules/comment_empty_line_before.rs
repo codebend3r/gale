@@ -116,28 +116,20 @@ fn is_configuration_comment(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
+
+  const RULE: &str = "comment-empty-line-before";
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     CommentEmptyLineBefore
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()
-  }
-
-  /// `source` fixed with the rule set to `options`.
-  fn fix(source: &str, syntax: Syntax, options: serde_json::Value) -> String {
-    fix_with("comment-empty-line-before", options, source, syntax)
   }
 
   #[test]
@@ -264,27 +256,34 @@ mod tests {
   fn fix_adds_and_removes_empty_lines() {
     let always = serde_json::json!("always");
     assert_eq!(
-      fix("/** a */\r\n/** b */", Syntax::Css, always.clone()),
+      fix(RULE, always.clone(), "/** a */\r\n/** b */", Syntax::Css),
       "/** a */\r\n\r\n/** b */"
     );
     assert_eq!(
-      fix("a {\n  /* c */\n  color: pink;\n}", Syntax::Css, always),
+      fix(
+        RULE,
+        always,
+        "a {\n  /* c */\n  color: pink;\n}",
+        Syntax::Css
+      ),
       "a {\n\n  /* c */\n  color: pink;\n}"
     );
     let first_nested = serde_json::json!(["always", { "except": ["first-nested"] }]);
     assert_eq!(
       fix(
+        RULE,
+        first_nested,
         "a { /* shared */\n\n  /* c */\n  color: pink;\n}",
-        Syntax::Css,
-        first_nested
+        Syntax::Css
       ),
       "a { /* shared */\n  /* c */\n  color: pink;\n}"
     );
     assert_eq!(
       fix(
+        RULE,
+        serde_json::json!("never"),
         "a {}\r\n\r\n\r\n/** c */",
-        Syntax::Css,
-        serde_json::json!("never")
+        Syntax::Css
       ),
       "a {}\r\n/** c */"
     );

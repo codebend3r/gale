@@ -801,33 +801,20 @@ const NAMED_COLORS: &[&str] = &[
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
+
+  const RULE: &str = "declaration-block-no-duplicate-properties";
 
   /// The offsets reported for `source` in `syntax` with `options`.
   fn offsets(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<usize> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     DeclarationBlockNoDuplicateProperties
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.span.offset)
       .collect()
-  }
-
-  /// `source` fixed with the rule set to `options`.
-  fn fix(source: &str, options: serde_json::Value) -> String {
-    fix_with(
-      "declaration-block-no-duplicate-properties",
-      options,
-      source,
-      Syntax::Css,
-    )
   }
 
   #[test]
@@ -877,15 +864,30 @@ mod tests {
       vec![27]
     );
     assert_eq!(
-      fix("a { color: red !important; color: blue; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { color: red !important; color: blue; }",
+        Syntax::Css
+      ),
       "a { color: red !important; }"
     );
     assert_eq!(
-      fix("a { color: red !important; color: blue }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { color: red !important; color: blue }",
+        Syntax::Css
+      ),
       "a { color: red !important }"
     );
     assert_eq!(
-      fix("a { color: red ! IMPORTANT; color: blue; }", on),
+      fix(
+        RULE,
+        on,
+        "a { color: red ! IMPORTANT; color: blue; }",
+        Syntax::Css
+      ),
       "a { color: red ! IMPORTANT; }"
     );
   }
@@ -894,20 +896,29 @@ mod tests {
   fn fix_removes_the_losing_declarations() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("a { color: pink; color: pink; color: orange }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { color: pink; color: pink; color: orange }",
+        Syntax::Css
+      ),
       "a { color: orange }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a {\n  color: pink;\n  /* c */\n  color: orange;\n}",
-        on.clone()
+        Syntax::Css
       ),
       "a {\n  /* c */\n  color: orange;\n}"
     );
     assert_eq!(
       fix(
+        RULE,
+        on,
         "a { color: pink; @media { color: orange; color: black; } }",
-        on
+        Syntax::Css
       ),
       "a { color: pink; @media { color: black; } }"
     );
@@ -926,8 +937,10 @@ mod tests {
     );
     assert_eq!(
       fix(
+        RULE,
+        consecutive,
         "p { font-size: 16px !important; font-weight: 400; font-size: 1rem; }",
-        consecutive
+        Syntax::Css
       ),
       "p { font-size: 16px !important; font-weight: 400; }"
     );
@@ -943,8 +956,10 @@ mod tests {
     );
     assert_eq!(
       fix(
+        RULE,
+        values,
         "p { font-size: 16px; font-size: 16px; font-weight: 400; }",
-        values
+        Syntax::Css
       ),
       "p { font-size: 16px; font-weight: 400; }"
     );
@@ -959,8 +974,10 @@ mod tests {
     );
     assert_eq!(
       fix(
+        RULE,
+        prefixless,
         "p { width: 100%; width: -moz-fit-content; height: 32px; }",
-        prefixless
+        Syntax::Css
       ),
       "p { width: -moz-fit-content; height: 32px; }"
     );
@@ -1002,8 +1019,10 @@ mod tests {
       serde_json::json!([true, { "ignore": ["consecutive-duplicates-with-different-syntaxes"] }]);
     assert_eq!(
       fix(
+        RULE,
+        syntaxes.clone(),
         "p { width: calc(100vw /* a comment */  + 10vw); width: calc(100vw + 10vw); }",
-        syntaxes.clone()
+        Syntax::Css
       ),
       "p { width: calc(100vw + 10vw); }"
     );
