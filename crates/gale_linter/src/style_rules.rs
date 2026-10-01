@@ -184,6 +184,12 @@ impl BlockScanner<'_> {
         0
       };
       match b {
+        // An escaped character, such as the quote in `[a=b\'c]`, is not
+        // syntax.
+        b'\\' => {
+          pos += 2;
+          continue;
+        }
         b'"' | b'\'' => {
           pos = self.skip_string(pos, end);
           continue;
@@ -221,6 +227,12 @@ impl BlockScanner<'_> {
         0
       };
       match b {
+        // An escaped character, such as the quote in `[a=b\'c]`, is not
+        // syntax.
+        b'\\' => {
+          pos += 2;
+          continue;
+        }
         b'"' | b'\'' => {
           pos = self.skip_string(pos, end);
           continue;
@@ -321,6 +333,17 @@ mod tests {
     assert_eq!(
       preludes("a[title=\"{\"] {}"),
       vec![("a[title=\"{\"]".into(), 0, None)]
+    );
+  }
+
+  #[test]
+  fn escaped_quotes_do_not_open_a_string() {
+    assert_eq!(
+      preludes("[href=te\\'s\\\"t] { } b {}"),
+      vec![
+        ("[href=te\\'s\\\"t]".into(), 0, None),
+        ("b".into(), 20, None)
+      ]
     );
   }
 
