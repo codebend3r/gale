@@ -30,6 +30,8 @@ pub struct RawAtRule {
   pub offset: usize,
   /// Byte offset of `params`.
   pub params_offset: usize,
+  /// Whether the at-rule has a `{ ... }` block rather than ending with `;`.
+  pub has_block: bool,
 }
 
 /// Find every style rule prelude in `source`, in document order.
@@ -92,7 +94,7 @@ impl BlockScanner<'_> {
       };
       match terminator {
         b';' => {
-          self.record_at_rule(stmt_start, at, at_rules);
+          self.record_at_rule(stmt_start, at, false, at_rules);
           pos = at + 1;
         }
         b'}' => return,
@@ -102,7 +104,7 @@ impl BlockScanner<'_> {
           let block_start = at + 1;
           let block_end = self.find_block_end(block_start, end);
           if prelude.starts_with('@') {
-            self.record_at_rule(stmt_start, at, at_rules);
+            self.record_at_rule(stmt_start, at, true, at_rules);
             let nested_keyframes = in_keyframes || at_rule_name(prelude).ends_with("keyframes");
             self.scan_block(
               block_start,
@@ -132,7 +134,13 @@ impl BlockScanner<'_> {
   }
 
   /// Record the statement in `[start, end)` if it is an at-rule.
-  fn record_at_rule(&self, start: usize, end: usize, at_rules: &mut Vec<RawAtRule>) {
+  fn record_at_rule(
+    &self,
+    start: usize,
+    end: usize,
+    has_block: bool,
+    at_rules: &mut Vec<RawAtRule>,
+  ) {
     let Some(text) = self.source.get(start..end) else {
       return;
     };
@@ -149,6 +157,7 @@ impl BlockScanner<'_> {
       params: after.trim().to_string(),
       offset: start,
       params_offset: start + 1 + name_len + leading,
+      has_block,
     });
   }
 
@@ -408,19 +417,19 @@ mod tests {
 
   #[test]
   fn finds_at_rules_nested_anywhere() {
-    let found: Vec<(String, String, usize, usize)> = scan_at_rules(
+    let found: Vec<(String, String, usize, usize, bool)> = scan_at_rules(
       "@import 'a';\na { @media  (x) { b {} } }\n@MEDIA print{}",
       Syntax::Css,
     )
     .into_iter()
-    .map(|r| (r.name, r.params, r.offset, r.params_offset))
+    .map(|r| (r.name, r.params, r.offset, r.params_offset, r.has_block))
     .collect();
     assert_eq!(
       found,
       vec![
-        ("import".into(), "'a'".into(), 0, 8),
-        ("media".into(), "(x)".into(), 17, 25),
-        ("MEDIA".into(), "print".into(), 40, 47),
+        ("import".into(), "'a'".into(), 0, 8, false),
+        ("media".into(), "(x)".into(), 17, 25, true),
+        ("MEDIA".into(), "print".into(), 40, 47, true),
       ]
     );
   }
