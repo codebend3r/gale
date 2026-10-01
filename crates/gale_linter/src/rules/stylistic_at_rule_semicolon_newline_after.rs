@@ -30,8 +30,26 @@ impl Rule for StylisticAtRuleSemicolonNewlineAfter {
     let mut diagnostics = Vec::new();
     let mut i = 0;
     let mut in_at_rule = false;
+    // `//` starts a comment in SCSS and Less, except inside parentheses,
+    // where it is part of a value such as `url(//example.com/a.css)`.
+    let line_comments = !matches!(context.syntax, gale_css_parser::Syntax::Css);
+    let mut paren_depth = 0usize;
 
     while i < len {
+      if bytes[i] == b'(' {
+        paren_depth += 1;
+      } else if bytes[i] == b')' {
+        paren_depth = paren_depth.saturating_sub(1);
+      }
+
+      // Skip line comments, so an `@todo` in one is no at-rule.
+      if line_comments && paren_depth == 0 && bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+        while i < len && bytes[i] != b'\n' {
+          i += 1;
+        }
+        continue;
+      }
+
       // Skip strings
       if bytes[i] == b'"' || bytes[i] == b'\'' {
         let quote = bytes[i];
@@ -151,6 +169,21 @@ mod tests {
     let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
+  }
+
+  #[test]
+  fn at_signs_in_scss_line_comments_are_no_at_rules() {
+    let source = "a {\n\t// @todo refactor this away; it is\n\t// in the quote block.\n\t&:first-child { color: red; }\n}\n@import url(//example.com/a.css); b { }";
+    let ctx = RuleContext {
+      file_path: "test.scss",
+      source,
+      syntax: Syntax::Scss,
+      options: None,
+    };
+    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx);
+    // Only the `@import`, whose `//` sits inside `url()`.
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span.offset, source.rfind(';').unwrap());
   }
 
   #[test]
