@@ -8,9 +8,10 @@
  * reports for the same input.
  */
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 
 import { cleanupProjects, config, makeProject, runGale, runGaleJson } from "./helpers";
+import { LspClient } from "./lsp-client";
 
 afterAll(cleanupProjects);
 
@@ -215,6 +216,54 @@ describe("--fix in embedded style blocks", () => {
       "11:13 color-hex-length",
       "15:5 color-hex-length",
       "16:15 length-zero-no-unit",
+    ]);
+  });
+});
+
+describe("embedded style blocks in the language server", () => {
+  let client: LspClient | undefined;
+
+  afterEach(async () => {
+    await client?.close();
+    client = undefined;
+  });
+
+  interface Range {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  }
+
+  test("a Vue document gets diagnostics and fixes at document positions", async () => {
+    const project = makeProject({
+      ".stylelintrc.json": config({ "color-hex-length": "short" }),
+      "App.vue": "<template>\n  <p>日本語</p>\n</template>\n<style>\n.é { color: #ffffff; }\n</style>\n",
+    });
+    client = new LspClient(project.dir);
+    await client.initialize(project.dir);
+
+    const uri = `file://${project.path("App.vue")}`;
+    const diagnostics = (await client.open(uri, project.read("App.vue"), "vue")) as {
+      range: Range;
+      code: string;
+    }[];
+
+    expect(diagnostics.map((d) => d.code)).toEqual(["color-hex-length"]);
+    // Line 5, UTF-16 column 12 (zero-based), past the two-byte `é`.
+    expect(diagnostics[0].range.start).toEqual({ line: 4, character: 12 });
+
+    const actions = await client.request<
+      { edit?: { changes?: Record<string, { range: Range; newText: string }[]> } }[]
+    >("textDocument/codeAction", {
+      textDocument: { uri },
+      range: diagnostics[0].range,
+      context: { diagnostics },
+    });
+    const edits = actions[0]?.edit?.changes?.[uri] ?? [];
+    expect(edits).toEqual([
+      {
+        range: { start: { line: 4, character: 12 }, end: { line: 4, character: 19 } },
+        newText: "#fff",
+      },
     ]);
   });
 });
