@@ -8,7 +8,7 @@ use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::RuleRegistry;
-use crate::rule::{Rule, RuleContext, secondary_options_of};
+use crate::rule::{PerFileOptions, Rule, RuleContext, secondary_options_of};
 
 // ---------------------------------------------------------------------------
 // Inline disable-comment support
@@ -928,6 +928,7 @@ impl LintRunner {
 
   /// [`Self::lint_source`] without the file-level panic guard.
   fn lint_source_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
@@ -1083,6 +1084,7 @@ impl LintRunner {
     rule_options: &HashMap<String, serde_json::Value>,
     rule_severities: &HashMap<String, Severity>,
   ) -> LintResult {
+    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
