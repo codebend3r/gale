@@ -7,7 +7,7 @@
 //! [`declaration_value`] and [`at_rule_params`] give what PostCSS hands
 //! Stylelint as `decl.value` and `atRule.params`, with their offsets.
 
-use gale_css_parser::{AtRule, CssNode, Declaration};
+use gale_css_parser::{AtRule, CssNode, Declaration, Syntax};
 
 /// The value of `decl` as written in `source`, and its byte offset there.
 ///
@@ -93,9 +93,17 @@ pub struct WrittenDeclaration<'a> {
 /// at-rule whose declarations the CSS parser keeps without positions (as it
 /// does for `@font-face`), read from its block instead.
 ///
+/// In plain CSS a style rule's block is read from the source too, because
+/// the CSS parser drops declarations it cannot parse (`font-family: Ahem!`)
+/// where PostCSS keeps them.
+///
 /// This is what Stylelint's `walkDecls` visits at each node, minus nesting:
 /// the runner calls rules for nested nodes separately.
-pub fn written_declarations<'a>(source: &'a str, node: &CssNode) -> Vec<WrittenDeclaration<'a>> {
+pub fn written_declarations<'a>(
+  source: &'a str,
+  node: &CssNode,
+  syntax: Syntax,
+) -> Vec<WrittenDeclaration<'a>> {
   let located = |decl: &Declaration| {
     if decl.span.length == 0 {
       return None;
@@ -110,6 +118,17 @@ pub fn written_declarations<'a>(source: &'a str, node: &CssNode) -> Vec<WrittenD
     })
   };
   match node {
+    CssNode::Style(rule) if syntax == Syntax::Css => {
+      // The `{` after the selector, which must lie inside the rule's span.
+      let open = source
+        .get(rule.span.offset..)
+        .map(|rest| rule.span.offset + value_end(rest, false))
+        .filter(|&open| open < rule.span.end() && source.as_bytes().get(open) == Some(&b'{'));
+      match open {
+        Some(open) => block_declarations(source, open),
+        None => rule.declarations.iter().filter_map(located).collect(),
+      }
+    }
     CssNode::Style(rule) => rule.declarations.iter().filter_map(located).collect(),
     CssNode::Declaration(decl) => located(decl).into_iter().collect(),
     CssNode::AtRule(at) => {
@@ -117,30 +136,26 @@ pub fn written_declarations<'a>(source: &'a str, node: &CssNode) -> Vec<WrittenD
         .children
         .iter()
         .any(|child| matches!(child, CssNode::Declaration(d) if d.span.length == 0));
-      if unplaced {
-        block_declarations(source, at)
-      } else {
-        Vec::new()
+      let open = source
+        .get(at.span.offset..)
+        .map(|rest| at.span.offset + value_end(rest, false))
+        .filter(|&open| source.as_bytes().get(open) == Some(&b'{'));
+      match open {
+        Some(open) if unplaced => block_declarations(source, open),
+        _ => Vec::new(),
       }
     }
     CssNode::Comment(_) => Vec::new(),
   }
 }
 
-/// The declarations directly inside the block of `at`, found by reading the
-/// source: each `property: value` statement of the block, skipping nested
-/// blocks.
-fn block_declarations<'a>(source: &'a str, at: &AtRule) -> Vec<WrittenDeclaration<'a>> {
+/// The declarations directly inside the block whose `{` is at `open`,
+/// found by reading the source: each `property: value` statement of the
+/// block, skipping nested blocks and statements whose property is not one
+/// (at-rules, mixin calls).
+fn block_declarations(source: &str, open: usize) -> Vec<WrittenDeclaration<'_>> {
   let mut out = Vec::new();
-  let Some(rest) = source.get(at.span.offset..) else {
-    return out;
-  };
-  // The block opens where the params end.
-  let open = value_end(rest, false);
-  if rest.as_bytes().get(open) != Some(&b'{') {
-    return out;
-  }
-  let mut pos = at.span.offset + open + 1;
+  let mut pos = open + 1;
   loop {
     let Some(text) = source.get(pos..) else {
       break;
@@ -184,13 +199,16 @@ fn block_declarations<'a>(source: &'a str, at: &AtRule) -> Vec<WrittenDeclaratio
             .find(|c: char| c.is_ascii_whitespace())
             .unwrap_or(name.len())
             .min(name.find("/*").unwrap_or(name.len()));
+          // PostCSS keeps an IE `*` or `_` hack out of the property.
+          let hack = usize::from(name.starts_with(['*', '_']));
+          let prop = &name[hack..name_end.max(hack)];
           let after = &text[colon + 1..end];
           let value_leading = after.len() - after.trim_start().len();
           let value = strip_important(after.trim());
-          if name_end > 0 {
+          if is_property_name(prop) {
             out.push(WrittenDeclaration {
-              prop: &name[..name_end],
-              prop_start: pos,
+              prop,
+              prop_start: pos + hack,
               value,
               value_start: pos + colon + 1 + value_leading,
             });
@@ -204,6 +222,16 @@ fn block_declarations<'a>(source: &'a str, at: &AtRule) -> Vec<WrittenDeclaratio
     }
   }
   out
+}
+
+/// Whether `prop` reads as a property name: identifier characters and
+/// `#{...}` interpolation, such as `color`, `--x`, `$var` or `#{$p}-top`.
+fn is_property_name(prop: &str) -> bool {
+  !prop.is_empty()
+    && !prop.starts_with('@')
+    && prop.chars().all(|c| {
+      c.is_alphanumeric() || matches!(c, '-' | '_' | '$' | '#' | '{' | '}' | '\\') || !c.is_ascii()
+    })
 }
 
 /// Offset of the `:` that ends the property name at the start of `text`,
@@ -366,16 +394,36 @@ mod tests {
     let source =
       "@font-face { font-family: 'foo' ; src: url( foo.ttf ) !important; @x { a: b } c: d }";
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
-    let found: Vec<(&str, usize, &str, usize)> = written_declarations(source, &parsed.nodes[0])
-      .into_iter()
-      .map(|d| (d.prop, d.prop_start, d.value, d.value_start))
-      .collect();
+    let found: Vec<(&str, usize, &str, usize)> =
+      written_declarations(source, &parsed.nodes[0], Syntax::Css)
+        .into_iter()
+        .map(|d| (d.prop, d.prop_start, d.value, d.value_start))
+        .collect();
     assert_eq!(
       found,
       vec![
         ("font-family", 13, "'foo'", 26),
         ("src", 34, "url( foo.ttf )", 39),
         ("c", 78, "d", 81),
+      ]
+    );
+  }
+
+  #[test]
+  fn reads_css_style_rule_blocks_from_the_source() {
+    let source =
+      "a { color: red; font-family: Arial, Ahem!; &:hover { x: y } *zoom: 1; @apply b; }";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let found: Vec<(&str, &str)> = written_declarations(source, &parsed.nodes[0], Syntax::Css)
+      .into_iter()
+      .map(|d| (d.prop, d.value))
+      .collect();
+    assert_eq!(
+      found,
+      vec![
+        ("color", "red"),
+        ("font-family", "Arial, Ahem!"),
+        ("zoom", "1")
       ]
     );
   }
