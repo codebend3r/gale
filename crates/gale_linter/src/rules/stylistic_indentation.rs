@@ -47,6 +47,33 @@ impl Rule for StylisticIndentation {
     let bytes = source.as_bytes();
     let len = bytes.len();
     let mut diagnostics = Vec::new();
+
+    // In a style sheet embedded in HTML, everything sits at the root's base
+    // indent level, which the plugin infers from the markup around it.
+    let base_indent_level = context
+      .secondary_options()
+      .and_then(|s| s.get("baseIndentLevel"))
+      .and_then(|v| v.as_i64());
+    let embedded = crate::embedded::indentation_context(
+      source,
+      (!use_tab).then_some(indent_size),
+      base_indent_level,
+    );
+    let base_indent = embedded.map_or(0, |e| e.base_level * indent_size);
+    if embedded.is_some_and(|e| e.check_first_line) {
+      // The first line follows the line holding the `<style>` tag, so it is
+      // indented like any other.
+      let first_char = bytes
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(len);
+      let indent = &bytes[..first_char];
+      let has_content = first_char < len && !matches!(bytes[first_char], b'\n' | b'\r');
+      let wrong_char = indent.contains(if use_tab { &b' ' } else { &b'\t' });
+      if has_content && (wrong_char || indent.len() != base_indent) {
+        diagnostics.push(self.indentation_problem(use_tab, wrong_char, base_indent, first_char));
+      }
+    }
     let mut i = 0;
     let mut brace_depth: i32 = 0;
     let mut paren_depth: i32 = 0;
@@ -270,42 +297,24 @@ impl Rule for StylisticIndentation {
         }
 
         // Compute expected indentation
-        let expected = if j < len && bytes[j] == b'}' {
-          // A closing brace should be at parent level
-          if expected_depth > 0 {
-            (expected_depth - 1) * indent_size
+        let expected = base_indent
+          + if j < len && bytes[j] == b'}' {
+            // A closing brace should be at parent level
+            if expected_depth > 0 {
+              (expected_depth - 1) * indent_size
+            } else {
+              0
+            }
+          } else if value_indent_depth > 0 {
+            // Inside multi-line parenthesized value:
+            // expected = base_indent + value_indent_depth * indent_size
+            expected_depth * indent_size + value_indent_depth as usize * indent_size
           } else {
-            0
-          }
-        } else if value_indent_depth > 0 {
-          // Inside multi-line parenthesized value:
-          // expected = base_indent + value_indent_depth * indent_size
-          expected_depth * indent_size + value_indent_depth as usize * indent_size
-        } else {
-          expected_depth * indent_size
-        };
+            expected_depth * indent_size
+          };
 
-        if wrong_char {
-          let indent_type = if use_tab { "tabs" } else { "spaces" };
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected {indent_type} for indentation"),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(j, 0)),
-          );
-        } else if actual_indent != expected {
-          let unit = if use_tab { "tab" } else { "space" };
-          let plural = if expected != 1 { "s" } else { "" };
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected indentation of {expected} {unit}{plural}",),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(j, 0)),
-          );
+        if wrong_char || actual_indent != expected {
+          diagnostics.push(self.indentation_problem(use_tab, wrong_char, expected, j));
         }
 
         continue;
@@ -328,6 +337,30 @@ impl Rule for StylisticIndentation {
     }
 
     diagnostics
+  }
+}
+
+impl StylisticIndentation {
+  /// The problem for a line indented with the wrong character, or by the
+  /// wrong amount, reported at its first non-blank character.
+  fn indentation_problem(
+    &self,
+    use_tab: bool,
+    wrong_char: bool,
+    expected: usize,
+    at: usize,
+  ) -> Diagnostic {
+    let message = if wrong_char {
+      let indent_type = if use_tab { "tabs" } else { "spaces" };
+      format!("Expected {indent_type} for indentation")
+    } else {
+      let unit = if use_tab { "tab" } else { "space" };
+      let plural = if expected != 1 { "s" } else { "" };
+      format!("Expected indentation of {expected} {unit}{plural}")
+    };
+    Diagnostic::new(self.name(), message)
+      .severity(self.default_severity())
+      .span(Span::new(at, 0))
   }
 }
 
