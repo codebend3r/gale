@@ -18,17 +18,30 @@ pub struct DeclarationPropertyValueNoUnknown;
 /// CSS-wide keywords valid for any property.
 const CSS_WIDE_KEYWORDS: &[&str] = &["inherit", "initial", "revert", "revert-layer", "unset"];
 
-/// Valid keywords for the `display` property.
+/// Valid single keywords for the `display` property: those css-tree, which
+/// Stylelint validates values with, accepts, legacy vendor values included.
 const DISPLAY_KEYWORDS: &[&str] = &[
+  "-moz-box",
+  "-moz-inline-box",
+  "-moz-inline-stack",
+  "-ms-grid",
+  "-ms-inline-flexbox",
+  "-ms-inline-grid",
+  "-webkit-box",
+  "-webkit-flex",
+  "-webkit-inline-box",
+  "-webkit-inline-flex",
   "block",
   "contents",
   "flex",
+  "flow",
   "flow-root",
   "grid",
   "inline",
   "inline-block",
   "inline-flex",
   "inline-grid",
+  "inline-list-item",
   "inline-table",
   "list-item",
   "none",
@@ -48,6 +61,10 @@ const DISPLAY_KEYWORDS: &[&str] = &[
   "table-row",
   "table-row-group",
 ];
+
+/// `display` keywords the css-tree of Stylelint 17 accepts on top of
+/// [`DISPLAY_KEYWORDS`].
+const DISPLAY_KEYWORDS_SINCE_17: &[&str] = &["grid-lanes", "inline-grid-lanes", "math"];
 
 /// Valid keywords for the `position` property.
 const POSITION_KEYWORDS: &[&str] = &["absolute", "fixed", "relative", "static", "sticky"];
@@ -176,7 +193,12 @@ impl DeclarationPropertyValueNoUnknown {
     // For display: check single-token values against the keyword list.
     // Multi-token display values (CSS Display Level 3) like "inline flex" are
     // harder to validate, so we skip them for now.
-    if tokens.len() == 1 && !keywords.contains(&tokens[0]) {
+    let known_since_17 = property == "display"
+      && crate::stylelint_version::stylelint_major_version() >= 17
+      && tokens
+        .first()
+        .is_some_and(|token| DISPLAY_KEYWORDS_SINCE_17.contains(token));
+    if tokens.len() == 1 && !keywords.contains(&tokens[0]) && !known_since_17 {
       return vec![
         Diagnostic::new(
           self.name(),
@@ -268,6 +290,22 @@ mod tests {
       let d = DeclarationPropertyValueNoUnknown.check(&decl("display", kw), &ctx());
       assert!(d.is_empty(), "Expected '{}' to be valid for display", kw);
     }
+  }
+
+  #[test]
+  fn allows_legacy_vendor_display_values() {
+    // docusaurus: `display: -webkit-box` for line clamping.
+    for value in [
+      "-webkit-box",
+      "-ms-inline-flexbox",
+      "-moz-inline-stack",
+      "flow",
+    ] {
+      let d = DeclarationPropertyValueNoUnknown.check(&decl("display", value), &ctx());
+      assert!(d.is_empty(), "{value}");
+    }
+    let d = DeclarationPropertyValueNoUnknown.check(&decl("display", "-ms-flexbox"), &ctx());
+    assert_eq!(d.len(), 1, "css-tree does not know -ms-flexbox");
   }
 
   #[test]
