@@ -1537,7 +1537,23 @@ mod tests {
     assert_eq!(d.rule_name, "--report-invalid-scope-disables");
     assert_eq!(d.message, "Rule \"color-named\" isn't enabled");
     assert_eq!(d.severity, Severity::Error);
-    assert_eq!(d.span.offset, 0);
+    // From the comment's first character to its last, as Stylelint's
+    // warning start and end.
+    assert_eq!(d.span, Span::from_range(0, 34));
+  }
+
+  #[test]
+  fn disable_reports_point_at_the_declaration_holding_the_comment() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_invalid_scope_disables(true);
+    let src = "a {\n  color: /* stylelint-disable-line color-named */ red;\n}\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    let span = result.diagnostics[0].span;
+    assert_eq!(
+      &src[span.offset..=span.end()],
+      "color: /* stylelint-disable-line color-named */ red;"
+    );
   }
 
   #[test]
