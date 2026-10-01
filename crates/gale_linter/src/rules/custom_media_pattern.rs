@@ -69,7 +69,8 @@ impl Rule for CustomMediaPattern {
         format!("Expected \"{full_name}\" to match pattern \"{pattern_str}\""),
       )
       .severity(self.default_severity())
-      .span(span),
+      .span(span)
+      .message_args([full_name, pattern_str]),
     ]
   }
 }
