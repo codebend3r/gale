@@ -2310,8 +2310,8 @@ mod tests {
 
   #[test]
   fn gale_all_preset_enables_every_registered_rule() {
-    // `gale:all` lives in gale_config, which cannot see the registry, so
-    // the two lists are kept in step by hand.  This catches drift.
+    // `gale:all` is built from the linter's rule table and the registry is
+    // filled from the same table; this checks the two end to end.
     let preset: BTreeSet<String> = gale_config::resolve_preset("gale:all")
       .unwrap()
       .into_keys()
@@ -2325,8 +2325,8 @@ mod tests {
     let extra: Vec<&String> = preset.difference(&registered).collect();
     assert!(
       missing.is_empty() && extra.is_empty(),
-      "gale:all is out of step with the registry; add {missing:?} to and remove {extra:?} from \
-       ALL_RULE_NAMES in gale_config"
+      "gale:all is out of step with the registry: {missing:?} are registered but not in the \
+       preset, and {extra:?} are in the preset but not registered"
     );
   }
 

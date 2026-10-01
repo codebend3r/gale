@@ -623,6 +623,7 @@ dependencies = [
 name = "gale_config"
 version = "0.2.4"
 dependencies = [
+ "gale_linter",
  "globset",
  "serde",
  "serde_json",
