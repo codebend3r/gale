@@ -257,15 +257,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan, Syntax};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx;
 
   fn dollar_var(name: &str) -> CssNode {
     CssNode::Declaration(Declaration {

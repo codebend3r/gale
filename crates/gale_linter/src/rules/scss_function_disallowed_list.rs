@@ -113,15 +113,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn scss_ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx_with_options;
 
   fn decl_node(value: &str) -> CssNode {
     CssNode::Declaration(Declaration {

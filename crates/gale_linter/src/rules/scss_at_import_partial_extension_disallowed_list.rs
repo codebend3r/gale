@@ -96,15 +96,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
 
-  fn scss_ctx_with_option(opt: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx_with_options;
 
   fn at_rule(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -119,7 +111,7 @@ mod tests {
   fn reports_disallowed_extension_in_import() {
     // Wrap in outer array so primary_option() returns the inner array
     let opt = serde_json::json!([[".scss", ".sass"]]);
-    let ctx = scss_ctx_with_option(&opt);
+    let ctx = scss_ctx_with_options(&opt);
     let d =
       ScssAtImportPartialExtensionDisallowedList.check(&at_rule("import", "\"foo.scss\""), &ctx);
     assert_eq!(d.len(), 1);
@@ -129,7 +121,7 @@ mod tests {
   #[test]
   fn allows_import_without_disallowed_extension() {
     let opt = serde_json::json!([[".scss"]]);
-    let ctx = scss_ctx_with_option(&opt);
+    let ctx = scss_ctx_with_options(&opt);
     let d = ScssAtImportPartialExtensionDisallowedList.check(&at_rule("import", "\"foo\""), &ctx);
     assert!(d.is_empty());
   }
@@ -137,7 +129,7 @@ mod tests {
   #[test]
   fn reports_disallowed_extension_in_use() {
     let opt = serde_json::json!([[".scss"]]);
-    let ctx = scss_ctx_with_option(&opt);
+    let ctx = scss_ctx_with_options(&opt);
     let d = ScssAtImportPartialExtensionDisallowedList.check(&at_rule("use", "\"bar.scss\""), &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("@use"));
@@ -146,7 +138,7 @@ mod tests {
   #[test]
   fn reports_disallowed_extension_in_forward() {
     let opt = serde_json::json!([[".sass"]]);
-    let ctx = scss_ctx_with_option(&opt);
+    let ctx = scss_ctx_with_options(&opt);
     let d =
       ScssAtImportPartialExtensionDisallowedList.check(&at_rule("forward", "\"baz.sass\""), &ctx);
     assert_eq!(d.len(), 1);
@@ -156,7 +148,7 @@ mod tests {
   #[test]
   fn allows_css_import() {
     let opt = serde_json::json!([[".scss"]]);
-    let ctx = scss_ctx_with_option(&opt);
+    let ctx = scss_ctx_with_options(&opt);
     let d =
       ScssAtImportPartialExtensionDisallowedList.check(&at_rule("import", "\"foo.css\""), &ctx);
     assert!(d.is_empty());

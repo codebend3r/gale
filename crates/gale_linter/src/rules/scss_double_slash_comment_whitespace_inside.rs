@@ -148,15 +148,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx;
 
   fn line_comment(text: &str) -> CssNode {
     CssNode::Comment(Comment {

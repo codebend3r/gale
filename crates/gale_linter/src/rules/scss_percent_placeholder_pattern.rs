@@ -97,15 +97,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Span as ParserSpan, StyleRule, Syntax};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx;
 
   fn style(selector: &str) -> CssNode {
     CssNode::Style(StyleRule {

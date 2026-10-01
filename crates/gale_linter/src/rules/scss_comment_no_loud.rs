@@ -71,27 +71,9 @@ impl Rule for ScssCommentNoLoud {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   #[test]
   fn reports_block_comment_in_scss() {
@@ -122,7 +104,7 @@ mod tests {
       text: "/* some comment */".to_string(),
       span: ParserSpan::new(0, 18),
     });
-    assert!(ScssCommentNoLoud.check(&node, &css_ctx()).is_empty());
+    assert!(ScssCommentNoLoud.check(&node, &ctx()).is_empty());
   }
 
   #[test]

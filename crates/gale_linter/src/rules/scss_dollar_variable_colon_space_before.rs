@@ -112,15 +112,7 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  fn scss_ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx_with_source;
 
   #[test]
   fn allows_no_space_before_colon() {

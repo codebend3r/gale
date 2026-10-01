@@ -133,37 +133,19 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  fn scss_ctx_with_options<'a>(source: &'a str, options: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: Some(options),
-      cache: None,
-    }
-  }
-
-  fn scss_ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{scss_ctx_with_source, scss_ctx_with_source_and_options};
 
   #[test]
   fn never_allows_no_space() {
     let src = "@mixin foo($x) { }";
-    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx(src));
+    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_space() {
     let src = "@mixin foo ($x) { }";
-    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx(src));
+    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -172,7 +154,7 @@ mod tests {
   fn always_allows_space() {
     let src = "@mixin foo ($x) { }";
     let opts = serde_json::json!("always");
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
@@ -181,7 +163,7 @@ mod tests {
   fn always_reports_no_space() {
     let src = "@mixin foo($x) { }";
     let opts = serde_json::json!("always");
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
@@ -190,7 +172,7 @@ mod tests {
   #[test]
   fn skips_argumentless_mixin() {
     let src = "@mixin foo { }";
-    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx(src));
+    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -213,7 +195,7 @@ mod tests {
   #[test]
   fn handles_multiple_mixins() {
     let src = "@mixin foo($x) { }\n@mixin bar ($y) { }";
-    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx(src));
+    let d = ScssAtMixinParenthesesSpaceBefore.check_root(&[], &scss_ctx_with_source(src));
     // default "never": second one has space => 1 report
     assert_eq!(d.len(), 1);
   }

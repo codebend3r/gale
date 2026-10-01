@@ -175,20 +175,12 @@ fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
 mod tests {
   use super::*;
 
-  fn scss_ctx(source: &'static str) -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx_with_source;
 
   #[test]
   fn reports_plus_before_newline() {
     let source = "$a: 1 +\n  2;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx(source));
+    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains('+'));
   }
@@ -196,7 +188,7 @@ mod tests {
   #[test]
   fn allows_operator_in_middle_of_line() {
     let source = "$a: 1 + 2;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx(source));
+    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -216,7 +208,7 @@ mod tests {
   #[test]
   fn ignores_operators_inside_block_comments() {
     let rule = ScssOperatorNoNewlineAfter;
-    let ctx = scss_ctx(
+    let ctx = scss_ctx_with_source(
       "/* two-line options (title +\n * description) render in a popover */\n.a { width: 1px + 2px; }\n",
     );
     assert!(rule.check_root(&[], &ctx).is_empty());
@@ -225,7 +217,7 @@ mod tests {
   #[test]
   fn reports_operator_after_block_comment_on_same_line() {
     let rule = ScssOperatorNoNewlineAfter;
-    let ctx = scss_ctx(".a { width: /* c */ 1px +\n 2px; }\n");
+    let ctx = scss_ctx_with_source(".a { width: /* c */ 1px +\n 2px; }\n");
     assert_eq!(rule.check_root(&[], &ctx).len(), 1);
   }
 
@@ -233,7 +225,7 @@ mod tests {
   fn allows_unary_minus_at_line_end() {
     // A line ending with ` -` after a colon is likely unary (start of value)
     let source = "color:\n  -1rem;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx(source));
+    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
     // No operator at end of line — "color:" ends with ":", not an operator
     assert!(d.is_empty());
   }

@@ -269,31 +269,13 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  fn scss_ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn scss_ctx_with_options<'a>(source: &'a str, options: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: Some(options),
-      cache: None,
-    }
-  }
+  use crate::testing::{scss_ctx_with_source, scss_ctx_with_source_and_options};
 
   #[test]
   fn always_reports_missing_empty_line() {
     let src = ".foo {\n  color: red;\n  $var: 1;\n}";
     let opts = serde_json::json!(["always"]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected an empty line"));
@@ -303,7 +285,7 @@ mod tests {
   fn always_allows_empty_line_before() {
     let src = ".foo {\n  color: red;\n\n  $var: 1;\n}";
     let opts = serde_json::json!(["always"]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
@@ -312,7 +294,7 @@ mod tests {
   fn never_reports_empty_line() {
     let src = ".foo {\n  color: red;\n\n  $var: 1;\n}";
     let opts = serde_json::json!(["never"]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(
@@ -326,7 +308,7 @@ mod tests {
   fn never_allows_no_empty_line() {
     let src = ".foo {\n  color: red;\n  $var: 1;\n}";
     let opts = serde_json::json!(["never"]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
@@ -336,7 +318,7 @@ mod tests {
     // "always" + except after-dollar-variable => no empty line needed between $vars
     let src = ".foo {\n\n  $var1: 1;\n  $var2: 2;\n}";
     let opts = serde_json::json!(["always", { "except": ["after-dollar-variable"] }]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
@@ -346,7 +328,7 @@ mod tests {
     // "always" + except first-nested => no empty line needed for first child
     let src = ".foo {\n  $var: 1;\n}";
     let opts = serde_json::json!(["always", { "except": ["first-nested"] }]);
-    let ctx = scss_ctx_with_options(src, &opts);
+    let ctx = scss_ctx_with_source_and_options(src, &opts);
     let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
