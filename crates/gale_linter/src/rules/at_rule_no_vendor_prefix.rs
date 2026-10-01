@@ -95,6 +95,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -136,6 +137,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = CssNode::AtRule(CssAtRule {
       name: "-webkit-keyframes".to_string(),

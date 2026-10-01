@@ -102,6 +102,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(opt),
+      cache: None,
     }
   }
 
@@ -169,6 +170,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opt),
+      cache: None,
     };
     let d = ScssAtImportPartialExtensionDisallowedList
       .check(&at_rule("import", "\"foo.scss\""), &css_ctx);

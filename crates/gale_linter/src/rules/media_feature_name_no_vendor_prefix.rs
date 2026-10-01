@@ -1,17 +1,20 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::autoprefixable;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
 
 /// Disallow vendor prefixes in media feature names.
 ///
 /// Equivalent to Stylelint's `media-feature-name-no-vendor-prefix` rule.
-/// E.g., `@media (-webkit-min-device-pixel-ratio: 2)` should be flagged.
+/// E.g., `@media (-webkit-min-device-pixel-ratio: 2)` is flagged, and the
+/// fix removes the vendor prefix, keeping the rest of the name as written.
 pub struct MediaFeatureNameNoVendorPrefix;
 
-/// Specific vendor-prefixed media features that Stylelint flags.
-/// This matches Stylelint's approach: only known autoprefixable features are
-/// flagged, NOT every occurrence of a vendor prefix in a media query.
+/// Stylelint's `FEATURES`: the prefixed media features it flags, in the
+/// order its regex tries them.  Only these are flagged, not every vendor
+/// prefix in a media query.
 const VENDOR_PREFIXED_FEATURES: &[&str] = &[
   "-webkit-device-pixel-ratio",
   "-webkit-min-device-pixel-ratio",
@@ -37,111 +40,199 @@ impl Rule for MediaFeatureNameNoVendorPrefix {
     Severity::Warning
   }
 
-  /// Flags vendor-prefixed media features, locating each in the source so the
-  /// reported span covers just the feature name.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(rule) = node else {
-      return vec![];
-    };
-
-    // Only check @media rules
-    if !rule.name.eq_ignore_ascii_case("media") {
-      return vec![];
-    }
-
-    let params_lower = rule.params.to_ascii_lowercase();
+  /// Flags each vendor-prefixed media feature in every `@media` query as
+  /// written (nested ones included), skipping `ignoreMediaFeatureNames`.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let ignore = ctx
+      .secondary_options()
+      .and_then(|v| v.get("ignoreMediaFeatureNames"));
     let mut diags = Vec::new();
-
-    for feature in VENDOR_PREFIXED_FEATURES {
-      if let Some(feature_pos_in_params) = params_lower.find(feature) {
-        // Calculate the byte offset of the feature name in the source.
-        // The at-rule span starts at `@media`, and the params start after
-        // `@media `. We need to find where the params appear in the source.
-        let feature_len = feature.len();
-
-        // Try to find the feature name in the source text for accurate positioning
-        let (feat_offset, feat_len) = if rule.span.offset + rule.span.length <= ctx.source.len() {
-          let rule_src = &ctx.source[rule.span.offset..rule.span.offset + rule.span.length];
-          let rule_lower = rule_src.to_ascii_lowercase();
-          if let Some(pos) = rule_lower.find(feature) {
-            (rule.span.offset + pos, feature_len)
-          } else {
-            // Fallback: compute from params offset
-            // @media + space = 7 bytes, then params start
-            let params_offset = rule.span.offset + 7; // "@media "
-            (params_offset + feature_pos_in_params, feature_len)
-          }
-        } else {
-          // Fallback if source is unavailable
-          (rule.span.offset, rule.span.length)
-        };
-
+    for at in &ctx.scanned_rules().at_rules {
+      if !at.name.eq_ignore_ascii_case("media") || !autoprefixable::media_feature_name(&at.params) {
+        continue;
+      }
+      // Stylelint matches against the at-rule's text and reports each match
+      // at its first occurrence there.
+      let prelude = ctx
+        .source_slice(at.offset, at.params_offset + at.params.len())
+        .unwrap_or("");
+      for (index, feature) in find_features(&at.params) {
+        if pattern::option_matches(ignore, feature) {
+          continue;
+        }
+        let reported = prelude
+          .find(feature)
+          .map_or(at.params_offset + index, |i| at.offset + i);
+        let fixed = strip_first_prefix(feature);
         diags.push(
-          Diagnostic::new(self.name(), "Unexpected vendor-prefix".to_string())
+          Diagnostic::new(self.name(), "Unexpected vendor-prefix")
             .severity(self.default_severity())
-            .span(Span::new(feat_offset, feat_len)),
+            .span(Span::new(reported, feature.len()))
+            .fix(Fix::new(
+              format!("Change \"{feature}\" to \"{fixed}\""),
+              vec![Edit::new(
+                Span::new(at.params_offset + index, feature.len()),
+                fixed,
+              )],
+            )),
         );
-        break; // one diagnostic per at-rule
       }
     }
-
     diags
+  }
+}
+
+/// Every prefixed feature in `text`, case-insensitively, as the global
+/// regex `FEATURES.join('|')` finds them: leftmost first, the first listed
+/// feature winning at a position.
+fn find_features(text: &str) -> Vec<(usize, &str)> {
+  let lower = text.to_ascii_lowercase();
+  let mut found = Vec::new();
+  let mut pos = 0;
+  while pos < lower.len() {
+    // Multibyte characters never start a feature; step over their bytes.
+    let Some(rest) = lower.get(pos..) else {
+      pos += 1;
+      continue;
+    };
+    let hit = VENDOR_PREFIXED_FEATURES
+      .iter()
+      .find(|feature| rest.starts_with(*feature));
+    match hit {
+      Some(feature) => {
+        found.push((pos, &text[pos..pos + feature.len()]));
+        pos += feature.len();
+      }
+      None => pos += 1,
+    }
+  }
+  found
+}
+
+/// `feature` without its first `-moz-`, `-o-` or `-webkit-` (any case),
+/// as Stylelint's `/-moz-|-o-|-webkit-/i` replacement removes it.
+fn strip_first_prefix(feature: &str) -> String {
+  let lower = feature.to_ascii_lowercase();
+  let first = ["-moz-", "-o-", "-webkit-"]
+    .iter()
+    .filter_map(|prefix| lower.find(prefix).map(|i| (i, prefix.len())))
+    .min();
+  match first {
+    Some((i, len)) => format!("{}{}", &feature[..i], &feature[i + len..]),
+    None => feature.to_string(),
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Span as ParserSpan, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "media-feature-name-no-vendor-prefix".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
     }
-  }
-
-  fn media_rule(params: &str) -> CssNode {
-    CssNode::AtRule(CssAtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: ParserSpan::new(0, 0),
-      children: vec![],
-    })
+    current
   }
 
   #[test]
-  fn reports_webkit_device_pixel_ratio() {
-    let d = MediaFeatureNameNoVendorPrefix
-      .check(&media_rule("(-webkit-min-device-pixel-ratio: 2)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("vendor-prefix"));
+  fn strips_the_prefix_keeping_the_rest_as_written() {
+    let on = serde_json::json!(true);
+    assert_eq!(
+      fix("@media (-wEbKiT-mIn-DeViCe-PiXeL-rAtIo: 1) {}", on.clone()),
+      "@media (mIn-DeViCe-PiXeL-rAtIo: 1) {}"
+    );
+    assert_eq!(
+      fix(
+        "@media (/* a */MIN--moz-device-pixel-ratio: 1) {}",
+        on.clone()
+      ),
+      "@media (/* a */MIN-device-pixel-ratio: 1) {}"
+    );
+    assert_eq!(
+      fix(
+        "@media (-webkit-min-device-pixel-ratio: 0) and (-webkit-max-device-pixel-ratio: 2) {}",
+        on.clone()
+      ),
+      "@media (min-device-pixel-ratio: 0) and (max-device-pixel-ratio: 2) {}"
+    );
+    let warnings = lint("@media (min--moz-device-pixel-ratio: 1) {}", on);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (8, 27));
   }
 
   #[test]
-  fn reports_moz_prefix() {
-    let d =
-      MediaFeatureNameNoVendorPrefix.check(&media_rule("(-moz-device-pixel-ratio: 2)"), &ctx());
-    assert_eq!(d.len(), 1);
+  fn leaves_other_features_and_ignored_names_alone() {
+    let on = serde_json::json!(true);
+    for css in [
+      "@media (-ms-min-resolution: 96dpi) {}",
+      "@media (-ms-device-pixel-ratio: 2) {}",
+      "@media (min-device-pixel-ratio: 2) {}",
+    ] {
+      assert!(lint(css, on.clone()).is_empty(), "{css}");
+    }
+    let options = serde_json::json!([true, {
+      "ignoreMediaFeatureNames": ["-webkit-min-device-pixel-ratio", "/^-o/"]
+    }]);
+    assert!(
+      lint(
+        "@media (-webkit-min-device-pixel-ratio: 1) {}",
+        options.clone()
+      )
+      .is_empty()
+    );
+    assert!(lint("@media (-o-device-pixel-ratio > 1) {}", options.clone()).is_empty());
+    assert_eq!(
+      fix("@media (-WEBKIT-MIN-DEVICE-PIXEL-RATIO: 1) {}", options),
+      "@media (MIN-DEVICE-PIXEL-RATIO: 1) {}"
+    );
   }
 
   #[test]
-  fn allows_standard_media_features() {
-    let d = MediaFeatureNameNoVendorPrefix.check(&media_rule("(min-width: 768px)"), &ctx());
-    assert!(d.is_empty());
+  fn reads_media_rules_nested_in_style_rules() {
+    let css = "a { @media (-webkit-min-device-pixel-ratio: 1) { b: c } }";
+    assert_eq!(
+      fix(css, serde_json::json!(true)),
+      "a { @media (min-device-pixel-ratio: 1) { b: c } }"
+    );
   }
 
   #[test]
-  fn allows_non_media_at_rule() {
-    let node = CssNode::AtRule(CssAtRule {
-      name: "keyframes".to_string(),
-      params: "-webkit-fade".to_string(),
-      span: ParserSpan::new(0, 0),
-      children: vec![],
-    });
-    let d = MediaFeatureNameNoVendorPrefix.check(&node, &ctx());
-    assert!(d.is_empty());
+  fn reads_past_multibyte_text() {
+    let css = "@media /* é */ (-webkit-device-pixel-ratio: 2) {}";
+    assert_eq!(
+      fix(css, serde_json::json!(true)),
+      "@media /* é */ (device-pixel-ratio: 2) {}"
+    );
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!([true, { "disableFix": true }]);
+    let css = "@media (-webkit-device-pixel-ratio: 2) {}";
+    assert_eq!(lint(css, options.clone()).len(), 1);
+    assert_eq!(fix(css, options), css);
   }
 }

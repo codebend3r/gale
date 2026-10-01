@@ -1,18 +1,22 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+use crate::selector::postcss::{self, Kind, Visit};
+use crate::standard_syntax::is_standard_syntax_selector;
 
 /// Require lowercase or uppercase for type selectors.
 ///
-/// In "lower" mode (default), flags uppercase type selectors like `DIV`, `SPAN`, etc.
-/// Ignores pseudo-elements, pseudo-classes, class selectors, ID selectors,
-/// attribute selectors, and case-sensitive SVG elements.
-///
-/// Equivalent to Stylelint's `selector-type-case` rule with "lower" option.
+/// Equivalent to Stylelint's `selector-type-case` rule: every type selector
+/// in a style rule's selector as written, nested ones included, is checked
+/// against the `"lower"` (default) or `"upper"` option, and the fix
+/// rewrites its case in place.  Case-sensitive SVG element names, the
+/// arguments of `:nth-*()`, `:lang()`, `:dir()` and `::part()`, and names
+/// in `ignoreTypes` are left alone.
 pub struct SelectorTypeCase;
 
-/// SVG elements that are case-sensitive and should be skipped.
+/// Stylelint's `mixedCaseSvgTypeSelectors`.
 const SVG_CASE_SENSITIVE: &[&str] = &[
   "altGlyph",
   "altGlyphDef",
@@ -48,9 +52,34 @@ const SVG_CASE_SENSITIVE: &[&str] = &[
   "feTurbulence",
   "foreignObject",
   "glyphRef",
+  "hatchPath",
   "linearGradient",
   "radialGradient",
   "textPath",
+];
+
+/// Pseudo-classes and pseudo-elements whose arguments postcss-selector-parser
+/// reads as tags that are not type selectors.
+const NON_SELECTOR_ARGUMENT_PSEUDOS: &[&str] = &[
+  "nth-column",
+  "nth-last-column",
+  "nth-last-of-type",
+  "nth-of-type",
+  "nth-child",
+  "nth-last-child",
+  "dir",
+  "lang",
+  "part",
+];
+
+/// Stylelint's `namedTimelineRangeKeywords`.
+const TIMELINE_RANGES: &[&str] = &[
+  "contain",
+  "cover",
+  "entry",
+  "entry-crossing",
+  "exit",
+  "exit-crossing",
 ];
 
 impl Rule for SelectorTypeCase {
@@ -66,292 +95,233 @@ impl Rule for SelectorTypeCase {
     Severity::Warning
   }
 
-  /// Flags type selectors not in the configured case. Case-sensitive SVG element
-  /// names are skipped.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-    let mut diags = Vec::new();
+  /// Flags type selectors not in the configured case, reading every style
+  /// rule's selector as written.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let upper = ctx.primary_option_str() == Some("upper");
+    let ignore_types = ctx.secondary_options().and_then(|v| v.get("ignoreTypes"));
 
-    for type_sel in extract_type_selectors(&rule.selector) {
-      // Skip SVG case-sensitive elements.
-      if SVG_CASE_SENSITIVE.contains(&type_sel.as_str()) {
+    let mut diags = Vec::new();
+    for rule in &ctx.scanned_rules().style_rules {
+      let clean = postcss::strip_comments(&rule.prelude);
+      if !starts_a_tag_name(&clean) {
         continue;
       }
-      // In "lower" mode: flag if any character is uppercase.
-      if type_sel.chars().any(|c| c.is_ascii_uppercase()) {
+      let has_wrong_case = if upper {
+        clean.bytes().any(|b| b.is_ascii_lowercase())
+      } else {
+        clean.bytes().any(|b| b.is_ascii_uppercase())
+      };
+      if !has_wrong_case || !is_standard_syntax_selector(&clean) {
+        continue;
+      }
+      if postcss::rule_selectors(&clean)
+        .iter()
+        .any(|s| is_keyframe_selector(s))
+      {
+        continue;
+      }
+      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+        continue;
+      };
+      postcss::walk(&selectors, &mut |visit| {
+        let tag = visit.node;
+        if tag.kind != Kind::Tag || !is_standard_syntax_type_selector(visit) {
+          return;
+        }
+        if SVG_CASE_SENSITIVE.contains(&tag.value.as_str())
+          || pattern::option_matches(ignore_types, &tag.value)
+        {
+          return;
+        }
+        let expected = if upper {
+          tag.value.to_ascii_uppercase()
+        } else {
+          tag.value.to_ascii_lowercase()
+        };
+        if expected == tag.value {
+          return;
+        }
+        let span = Span::new(tag.start, tag.value.len());
         diags.push(
           Diagnostic::new(
             self.name(),
-            format!(
-              "Expected \"{}\" to be \"{}\"",
-              type_sel,
-              type_sel.to_ascii_lowercase()
-            ),
+            format!("Expected \"{}\" to be \"{expected}\"", tag.value),
           )
           .severity(self.default_severity())
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          .span(span)
+          .fix(Fix::new(
+            format!("Change \"{}\" to \"{expected}\"", tag.value),
+            vec![Edit::new(span, expected.clone())],
+          )),
         );
-      }
+      });
     }
-
     diags
   }
 }
 
-/// Extract type selectors from a CSS selector string.
-///
-/// Type selectors are bare element names (e.g., `div`, `span`, `a`).
-/// This skips class selectors (`.foo`), ID selectors (`#bar`), attribute
-/// selectors (`[attr]`), pseudo-classes (`:hover`), pseudo-elements (`::before`),
-/// and combinators (`>`, `+`, `~`).
-fn extract_type_selectors(selector: &str) -> Vec<String> {
-  let mut results = Vec::new();
-  let chars: Vec<char> = selector.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
+/// Stylelint's `STARTS_A_TAG_NAME_REGEX` (`/(?:[^.#[:a-z-]|^)[a-z]/i`): a
+/// letter at the start, or after something that cannot begin a class, id,
+/// attribute or pseudo.
+fn starts_a_tag_name(selector: &str) -> bool {
+  let bytes = selector.as_bytes();
+  bytes.iter().enumerate().any(|(i, &b)| {
+    b.is_ascii_alphabetic()
+      && (i == 0 || {
+        let prev = bytes[i - 1];
+        !(matches!(prev, b'.' | b'#' | b'[' | b':' | b'-') || prev.is_ascii_alphabetic())
+      })
+  })
+}
 
-  while i < len {
-    let ch = chars[i];
-
-    // Skip SCSS/Less interpolation blocks: #{...} or @{...}
-    // Also consume any trailing identifier characters that are part of the
-    // interpolated name (e.g. `.#{$prefix}__itemsWrapper` — the suffix
-    // `__itemsWrapper` belongs to the same class selector).
-    if (ch == '#' || ch == '@') && i + 1 < len && chars[i + 1] == '{' {
-      i += 2;
-      let mut depth = 1;
-      while i < len && depth > 0 {
-        if chars[i] == '{' {
-          depth += 1;
-        } else if chars[i] == '}' {
-          depth -= 1;
-        }
-        i += 1;
-      }
-      // Consume trailing identifier chars (part of the interpolated token)
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip SCSS variables ($var)
-    if ch == '$' {
-      i += 1;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip SCSS line comments (// ...)
-    if ch == '/' && i + 1 < len && chars[i + 1] == '/' {
-      while i < len && chars[i] != '\n' {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip attribute selectors entirely.
-    if ch == '[' {
-      while i < len && chars[i] != ']' {
-        i += 1;
-      }
-      i += 1; // skip ']'
-      continue;
-    }
-
-    // Skip class selectors.
-    if ch == '.' {
-      i += 1;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip ID selectors.
-    if ch == '#' {
-      i += 1;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip pseudo-elements (::) and pseudo-classes (:).
-    if ch == ':' {
-      i += 1;
-      if i < len && chars[i] == ':' {
-        i += 1; // skip second ':'
-      }
-      // Skip the pseudo name.
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      // Skip parenthesized arguments like :nth-child(2n).
-      if i < len && chars[i] == '(' {
-        let mut depth = 1;
-        i += 1;
-        while i < len && depth > 0 {
-          if chars[i] == '(' {
-            depth += 1;
-          } else if chars[i] == ')' {
-            depth -= 1;
-          }
-          i += 1;
-        }
-      }
-      continue;
-    }
-
-    // Skip combinators and whitespace.
-    if ch == '>' || ch == '+' || ch == '~' || ch == ',' || ch.is_whitespace() {
-      i += 1;
-      continue;
-    }
-
-    // Skip the universal selector.
-    if ch == '*' {
-      i += 1;
-      continue;
-    }
-
-    // Skip `&` (nesting selector) and any following identifier suffix
-    // (e.g. `&_suggestionsWrapper`, `&--modifier`).
-    if ch == '&' {
-      i += 1;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip block comments (/* ... */).
-    if ch == '/' && i + 1 < len && chars[i + 1] == '*' {
-      i += 2;
-      while i + 1 < len {
-        if chars[i] == '*' && chars[i + 1] == '/' {
-          i += 2;
-          break;
-        }
-        i += 1;
-      }
-      continue;
-    }
-
-    // Collect an identifier — this should be a type selector.
-    if ch.is_alphabetic() || ch == '_' {
-      let start = i;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      results.push(chars[start..i].iter().collect::<String>());
-      continue;
-    }
-
-    // Skip SCSS placeholder selectors (%placeholder) and keyframe `%`.
-    if ch == '%' {
-      i += 1;
-      while i < len && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Skip anything else.
-    i += 1;
+/// Stylelint's `isKeyframeSelector`: `from`, `to`, a percentage, or a
+/// timeline range with a percentage.
+fn is_keyframe_selector(selector: &str) -> bool {
+  if selector == "from" || selector == "to" {
+    return true;
   }
+  if is_percentage(selector) {
+    return true;
+  }
+  selector
+    .split_once(char::is_whitespace)
+    .is_some_and(|(range, rest)| {
+      TIMELINE_RANGES
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(range))
+        && is_percentage(rest.trim_start())
+    })
+}
 
-  results
+/// Whether `text` is `/^(?:\d+|\d*\.\d+)%$/`.
+fn is_percentage(text: &str) -> bool {
+  let Some(number) = text.strip_suffix('%') else {
+    return false;
+  };
+  match number.split_once('.') {
+    Some((int, frac)) => {
+      int.bytes().all(|b| b.is_ascii_digit())
+        && !frac.is_empty()
+        && frac.bytes().all(|b| b.is_ascii_digit())
+    }
+    None => !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()),
+  }
+}
+
+/// Stylelint's `isStandardSyntaxTypeSelector`: not an argument of a pseudo
+/// that takes no selectors, not a suffix after `&`, not a Sass placeholder
+/// and not a `/deep/`-style combinator.
+fn is_standard_syntax_type_selector(visit: &Visit) -> bool {
+  if let Some(parent) = visit.parent_pseudo {
+    let name = parent.value.trim_start_matches(':').to_ascii_lowercase();
+    if NON_SELECTOR_ARGUMENT_PSEUDOS.contains(&name.as_str()) {
+      return false;
+    }
+  }
+  if visit.prev().is_some_and(|prev| prev.kind == Kind::Nesting) {
+    return false;
+  }
+  let value = &visit.node.value;
+  !(value.starts_with('%') || (value.starts_with('/') && value.ends_with('/')))
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` as `syntax` with only this rule enabled, configured with
+  /// `options`.
+  fn lint_as(
+    css: &str,
+    syntax: Syntax,
+    options: serde_json::Value,
+  ) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "selector-type-case".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", syntax).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let diags = lint_as(&current, Syntax::Css, options.clone());
+      let (next, applied) = apply_fixes(&current, &diags);
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
+  }
+
+  #[test]
+  fn lowercases_type_selectors_in_place() {
+    let lower = serde_json::json!("lower");
+    assert_eq!(fix("DIV::before {}", lower.clone()), "div::before {}");
+    assert_eq!(fix("a { & B {}}", lower.clone()), "a { & b {}}");
+    assert_eq!(
+      fix("A:nth-child(even) {}", lower.clone()),
+      "a:nth-child(even) {}"
+    );
+    assert_eq!(
+      fix("/* x */\nA, /* y */\nA:not(B) {}", lower.clone()),
+      "/* x */\na, /* y */\na:not(b) {}"
+    );
+    let warnings = lint_as("a B {}", Syntax::Css, lower);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].message, "Expected \"B\" to be \"b\"");
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (2, 1));
+  }
+
+  #[test]
+  fn uppercases_with_the_upper_option() {
+    let upper = serde_json::json!("upper");
+    assert_eq!(
+      fix("a { &:nth-child(3n + 1) {} }", upper.clone()),
+      "A { &:nth-child(3n + 1) {} }"
+    );
+    assert_eq!(fix("A /*c*/\n b {}", upper.clone()), "A /*c*/\n B {}");
+    for css in ["&LI {}", "A:nth-child(odd) {}", ".foo {}", "A, B, * {}"] {
+      assert!(lint_as(css, Syntax::Css, upper.clone()).is_empty(), "{css}");
+    }
+    for css in [".foo { &-bar {} }", "%foo {}", "#{$variable} {}"] {
+      assert!(
+        lint_as(css, Syntax::Scss, upper.clone()).is_empty(),
+        "{css}"
+      );
     }
   }
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  #[test]
+  fn leaves_svg_names_keyframes_and_ignored_types_alone() {
+    let lower = serde_json::json!(["lower", { "ignoreTypes": ["/(p|P)arent.*/", "/foo$/i"] }]);
+    for css in [
+      "foreignObject {}",
+      "html textPath { fill: red; }",
+      "@include keyframes(identifier) { TO, 50.0% {} }",
+      "myParentClass {}",
+      "myFoo {}",
+    ] {
+      assert!(lint_as(css, Syntax::Css, lower.clone()).is_empty(), "{css}");
+    }
   }
 
   #[test]
-  fn reports_uppercase_type_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("DIV"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("div"));
-    assert!(d[0].message.contains("DIV"));
-  }
-
-  #[test]
-  fn allows_lowercase_type_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("div"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_mixed_case_type_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("Div"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("div"));
-  }
-
-  #[test]
-  fn ignores_class_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector(".MyClass"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_id_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("#MyId"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_pseudo_class() {
-    let d = SelectorTypeCase.check(&style_with_selector("a:Hover"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn skips_svg_case_sensitive_elements() {
-    let d = SelectorTypeCase.check(&style_with_selector("clipPath"), &ctx());
-    assert!(d.is_empty());
-    let d = SelectorTypeCase.check(&style_with_selector("textPath"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_uppercase_among_complex_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("SPAN.foo > A"), &ctx());
-    assert_eq!(d.len(), 2); // SPAN and A
-  }
-
-  #[test]
-  fn allows_lowercase_complex_selector() {
-    let d = SelectorTypeCase.check(&style_with_selector("span.foo > a"), &ctx());
-    assert!(d.is_empty());
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["lower", { "disableFix": true }]);
+    assert_eq!(lint_as("A {}", Syntax::Css, options.clone()).len(), 1);
+    assert_eq!(fix("A {}", options), "A {}");
   }
 }

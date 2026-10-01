@@ -139,6 +139,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(Box::leak(Box::new(options))),
+      cache: None,
     }
   }
 
@@ -148,6 +149,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 

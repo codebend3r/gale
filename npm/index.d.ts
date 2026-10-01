@@ -91,11 +91,18 @@ export interface Config {
 }
 
 export interface LinterOptions {
-  /** Glob pattern(s) for files to lint. */
+  /**
+   * Glob pattern(s) for files to lint: style sheets, and Vue, Svelte, Astro
+   * or HTML files, whose `<style>` blocks and `style` attributes are linted.
+   */
   files?: string | string[];
-  /** CSS source to lint instead of files. */
+  /** Source to lint instead of files. */
   code?: string;
-  /** Virtual filename for `code`, used for syntax detection. */
+  /**
+   * Virtual filename for `code`, used for syntax detection. A `.vue`,
+   * `.svelte`, `.astro` or `.html` name lints the styles embedded in `code`,
+   * and with `fix` the returned `code` is the whole file with them fixed.
+   */
   codeFilename?: string;
   /** Inline config object. */
   config?: Config;

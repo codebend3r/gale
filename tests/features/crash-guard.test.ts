@@ -10,7 +10,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 
-import { cleanupProjects, config, makeProject, runGale, runGaleJson } from "./helpers";
+import { cleanupProjects, config, makeProject, reportedPath, runGale, runGaleJson } from "./helpers";
 import { LspClient } from "./lsp-client";
 
 afterAll(cleanupProjects);
@@ -33,7 +33,7 @@ describe("a rule that panics", () => {
     const result = runGaleJson(["bad.css", "good.css"], { cwd: project.dir, env: PANIC });
     const [bad, good] = result.json();
 
-    expect(bad.source).toBe("bad.css");
+    expect(bad.source).toBe(reportedPath(project.dir, "bad.css"));
     const crash = bad.warnings.find((w) => w.rule === "color-named");
     expect(crash?.severity).toBe("error");
     expect(crash?.text).toStartWith('Internal error in rule "color-named": ');
@@ -43,7 +43,7 @@ describe("a rule that panics", () => {
     expect(bad.warnings.map((w) => w.rule)).toContain("block-no-empty");
 
     // The other file is linted as usual, including by the crashing rule.
-    expect(good.source).toBe("good.css");
+    expect(good.source).toBe(reportedPath(project.dir, "good.css"));
     expect(good.warnings.map((w) => w.rule).sort()).toEqual(["block-no-empty", "color-named"]);
     expect(good.warnings.every((w) => !w.text.startsWith("Internal error"))).toBe(true);
   });

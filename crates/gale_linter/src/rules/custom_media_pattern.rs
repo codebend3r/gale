@@ -69,7 +69,8 @@ impl Rule for CustomMediaPattern {
         format!("Expected \"{full_name}\" to match pattern \"{pattern_str}\""),
       )
       .severity(self.default_severity())
-      .span(span),
+      .span(span)
+      .message_args([full_name, pattern_str]),
     ]
   }
 }
@@ -85,6 +86,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -116,6 +118,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(&options),
+      cache: None,
     };
     let mut node = custom_media("--bp-small (max-width: 30em)");
     if let CssNode::AtRule(at) = &mut node {

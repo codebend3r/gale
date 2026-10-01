@@ -111,6 +111,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -120,6 +121,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -223,6 +225,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let d = ScssAtMixinDisallowedList.check(&include_node("breakpoint(medium)"), &ctx);
     assert!(d.is_empty());

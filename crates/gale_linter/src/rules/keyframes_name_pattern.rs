@@ -100,7 +100,8 @@ impl Rule for KeyframesNamePattern {
       return vec![
         Diagnostic::new(self.name(), message)
           .severity(self.default_severity())
-          .span(Span::new(name_offset, name.len())),
+          .span(Span::new(name_offset, name.len()))
+          .message_args([name, pattern_str]),
       ];
     }
 
@@ -119,6 +120,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -128,6 +130,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 

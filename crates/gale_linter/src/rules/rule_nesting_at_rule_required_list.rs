@@ -110,6 +110,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let nodes = vec![top_level_at_rule("media"), style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
@@ -125,6 +126,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let nodes = vec![top_level_at_rule("keyframes"), style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
@@ -139,6 +141,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let nodes = vec![style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
@@ -152,6 +155,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let nodes = vec![top_level_at_rule("media")];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
@@ -166,6 +170,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let nodes = vec![top_level_at_rule("Media")];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);

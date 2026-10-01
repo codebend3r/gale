@@ -139,6 +139,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(options),
+      cache: None,
     }
   }
 
@@ -148,6 +149,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -199,6 +201,7 @@ mod tests {
       source: "@mixin foo($x) { }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssAtMixinParenthesesSpaceBefore

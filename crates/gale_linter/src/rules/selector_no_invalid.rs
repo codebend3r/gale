@@ -6,7 +6,6 @@ use crate::selector::{
   Pseudo, PseudoArg, Selector, SelectorList, SelectorNode, any_pseudo, is_standard_syntax_selector,
   parse_selector_list, walk_pseudos,
 };
-use crate::style_rules::scan_style_rules;
 
 /// Disallow invalid selectors.
 ///
@@ -63,7 +62,7 @@ impl Rule for SelectorNoInvalid {
   /// the ones this rule exists to report.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for raw in scan_style_rules(ctx.source, ctx.syntax) {
+    for raw in &ctx.scanned_rules().style_rules {
       self.check_prelude(&raw.prelude, raw.offset, &mut diagnostics);
     }
     diagnostics
@@ -257,6 +256,7 @@ mod tests {
       source: css,
       syntax,
       options: Some(&serde_json::Value::Bool(true)),
+      cache: None,
     };
     let index = SourceLineIndex::build(css);
     SelectorNoInvalid

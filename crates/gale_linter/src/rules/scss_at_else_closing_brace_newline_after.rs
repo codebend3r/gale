@@ -124,6 +124,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -148,6 +149,7 @@ mod tests {
       source: "@else { } .foo {}",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssAtElseClosingBraceNewlineAfter

@@ -134,6 +134,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(max),
+      cache: None,
     }
   }
 

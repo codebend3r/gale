@@ -159,15 +159,6 @@
     "branch": "main",
     "paths": ["ui"],
     "globs": ["ui/**/*.scss"],
-    "expected_diffs": [
-      {
-        "file": "ui/components/summary-detail/base/_index.scss",
-        "line": 28,
-        "column": 7,
-        "rule": "property-no-vendor-prefix",
-        "reason": "Stylelint v13 uses different message format ('vendor-prefix' vs v16 'vendor-prefixed property')"
-      }
-    ],
     "notes": "Salesforce Lightning design system (2k stars). SCSS-heavy. Uses Stylelint v13."
   },
   {

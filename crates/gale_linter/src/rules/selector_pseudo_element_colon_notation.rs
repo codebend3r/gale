@@ -2,14 +2,19 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::selector::postcss::{self, Kind};
+use crate::standard_syntax::is_standard_syntax_selector;
+use crate::stylelint_version::stylelint_major_version;
 
 /// Enforces a specific colon notation (`::` or `:`) for pseudo-elements that
 /// support both syntaxes (`:before`, `:after`, `:first-line`, `:first-letter`).
 ///
 /// Equivalent to Stylelint's `selector-pseudo-element-colon-notation` rule.
-/// Primary option: `"double"` (default) or `"single"`.
+/// Primary option: `"double"` (default) or `"single"`.  The fix rewrites the
+/// colons and keeps the name as written.
 pub struct SelectorPseudoElementColonNotation;
 
+/// Stylelint's `levelOneAndTwoPseudoElements`.
 const LEGACY_PSEUDO_ELEMENTS: &[&str] = &["before", "after", "first-line", "first-letter"];
 
 impl Rule for SelectorPseudoElementColonNotation {
@@ -25,238 +30,143 @@ impl Rule for SelectorPseudoElementColonNotation {
     Severity::Warning
   }
 
-  /// Flags the four dual-syntax pseudo-elements written with the colon notation
-  /// the option forbids, reading the source for exact offsets.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let source = ctx.source;
-    if source.is_empty() {
-      return vec![];
-    }
-
-    // Determine mode from primary option: "single" or "double" (default)
-    let mode = ctx.primary_option_str().unwrap_or("double");
-    let want_single = mode == "single";
-
-    // The parsed selector from lightningcss normalizes to `::`, so we must
-    // look at the original source text to detect actual notation.
-    // IMPORTANT: only look at the SELECTOR source portion (before `{`) to
-    // avoid flagging `:before`/`:after` that appear in child rules.
-    let rule_src_start = rule.span.offset;
-    let rule_src_end = (rule.span.offset + rule.span.length).min(source.len());
-    let rule_src = if rule_src_start < rule_src_end {
-      &source[rule_src_start..rule_src_end]
+  /// Flags the four dual-syntax pseudo-elements written with the colon
+  /// notation the option forbids, in every style rule's selector as written.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let single = ctx.primary_option_str() == Some("single");
+    let (colons, message) = if single {
+      (":", "Expected single colon pseudo-element notation")
     } else {
-      ""
+      ("::", "Expected double colon pseudo-element notation")
     };
-    // The selector ends at the first `{`.
-    let selector_src_len = rule_src.find('{').unwrap_or(rule_src.len());
-    let selector_src = &rule_src[..selector_src_len];
-    let selector_src_lower = selector_src.to_ascii_lowercase();
 
-    // Check if the selector (normalized or in source) contains any relevant pseudo-elements.
-    // lightningcss normalizes :before → ::before, but raffia (SCSS) may not.
-    let sel_lower = rule.selector.to_ascii_lowercase();
-    let has_relevant_pseudo = LEGACY_PSEUDO_ELEMENTS.iter().any(|p| {
-      sel_lower.contains(&format!("::{p}"))
-        || sel_lower.contains(&format!(":{p}"))
-        || selector_src_lower.contains(&format!("::{p}"))
-        || selector_src_lower.contains(&format!(":{p}"))
-    });
-    if !has_relevant_pseudo {
-      return vec![];
-    }
+    // Stylelint 13 and older searched the selector text for `:before` and
+    // the like, so a `::before` it wanted single was reported from its
+    // second colon; 14 reports from the first.
+    let second_colon = single && stylelint_major_version() <= 13;
 
     let mut diags = Vec::new();
-
-    for pseudo in LEGACY_PSEUDO_ELEMENTS {
-      let single_pattern = format!(":{pseudo}");
-      let double_pattern = format!("::{pseudo}");
-      let lower_search = &selector_src_lower;
-
-      if want_single {
-        // Looking for `::pseudo` that should be `:pseudo`
-        let mut pos = 0;
-        while let Some(idx) = lower_search[pos..].find(&double_pattern) {
-          let abs_idx = pos + idx;
-          // Make sure it's not `:::pseudo` (triple colon)
-          let is_triple = abs_idx > 0 && lower_search.as_bytes()[abs_idx - 1] == b':';
-          let end_idx = abs_idx + double_pattern.len();
-          let at_boundary = end_idx >= lower_search.len()
-            || !lower_search.as_bytes()[end_idx].is_ascii_alphanumeric();
-
-          if !is_triple && at_boundary {
-            let fix_offset = rule_src_start + abs_idx;
-            // Report position at the second colon to match Stylelint
-            let report_offset = fix_offset + 1;
-            diags.push(
-              Diagnostic::new(
-                self.name(),
-                "Expected single colon pseudo-element notation".to_string(),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(report_offset, double_pattern.len() - 1))
-              .fix(Fix::new(
-                format!("Replace ::{pseudo} with :{pseudo}"),
-                vec![Edit::new(
-                  Span::new(fix_offset, double_pattern.len()),
-                  format!(":{pseudo}"),
-                )],
-              )),
-            );
-          }
-          pos = abs_idx + 1;
-        }
-      } else {
-        // Looking for `:pseudo` that should be `::pseudo` (default "double" mode)
-        let mut pos = 0;
-        while let Some(idx) = lower_search[pos..].find(&single_pattern) {
-          let abs_idx = pos + idx;
-          let is_double = abs_idx > 0 && lower_search.as_bytes()[abs_idx - 1] == b':';
-          let end_idx = abs_idx + single_pattern.len();
-          let at_boundary = end_idx >= lower_search.len()
-            || !lower_search.as_bytes()[end_idx].is_ascii_alphanumeric();
-
-          if !is_double && at_boundary {
-            let fix_offset = rule_src_start + abs_idx;
-            diags.push(
-              Diagnostic::new(
-                self.name(),
-                "Expected double colon pseudo-element notation".to_string(),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(fix_offset, single_pattern.len()))
-              .fix(Fix::new(
-                format!("Replace :{pseudo} with ::{pseudo}"),
-                vec![Edit::new(
-                  Span::new(fix_offset, single_pattern.len()),
-                  format!("::{pseudo}"),
-                )],
-              )),
-            );
-            break;
-          }
-          pos = abs_idx + 1;
-        }
+    for rule in &ctx.scanned_rules().style_rules {
+      if !rule.prelude.contains(':') || !is_standard_syntax_selector(&rule.prelude) {
+        continue;
       }
+      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+        continue;
+      };
+      postcss::walk(&selectors, &mut |visit| {
+        let node = visit.node;
+        if node.kind != Kind::Pseudo {
+          return;
+        }
+        let name = node.value.trim_start_matches(':');
+        if !LEGACY_PSEUDO_ELEMENTS.contains(&name.to_ascii_lowercase().as_str()) {
+          return;
+        }
+        let written = node.value.len() - name.len();
+        let is_double = node.value.starts_with("::");
+        if is_double != single {
+          return;
+        }
+        diags.push(
+          Diagnostic::new(self.name(), message)
+            .severity(self.default_severity())
+            .span(if is_double && second_colon {
+              Span::new(node.start + 1, 1)
+            } else {
+              Span::new(node.start, if is_double { 2 } else { 1 })
+            })
+            .fix(Fix::new(
+              format!("Write \"{colons}{name}\""),
+              vec![Edit::new(Span::new(node.start, written), colons)],
+            )),
+        );
+      });
     }
-
     diags
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn style_with_selector_and_source(
-    sel: &str,
-    source: &'static str,
-  ) -> (CssNode, RuleContext<'static>) {
-    let node = CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    };
-    (node, ctx)
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "selector-pseudo-element-colon-notation".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
   }
 
-  fn style_with_selector_source_options<'a>(
-    sel: &str,
-    source: &'a str,
-    options: &'a serde_json::Value,
-  ) -> (CssNode, RuleContext<'a>) {
-    let node = CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(options),
-    };
-    (node, ctx)
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
   }
 
   #[test]
-  fn reports_single_colon_before() {
-    // lightningcss normalizes selector to "a::before" but source has single colon
-    let source = "a:before { color: red; }";
-    let (node, ctx) = style_with_selector_and_source("a::before", source);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(
-      d[0]
-        .message
-        .contains("double colon pseudo-element notation")
+  fn single_keeps_the_name_as_written() {
+    let single = serde_json::json!("single");
+    assert_eq!(fix("a::bEfOrE { }", single.clone()), "a:bEfOrE { }");
+    assert_eq!(
+      fix("a::before, a::after, a::first-letter { }", single.clone()),
+      "a:before, a:after, a:first-letter { }"
+    );
+    assert_eq!(
+      fix("a\\:before-none::before { }", single.clone()),
+      "a\\:before-none:before { }"
+    );
+    let warnings = lint("a::before { }", single);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (1, 2));
+  }
+
+  #[test]
+  fn double_adds_a_colon() {
+    let double = serde_json::json!("double");
+    assert_eq!(
+      fix("a:before, a:after, a:FIRST-LINE { }", double.clone()),
+      "a::before, a::after, a::FIRST-LINE { }"
+    );
+    for css in [
+      "a::before { }",
+      "::selection { }",
+      "a[data-before=':before'] { }",
+      "li::marker { }",
+    ] {
+      assert!(lint(css, double.clone()).is_empty(), "{css}");
+    }
+  }
+
+  #[test]
+  fn reads_selectors_between_comments() {
+    let css = "/* a */\na::after, /* b */\na::after\n{}";
+    assert_eq!(
+      fix(css, serde_json::json!("single")),
+      "/* a */\na:after, /* b */\na:after\n{}"
     );
   }
 
   #[test]
-  fn allows_double_colon_before() {
-    let source = "a::before { color: red; }";
-    let (node, ctx) = style_with_selector_and_source("a::before", source);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_single_colon_after() {
-    let source = "a:after { color: red; }";
-    let (node, ctx) = style_with_selector_and_source("a::after", source);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn single_mode_reports_double_colon() {
-    let source = "a::before { color: red; }";
-    let opts = serde_json::json!("single");
-    let (node, ctx) = style_with_selector_source_options("a::before", source, &opts);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("single colon"));
-  }
-
-  #[test]
-  fn single_mode_allows_single_colon() {
-    let source = "a:before { color: red; }";
-    let opts = serde_json::json!("single");
-    let (node, ctx) = style_with_selector_source_options("a::before", source, &opts);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn single_mode_reports_double_colon_after() {
-    let source = "a::after { color: red; }";
-    let opts = serde_json::json!("single");
-    let (node, ctx) = style_with_selector_source_options("a::after", source, &opts);
-    let d = SelectorPseudoElementColonNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["single", { "disableFix": true }]);
+    assert_eq!(lint("a::after { }", options.clone()).len(), 1);
+    assert_eq!(fix("a::after { }", options), "a::after { }");
   }
 }

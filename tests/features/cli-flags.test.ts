@@ -10,6 +10,7 @@ import {
   config,
   hasAnsi,
   makeProject,
+  relativeSource,
   runGale,
   runGaleJson,
 } from "./helpers";
@@ -18,11 +19,11 @@ afterAll(cleanupProjects);
 
 const RULES = { "block-no-empty": true };
 
-/** Normalise the `source` paths Gale prints for a directory walk. */
-function sources(result: ReturnType<typeof runGaleJson>): string[] {
+/** The `source` paths Gale prints, relative to the project in `dir`. */
+function sources(result: ReturnType<typeof runGaleJson>, dir: string): string[] {
   return result
     .json()
-    .map((r) => r.source.replace(/^\.\//, ""))
+    .map((r) => relativeSource(dir, r.source))
     .sort();
 }
 
@@ -37,7 +38,7 @@ describe("--ignore-pattern", () => {
   test("every file is linted without the flag", () => {
     const project = makeProject(files);
 
-    expect(sources(runGaleJson(["**/*.css"], { cwd: project.dir }))).toEqual([
+    expect(sources(runGaleJson(["**/*.css"], { cwd: project.dir }), project.dir)).toEqual([
       "a.css",
       "vendor/b.css",
       "vendor/deep/c.css",
@@ -51,7 +52,7 @@ describe("--ignore-pattern", () => {
       cwd: project.dir,
     });
 
-    expect(sources(result)).toEqual(["a.css"]);
+    expect(sources(result, project.dir)).toEqual(["a.css"]);
   });
 
   test("the flag can be repeated", () => {
@@ -62,7 +63,7 @@ describe("--ignore-pattern", () => {
       { cwd: project.dir },
     );
 
-    expect(sources(result)).toEqual(["a.css"]);
+    expect(sources(result, project.dir)).toEqual(["a.css"]);
   });
 
   test("--ip is the short alias", () => {
@@ -70,7 +71,7 @@ describe("--ignore-pattern", () => {
 
     const result = runGaleJson(["**/*.css", "--ip", "vendor/**"], { cwd: project.dir });
 
-    expect(sources(result)).toEqual(["a.css"]);
+    expect(sources(result, project.dir)).toEqual(["a.css"]);
   });
 });
 
@@ -84,7 +85,7 @@ describe("--disable-default-ignores", () => {
   test("node_modules is skipped by default", () => {
     const project = makeProject(files);
 
-    expect(sources(runGaleJson(["**/*.css"], { cwd: project.dir }))).toEqual(["a.css"]);
+    expect(sources(runGaleJson(["**/*.css"], { cwd: project.dir }), project.dir)).toEqual(["a.css"]);
   });
 
   test("the flag lints node_modules too", () => {
@@ -92,7 +93,7 @@ describe("--disable-default-ignores", () => {
 
     const result = runGaleJson(["**/*.css", "--disable-default-ignores"], { cwd: project.dir });
 
-    expect(sources(result)).toEqual(["a.css", "node_modules/pkg/x.css"]);
+    expect(sources(result, project.dir)).toEqual(["a.css", "node_modules/pkg/x.css"]);
   });
 
   test("--di is the short alias", () => {
@@ -100,7 +101,7 @@ describe("--disable-default-ignores", () => {
 
     const result = runGaleJson(["**/*.css", "--di"], { cwd: project.dir });
 
-    expect(sources(result)).toEqual(["a.css", "node_modules/pkg/x.css"]);
+    expect(sources(result, project.dir)).toEqual(["a.css", "node_modules/pkg/x.css"]);
   });
 });
 

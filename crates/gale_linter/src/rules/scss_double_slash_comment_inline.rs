@@ -144,6 +144,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -153,6 +154,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -206,6 +208,7 @@ mod tests {
       source: ".foo { color: red; } // inline",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssDoubleSlashCommentInline

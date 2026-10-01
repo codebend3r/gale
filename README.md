@@ -93,7 +93,7 @@ Gale never drops part of your config silently. On stderr, once per run, it names
 
 - Stylelint and plugin rules it does not implement yet, and rules Stylelint itself has removed (`linebreaks`, `function-whitelist`); these are skipped, so the run does not fail on them.
 - `extends` entries it cannot resolve, such as a package that is not installed.
-- Files it cannot lint yet: styles in `.vue`, `.svelte`, `.html`, `.astro`, `.md` or JavaScript files, or under a `customSyntax` other than `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`.
+- Files it cannot lint yet: styles in `.md` or JavaScript files, or under a `customSyntax` other than `postcss`, `postcss-scss`, `postcss-less`, `postcss-sass` or `postcss-html`, and `<style>` blocks in a language it has no parser for (`lang="stylus"`).
 
 A rule name that is no rule at all is reported the way Stylelint reports it, as an `Unknown rule <name>.` error at the top of each file, and a regular expression option that does not compile is an invalid option (`Invalid option value ...`), which fails the run as it does in Stylelint.
 
@@ -177,6 +177,7 @@ Gale walks up from the working directory and uses the first config it finds, in 
 ### Feature overview
 
 - **CSS, SCSS, and Less** out of the box (no plugins needed)
+- **Styles in Vue, Svelte, Astro and HTML files**: every `<style>` block and `style` attribute, as Stylelint lints them with `postcss-html` (see [Supported file types](#supported-file-types))
 - **Sass indented syntax** (`.sass`) via an internal Sass-to-SCSS conversion; problems are reported at their position in the `.sass` file (see the autofix caveat below)
 - **Autofix** via `--fix`, applied repeatedly until the file stops changing
 - **File caching** via `--cache` (skips unchanged files)
@@ -189,6 +190,70 @@ Gale walks up from the working directory and uses the first config it finds, in 
 - **Crash isolation**: a bug in one rule is reported as an `Internal error` problem on the file that triggered it, and every other rule and file is still linted
 - **`extends`** with built-in presets, npm packages, and relative paths
 - **`.stylelintignore` and `.galeignore`** files (gitignore syntax) for custom exclusions
+
+### Supported file types
+
+| Files | What Gale lints |
+|-------|-----------------|
+| `.css` | The style sheet |
+| `.scss`, `.less`, `.sass` | The style sheet, in that syntax |
+| `.vue`, `.svelte`, `.astro`, `.html`, `.htm`, `.xhtml`, `.php` | Every `<style>` element and every quoted `style="…"` attribute, each as a style sheet of its own |
+
+Gale reads styles out of HTML-like files the way Stylelint does with
+`customSyntax: "postcss-html"`, and reports every problem at its line and
+column in the file. They are linted whether or not your config sets that
+`customSyntax`; Stylelint needs it (usually through `stylelint-config-html`,
+`stylelint-config-recommended-vue` or `stylelint-config-standard-vue`) and
+cannot parse the files without it. Those shareable configs are read from
+`node_modules` like any other, including the Vue rules they apply only to
+`.vue` files.
+
+- **Languages.** A block's `lang` (or `type="text/x-scss"`) picks its parser:
+  `css` or `postcss` (the default), `scss`, `less` or `sass`. A block in a
+  language Gale has no parser for, such as `lang="stylus"`, is skipped with a
+  warning naming the file; the file's other blocks are still linted.
+  Attributes such as `scoped`, `module`, `global` and `is:global` make no
+  difference.
+- **What is not a style block.** `<style>` text inside HTML comments,
+  `<script>`, `<textarea>` and `<title>`, inside attribute values, inside Vue
+  `{{ … }}` interpolations and Svelte `{ … }` expressions, or in Astro front
+  matter. postcss-html's `<!-- postcss-ignore -->`,
+  `<!-- postcss-disable -->` and `<!-- postcss-enable -->` comments are
+  honoured, and an empty `<style src="…">` in a Vue, Svelte or Astro file is
+  an external sheet, not an empty one.
+- **Rules.** Each block is its own root, so `no-duplicate-selectors` and
+  `no-empty-source` look at one block at a time, while a `stylelint-disable`
+  comment left open in one block still applies to the blocks after it.
+  `@stylistic/indentation` infers each block's base indent level from the
+  markup around it, and honours `baseIndentLevel`. As in Stylelint,
+  `@stylistic/unicode-bom` and `nesting-selector-no-missing-scoping-root`
+  skip embedded styles, and `@stylistic/no-empty-first-line`,
+  `@stylistic/no-missing-end-of-source-newline` and
+  `no-invalid-position-declaration` skip `style` attributes.
+- **Autofix.** `--fix` rewrites only the text inside style blocks and
+  attributes; everything else in the file is left byte-for-byte as it was.
+- **Input.** HTML-like files are picked up by globs, named paths and
+  directory walks, from `--stdin` with `--stdin-filename App.vue`, from the
+  Node API (`lint({ code, codeFilename: 'App.vue' })`), and by the language
+  server.
+
+Where Gale differs from postcss-html:
+
+- A `"<style>"` string inside a Vue interpolation or a Svelte expression does
+  not open a block. postcss-html reads it as a tag, and the file usually fails
+  to parse.
+- A self-closing `<style … />` is empty unless a later `</style>` closes it.
+  postcss-html leaves it open and reads the rest of the file into it.
+- Other extensions a config maps to `postcss-html` (`.ejs`, `.jsp`, `.xml`,
+  ...) are not picked up, and `customSyntax: "postcss-html"` on a `.css` file
+  still lints it as CSS.
+- Rules that only check declarations inside a rule block, such as
+  `@stylistic/declaration-block-trailing-semicolon` and
+  `@stylistic/color-hex-case`, do not see the declarations in a `style`
+  attribute, as they do not see top-level declarations in SCSS or Less files.
+- Stylelint reports `@stylistic/no-extra-semicolons` problems in the top level
+  of an embedded block at the wrong position (the plugin computes their offset
+  as 0); Gale reports the semicolon itself.
 
 ### Declarative plugin rules
 
@@ -237,7 +302,7 @@ const { lint } = require('@codebend3r/gale');
 - **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 271 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
 - **Dynamic JavaScript configs.** See the config compatibility note above.
 - **Autofix in `.sass` files.** `.sass` sources are converted to SCSS before parsing. Problems are mapped back to their line and column in the `.sass` file, but fixes are computed against the converted SCSS, so `--fix` leaves `.sass` files unchanged.
-- **Vue, Svelte, HTML, Astro, Markdown and CSS-in-JS sources.** Such files that your patterns match, and files under a `customSyntax` Gale cannot parse, are skipped with a warning naming them. They still count as input, so matching only such files is not an error.
+- **Markdown and CSS-in-JS sources.** Such files that your patterns match, and files under a `customSyntax` Gale cannot parse, are skipped with a warning naming them. They still count as input, so matching only such files is not an error. Vue, Svelte, Astro and HTML files are supported: see [Supported file types](#supported-file-types).
 - **Custom JS formatters.** There is no `--custom-formatter` flag; use one of the built-in formatters.
 - **Stylelint v17 message wording.** See [Parity with Stylelint](#parity-with-stylelint) above.
 

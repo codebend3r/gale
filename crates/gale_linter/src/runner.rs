@@ -1,670 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
+use crate::disables::{self, DisableReports};
+use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::RuleRegistry;
-use crate::rule::{PerFileOptions, Rule, RuleContext, secondary_options_of};
-
-// ---------------------------------------------------------------------------
-// Inline disable-comment support
-// ---------------------------------------------------------------------------
-
-/// A range in the source where certain (or all) rules are disabled.
-#[derive(Debug)]
-struct DisabledRange {
-  /// Byte offset where the disable starts.
-  start: usize,
-  /// Byte offset where the disable ends (exclusive). `usize::MAX` means EOF.
-  end: usize,
-  /// `None` → all rules disabled; `Some(name)` → only that rule.
-  rule: Option<String>,
-  /// Byte offset of the comment that created this range (for needless-disable
-  /// reporting).  Points to the `/*` or `//` that starts the directive.
-  comment_start: usize,
-  /// Whether the directive carried a `-- description` explaining itself.
-  has_description: bool,
-}
-
-/// A `disable` directive that has not yet met its `enable`.
-struct OpenDisable {
-  start: usize,
-  comment_start: usize,
-  rule: Option<String>,
-  has_description: bool,
-}
-
-/// The parsed body of a disable directive: which rules it names (`None` for
-/// all of them) and whether it explains itself with a `-- description`.
-struct Directive {
-  rules: Vec<Option<String>>,
-  has_description: bool,
-}
-
-/// Scan `source` for gale / stylelint disable comments and return disabled ranges.
-fn collect_disabled_ranges(source: &str, line_index: &SourceLineIndex) -> Vec<DisabledRange> {
-  let mut ranges: Vec<DisabledRange> = Vec::new();
-
-  // Track open "disable" directives until their matching "enable".
-  let mut open_disables: Vec<OpenDisable> = Vec::new();
-
-  // We scan for `/* ... */` comments manually so we don't rely on the parser
-  // (comments inside values, etc. would be stripped by the parser).
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i + 1 < len {
-    if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-      // Found block comment start — find the end.
-      let comment_start = i;
-      if let Some(end_pos) = find_comment_end(bytes, i + 2) {
-        let comment_end = end_pos + 2; // past `*/`
-        let inner = &source[comment_start + 2..end_pos];
-        let trimmed = inner.trim();
-
-        process_directive(
-          trimmed,
-          comment_start,
-          comment_end,
-          source,
-          line_index,
-          &mut open_disables,
-          &mut ranges,
-        );
-
-        i = comment_end;
-      } else {
-        break; // unterminated comment
-      }
-    } else if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-      // Found line comment (`//`) — used in SCSS/Less for disable directives.
-      let comment_start = i;
-      i += 2; // skip `//`
-      let inner_start = i;
-      // Find end of line
-      while i < len && bytes[i] != b'\n' {
-        i += 1;
-      }
-      let inner = &source[inner_start..i];
-      let trimmed = inner.trim();
-      let comment_end = i;
-
-      process_directive(
-        trimmed,
-        comment_start,
-        comment_end,
-        source,
-        line_index,
-        &mut open_disables,
-        &mut ranges,
-      );
-
-      if i < len {
-        i += 1; // skip newline
-      }
-    } else {
-      i += 1;
-    }
-  }
-
-  // Close any still-open disables at EOF.
-  for open in open_disables {
-    ranges.push(DisabledRange {
-      start: open.start,
-      end: len,
-      rule: open.rule,
-      comment_start: open.comment_start,
-      has_description: open.has_description,
-    });
-  }
-
-  ranges
-}
-
-/// Byte offset of the `*/` closing a block comment started at `from`.
-fn find_comment_end(bytes: &[u8], from: usize) -> Option<usize> {
-  let mut j = from;
-  while j + 1 < bytes.len() {
-    if bytes[j] == b'*' && bytes[j + 1] == b'/' {
-      return Some(j);
-    }
-    j += 1;
-  }
-  None
-}
-
-/// Dispatches a comment body that carries a `gale-` or `stylelint-` directive.
-fn process_directive(
-  trimmed: &str,
-  comment_start: usize,
-  comment_end: usize,
-  source: &str,
-  line_index: &SourceLineIndex,
-  open_disables: &mut Vec<OpenDisable>,
-  ranges: &mut Vec<DisabledRange>,
-) {
-  // Try both prefixes: gale-* and stylelint-*
-  for prefix in &["gale-", "stylelint-"] {
-    if let Some(rest) = trimmed.strip_prefix(prefix) {
-      handle_directive(
-        rest,
-        comment_start,
-        comment_end,
-        source,
-        line_index,
-        open_disables,
-        ranges,
-      );
-      return;
-    }
-  }
-}
-
-/// Applies one directive: `disable-next-line` and `disable-line` push a
-/// range for a single line, `enable` closes open disables, and `disable`
-/// opens one (plus the current line when the comment is inline).
-fn handle_directive(
-  rest: &str,
-  comment_start: usize,
-  comment_end: usize,
-  source: &str,
-  line_index: &SourceLineIndex,
-  open_disables: &mut Vec<OpenDisable>,
-  ranges: &mut Vec<DisabledRange>,
-) {
-  if let Some(rule_part) = rest.strip_prefix("disable-next-line") {
-    // disable-next-line [rule-name, rule-name, ...]
-    let directive = parse_directive(rule_part);
-    let (comment_line, _) = line_index.offset_to_location(comment_start);
-    let next_line = comment_line + 1;
-    let (next_start, next_end) = line_byte_range(source, next_line);
-    for rule_name in directive.rules {
-      ranges.push(DisabledRange {
-        start: next_start,
-        end: next_end,
-        rule: rule_name,
-        comment_start,
-        has_description: directive.has_description,
-      });
-    }
-  } else if let Some(rule_part) = rest.strip_prefix("disable-line") {
-    // disable-line [rule-name, ...] — disables on the current line
-    let directive = parse_directive(rule_part);
-    let (comment_line, _) = line_index.offset_to_location(comment_start);
-    let (line_start, line_end) = line_byte_range(source, comment_line);
-    for rule_name in directive.rules {
-      ranges.push(DisabledRange {
-        start: line_start,
-        end: line_end,
-        rule: rule_name,
-        comment_start,
-        has_description: directive.has_description,
-      });
-    }
-  } else if let Some(rule_part) = rest.strip_prefix("enable") {
-    // enable [rule-name, ...]
-    // Use the end of the enable comment (past `*/`) so that diagnostics
-    // whose span starts within the enable comment itself are still
-    // suppressed.  This matches Stylelint's behaviour where the enable
-    // comment line is considered part of the disabled region.
-    let directive = parse_directive(rule_part);
-    for rule_name in directive.rules {
-      close_disable(open_disables, ranges, comment_end, &rule_name);
-    }
-  } else if let Some(rule_part) = rest.strip_prefix("disable") {
-    // disable [rule-name, ...]
-    let directive = parse_directive(rule_part);
-
-    // If the disable comment is inline (on the same line as code), also
-    // disable from the start of the current line so that code preceding
-    // the comment on the same line is covered. This matches Stylelint's
-    // behavior where `property: value; // stylelint-disable rule` suppresses
-    // the diagnostic on the declaration.
-    let (comment_line, _) = line_index.offset_to_location(comment_start);
-    let (line_start, line_end) = line_byte_range(source, comment_line);
-    let before_comment = &source[line_start..comment_start];
-    let is_inline = !before_comment.trim().is_empty();
-
-    for rule_name in directive.rules {
-      if is_inline {
-        // Add a range covering the current line in addition to the
-        // open-ended disable.
-        ranges.push(DisabledRange {
-          start: line_start,
-          end: line_end,
-          rule: rule_name.clone(),
-          comment_start,
-          has_description: directive.has_description,
-        });
-      }
-      open_disables.push(OpenDisable {
-        start: comment_end,
-        comment_start,
-        rule: rule_name,
-        has_description: directive.has_description,
-      });
-    }
-  }
-}
-
-/// Parse the body of a directive: comma-separated rule names followed by an
-/// optional `-- description`.
-///
-/// `None` in `rules` means "all rules".
-/// E.g. " rule-a, rule-b " → [Some("rule-a"), Some("rule-b")]
-///      "" → [None]  (all rules)
-///
-/// Deprecated rule name aliases (e.g. `scss/at-import-no-partial-leading-underscore`)
-/// are resolved to their canonical names so that disable comments using old names
-/// still suppress diagnostics emitted under the new name.
-fn parse_directive(text: &str) -> Directive {
-  let t = text.trim();
-  // Split off the description after the ` -- ` separator (Stylelint
-  // convention).  E.g. "rule-name -- reason" → "rule-name".
-  let (t, has_description) = if let Some(pos) = t.find(" -- ") {
-    (t[..pos].trim(), true)
-  } else if t.starts_with("--") {
-    // The entire text is a description (e.g. "-- Disable reason: ...")
-    ("", true)
-  } else {
-    (t, false)
-  };
-  Directive {
-    rules: parse_rule_names(t),
-    has_description,
-  }
-}
-
-/// Parse comma-separated rule names.  An empty string means "all rules".
-fn parse_rule_names(t: &str) -> Vec<Option<String>> {
-  if t.is_empty() {
-    return vec![None]; // disable all rules
-  }
-
-  let resolve = |name: &str| -> String {
-    crate::registry::resolve_deprecated_alias(name)
-      .map(|s| s.to_string())
-      .unwrap_or_else(|| name.to_string())
-  };
-
-  // If there are commas, split by comma
-  if t.contains(',') {
-    t.split(',')
-      .map(|part| {
-        let p = part.trim();
-        if p.is_empty() { None } else { Some(resolve(p)) }
-      })
-      .filter(|n| n.is_some()) // filter out empty parts
-      .collect()
-  } else {
-    vec![Some(resolve(t))]
-  }
-}
-
-/// Close the most-recent matching open disable.
-fn close_disable(
-  open_disables: &mut Vec<OpenDisable>,
-  ranges: &mut Vec<DisabledRange>,
-  end_offset: usize,
-  rule_name: &Option<String>,
-) {
-  // Find the last matching open disable (same rule or both None).
-  if let Some(idx) = open_disables.iter().rposition(|o| &o.rule == rule_name) {
-    let open = open_disables.remove(idx);
-    ranges.push(DisabledRange {
-      start: open.start,
-      end: end_offset,
-      rule: open.rule,
-      comment_start: open.comment_start,
-      has_description: open.has_description,
-    });
-  }
-}
-
-/// Return (start_byte, end_byte) for 1-indexed `line_number`.
-fn line_byte_range(source: &str, line_number: usize) -> (usize, usize) {
-  let mut current_line = 1usize;
-  let mut line_start = 0usize;
-
-  for (i, b) in source.bytes().enumerate() {
-    if current_line == line_number {
-      // Find end of this line.
-      let mut end = i;
-      for (j, b2) in source.bytes().enumerate().skip(i) {
-        if b2 == b'\n' {
-          end = j + 1; // include the newline
-          return (line_start, end);
-        }
-        end = j + 1;
-      }
-      return (line_start, end);
-    }
-    if b == b'\n' {
-      current_line += 1;
-      line_start = i + 1;
-    }
-  }
-  // If the requested line is beyond EOF, return an empty range at end.
-  (source.len(), source.len())
-}
-
-/// Which reports about disable comments to emit, and at what severity.
-///
-/// Stylelint's `reportNeedlessDisables`, `reportInvalidScopeDisables` and
-/// `reportDescriptionlessDisables` all default to `defaultSeverity`, falling
-/// back to error.
-#[derive(Debug, Clone, Copy)]
-struct DisableReports {
-  needless: bool,
-  invalid_scope: bool,
-  descriptionless: bool,
-  unscoped: bool,
-  severity: Severity,
-}
-
-/// Filter out disabled diagnostics and optionally report on the disable
-/// comments themselves.
-///
-/// When `reports.needless` is `true`, a disable comment is reported as "needless"
-/// only if:
-///   1. The disable targets a **specific rule** (not `/* stylelint-disable */`), AND
-///   2. The referenced rule is **known** to Gale (registered in the registry), AND
-///   3. The disable didn't actually suppress any diagnostic.
-///
-/// Disables for **unknown** rules (e.g. third-party plugin rules Gale doesn't
-/// implement) are NOT reported as needless because Gale can't know if they
-/// suppress warnings — it doesn't run those plugins.
-///
-/// "All rules" disables (`/* stylelint-disable */`) are also not reported as
-/// needless, since Gale may not implement all rules that Stylelint would fire.
-///
-/// When `reports.invalid_scope` is `true`, a disable that names a rule which is
-/// not configured is reported (`is_configured` decides), matching Stylelint's
-/// `reportInvalidScopeDisables`.  Blanket disables are never out of scope.
-///
-/// When `reports.descriptionless` is `true`, a disable comment without a
-/// `-- description` is reported once, matching `reportDescriptionlessDisables`.
-///
-/// When `apply_disables` is `false` (Stylelint's `ignoreDisables`) the ranges
-/// suppress nothing, but the reports above still run.
-///
-/// `forbids_disable` says whether a rule was configured with
-/// `reportDisables: true`; any disable naming such a rule is reported.
-fn filter_disabled_and_report(
-  diagnostics: &mut Vec<Diagnostic>,
-  ranges: &[DisabledRange],
-  apply_disables: bool,
-  reports: DisableReports,
-  is_configured: &dyn Fn(&str) -> bool,
-  forbids_disable: &dyn Fn(&str) -> bool,
-  file_path: &str,
-) {
-  if ranges.is_empty() {
-    return;
-  }
-
-  // Track which ranges actually suppressed at least one diagnostic.
-  let mut suppressed = vec![false; ranges.len()];
-
-  // Stylelint tracks which disables suppressed a warning even under
-  // `ignoreDisables`; only the suppression itself is switched off.
-  diagnostics.retain(|d| {
-    let hit = range_covering(d, ranges);
-    if let Some(i) = hit {
-      suppressed[i] = true;
-    }
-    hit.is_none() || !apply_disables
-  });
-
-  if reports.invalid_scope {
-    report_invalid_scope_disables(
-      diagnostics,
-      ranges,
-      reports.severity,
-      is_configured,
-      file_path,
-    );
-  }
-
-  if reports.descriptionless {
-    report_descriptionless_disables(diagnostics, ranges, reports.severity, file_path);
-  }
-
-  if reports.unscoped {
-    report_unscoped_disables(diagnostics, ranges, reports.severity, file_path);
-  }
-
-  report_forbidden_disables(diagnostics, ranges, forbids_disable, file_path);
-
-  if !reports.needless {
-    return;
-  }
-
-  // Deduplicate: an inline disable creates two ranges (current line +
-  // open-ended) sharing the same comment_start.  Only report once per
-  // (comment_start, rule) pair.  Also merge suppression: if *either*
-  // range suppressed a diagnostic, the comment is not needless.
-  use std::collections::HashMap as StdHashMap;
-  let mut comment_suppressed: StdHashMap<(usize, Option<&str>), bool> = StdHashMap::new();
-  for (i, range) in ranges.iter().enumerate() {
-    let key = (range.comment_start, range.rule.as_deref());
-    let entry = comment_suppressed.entry(key).or_insert(false);
-    if suppressed[i] {
-      *entry = true;
-    }
-  }
-
-  let mut reported: HashSet<(usize, Option<String>)> = HashSet::new();
-
-  for range in ranges.iter() {
-    let key = (range.comment_start, range.rule.as_deref());
-
-    // Skip if any range from this comment suppressed a diagnostic.
-    if comment_suppressed.get(&key).copied().unwrap_or(false) {
-      continue;
-    }
-
-    // "All rules" disables (`/* stylelint-disable */`) are never reported
-    // as needless because Gale may not implement every rule that Stylelint
-    // would fire — so a blanket disable might legitimately suppress
-    // warnings from plugin rules Gale doesn't know about.
-    if range.rule.is_none() {
-      continue;
-    }
-
-    // Only report needless for rules where Gale has a **no-op stub**
-    // implementation — i.e. a rule that is registered but intentionally
-    // never produces diagnostics.  For all other rules, Gale's detection
-    // might differ from Stylelint's, so a disable that appears to suppress
-    // nothing in Gale might legitimately suppress warnings in Stylelint.
-    //
-    // No-op stubs exist for plugin rules that Gale can't execute (e.g.
-    // Angular's `material/no-prefixes`): the rule is "known" but always
-    // returns empty diagnostics.  Since it never fires, any inline disable
-    // for it is genuinely needless.
-    if let Some(ref rule_name) = range.rule
-      && !is_noop_stub_rule(rule_name)
-    {
-      continue;
-    }
-
-    // Deduplicate: only report once per (comment_start, rule).
-    let dedup_key = (range.comment_start, range.rule.clone());
-    if !reported.insert(dedup_key) {
-      continue;
-    }
-
-    let rule_desc = match &range.rule {
-      None => "\"all\"".to_string(),
-      Some(name) => format!("\"{}\"", name),
-    };
-
-    let msg = format!("Needless disable for {}", rule_desc);
-
-    diagnostics.push(
-      Diagnostic::new("--report-needless-disables", msg)
-        .severity(reports.severity)
-        .span(Span::new(range.comment_start, 0))
-        .file_path(file_path),
-    );
-  }
-}
-
-/// Index of the first disabled range that covers `diag`, if any.
-///
-/// A range matches when it is a blanket disable, names the diagnostic's rule,
-/// or names a deprecated alias of it (in either direction).
-fn range_covering(diag: &Diagnostic, ranges: &[DisabledRange]) -> Option<usize> {
-  let offset = diag.span.offset;
-  ranges.iter().position(|r| {
-    if offset < r.start || offset >= r.end {
-      return false;
-    }
-    match &r.rule {
-      None => true,
-      Some(name) if name == &diag.rule_name => true,
-      Some(name) => {
-        // The disable may reference a deprecated alias that resolves
-        // to this diagnostic's canonical rule name, or the diagnostic
-        // may carry an alias of the disable's rule.
-        crate::registry::resolve_deprecated_alias(name)
-          .is_some_and(|canonical| canonical == diag.rule_name)
-          || crate::registry::resolve_deprecated_alias(&diag.rule_name)
-            .is_some_and(|canonical| canonical == name.as_str())
-      }
-    }
-  })
-}
-
-/// Stylelint's `reportInvalidScopeDisables`: a disable that names a rule the
-/// config does not enable.  Reported once per comment and rule.
-fn report_invalid_scope_disables(
-  diagnostics: &mut Vec<Diagnostic>,
-  ranges: &[DisabledRange],
-  severity: Severity,
-  is_configured: &dyn Fn(&str) -> bool,
-  file_path: &str,
-) {
-  let mut reported: HashSet<(usize, &str)> = HashSet::new();
-  for range in ranges {
-    let Some(name) = range.rule.as_deref() else {
-      continue;
-    };
-    if is_configured(name) || !reported.insert((range.comment_start, name)) {
-      continue;
-    }
-    diagnostics.push(
-      Diagnostic::new(
-        "--report-invalid-scope-disables",
-        format!("Rule \"{name}\" isn't enabled"),
-      )
-      .severity(severity)
-      .span(Span::new(range.comment_start, 0))
-      .file_path(file_path),
-    );
-  }
-}
-
-/// Stylelint's per-rule `reportDisables: true`: a disable that names a rule
-/// which may not be disabled.  Always an error, once per comment and rule.
-fn report_forbidden_disables(
-  diagnostics: &mut Vec<Diagnostic>,
-  ranges: &[DisabledRange],
-  forbids_disable: &dyn Fn(&str) -> bool,
-  file_path: &str,
-) {
-  let mut reported: HashSet<(usize, &str)> = HashSet::new();
-  for range in ranges {
-    let Some(name) = range.rule.as_deref() else {
-      continue;
-    };
-    if !forbids_disable(name) || !reported.insert((range.comment_start, name)) {
-      continue;
-    }
-    diagnostics.push(
-      Diagnostic::new(
-        "reportDisables",
-        format!("Rule \"{name}\" may not be disabled"),
-      )
-      .severity(Severity::Error)
-      .span(Span::new(range.comment_start, 0))
-      .file_path(file_path),
-    );
-  }
-}
-
-/// Stylelint's `reportUnscopedDisables`: a disable comment that names no
-/// rule.  Reported once per comment.
-fn report_unscoped_disables(
-  diagnostics: &mut Vec<Diagnostic>,
-  ranges: &[DisabledRange],
-  severity: Severity,
-  file_path: &str,
-) {
-  let mut reported: HashSet<usize> = HashSet::new();
-  for range in ranges {
-    if range.rule.is_some() || !reported.insert(range.comment_start) {
-      continue;
-    }
-    diagnostics.push(
-      Diagnostic::new(
-        "--report-unscoped-disables",
-        "Configuration comment must be scoped",
-      )
-      .severity(severity)
-      .span(Span::new(range.comment_start, 0))
-      .file_path(file_path),
-    );
-  }
-}
-
-/// Stylelint's `reportDescriptionlessDisables`: a disable comment with no
-/// `-- description`.  Reported once per comment, naming its first rule (or
-/// `all` for a blanket disable).
-fn report_descriptionless_disables(
-  diagnostics: &mut Vec<Diagnostic>,
-  ranges: &[DisabledRange],
-  severity: Severity,
-  file_path: &str,
-) {
-  let mut reported: HashSet<usize> = HashSet::new();
-  for range in ranges {
-    if range.has_description || !reported.insert(range.comment_start) {
-      continue;
-    }
-    let name = range.rule.as_deref().unwrap_or("all");
-    diagnostics.push(
-      Diagnostic::new(
-        "--report-descriptionless-disables",
-        format!("Disable for \"{name}\" is missing a description"),
-      )
-      .severity(severity)
-      .span(Span::new(range.comment_start, 0))
-      .file_path(file_path),
-    );
-  }
-}
-
-/// Rules that are registered as **no-op stubs** — they never produce any
-/// diagnostics.  These exist for third-party plugin rules that Gale can't
-/// execute natively.  Because they never fire, any inline disable comment
-/// referencing them is genuinely needless.
-///
-/// All other registered rules *might* produce different diagnostics than
-/// Stylelint, so we can't safely call their disables "needless".
-fn is_noop_stub_rule(name: &str) -> bool {
-  // Only include rules where BOTH Gale AND Stylelint produce zero warnings
-  // in practice.  Plugin rules that Gale stubs as no-ops BUT Stylelint
-  // actually fires (like scss/dollar-variable-no-missing-interpolation)
-  // must NOT be listed here, because their disables suppress real
-  // Stylelint warnings and are therefore not needless.
-  matches!(name, "material/no-prefixes")
-}
+use crate::rule::{Rule, RuleContext, secondary_options_of};
 
 /// Apply the secondary options every Stylelint rule accepts, whatever the
 /// rule itself does with its options:
@@ -677,7 +23,7 @@ fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::V
     return;
   };
   if let Some(message) = secondary.get("message").and_then(|v| v.as_str()) {
-    diag.message = message.to_string();
+    crate::custom_message::apply(diag, message);
   }
   if let Some(url) = secondary.get("url").and_then(|v| v.as_str()) {
     diag.url = Some(url.to_string());
@@ -848,6 +194,60 @@ impl LintRunner {
     }
   }
 
+  /// Apply the file's configuration comments to `diagnostics`: drop the
+  /// problems they disable and add the reports about the comments.
+  ///
+  /// The rules linted `parsed.source` (the converted SCSS, for Sass), whose
+  /// offsets the source map takes back to `source` so that lines are those
+  /// of the file the author wrote.  In a style sheet embedded in an
+  /// HTML-like file the host applies the ranges of the whole document
+  /// instead, so only the reports are added here.  The comments are found
+  /// in the statement tree the rules share, `cache`, built for that text.
+  ///
+  /// Returns Stylelint's `CssSyntaxError` for a comment it rejects (an
+  /// `enable` with nothing disabled, say), which replaces every other
+  /// problem in the file, `ignoreDisables` or not.
+  #[allow(clippy::too_many_arguments)]
+  fn apply_disables(
+    &self,
+    diagnostics: &mut Vec<Diagnostic>,
+    source: &str,
+    parsed: &ParseResult,
+    cache: &FileCache,
+    file_path: &str,
+    is_configured: &dyn Fn(&str) -> bool,
+    forbids_disable: &dyn Fn(&str) -> bool,
+  ) -> Option<Diagnostic> {
+    let text = cache.source();
+    if !disables::may_have_directives(text) {
+      return None;
+    }
+    let lines = SourceLineIndex::build(source);
+    let line_of = |offset: usize| match &parsed.source_map {
+      Some(map) => lines.line(map.to_original(offset)),
+      None => lines.line(offset),
+    };
+    let mut collector = disables::Collector::new(&line_of);
+    collector.scan_tree(&cache.postcss_tree(), cache.syntax(), 0);
+    let (ranges, rejected) = collector.finish();
+    let embedded = crate::embedded::in_embedded_root();
+    if let Some(rejected) = rejected.filter(|_| !embedded) {
+      return Some(rejected.to_diagnostic(file_path));
+    }
+    if !self.needs_disabled_ranges() {
+      return None;
+    }
+    let settings = disables::DisableSettings {
+      suppress: !self.ignore_disables && !embedded,
+      reports: self.disable_reports(),
+      is_configured,
+      forbids_disable,
+      file_path,
+    };
+    disables::apply(diagnostics, &ranges, &line_of, &settings);
+    None
+  }
+
   /// Whether the comment reports need the disabled ranges at all.
   fn needs_disabled_ranges(&self) -> bool {
     !self.ignore_disables
@@ -928,7 +328,6 @@ impl LintRunner {
 
   /// [`Self::lint_source`] without the file-level panic guard.
   fn lint_source_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
-    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
@@ -961,14 +360,8 @@ impl LintRunner {
       .map(|rule| self.rule_options.get(rule.name()))
       .collect();
 
-    let mut run = RuleRun::new(
-      &active_rules,
-      options.clone(),
-      options,
-      file_path,
-      text,
-      syntax,
-    );
+    let cache = FileCache::new(text, syntax);
+    let mut run = RuleRun::new(&active_rules, options.clone(), options, file_path, &cache);
 
     // Run document-level checks (check_root).
     let t1 = Instant::now();
@@ -1019,18 +412,16 @@ impl LintRunner {
     // report needless disable comments.  When `ignore_disables` is true,
     // skip filtering entirely so all diagnostics are reported.
     let t4 = Instant::now();
-    if self.needs_disabled_ranges() {
-      let line_index = SourceLineIndex::build(text);
-      let disabled_ranges = collect_disabled_ranges(text, &line_index);
-      filter_disabled_and_report(
-        &mut diagnostics,
-        &disabled_ranges,
-        !self.ignore_disables,
-        self.disable_reports(),
-        &|rule_name| self.is_configured_rule(&[], rule_name),
-        &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
-        file_path,
-      );
+    if let Some(rejected) = self.apply_disables(
+      &mut diagnostics,
+      source,
+      &parse_result,
+      &cache,
+      file_path,
+      &|rule_name| self.is_configured_rule(&[], rule_name),
+      &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
+    ) {
+      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
     }
     if debug {
       eprintln!("[perf] disable-filter: {:.3}s", t4.elapsed().as_secs_f64());
@@ -1087,7 +478,6 @@ impl LintRunner {
     rule_options: &HashMap<String, serde_json::Value>,
     rule_severities: &HashMap<String, Severity>,
   ) -> LintResult {
-    let _options_memo = PerFileOptions::begin();
     let debug = perf_enabled();
     if debug {
       eprintln!("[perf] start file: {}", file_path);
@@ -1136,14 +526,8 @@ impl LintRunner {
       .map(|rule| merged_options.get(rule.name()))
       .collect();
 
-    let mut run = RuleRun::new(
-      &active_rules,
-      root_options,
-      node_options,
-      file_path,
-      text,
-      syntax,
-    );
+    let cache = FileCache::new(text, syntax);
+    let mut run = RuleRun::new(&active_rules, root_options, node_options, file_path, &cache);
 
     let t1 = Instant::now();
     run.check_root(&nodes, debug);
@@ -1211,18 +595,16 @@ impl LintRunner {
       }
     }
 
-    if self.needs_disabled_ranges() {
-      let line_index = SourceLineIndex::build(text);
-      let disabled_ranges = collect_disabled_ranges(text, &line_index);
-      filter_disabled_and_report(
-        &mut diagnostics,
-        &disabled_ranges,
-        !self.ignore_disables,
-        self.disable_reports(),
-        &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
-        &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
-        file_path,
-      );
+    if let Some(rejected) = self.apply_disables(
+      &mut diagnostics,
+      source,
+      &parse_result,
+      &cache,
+      file_path,
+      &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
+      &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
+    ) {
+      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
     }
 
     // Rule crashes go in last, as in `lint_source`, under the rule name the
@@ -1381,6 +763,8 @@ struct RuleRun<'a> {
   file_path: &'a str,
   source: &'a str,
   syntax: Syntax,
+  /// What the rules share for this file, built from `source`.
+  cache: &'a FileCache<'a>,
   /// `failed[i]` once `rules[i]` has panicked on this file.
   failed: Vec<bool>,
   /// What the rules reported.
@@ -1393,22 +777,23 @@ struct RuleRun<'a> {
 }
 
 impl<'a> RuleRun<'a> {
-  /// Prepare a pass of `rules` over one file.
+  /// Prepare a pass of `rules` over one file, the text `cache` was built
+  /// for.
   fn new(
     rules: &'a [&'a dyn Rule],
     root_options: Vec<Option<&'a serde_json::Value>>,
     node_options: Vec<Option<&'a serde_json::Value>>,
     file_path: &'a str,
-    source: &'a str,
-    syntax: Syntax,
+    cache: &'a FileCache<'a>,
   ) -> Self {
     let mut run = Self {
       rules,
       root_options,
       node_options,
       file_path,
-      source,
-      syntax,
+      source: cache.source(),
+      syntax: cache.syntax(),
+      cache,
       failed: vec![false; rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
@@ -1441,6 +826,7 @@ impl<'a> RuleRun<'a> {
       source: self.source,
       syntax: self.syntax,
       options,
+      cache: Some(self.cache),
     }
   }
 
@@ -1497,6 +883,8 @@ impl<'a> RuleRun<'a> {
   /// rules are wrapped as nodes without copying their subtrees.
   fn walk(&mut self, node: CssNode) {
     let offset = node.span().offset;
+    // `node` stays put until `leave_node`, as `enter_node` requires.
+    self.cache.enter_node(&node);
     for index in 0..self.rules.len() {
       if self.failed[index] {
         continue;
@@ -1506,6 +894,7 @@ impl<'a> RuleRun<'a> {
       let outcome = panic_guard::catch(|| rule.check(&node, &context));
       self.record(index, outcome, offset);
     }
+    self.cache.leave_node();
 
     // Recurse into children based on node type.
     match node {
@@ -1780,6 +1169,254 @@ mod tests {
     assert!(rules.contains(&"color-named"), "{rules:?}");
   }
 
+  // -- Panics and the artifacts rules share --
+
+  /// A rule that reports every style rule in the shared statement tree, at
+  /// its start.
+  struct ReportsTreeRules;
+
+  impl Rule for ReportsTreeRules {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/tree-rules"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Reports every style rule in the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Reports each style rule of the shared tree.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let tree = ctx.postcss_tree();
+      tree
+        .nodes
+        .iter()
+        .filter(|node| node.kind == crate::postcss_tree::NodeKind::Rule)
+        .map(|node| Diagnostic::new(self.name(), "rule").span(Span::new(node.start, 1)))
+        .collect()
+    }
+  }
+
+  /// A rule that is first to ask for the shared tree and whose build of it
+  /// panics, standing in for a bug in the tree's parser.
+  struct BreaksTreeBuild;
+
+  impl Rule for BreaksTreeBuild {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/breaks-tree-build"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while building the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Builds the shared tree with a builder that panics.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let cache = ctx.cache.expect("the runner shares a cache");
+      cache.postcss_tree_built_by(|| panic!("tree build failed"));
+      vec![]
+    }
+  }
+
+  /// A rule that panics while it holds the shared tree.
+  struct PanicsHoldingTree;
+
+  impl Rule for PanicsHoldingTree {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/panics-holding-tree"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while holding the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Takes the shared tree, then panics.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let tree = ctx.postcss_tree();
+      panic!("crashed holding {} statements", tree.nodes.len());
+    }
+  }
+
+  /// A rule that reports every declaration of the node it checks, read
+  /// through the shared per-node cache, at its property.
+  struct ReportsDeclarations;
+
+  impl Rule for ReportsDeclarations {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/declarations"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Reports every declaration of the node it checks"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Reports each declaration of `node` by property.
+    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+      ctx
+        .written_declarations(node)
+        .iter()
+        .map(|decl| Diagnostic::new(self.name(), decl.prop).span(Span::new(decl.prop_start, 1)))
+        .collect()
+    }
+  }
+
+  /// A rule that panics while it holds a node's shared declarations.
+  struct PanicsHoldingDeclarations;
+
+  impl Rule for PanicsHoldingDeclarations {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/panics-holding-declarations"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while holding a node's shared declarations"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Takes the node's declarations, then panics if there are any.
+    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+      let found = ctx.written_declarations(node);
+      if !found.is_empty() {
+        panic!("crashed holding {} declarations", found.len());
+      }
+      vec![]
+    }
+  }
+
+  /// A runner over `rules`, in that order, with the test rules above
+  /// registered.
+  fn runner_with_tree_rules(rules: &[&str]) -> LintRunner {
+    let mut registry = RuleRegistry::default();
+    registry.register(Box::new(ReportsTreeRules));
+    registry.register(Box::new(BreaksTreeBuild));
+    registry.register(Box::new(PanicsHoldingTree));
+    registry.register(Box::new(ReportsDeclarations));
+    registry.register(Box::new(PanicsHoldingDeclarations));
+    LintRunner::new(registry, rules.iter().map(|r| r.to_string()).collect())
+  }
+
+  /// The messages of `rule`'s problems, by offset.
+  fn problems_of<'r>(result: &'r LintResult, rule: &str) -> Vec<(usize, &'r str)> {
+    result
+      .diagnostics
+      .iter()
+      .filter(|d| d.rule_name == rule)
+      .map(|d| (d.span.offset, d.message.as_str()))
+      .collect()
+  }
+
+  /// A rule whose build of the shared tree panics reports an internal
+  /// error; the next rule to ask builds the tree, and so do the disable
+  /// comments read after the rules.
+  #[test]
+  fn a_shared_build_that_panics_is_built_again_for_the_next_rule() {
+    let runner = runner_with_tree_rules(&["test/breaks-tree-build", "test/tree-rules"]);
+    // The disable comment is read from the same shared tree, after the
+    // failed build: it must still apply.
+    let src = "a {}
+/* stylelint-disable-next-line test/tree-rules */
+b {}
+c {}
+";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+
+    let crashes = problems_of(&result, "test/breaks-tree-build");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("tree build failed"),
+      "{}",
+      crashes[0].1
+    );
+
+    let c = src.find("c {").unwrap();
+    assert_eq!(
+      problems_of(&result, "test/tree-rules"),
+      vec![(0, "rule"), (c, "rule")],
+      "the next rule builds the tree and the disable comment applies"
+    );
+  }
+
+  /// A rule that panics while holding the shared tree only drops its
+  /// reference; the other rules still get the tree.
+  #[test]
+  fn a_rule_that_panics_holding_the_shared_tree_leaves_it_to_the_others() {
+    let runner = runner_with_tree_rules(&["test/panics-holding-tree", "test/tree-rules"]);
+    let result = runner.lint_source(
+      "a {}
+b {}
+",
+      "test.css",
+      Syntax::Css,
+    );
+
+    let crashes = problems_of(&result, "test/panics-holding-tree");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("crashed holding 2 statements"),
+      "{}",
+      crashes[0].1
+    );
+    assert_eq!(
+      problems_of(&result, "test/tree-rules"),
+      vec![(0, "rule"), (5, "rule")]
+    );
+  }
+
+  /// A rule that panics while holding a node's shared declarations does
+  /// not lock them: the next rule reads them for that node and every other.
+  #[test]
+  fn a_rule_that_panics_holding_shared_declarations_leaves_them_to_the_others() {
+    let runner = runner_with_tree_rules(&["test/panics-holding-declarations", "test/declarations"]);
+    let src = "a { color: red; top: 0 }\nb { left: 0 }\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+
+    let crashes = problems_of(&result, "test/panics-holding-declarations");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("crashed holding 2 declarations"),
+      "{}",
+      crashes[0].1
+    );
+    let props: Vec<&str> = problems_of(&result, "test/declarations")
+      .into_iter()
+      .map(|(_, prop)| prop)
+      .collect();
+    assert_eq!(props, ["color", "top", "left"]);
+  }
+
   #[test]
   fn a_panic_outside_any_rule_becomes_one_problem_on_the_file() {
     let result = guard_file("a {}", "test.css", || panic!("parser exploded"));
@@ -1865,6 +1502,127 @@ mod tests {
     let src = "/* stylelint-disable-next-line */\na { }\nb { }";
     let result = runner.lint_source(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
+  }
+
+  /// The lines `runner` reports problems on in `src`.
+  fn problem_lines(runner: &LintRunner, src: &str, path: &str, syntax: Syntax) -> Vec<usize> {
+    let result = runner.lint_source(src, path, syntax);
+    let index = SourceLineIndex::build(src);
+    result
+      .diagnostics
+      .iter()
+      .map(|d| index.line(d.span.offset))
+      .collect()
+  }
+
+  #[test]
+  fn disables_cover_whole_lines_like_stylelint() {
+    let runner = runner_for(&["block-no-empty"]);
+    let lines = |src: &str| problem_lines(&runner, src, "test.css", Syntax::Css);
+    // A disable covers its own line, code before it included, and the
+    // enable's line is still off.
+    assert_eq!(
+      lines("a {} /* stylelint-disable */\nb {}\n/* stylelint-enable */ c {}\nd {}\n"),
+      vec![4]
+    );
+    // `disable-next-line` reaches the line after the comment ends.
+    assert_eq!(
+      lines("/* stylelint-disable-next-line\n  block-no-empty */\na {}\nb {}\n"),
+      vec![4]
+    );
+    // A command inside a selector or value counts; one inside a string
+    // does not.
+    assert_eq!(
+      lines(
+        "a, /* stylelint-disable-line */ b {}\nc { content: \"/* stylelint-disable */\" }\nd {}\n"
+      ),
+      vec![3]
+    );
+  }
+
+  #[test]
+  fn a_plain_enable_turns_rules_disabled_by_name_back_on() {
+    let runner = runner_for(&["color-no-invalid-hex"]);
+    let src = "/* stylelint-disable color-no-invalid-hex */\na { color: #ab; }\n/* stylelint-enable */\na { color: #ab; }\n";
+    assert_eq!(
+      problem_lines(&runner, src, "test.css", Syntax::Css),
+      vec![4]
+    );
+    // And enabling one rule under a blanket disable turns on just that one.
+    let runner = runner_for(&["color-no-invalid-hex", "block-no-empty"]);
+    let src = "/* stylelint-disable */\na {}\n/* stylelint-enable color-no-invalid-hex */\nb { color: #ab; }\nc {}\n";
+    assert_eq!(
+      problem_lines(&runner, src, "test.css", Syntax::Css),
+      vec![4]
+    );
+  }
+
+  #[test]
+  fn a_rejected_command_replaces_every_problem_like_stylelint() {
+    let mut runner = runner_for(&["block-no-empty", "not-a-rule"]);
+    runner.set_default_severity(Some(Severity::Warning));
+    runner.set_ignore_disables(true);
+    let src = "a {}\n/* stylelint-enable */\nb {}\n";
+    for result in [
+      runner.lint_source(src, "test.css", Syntax::Css),
+      runner.lint_source_with_rules(
+        src,
+        "test.css",
+        Syntax::Css,
+        &["block-no-empty".to_string()],
+        &HashMap::new(),
+        &HashMap::new(),
+      ),
+    ] {
+      assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+      let d = &result.diagnostics[0];
+      assert_eq!(d.rule_name, "CssSyntaxError");
+      assert_eq!(d.message, "No rules have been disabled");
+      assert_eq!(d.severity, Severity::Error);
+      assert_eq!(&src[d.span.offset..d.span.end()], "/* stylelint-enable */");
+      assert_eq!(
+        d.stylelint_text(),
+        "No rules have been disabled (CssSyntaxError)"
+      );
+    }
+  }
+
+  #[test]
+  fn double_slash_commands_need_scss_or_less() {
+    let runner = runner_for(&["block-no-empty"]);
+    let src = "// stylelint-disable-next-line block-no-empty\na {}\nb {}\n";
+    assert_eq!(problem_lines(&runner, src, "t.scss", Syntax::Scss), vec![3]);
+    assert_eq!(problem_lines(&runner, src, "t.less", Syntax::Less), vec![3]);
+    // In CSS the line is part of the next selector, not a comment.
+    let hex = runner_for(&["color-no-invalid-hex"]);
+    let css = "a { color: #ab; } // stylelint-disable-line color-no-invalid-hex\nb {}\n";
+    assert_eq!(problem_lines(&hex, css, "t.css", Syntax::Css), vec![1]);
+    assert!(problem_lines(&hex, css, "t.scss", Syntax::Scss).is_empty());
+    // A description on the next `//` line makes the command span both.
+    let described = "// stylelint-disable-next-line block-no-empty\n// -- legacy\na {}\nb {}\n";
+    assert_eq!(
+      problem_lines(&runner, described, "t.scss", Syntax::Scss),
+      vec![4]
+    );
+  }
+
+  #[test]
+  fn sass_disables_count_the_lines_of_the_sass() {
+    // The converted SCSS gains a `}` line before `color`, which must not
+    // push the problem off the line the command names.
+    let mut options = HashMap::new();
+    options.insert("color-hex-case".to_string(), serde_json::json!("lower"));
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec!["color-hex-case".to_string()],
+      options,
+    );
+    let src =
+      ".a\n  .b\n    // stylelint-disable-next-line color-hex-case\n  color: #FFF\n  top: #FFF\n";
+    assert_eq!(
+      problem_lines(&runner, src, "test.sass", Syntax::Sass),
+      vec![5]
+    );
   }
 
   #[test]
@@ -2068,7 +1826,23 @@ mod tests {
     assert_eq!(d.rule_name, "--report-invalid-scope-disables");
     assert_eq!(d.message, "Rule \"color-named\" isn't enabled");
     assert_eq!(d.severity, Severity::Error);
-    assert_eq!(d.span.offset, 0);
+    // From the comment's first character to its last, as Stylelint's
+    // warning start and end.
+    assert_eq!(d.span, Span::from_range(0, 34));
+  }
+
+  #[test]
+  fn disable_reports_point_at_the_declaration_holding_the_comment() {
+    let mut runner = runner_for(&["block-no-empty"]);
+    runner.set_report_invalid_scope_disables(true);
+    let src = "a {\n  color: /* stylelint-disable-line color-named */ red;\n}\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1);
+    let span = result.diagnostics[0].span;
+    assert_eq!(
+      &src[span.offset..=span.end()],
+      "color: /* stylelint-disable-line color-named */ red;"
+    );
   }
 
   #[test]

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod decl_spans;
+pub mod embedded;
 mod sass_to_scss;
 
 use decl_spans::{ProtoDeclaration, assign_spans, find_declaration_span, locate_declarations};

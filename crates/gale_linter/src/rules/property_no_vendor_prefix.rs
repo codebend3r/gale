@@ -1,12 +1,20 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::autoprefixable;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+use crate::source_text;
 
 /// Reports vendor-prefixed properties (e.g. `-webkit-transform`).
 ///
-/// Equivalent to Stylelint's `property-no-vendor-prefix` rule.
+/// Equivalent to Stylelint's `property-no-vendor-prefix` rule.  Only
+/// prefixes Autoprefixer would add back are reported, and the fix strips the
+/// prefix from the property as written, keeping its case.
 pub struct PropertyNoVendorPrefix;
+
+/// Stylelint's `basicKeywords`.
+const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
 impl Rule for PropertyNoVendorPrefix {
   fn name(&self) -> &'static str {
@@ -24,21 +32,10 @@ impl Rule for PropertyNoVendorPrefix {
   /// Flags vendor-prefixed properties that have an unprefixed equivalent,
   /// skipping any listed in `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    // Read ignoreProperties from options (secondary option object).
-    let ignore_props: Vec<String> = ctx
+    let ignore_props = ctx
       .secondary_options()
-      .or(ctx.options)
-      .and_then(|v| v.get("ignoreProperties"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(|s| s.to_ascii_lowercase()))
-          .collect()
-      })
-      .unwrap_or_default();
+      .and_then(|v| v.get("ignoreProperties"));
 
-    // Collect declarations to check from both Style rules and standalone Declaration nodes
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
       CssNode::Declaration(decl) => vec![decl],
@@ -47,324 +44,155 @@ impl Rule for PropertyNoVendorPrefix {
 
     let mut diags = Vec::new();
     for decl in decls {
-      if is_vendor_prefixed(&decl.property) {
-        // Skip properties in the ignore list
-        let prop_lower = decl.property.to_ascii_lowercase();
-        if ignore_props.iter().any(|p| p == &prop_lower) {
+      if decl.span.length == 0 {
+        continue;
+      }
+      let Some((prop, prop_start)) = source_text::declaration_property(ctx.source, decl) else {
+        continue;
+      };
+      if pattern::option_matches(ignore_props, prop) {
+        continue;
+      }
+      // A vendor prefix, but not a custom property.
+      if !prop.starts_with('-') || prop.starts_with("--") {
+        continue;
+      }
+      if !autoprefixable::property(prop) {
+        continue;
+      }
+      // whatwg/compat#28: the prefixed form treats one length differently.
+      if prop == "-webkit-background-size" {
+        let value = source_text::declaration_value(ctx.source, decl).map_or("", |(v, _)| v);
+        if !is_safe_background_size(value) {
           continue;
         }
-        let unprefixed = strip_vendor_prefix(&decl.property);
-
-        // Try to find the property in the source to build a fix
-        let decl_start = decl.span.offset;
-        let decl_end = decl_start + decl.span.length;
-        let fix = if decl_end <= ctx.source.len() && decl_start < decl_end {
-          let search_area = &ctx.source[decl_start..decl_end];
-          let lower_search = search_area.to_ascii_lowercase();
-          let lower_prop = decl.property.to_ascii_lowercase();
-          lower_search.find(&lower_prop).map(|rel_offset| {
-            let abs_offset = decl_start + rel_offset;
-            Fix::new(
-              format!("Remove vendor prefix from \"{}\"", decl.property),
-              vec![Edit::new(
-                Span::new(abs_offset, decl.property.len()),
-                &unprefixed,
-              )],
-            )
-          })
-        } else {
-          None
-        };
-
-        let mut diag = Diagnostic::new(
-          self.name(),
-          format!("Unexpected vendor-prefixed property \"{}\"", decl.property),
-        )
-        .severity(self.default_severity())
-        .span(Span::new(decl.span.offset, decl.span.length));
-
-        if let Some(f) = fix {
-          diag = diag.fix(f);
-        }
-
-        diags.push(diag);
       }
+
+      let unprefixed = autoprefixable::unprefix(prop);
+      let span = Span::new(prop_start, prop.len());
+      // Stylelint 15 and older word the message differently.
+      let message = if crate::stylelint_version::stylelint_major_version() >= 16 {
+        format!("Unexpected vendor-prefixed property \"{prop}\"")
+      } else {
+        format!("Unexpected vendor-prefix \"{prop}\"")
+      };
+      diags.push(
+        Diagnostic::new(self.name(), message)
+          .severity(self.default_severity())
+          .span(span)
+          .fix(Fix::new(
+            format!("Remove vendor prefix from \"{prop}\""),
+            vec![Edit::new(span, unprefixed)],
+          )),
+      );
     }
     diags
   }
 }
 
-/// The property with any vendor prefix removed, preserving the original case.
-fn strip_vendor_prefix(property: &str) -> String {
-  let p = property.to_ascii_lowercase();
-  for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
-    if p.starts_with(prefix) {
-      return property[prefix.len()..].to_string();
+/// Whether a `-webkit-background-size` value means the same unprefixed:
+/// every comma-separated layer has two sizes, or is `auto` or a basic
+/// keyword.  Other single sizes are read differently by the prefixed form.
+fn is_safe_background_size(value: &str) -> bool {
+  value.split(',').all(|layer| {
+    let words: Vec<&str> = layer.split_whitespace().collect();
+    match words.as_slice() {
+      [_, _] => true,
+      [first] => *first == "auto" || BASIC_KEYWORDS.contains(first),
+      _ => false,
     }
-  }
-  property.to_string()
-}
-
-/// Known CSS properties that have standard unprefixed equivalents.
-/// Only these should be flagged when vendor-prefixed. Properties like
-/// `-webkit-tap-highlight-color` or `-webkit-overflow-scrolling` that
-/// have NO standard equivalent are not autoprefixable and should not
-/// be flagged (matching Stylelint's behavior).
-const KNOWN_PREFIXABLE_PROPERTIES: &[&str] = &[
-  "align-content",
-  "align-items",
-  "align-self",
-  "animation",
-  "animation-delay",
-  "animation-direction",
-  "animation-duration",
-  "animation-fill-mode",
-  "animation-iteration-count",
-  "animation-name",
-  "animation-play-state",
-  "animation-timing-function",
-  "appearance",
-  "backdrop-filter",
-  "backface-visibility",
-  "background-clip",
-  "background-origin",
-  "background-size",
-  "border-image",
-  "border-radius",
-  "border-top-left-radius",
-  "border-top-right-radius",
-  "border-bottom-left-radius",
-  "border-bottom-right-radius",
-  "box-decoration-break",
-  "box-shadow",
-  "box-sizing",
-  "clip-path",
-  "column-count",
-  "column-fill",
-  "column-gap",
-  "column-rule",
-  "column-rule-color",
-  "column-rule-style",
-  "column-rule-width",
-  "column-span",
-  "column-width",
-  "columns",
-  "filter",
-  "flex",
-  "flex-basis",
-  "flex-direction",
-  "flex-flow",
-  "flex-grow",
-  "flex-shrink",
-  "flex-wrap",
-  "font-feature-settings",
-  "font-kerning",
-  "font-variant-ligatures",
-  "grid",
-  "grid-area",
-  "grid-auto-columns",
-  "grid-auto-flow",
-  "grid-auto-rows",
-  "grid-column",
-  "grid-column-end",
-  "grid-column-gap",
-  "grid-column-start",
-  "grid-gap",
-  "grid-row",
-  "grid-row-end",
-  "grid-row-gap",
-  "grid-row-start",
-  "grid-template",
-  "grid-template-areas",
-  "grid-template-columns",
-  "grid-template-rows",
-  "hyphens",
-  "image-rendering",
-  "justify-content",
-  "mask",
-  "mask-image",
-  "object-fit",
-  "object-position",
-  "opacity",
-  "order",
-  "overscroll-behavior",
-  "perspective",
-  "perspective-origin",
-  "scroll-snap-type",
-  "shape-image-threshold",
-  "shape-margin",
-  "shape-outside",
-  "tab-size",
-  "text-decoration",
-  "text-decoration-color",
-  "text-decoration-line",
-  "text-decoration-skip",
-  "text-decoration-style",
-  "text-emphasis",
-  "text-emphasis-color",
-  "text-emphasis-position",
-  "text-emphasis-style",
-  "text-orientation",
-  "text-overflow",
-  "touch-action",
-  "transform",
-  "transform-origin",
-  "transform-style",
-  "transition",
-  "transition-delay",
-  "transition-duration",
-  "transition-property",
-  "transition-timing-function",
-  "user-select",
-  "will-change",
-  "writing-mode",
-];
-
-/// Whether the property carries a vendor prefix. Custom properties do not.
-fn is_vendor_prefixed(property: &str) -> bool {
-  let p = property.to_ascii_lowercase();
-  // Custom properties (--) are not vendor prefixes
-  if p.starts_with("--") {
-    return false;
-  }
-  if !p.starts_with("-webkit-")
-    && !p.starts_with("-moz-")
-    && !p.starts_with("-ms-")
-    && !p.starts_with("-o-")
-  {
-    return false;
-  }
-
-  // Only flag if the unprefixed property is a known standard property.
-  let unprefixed = strip_vendor_prefix_lower(&p);
-  KNOWN_PREFIXABLE_PROPERTIES
-    .binary_search(&unprefixed.as_str())
-    .is_ok()
-}
-
-/// The already-lowercase property with any vendor prefix removed.
-fn strip_vendor_prefix_lower(property: &str) -> String {
-  for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
-    if let Some(stripped) = property.strip_prefix(prefix) {
-      return stripped.to_string();
-    }
-  }
-  property.to_string()
+  })
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "property-no-vendor-prefix".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
     }
-  }
-
-  fn style_decl(prop: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: "none".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+    current
   }
 
   #[test]
-  fn reports_webkit_prefix() {
-    let d = PropertyNoVendorPrefix.check(&style_decl("-webkit-transform"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("-webkit-transform"));
-  }
-
-  #[test]
-  fn allows_standard_property() {
-    assert!(
-      PropertyNoVendorPrefix
-        .check(&style_decl("transform"), &ctx())
-        .is_empty()
-    );
-  }
-
-  #[test]
-  fn allows_custom_property() {
-    assert!(
-      PropertyNoVendorPrefix
-        .check(&style_decl("--my-var"), &ctx())
-        .is_empty()
-    );
-  }
-
-  #[test]
-  fn emits_fix_for_vendor_prefixed_property() {
-    let source = "a { -webkit-transform: none; }";
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    };
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "-webkit-transform".to_string(),
-        value: "none".to_string(),
-        span: ParserSpan::new(4, 24),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = PropertyNoVendorPrefix.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].fix.is_some());
-    let fix = d[0].fix.as_ref().unwrap();
-    assert_eq!(fix.edits.len(), 1);
-    assert_eq!(fix.edits[0].new_text, "transform");
-  }
-
-  #[test]
-  fn ignore_properties_checks_as_is_not_unprefixed() {
-    // v17: ignoreProperties: ["transform"] should NOT match -webkit-transform
-    let opts = serde_json::json!(["true", {"ignoreProperties": ["transform"]}]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-    };
-    let d = PropertyNoVendorPrefix.check(&style_decl("-webkit-transform"), &ctx);
+  fn strips_the_prefix_keeping_the_property_case() {
+    let on = serde_json::json!(true);
     assert_eq!(
-      d.len(),
-      1,
-      "ignoreProperties: [\"transform\"] should NOT ignore -webkit-transform"
+      fix("a { -webkit-transform: scale(1); }", on.clone()),
+      "a { transform: scale(1); }"
+    );
+    assert_eq!(
+      fix("a { -wEbKiT-tRaNsFoRm: scale(1); }", on.clone()),
+      "a { tRaNsFoRm: scale(1); }"
+    );
+    assert_eq!(
+      fix("a { -WEBKIT-TRANSFORM: scale(1); }", on.clone()),
+      "a { TRANSFORM: scale(1); }"
+    );
+    let warnings = lint("a { -moz-columns: 2; }", on);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (4, 12));
+  }
+
+  #[test]
+  fn leaves_properties_without_a_standard_form_alone() {
+    let on = serde_json::json!(true);
+    for css in [
+      "a { -webkit-touch-callout: none; }",
+      "a { -WEBKIT-TOUCH-CALLOUT: none; }",
+      "a { --webkit-transform: 1px; }",
+      "a { -webkit-background-size: 1px; }",
+      "a { -webkit-background-size: 1px   2px ,   1px; }",
+    ] {
+      assert!(lint(css, on.clone()).is_empty(), "{css}");
+    }
+    assert_eq!(
+      fix("a { -webkit-background-size: 1px 2px, 2px 1px; }", on),
+      "a { background-size: 1px 2px, 2px 1px; }"
     );
   }
 
   #[test]
-  fn ignore_properties_matches_full_prefixed_name() {
-    // v17: ignoreProperties: ["-webkit-transform"] SHOULD match -webkit-transform
-    let opts = serde_json::json!(["true", {"ignoreProperties": ["-webkit-transform"]}]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-    };
-    let d = PropertyNoVendorPrefix.check(&style_decl("-webkit-transform"), &ctx);
-    assert!(
-      d.is_empty(),
-      "ignoreProperties: [\"-webkit-transform\"] SHOULD ignore -webkit-transform"
+  fn ignore_properties_compares_strings_exactly_and_regexes_as_written() {
+    let options = serde_json::json!([true, {
+      "ignoreProperties": ["-webkit-transform", "/^-webkit-animation-/i"]
+    }]);
+    assert!(lint("a { -webkit-transform: none; }", options.clone()).is_empty());
+    assert!(lint("a { -webkit-ANIMATION-DeLaY: 0.5s; }", options.clone()).is_empty());
+    assert_eq!(
+      fix("a { -WEBKIT-tranSFoRM: translateY(-50%); }", options),
+      "a { tranSFoRM: translateY(-50%); }"
     );
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!([true, { "disableFix": true }]);
+    assert_eq!(lint("a { -o-columns: 2; }", options.clone()).len(), 1);
+    assert_eq!(fix("a { -o-columns: 2; }", options), "a { -o-columns: 2; }");
   }
 }

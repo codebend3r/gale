@@ -165,7 +165,8 @@ impl Rule for CustomPropertyPattern {
           diags.push(
             Diagnostic::new(self.name(), message)
               .severity(self.default_severity())
-              .span(Span::new(decl.span.offset, decl.span.length)),
+              .span(Span::new(decl.span.offset, decl.span.length))
+              .message_args([full_name.as_str(), pattern_str]),
           );
         }
       }
@@ -192,7 +193,8 @@ impl Rule for CustomPropertyPattern {
                 diags.push(
                   Diagnostic::new(self.name(), message)
                     .severity(self.default_severity())
-                    .span(Span::new(token_abs_offset, prop_name.len())),
+                    .span(Span::new(token_abs_offset, prop_name.len()))
+                    .message_args([prop_name, pattern_str]),
                 );
               }
             }
@@ -215,6 +217,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -224,6 +227,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 

@@ -119,6 +119,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -209,6 +210,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let d = ScssFunctionDisallowedList.check(&decl_node("lighten($c, 10%)"), &ctx);
     assert!(d.is_empty());
@@ -222,6 +224,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let d = ScssFunctionDisallowedList.check(&decl_node("lighten($c, 10%)"), &ctx);
     assert!(d.is_empty());

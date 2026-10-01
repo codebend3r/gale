@@ -198,6 +198,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(opt),
+      cache: None,
     }
   }
 

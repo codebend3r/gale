@@ -288,6 +288,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     };
     rule.check_root(&[], &ctx)
   }
@@ -330,6 +331,7 @@ mod tests {
       source: "a { border: none; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());

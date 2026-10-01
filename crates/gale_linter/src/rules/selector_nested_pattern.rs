@@ -98,6 +98,7 @@ mod tests {
         source: "",
         syntax: Syntax::Css,
         options: None,
+        cache: None,
       },
     )
   }
@@ -119,6 +120,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -145,6 +147,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -170,6 +173,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -188,6 +192,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -215,6 +220,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&opts),
+      cache: None,
     };
     // &__child should be rejected (contains &_)
     let node = CssNode::Style(StyleRule {

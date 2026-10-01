@@ -1,83 +1,134 @@
-use gale_css_parser::CssNode;
+use std::collections::HashSet;
+
+use gale_css_parser::{CssNode, Declaration, StyleRule};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::source_text;
+use crate::stylelint_version::stylelint_major_version;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Reports when a custom property (e.g. `--my-color`) is used as a declaration
-/// value without being wrapped in a `var()` function.
+/// Reports a custom property (e.g. `--my-color`) used as a value without a
+/// `var()` around it.
 ///
-/// Equivalent to Stylelint's `custom-property-no-missing-var-function` rule.
+/// Equivalent to Stylelint's `custom-property-no-missing-var-function`
+/// rule.  Like it, only names this stylesheet defines (with a `--name:`
+/// declaration or an `@property --name` rule) count as custom properties:
+/// any other dashed ident, an anchor name in `anchor-name: --menu` say, is
+/// left alone, as are properties that take a custom ident.
 pub struct CustomPropertyNoMissingVarFunction;
 
-/// Check if a value contains a custom property reference (`--something`) that is
-/// not wrapped in `var(...)`.
-fn has_bare_custom_property(value: &str) -> bool {
-  // If the trimmed value starts with `--`, it's likely a bare custom property
-  // reference used directly as a value (e.g., `color: --my-color`).
-  let trimmed = value.trim();
-  if trimmed.starts_with("--") {
-    return true;
-  }
+/// Properties whose values may hold a dashed ident that is no custom
+/// property reference (Stylelint's `IGNORED_PROPERTIES`).
+const IGNORED_PROPERTIES: &[&str] = &[
+  "animation",
+  "animation-name",
+  "container-name",
+  "counter-increment",
+  "counter-reset",
+  "counter-set",
+  "grid-column",
+  "grid-column-end",
+  "grid-column-start",
+  "grid-row",
+  "grid-row-end",
+  "grid-row-start",
+  "list-style",
+  "list-style-type",
+  "transition",
+  "transition-property",
+  "view-transition-name",
+  "will-change",
+];
 
-  // Also check for bare `--` tokens that are NOT inside `var(...)` or parentheses.
-  // Strategy: remove all `var(...)` occurrences then check for remaining `--` tokens
-  // that are not inside parentheses (non-var parens like `(--x, 0.72)` are not
-  // custom property references).
-  let without_var = remove_var_functions(trimmed);
-  let chars_vec: Vec<char> = without_var.chars().collect();
-  let mut paren_depth = 0i32;
-  for (idx, ch) in chars_vec.iter().enumerate() {
-    if *ch == '(' {
-      paren_depth += 1;
-    } else if *ch == ')' {
-      paren_depth -= 1;
-    }
-    if *ch == '-'
-      && idx + 1 < chars_vec.len()
-      && chars_vec[idx + 1] == '-'
-      && (idx == 0 || !chars_vec[idx - 1].is_ascii_alphanumeric())
-      && paren_depth == 0
-    {
-      return true;
+/// Properties Stylelint 17 added to [`IGNORED_PROPERTIES`].
+const IGNORED_PROPERTIES_SINCE_17: &[&str] = &["animation-timeline", "timeline-scope"];
+
+/// Every declaration in `nodes`, at any depth, and the params of every
+/// `@property` rule.
+fn collect<'a>(
+  nodes: &'a [CssNode],
+  decls: &mut Vec<&'a Declaration>,
+  property_rules: &mut Vec<&'a gale_css_parser::AtRule>,
+) {
+  for node in nodes {
+    match node {
+      CssNode::Declaration(decl) => decls.push(decl),
+      CssNode::AtRule(at) => {
+        if at.name.eq_ignore_ascii_case("property") {
+          property_rules.push(at);
+        }
+        collect(&at.children, decls, property_rules);
+      }
+      CssNode::Style(rule) => collect_rule(rule, decls, property_rules),
+      CssNode::Comment(_) => {}
     }
   }
-
-  false
 }
 
-/// Remove `var(...)` function calls from a string, handling nested parentheses.
-fn remove_var_functions(s: &str) -> String {
-  let mut result = String::with_capacity(s.len());
-  let chars: Vec<char> = s.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
+/// [`collect`] for a style rule and everything nested in it.
+fn collect_rule<'a>(
+  rule: &'a StyleRule,
+  decls: &mut Vec<&'a Declaration>,
+  property_rules: &mut Vec<&'a gale_css_parser::AtRule>,
+) {
+  decls.extend(rule.declarations.iter());
+  collect(&rule.nested_at_rules, decls, property_rules);
+  for child in &rule.children {
+    collect_rule(child, decls, property_rules);
+  }
+}
 
-  while i < len {
-    // Check for "var("
-    if i + 4 <= len
-      && chars[i] == 'v'
-      && chars[i + 1] == 'a'
-      && chars[i + 2] == 'r'
-      && chars[i + 3] == '('
-    {
-      let mut depth = 1;
-      let mut j = i + 4;
-      while j < len && depth > 0 {
-        if chars[j] == '(' {
-          depth += 1;
-        } else if chars[j] == ')' {
-          depth -= 1;
+/// The checks for one stylesheet.
+struct Check<'a> {
+  /// Custom property names the stylesheet defines.
+  known: HashSet<&'a str>,
+  /// Where each reported dashed ident starts in the source, and its name.
+  found: Vec<(usize, &'a str)>,
+}
+
+impl<'a> Check<'a> {
+  /// Check a value node whose value text starts at `offset` in the source.
+  fn node(&mut self, node: &ValueNode<'a>, offset: usize) {
+    if node.is_function() {
+      let name = node.value.to_ascii_lowercase();
+      let args: &[ValueNode<'a>] = match name.as_str() {
+        "var" => node.nodes.get(1..).unwrap_or_default(),
+        "running" => match node.nodes.first() {
+          Some(first) if first.is_function() && first.value.eq_ignore_ascii_case("var") => {
+            first.nodes.get(1..).unwrap_or_default()
+          }
+          _ => return,
+        },
+        "style" => {
+          // In a `style()` query the property name before the `:` is
+          // exempt; the value after it is checked as usual.
+          let mut after_colon = false;
+          for arg in &node.nodes {
+            if arg.kind == NodeKind::Div && arg.value == ":" {
+              after_colon = true;
+            } else if after_colon {
+              self.node(arg, offset);
+            }
+          }
+          return;
         }
-        j += 1;
+        _ => &node.nodes,
+      };
+      for arg in args {
+        self.node(arg, offset);
       }
-      i = j;
-    } else {
-      result.push(chars[i]);
-      i += 1;
+      return;
+    }
+    if !node.is_word() || !node.value.starts_with("--") {
+      return;
+    }
+    // `postcss-value-parser` keeps a trailing `;` in a word.
+    let name = node.value.trim_end_matches(';');
+    if self.known.contains(name) {
+      self.found.push((offset + node.source_index, name));
     }
   }
-
-  result
 }
 
 impl Rule for CustomPropertyNoMissingVarFunction {
@@ -93,115 +144,135 @@ impl Rule for CustomPropertyNoMissingVarFunction {
     Severity::Warning
   }
 
-  /// Flags a `--name` used as a bare value instead of inside `var()`. Custom
-  /// property definitions and interpolated values are skipped.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let style = match node {
-      CssNode::Style(s) => s,
-      _ => return vec![],
+  /// Flags a custom property this stylesheet defines when a value uses it
+  /// bare instead of inside `var()`.
+  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut decls = Vec::new();
+    let mut property_rules = Vec::new();
+    collect(nodes, &mut decls, &mut property_rules);
+
+    let mut check = Check {
+      known: HashSet::new(),
+      found: Vec::new(),
     };
-
-    let mut diagnostics = Vec::new();
-
-    for decl in &style.declarations {
-      // Skip custom property definitions (e.g., `--my-color: red`).
+    for at in property_rules {
+      let params =
+        source_text::at_rule_params(ctx.source, at).map_or(at.params.trim(), |(params, _)| params);
+      check.known.insert(params);
+    }
+    for decl in &decls {
       if decl.property.starts_with("--") {
+        check.known.insert(decl.property.as_str());
+      }
+    }
+    if check.known.is_empty() {
+      return vec![];
+    }
+
+    let stylelint_17 = stylelint_major_version() >= 17;
+    for decl in decls {
+      let Some((value, offset)) = source_text::declaration_value(ctx.source, decl) else {
+        continue;
+      };
+      if !value.contains("--") {
         continue;
       }
-
-      // Skip values containing SCSS/Less interpolation — the `--`
-      // may be part of an interpolated identifier, not a bare custom
-      // property reference.
-      if decl.value.contains("#{") || decl.value.contains("@{") {
+      let property = decl.property.to_ascii_lowercase();
+      let ignored = IGNORED_PROPERTIES.contains(&property.as_str())
+        || (stylelint_17 && IGNORED_PROPERTIES_SINCE_17.contains(&property.as_str()));
+      if ignored {
         continue;
       }
-
-      if has_bare_custom_property(&decl.value) {
-        diagnostics.push(
-          Diagnostic::new(
-            self.name(),
-            "Unexpected missing var function for custom property",
-          )
-          .severity(self.default_severity())
-          .span(Span::new(decl.span.offset, decl.span.length)),
-        );
+      for node in &value_parser::parse(value) {
+        check.node(node, offset);
       }
     }
 
-    diagnostics
+    check
+      .found
+      .into_iter()
+      .map(|(offset, name)| {
+        let message = if stylelint_17 {
+          format!("Missing var function for \"{name}\"")
+        } else {
+          format!("Unexpected missing var function for \"{name}\"")
+        };
+        Diagnostic::new(self.name(), message)
+          .severity(self.default_severity())
+          .span(Span::new(offset, name.len()))
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::Syntax;
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
+  /// Lint `source` with the real parser, returning `(offset, name)` for
+  /// each report (the name is the quoted part of the message).
+  fn lint(source: &str) -> Vec<(usize, String)> {
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
       syntax: Syntax::Css,
       options: None,
-    }
+      cache: None,
+    };
+    CustomPropertyNoMissingVarFunction
+      .check_root(&parsed.nodes, &ctx)
+      .into_iter()
+      .map(|d| {
+        let name = d.message.split('"').nth(1).unwrap_or_default().to_string();
+        (d.span.offset, name)
+      })
+      .collect()
   }
 
   #[test]
-  fn reports_bare_custom_property_in_value() {
-    let rule = CustomPropertyNoMissingVarFunction;
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "--my-color".to_string(),
-        span: ParserSpan::new(4, 18),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 24),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &make_context());
-    assert_eq!(diags.len(), 1);
+  fn reports_a_defined_custom_property_used_bare() {
+    let source = ":root { --accent: red; }\na { color: --accent; }";
+    assert_eq!(lint(source), vec![(36, "--accent".to_string())]);
+  }
+
+  #[test]
+  fn names_the_property_in_the_message() {
+    let source = ":root { --a: 1px; }\na { margin: 0 --a; }";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
+      syntax: Syntax::Css,
+      options: None,
+      cache: None,
+    };
+    let d = CustomPropertyNoMissingVarFunction.check_root(&parsed.nodes, &ctx);
+    assert_eq!(d.len(), 1);
     assert!(
-      diags[0]
-        .message
-        .contains("missing var function for custom property")
+      d[0].message.ends_with("var function for \"--a\""),
+      "{}",
+      d[0].message
     );
   }
 
   #[test]
-  fn ignores_custom_property_inside_var() {
-    let rule = CustomPropertyNoMissingVarFunction;
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "var(--my-color)".to_string(),
-        span: ParserSpan::new(4, 22),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 28),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &make_context());
-    assert!(diags.is_empty());
+  fn leaves_undefined_dashed_idents_alone() {
+    // Anchor names are dashed idents, not custom property references.
+    let source = ".a { anchor-name: --menu; }\n.b { position-anchor: --menu; }";
+    assert!(lint(source).is_empty());
   }
 
   #[test]
-  fn ignores_custom_property_definitions() {
-    let rule = CustomPropertyNoMissingVarFunction;
-    let node = CssNode::Style(StyleRule {
-      selector: ":root".to_string(),
-      declarations: vec![Declaration {
-        property: "--my-color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(8, 16),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 26),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &make_context());
-    assert!(diags.is_empty());
+  fn var_fallbacks_and_property_rules_count() {
+    let source = "@property --size { syntax: '<length>'; inherits: false; initial-value: 0px; }\na { width: var(--other, --size); height: var(--size); }";
+    assert_eq!(lint(source), vec![(102, "--size".to_string())]);
+  }
+
+  #[test]
+  fn properties_taking_custom_idents_are_skipped() {
+    let source = ":root { --fade: 1; }\na { animation-name: --fade; transition-property: --fade; }";
+    assert!(lint(source).is_empty());
   }
 }

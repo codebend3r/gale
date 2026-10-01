@@ -65,6 +65,9 @@ pub struct ResolvedOverride {
   /// `None` means no custom syntax was specified (use default detection).
   /// `Some(name)` is the raw string value (e.g. `"postcss-markdown"`).
   pub custom_syntax: Option<String>,
+  /// The override this one came from through its `extends`, which it only
+  /// applies within: a file must match both.
+  scope: Option<Box<ResolvedOverride>>,
 }
 
 impl ResolvedOverride {
@@ -90,7 +93,28 @@ impl ResolvedOverride {
       exclude_matchers,
       rules,
       custom_syntax,
+      scope: None,
     }
+  }
+
+  /// This override, applying only to files `outer` matches too.
+  fn within(mut self, outer: &ResolvedOverride) -> Self {
+    self.scope = Some(Box::new(match self.scope.take() {
+      Some(scope) => scope.within(outer),
+      None => ResolvedOverride {
+        rules: HashMap::new(),
+        ..outer.clone()
+      },
+    }));
+    self
+  }
+
+  /// Whether the file is inside the override this one is scoped to, if any.
+  fn in_scope(&self, file_path: &str) -> bool {
+    self
+      .scope
+      .as_ref()
+      .is_none_or(|scope| scope.matches(file_path))
   }
 
   /// Check whether a file path matches any of this override's glob patterns
@@ -102,13 +126,13 @@ impl ResolvedOverride {
       return false;
     }
     // Check exclusions
-    !self.exclude_matchers.iter().any(|m| m.is_match(path))
+    !self.exclude_matchers.iter().any(|m| m.is_match(path)) && self.in_scope(file_path)
   }
 
   /// Check whether a file path matches the override's `files` patterns.
   pub fn matches_files(&self, file_path: &str) -> bool {
     let path = Path::new(file_path);
-    self.matchers.iter().any(|m| m.is_match(path))
+    self.matchers.iter().any(|m| m.is_match(path)) && self.in_scope(file_path)
   }
 
   /// Check whether a file path is excluded by this override's `ignoreFiles`
@@ -2825,12 +2849,9 @@ fn replace_arrow_functions(s: &str) -> String {
           template_content
         };
 
-        // Escape double quotes in content
-        let escaped = standardized.replace('"', "\\\"");
-
-        // Emit as JSON double-quoted string
+        // Emit as a JSON string with the template's value.
         result.push('"');
-        result.push_str(&escaped);
+        result.push_str(&js_string_body_to_json(&standardized));
         result.push('"');
       } else {
         // Skip the arrow function body.
@@ -3070,122 +3091,117 @@ fn remove_method_calls(s: &str) -> String {
   result
 }
 
-/// Convert single-quoted strings to double-quoted strings.
-/// Handles escaping: internal `'` becomes `\'` → `"` becomes itself,
-/// and internal unescaped `"` gets escaped.
-fn convert_single_to_double_quotes(s: &str) -> String {
-  let mut result = String::with_capacity(s.len());
-  let mut chars = s.chars().peekable();
-  let mut in_double_quote = false;
-  let mut escape_next = false;
-
+/// The body of a JavaScript string literal (the text between its quotes or
+/// backticks, escapes and all) rewritten as the body of a JSON string with
+/// the same value.
+///
+/// JavaScript allows what JSON does not: raw line breaks and tabs in a
+/// template literal, escapes such as `` \` ``, `\'`, `\$`, `\x41`, `\v`
+/// and `\u{1F600}`, line continuations, and needless escapes like `\d`.
+/// Each becomes its JSON equivalent; an unescaped `"` gets a backslash.
+fn js_string_body_to_json(body: &str) -> String {
+  let mut out = String::with_capacity(body.len() + 8);
+  let mut chars = body.chars().peekable();
   while let Some(c) = chars.next() {
-    if escape_next {
-      result.push(c);
-      escape_next = false;
-      continue;
-    }
-
-    // Convert template literals (backtick strings) to double-quoted
-    // strings, same as single quotes.  Template literals in config files
-    // are virtually always plain strings without `${...}` interpolation.
-    if c == '`' && !in_double_quote {
-      result.push('"');
-      // Collect until closing backtick.
-      loop {
-        match chars.next() {
-          None => break,
-          Some('\\') => {
-            if let Some(ec) = chars.next() {
-              if ec == '`' {
-                result.push('`');
-              } else {
-                result.push('\\');
-                result.push(ec);
-              }
-            }
-          }
-          Some('`') => {
-            result.push('"');
-            break;
-          }
-          Some('"') => {
-            // Escape inner double quotes.
-            result.push('\\');
-            result.push('"');
-          }
-          Some(ch) => result.push(ch),
+    match c {
+      '\\' => match chars.next() {
+        None => out.push_str("\\\\"),
+        Some(escaped @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => {
+          out.push('\\');
+          out.push(escaped);
         }
-      }
-      continue;
-    }
-
-    if c == '\\' && in_double_quote {
-      result.push(c);
-      escape_next = true;
-      continue;
-    }
-
-    if c == '"' && !in_double_quote {
-      // Not inside a double-quoted string, not starting one unless context says so
-      // Check if we're about to start a double-quoted string
-      in_double_quote = true;
-      result.push('"');
-      continue;
-    }
-
-    if c == '"' && in_double_quote {
-      in_double_quote = false;
-      result.push('"');
-      continue;
-    }
-
-    if in_double_quote {
-      if c == '\\' {
-        escape_next = true;
-      }
-      result.push(c);
-      continue;
-    }
-
-    // Outside any string context
-    if c == '\'' {
-      // Start of single-quoted string — collect until closing '
-      result.push('"');
-      loop {
-        match chars.next() {
-          None => break,
-          Some('\\') => {
-            // Next char is escaped
-            if let Some(ec) = chars.next() {
-              if ec == '\'' {
-                // Escaped single quote — just emit the quote
-                result.push('\'');
-              } else {
-                result.push('\\');
-                result.push(ec);
-              }
-            }
-          }
-          Some('\'') => {
-            // End of single-quoted string
-            result.push('"');
-            break;
-          }
-          Some('"') => {
-            // Unescaped double quote inside single-quoted string — escape it
-            result.push('\\');
-            result.push('"');
-          }
-          Some(ch) => result.push(ch),
+        Some('v') => out.push_str("\\u000b"),
+        Some('0') if !chars.peek().is_some_and(char::is_ascii_digit) => {
+          out.push_str("\\u0000");
         }
-      }
-      continue;
+        Some('x') => {
+          let hex: String = chars.by_ref().take(2).collect();
+          match u32::from_str_radix(&hex, 16) {
+            Ok(code) if hex.len() == 2 => out.push_str(&format!("\\u{code:04x}")),
+            _ => out.push_str(&hex),
+          }
+        }
+        Some('u') if chars.peek() == Some(&'{') => {
+          chars.next();
+          let hex: String = chars.by_ref().take_while(|&h| h != '}').collect();
+          match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            Some(decoded) => push_json_char(&mut out, decoded),
+            None => out.push_str(&hex),
+          }
+        }
+        Some('u') => out.push_str("\\u"),
+        // A line continuation: the backslash and line break vanish.
+        Some('\r') => {
+          if chars.peek() == Some(&'\n') {
+            chars.next();
+          }
+        }
+        Some('\n' | '\u{2028}' | '\u{2029}') => {}
+        // Any other escaped character stands for itself (`\'`, `` \` ``).
+        Some(other) => push_json_char(&mut out, other),
+      },
+      other => push_json_char(&mut out, other),
     }
-
-    result.push(c);
   }
+  out
+}
 
+/// Append `c` to a JSON string body, escaping it if JSON requires.
+fn push_json_char(out: &mut String, c: char) {
+  match c {
+    '"' => out.push_str("\\\""),
+    '\\' => out.push_str("\\\\"),
+    '\n' => out.push_str("\\n"),
+    '\r' => out.push_str("\\r"),
+    '\t' => out.push_str("\\t"),
+    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+    c => out.push(c),
+  }
+}
+
+/// The body of the JavaScript string literal opening at `chars[start]`
+/// (a `'`, `"` or backtick), and the index just past its closing quote.  An
+/// unterminated literal runs to the end.
+fn js_string_literal(chars: &[char], start: usize) -> (String, usize) {
+  let quote = chars[start];
+  let mut i = start + 1;
+  let mut body = String::new();
+  while i < chars.len() && chars[i] != quote {
+    if chars[i] == '\\' && i + 1 < chars.len() {
+      body.push(chars[i]);
+      i += 1;
+    }
+    body.push(chars[i]);
+    i += 1;
+  }
+  (body, (i + 1).min(chars.len()))
+}
+
+/// Rewrite every JavaScript string literal (single-quoted, double-quoted or
+/// template) as a JSON string with the same value; see
+/// [`js_string_body_to_json`].
+fn convert_single_to_double_quotes(s: &str) -> String {
+  let chars: Vec<char> = s.chars().collect();
+  let mut result = String::with_capacity(s.len());
+  let mut i = 0;
+  while i < chars.len() {
+    match chars[i] {
+      // Every string form becomes a JSON string with the same value.
+      // Template literals in config files are virtually always plain
+      // strings; a `${...}` in one is kept as written.
+      '\'' | '"' | '`' => {
+        let (body, next) = js_string_literal(&chars, i);
+        result.push('"');
+        result.push_str(&js_string_body_to_json(&body));
+        result.push('"');
+        i = next;
+      }
+      c => {
+        result.push(c);
+        i += 1;
+      }
+    }
+  }
   result
 }
 
@@ -3390,13 +3406,11 @@ fn remove_spread_entries(s: &str) -> String {
       continue;
     }
 
-    // Detect `...identifier`
+    // Detect `...operand`: an identifier, a member chain such as
+    // `...base.overrides`, a call, or a parenthesised expression such as
+    // `...(cond ? { a: 1 } : {})`.
     if c == '.' && i + 2 < len && chars[i + 1] == '.' && chars[i + 2] == '.' {
-      // Skip `...` and the following identifier
-      i += 3;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
-        i += 1;
-      }
+      i = skip_spread_operand(&chars, i + 3);
       // Also skip a trailing comma if present
       // Skip whitespace first
       while i < len && chars[i].is_ascii_whitespace() {
@@ -3413,6 +3427,69 @@ fn remove_spread_entries(s: &str) -> String {
   }
 
   result
+}
+
+/// The index just past the operand of a spread that starts at `i`: an
+/// identifier or a bracketed expression, followed by any number of `.member`
+/// accesses and index expressions.
+fn skip_spread_operand(chars: &[char], mut i: usize) -> usize {
+  let len = chars.len();
+  let skip_space = |mut i: usize| {
+    while i < len && chars[i].is_whitespace() {
+      i += 1;
+    }
+    i
+  };
+  i = skip_space(i);
+  loop {
+    match chars.get(i) {
+      Some('(' | '[' | '{') => i = skip_bracketed(chars, i),
+      Some(&c) if c.is_alphanumeric() || c == '_' || c == '$' => {
+        while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+          i += 1;
+        }
+      }
+      _ => return i,
+    }
+    // What may follow: `.member`, `?.member`, a call or an index.
+    let next = skip_space(i);
+    match chars.get(next) {
+      Some('.') if chars.get(next + 1) != Some(&'.') => i = skip_space(next + 1),
+      Some('?') if chars.get(next + 1) == Some(&'.') => i = skip_space(next + 2),
+      Some('(' | '[') => i = next,
+      _ => return i,
+    }
+  }
+}
+
+/// The index just past the bracket that closes the one at `open`, skipping
+/// quoted strings.  The end of the input when it never closes.
+fn skip_bracketed(chars: &[char], open: usize) -> usize {
+  let mut depth = 0usize;
+  let mut i = open;
+  while i < chars.len() {
+    match chars[i] {
+      quote @ ('"' | '\'' | '`') => {
+        i += 1;
+        while i < chars.len() && chars[i] != quote {
+          if chars[i] == '\\' {
+            i += 1;
+          }
+          i += 1;
+        }
+      }
+      '(' | '[' | '{' => depth += 1,
+      ')' | ']' | '}' => {
+        depth -= 1;
+        if depth == 0 {
+          return i + 1;
+        }
+      }
+      _ => {}
+    }
+    i += 1;
+  }
+  chars.len()
 }
 
 /// Replace bare identifier values with `null` in a JSON-like string.
@@ -4083,50 +4160,6 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
 
   // 3. Resolve overrides.
   //    Extended configs' overrides come first, then the user's own overrides.
-  let resolve_override = |ov: ConfigOverride| -> Option<ResolvedOverride> {
-    let file_patterns = ov.files.unwrap_or_default();
-    if file_patterns.is_empty() {
-      return None;
-    }
-
-    // Start with rules from the override's extends.
-    let mut ov_rules: HashMap<String, RuleConfig> = HashMap::new();
-    if let Some(ref extends) = ov.extends {
-      let mut visited = HashSet::new();
-      let (ext_rules, _ext_overrides) = collect_rules_from_extends(extends, base_dir, &mut visited);
-      ov_rules = ext_rules;
-      // Note: nested overrides within an override's extends are not
-      // propagated (matching Stylelint behavior).
-    }
-
-    // Overlay the override's own rules on top.
-    for (name, value) in ov.rules.unwrap_or_default() {
-      let resolved = value.resolve();
-      if resolved.severity == Some(Severity::Off) {
-        // For overrides, keep Off entries so they can remove
-        // base rules when applied per-file.
-        ov_rules.insert(name, resolved);
-      } else {
-        ov_rules.insert(name, resolved);
-      }
-    }
-
-    let ignore_patterns = ov.ignore_files.unwrap_or_default();
-
-    // Extract customSyntax as a string (if present).
-    let custom_syntax = ov
-      .custom_syntax
-      .as_ref()
-      .and_then(|v| v.as_str().map(String::from));
-
-    Some(ResolvedOverride::new(
-      file_patterns,
-      ignore_patterns,
-      ov_rules,
-      custom_syntax,
-    ))
-  };
-
   // Combine: extended overrides first, then user overrides.
   let mut all_raw_overrides = extended_overrides;
   if let Some(user_overrides) = raw.overrides {
@@ -4135,7 +4168,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
 
   let overrides: Vec<ResolvedOverride> = all_raw_overrides
     .into_iter()
-    .filter_map(resolve_override)
+    .flat_map(|ov| resolve_override(ov, base_dir, 0))
     .collect();
 
   // 4. Extract plugin names from the config.
@@ -4193,6 +4226,76 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     cache_location,
     cache_strategy: raw.cache_strategy,
   }
+}
+
+/// How deep overrides may nest through `extends` before gale stops
+/// following them, as a guard against configs that extend each other.
+const MAX_OVERRIDE_NESTING: usize = 8;
+
+/// Resolve one `overrides` entry into the overrides gale applies, in order.
+///
+/// The override's `extends` supply rules under its own.  When an extended
+/// config has `overrides` of its own (`stylelint-config-standard-vue`
+/// extends `stylelint-config-recommended-vue`, whose Vue rules sit in an
+/// override), Stylelint applies those too, to the files both match.  Such
+/// an entry becomes three steps with Stylelint's precedence: the extended
+/// rules, then the extended configs' overrides, then the entry's own rules.
+fn resolve_override(ov: ConfigOverride, base_dir: &Path, depth: usize) -> Vec<ResolvedOverride> {
+  let file_patterns = ov.files.unwrap_or_default();
+  if file_patterns.is_empty() {
+    return Vec::new();
+  }
+  let ignore_patterns = ov.ignore_files.unwrap_or_default();
+  let custom_syntax = ov
+    .custom_syntax
+    .as_ref()
+    .and_then(|v| v.as_str().map(String::from));
+
+  // Rules from the override's extends, and the overrides they bring.
+  let (mut ov_rules, nested) = match ov.extends {
+    Some(ref extends) => collect_rules_from_extends(extends, base_dir, &mut HashSet::new()),
+    None => (HashMap::new(), Vec::new()),
+  };
+  // The override's own rules.  Off entries are kept so they can remove
+  // base rules when applied per-file.
+  let own_rules: HashMap<String, RuleConfig> = ov
+    .rules
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(name, value)| (name, value.resolve()))
+    .collect();
+
+  if nested.is_empty() || depth >= MAX_OVERRIDE_NESTING {
+    ov_rules.extend(own_rules);
+    return vec![ResolvedOverride::new(
+      file_patterns,
+      ignore_patterns,
+      ov_rules,
+      custom_syntax,
+    )];
+  }
+
+  let outer = ResolvedOverride::new(
+    file_patterns.clone(),
+    ignore_patterns.clone(),
+    ov_rules,
+    custom_syntax,
+  );
+  let mut resolved = vec![outer.clone()];
+  for inner in nested {
+    resolved.extend(
+      resolve_override(inner, base_dir, depth + 1)
+        .into_iter()
+        .map(|r| r.within(&outer)),
+    );
+  }
+  resolved.push(ResolvedOverride::new(
+    file_patterns,
+    ignore_patterns,
+    own_rules,
+    None,
+  ));
+  resolved
 }
 
 /// Interpret one of Stylelint's `report*Disables` settings.
@@ -4913,6 +5016,31 @@ module.exports = {
   }
 
   #[test]
+  fn js_config_spreads_of_members_calls_and_expressions_are_skipped() {
+    // The shapes stylelint-config-html and stylelint-config-recommended-vue
+    // use: spreads gale cannot evaluate statically must not break the rest.
+    let js = r#"
+const config = {
+  overrides: [...html.overrides, ...vue?.overrides],
+  rules: {
+    'block-no-empty': true,
+    ...(semver.gte(version, "16.13.0")
+      ? { 'color-named': [true, { ignore: ["inside-function"] }] }
+      : {}),
+    'color-no-invalid-hex': true,
+  },
+};
+export default config;
+"#;
+    let raw = parse_js_config(js, None).unwrap();
+    let rules = raw.rules.unwrap();
+    assert!(rules.contains_key("block-no-empty"));
+    assert!(rules.contains_key("color-no-invalid-hex"));
+    assert!(!rules.contains_key("color-named"));
+    assert_eq!(raw.overrides.unwrap().len(), 0);
+  }
+
+  #[test]
   fn js_config_no_exports_returns_error() {
     let js = r#"
 const config = {
@@ -5526,6 +5654,70 @@ module.exports = {
     }
   }
 
+  /// The secondary option `key` of rule `rule` in a parsed JS config.
+  fn secondary_string(raw: &ConfigFile, rule: &str, key: &str) -> String {
+    match raw.rules.as_ref().unwrap().get(rule).unwrap() {
+      RuleConfigValue::Array(arr) => arr[1]
+        .as_object()
+        .unwrap()
+        .get(key)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string(),
+      other => panic!("Expected array, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn js_config_multiline_template_literal() {
+    // docusaurus's `.stylelintrc.js`: a copyright header spanning lines.
+    let js = "module.exports = {\n  rules: {\n    'docusaurus/copyright-header': [\n      true,\n      {\n        header: `*\n * Copyright (c) Facebook, Inc. and its affiliates.\n *\n * This source code is licensed under the MIT license.`,\n      },\n    ],\n  },\n};\n";
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(
+      secondary_string(&raw, "docusaurus/copyright-header", "header"),
+      "*\n * Copyright (c) Facebook, Inc. and its affiliates.\n *\n * This source code is licensed under the MIT license."
+    );
+  }
+
+  #[test]
+  fn js_config_message_function_with_escaped_backticks() {
+    // govuk-frontend's `stylelint.config.js`.
+    let js = r#"
+module.exports = {
+  rules: {
+    'custom-property-pattern': [
+      '^_?([a-z][a-z0-9]*)(-[a-z0-9]+)*$',
+      {
+        message: (name) =>
+          `Expected custom property name "${name}" to be kebab-case, possibly starting with an \`_\` if it is private`
+      }
+    ]
+  }
+}
+"#;
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(
+      secondary_string(&raw, "custom-property-pattern", "message"),
+      "Expected custom property name \"${name}\" to be kebab-case, possibly starting with an `_` if it is private"
+    );
+  }
+
+  #[test]
+  fn js_string_escapes_become_json_escapes() {
+    assert_eq!(js_string_body_to_json(r"it\'s"), "it's");
+    assert_eq!(js_string_body_to_json(r#"say "hi""#), r#"say \"hi\""#);
+    assert_eq!(
+      js_string_body_to_json(r"\x41\u0042\u{43}\v"),
+      r"\u0041\u0042C\u000b"
+    );
+    assert_eq!(js_string_body_to_json("a\\\nb\tc"), r"ab\tc");
+    assert_eq!(js_string_body_to_json(r"\d\$\\"), r"d$\\");
+    let js = "module.exports = { rules: { 'a': ['x', { message: \"it\\'s \\x41\" }] } }";
+    let raw = parse_js_config(js, None).unwrap();
+    assert_eq!(secondary_string(&raw, "a", "message"), "it's A");
+  }
+
   // -----------------------------------------------------------------------
   // Override tests
   // -----------------------------------------------------------------------
@@ -5630,6 +5822,52 @@ module.exports = {
     assert_eq!(cfg.overrides.len(), 1);
     assert!(cfg.overrides[0].matches("main.scss"));
     assert!(!cfg.overrides[0].matches("main.css"));
+  }
+
+  #[test]
+  fn overrides_inside_an_overrides_extends_apply_to_files_both_match() {
+    // The shape of stylelint-config-standard-vue: an override for `*.vue`
+    // extends a config whose own Vue rules sit in an override.
+    let tmp = tempfile::tempdir().unwrap();
+    let nm = tmp.path().join("node_modules");
+    let write = |rel: &str, body: &str| {
+      let path = nm.join(rel);
+      std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+      std::fs::write(path, body).unwrap();
+    };
+    write(
+      "base-config/index.json",
+      r#"{ "rules": { "selector-pseudo-class-no-unknown": true, "color-named": "never" } }"#,
+    );
+    write(
+      "vue-config/index.json",
+      r#"{ "overrides": [
+        { "files": ["*.vue", "**/*.vue", "**/*.html"], "extends": ["base-config"],
+          "rules": { "selector-pseudo-class-no-unknown": [true, { "ignorePseudoClasses": ["deep"] }] } }
+      ] }"#,
+    );
+    let raw: ConfigFile = serde_json::from_str(
+      r#"{ "overrides": [
+        { "files": ["**/*.vue"], "extends": ["base-config", "vue-config"],
+          "rules": { "color-named": null } }
+      ] }"#,
+    )
+    .unwrap();
+    let cfg = resolve_raw(raw, tmp.path());
+
+    let vue = cfg.rules_for_file("src/App.vue");
+    // The nested override beats the outer override's extended rules...
+    assert_eq!(
+      vue["selector-pseudo-class-no-unknown"].options,
+      Some(serde_json::json!({ "ignorePseudoClasses": ["deep"] }))
+    );
+    // ...and the outer override's own rules beat both.
+    assert!(!vue.contains_key("color-named"));
+
+    // The nested override names `*.html`, but only reaches files the outer
+    // `*.vue` override matches.
+    assert!(cfg.rules_for_file("src/index.html").is_empty());
+    assert!(cfg.rules_for_file("src/a.css").is_empty());
   }
 
   #[test]

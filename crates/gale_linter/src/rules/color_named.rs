@@ -1213,12 +1213,13 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
+  fn ctx<'a>() -> RuleContext<'a> {
     RuleContext {
       file_path: "t.css",
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 

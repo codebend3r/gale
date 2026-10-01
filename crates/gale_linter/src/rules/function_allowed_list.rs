@@ -190,6 +190,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: opts,
+      cache: None,
     }
   }
 

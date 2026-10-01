@@ -181,6 +181,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -206,6 +207,7 @@ mod tests {
       source: "$a: 1 +\n  2;",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let d = ScssOperatorNoNewlineAfter.check_root(&[], &ctx);
     assert!(d.is_empty());

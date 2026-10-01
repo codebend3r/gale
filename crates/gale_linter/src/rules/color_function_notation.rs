@@ -1,33 +1,23 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::pattern::option_matches;
 use crate::rule::{Rule, RuleContext};
+use crate::standard_syntax::is_standard_syntax_color_function;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Prefer modern color function notation (space-separated) over legacy (comma-separated).
+/// Specify modern or legacy notation for color functions.
 ///
-/// Equivalent to Stylelint's `color-function-notation` rule with "modern" option.
-/// Detects comma-separated arguments in rgb/rgba/hsl/hsla.
+/// Equivalent to Stylelint's `color-function-notation` rule, including its
+/// autofix.  Checks `rgb()`, `rgba()`, `hsl()` and `hsla()`.  Primary option:
+/// `"modern"` (space-separated channels, `/` before the alpha) or `"legacy"`
+/// (comma-separated); only the move to modern notation is fixable.
+/// Secondary option `ignore: ["with-var-inside"]` skips calls with a direct
+/// `var()` argument.
 pub struct ColorFunctionNotation;
 
-const COLOR_FUNCTIONS: &[&str] = &["rgb(", "rgba(", "hsl(", "hsla("];
-
-/// Find the position of the matching closing paren, handling nesting.
-fn find_matching_paren(s: &str) -> Option<usize> {
-  let mut depth: i32 = 1;
-  for (i, ch) in s.char_indices() {
-    match ch {
-      '(' => depth += 1,
-      ')' => {
-        depth -= 1;
-        if depth == 0 {
-          return Some(i);
-        }
-      }
-      _ => {}
-    }
-  }
-  None
-}
+/// The color functions that have a legacy, comma-separated notation.
+const LEGACY_FUNCTIONS: &[&str] = &["rgb", "rgba", "hsl", "hsla"];
 
 impl Rule for ColorFunctionNotation {
   fn name(&self) -> &'static str {
@@ -42,192 +32,223 @@ impl Rule for ColorFunctionNotation {
     Severity::Warning
   }
 
-  /// Flags color functions written in the notation the primary option forbids,
-  /// optionally ignoring ones containing `var()`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
+  /// Reports color functions in the other notation.  Under `"modern"` the
+  /// fix turns the channel commas into spaces, the alpha comma into ` / `,
+  /// and drops the `a` of `rgba`/`hsla`.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let modern = match ctx.primary_option_str() {
+      Some("modern") => true,
+      Some("legacy") => false,
+      _ => return Vec::new(),
     };
-
-    // Read secondary options for `ignore: ["with-var-inside"]`
-    let ignore_with_var = ctx
-      .secondary_options()
-      .or(ctx.options)
-      .and_then(|v| v.get("ignore"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .any(|item| item.as_str() == Some("with-var-inside"))
-      })
-      .unwrap_or(false);
-
-    let primary = ctx.primary_option_str().unwrap_or("modern");
-
+    let ignore_with_var = option_matches(
+      ctx.secondary_options().and_then(|s| s.get("ignore")),
+      "with-var-inside",
+    );
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
-    let mut seen_offsets: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for decl in decls {
-      // Use source text to avoid lightningcss normalization
-      let decl_start = decl.span.offset;
-      let decl_end = (decl_start + decl.span.length).min(ctx.source.len());
-      let search_area = if decl_end > decl_start && decl_end <= ctx.source.len() {
-        &ctx.source[decl_start..decl_end]
-      } else {
-        &decl.value
+
+    for decl in tree.decls() {
+      let Some(value) = ctx.source_slice(decl.value_span.start, decl.value_span.end) else {
+        continue;
       };
-      let lower = search_area.to_ascii_lowercase();
-
-      for &func in COLOR_FUNCTIONS {
-        let mut search_from = 0;
-        while let Some(pos) = lower[search_from..].find(func) {
-          let abs_pos = search_from + pos;
-          // Skip if preceded by an ident char (e.g. `hsv-to-rgb(` is not `rgb(`).
-          if abs_pos > 0 {
-            let prev = lower.as_bytes()[abs_pos - 1];
-            if prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_' {
-              search_from = abs_pos + 1;
-              continue;
-            }
-          }
-          let args_start = abs_pos + func.len();
-          if let Some(close) = find_matching_paren(&lower[args_start..]) {
-            let args = &search_area[args_start..args_start + close];
-            let has_commas = args.contains(',');
-
-            let should_report = match primary {
-              "legacy" => !has_commas && !args.trim().is_empty(),
-              // "modern" (default)
-              _ => has_commas,
-            };
-
-            if should_report {
-              // Skip if ignore: ["with-var-inside"] and args contain var(
-              if ignore_with_var && args.to_ascii_lowercase().contains("var(") {
-                search_from = abs_pos + 1;
-                continue;
-              }
-              let abs_offset = decl_start + abs_pos;
-              // Deduplicate: keyframe declarations may have
-              // overlapping source spans, producing duplicates.
-              if seen_offsets.insert(abs_offset) {
-                let fn_name = &func[..func.len() - 1];
-                let msg = if primary == "legacy" {
-                  "Expected legacy color-function notation".to_string()
-                } else {
-                  "Expected modern color-function notation".to_string()
-                };
-                diags.push(
-                  Diagnostic::new(self.name(), msg)
-                    .severity(self.default_severity())
-                    .span(Span::new(abs_offset, fn_name.len())),
-                );
-              }
-            }
-          }
-          search_from = abs_pos + 1;
-        }
+      if !mentions_legacy_function(value) || (modern && !value.contains(',')) {
+        continue;
       }
+      let base = decl.value_span.start;
+      let parsed = value_parser::parse(value);
+      let mut check = |node: &ValueNode<'_>| {
+        if node.kind != NodeKind::Function || !is_standard_syntax_color_function(node) {
+          return;
+        }
+        if ignore_with_var
+          && node
+            .nodes
+            .iter()
+            .any(|n| n.is_function() && n.value.eq_ignore_ascii_case("var"))
+        {
+          return;
+        }
+        let name = node.value.to_ascii_lowercase();
+        if !LEGACY_FUNCTIONS.contains(&name.as_str()) || node.nodes.len() < 5 {
+          return;
+        }
+        if is_likely_legacy(&node.nodes) != modern {
+          return;
+        }
+        let span = Span::from_range(base + node.source_index, base + node.source_end_index);
+        let mut diag = Diagnostic::new(
+          self.name(),
+          format!(
+            "Expected {} color-function notation",
+            if modern { "modern" } else { "legacy" }
+          ),
+        )
+        .severity(self.default_severity())
+        .span(span);
+        if modern {
+          diag = diag.fix(Fix::new(
+            "Convert to modern notation",
+            modern_edits(node, base),
+          ));
+        }
+        diags.push(diag);
+      };
+      value_parser::walk(&parsed, &mut |node| {
+        check(node);
+        true
+      });
     }
     diags
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+/// Whether `value` calls a legacy-capable color function (Stylelint tests
+/// `/\b(?:hsla|rgba|hsl|rgb)\(/i`).
+fn mentions_legacy_function(value: &str) -> bool {
+  let lower = value.to_ascii_lowercase();
+  lower.match_indices('(').any(|(paren, _)| {
+    LEGACY_FUNCTIONS.iter().any(|name| {
+      lower[..paren].ends_with(name) && {
+        let start = paren - name.len();
+        start == 0 || {
+          let prev = lower.as_bytes()[start - 1];
+          !(prev.is_ascii_alphanumeric() || prev == b'_')
+        }
+      }
+    })
+  })
+}
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+/// Stylelint's `isLikelyLegacy`: two or three commas and no `/`.
+fn is_likely_legacy(nodes: &[ValueNode<'_>]) -> bool {
+  let mut commas = 0;
+  for node in nodes {
+    if node.is_comma() {
+      commas += 1;
+    } else if node.is_slash() {
+      return false;
     }
   }
+  commas == 2 || commas == 3
+}
 
-  fn style_with_value(value: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: value.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+/// The edits of Stylelint's modern fixer for the function `node`, whose
+/// offsets are relative to `base`: the first two commas become their
+/// following whitespace (at least one space), any later comma becomes a `/`
+/// with at least one space either side, and `rgba`/`hsla` lose their `a`.
+fn modern_edits(node: &ValueNode<'_>, base: usize) -> Vec<Edit> {
+  let at_least_one_space = |ws: &str| if ws.is_empty() { " " } else { ws }.to_string();
+  let mut edits = Vec::new();
+  let mut commas = 0;
+  for child in node.nodes.iter().filter(|n| n.is_comma()) {
+    let text = if commas < 2 {
+      commas += 1;
+      at_least_one_space(child.after)
+    } else {
+      format!(
+        "{}/{}",
+        at_least_one_space(child.before),
+        at_least_one_space(child.after)
+      )
+    };
+    edits.push(Edit::new(
+      Span::from_range(base + child.source_index, base + child.source_end_index),
+      text,
+    ));
   }
-
-  #[test]
-  fn reports_legacy_rgb() {
-    let d = ColorFunctionNotation.check(&style_with_value("rgb(0, 0, 0)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("color-function notation"));
+  let name = node.value;
+  if name.eq_ignore_ascii_case("rgba") || name.eq_ignore_ascii_case("hsla") {
+    edits.push(Edit::new(
+      Span::new(base + node.source_index, name.len()),
+      &name[..name.len() - 1],
+    ));
   }
-
-  #[test]
-  fn allows_modern_rgb() {
-    let d = ColorFunctionNotation.check(&style_with_value("rgb(0 0 0)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_legacy_hsl() {
-    let d = ColorFunctionNotation.check(&style_with_value("hsl(0, 100%, 50%)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("color-function notation"));
-  }
-
-  #[test]
-  fn allows_modern_hsl() {
-    let d = ColorFunctionNotation.check(&style_with_value("hsl(0 100% 50%)"), &ctx());
-    assert!(d.is_empty());
-  }
+  edits
 }
 
 #[cfg(test)]
-#[test]
-fn debug_detect_rgb_comma() {
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
-  let rule = ColorFunctionNotation;
-  let source = ":root {\n  --my-color: rgb(248, 248, 247);\n  color: rgb(100, 200, 50);\n}\n";
-  let node = CssNode::Style(StyleRule {
-    selector: ":root".to_string(),
-    declarations: vec![
-      Declaration {
-        property: "--my-color".to_string(),
-        value: "#f8f8f7".to_string(),
-        span: ParserSpan::new(10, 31),
-        important: false,
-      },
-      Declaration {
-        property: "color".to_string(),
-        value: "#64c832".to_string(),
-        span: ParserSpan::new(44, 25),
-        important: false,
-      },
-    ],
-    span: ParserSpan::new(0, source.len()),
-    ..Default::default()
-  });
-  let ctx = RuleContext {
-    file_path: "t.css",
-    source,
-    syntax: Syntax::Css,
-    options: None,
-  };
-  let d = rule.check(&node, &ctx);
-  eprintln!("Diagnostics: {:?}", d.len());
-  for diag in &d {
-    eprintln!("  {}: {}", diag.rule_name, diag.message);
+mod tests {
+  use gale_css_parser::Syntax;
+  use serde_json::json;
+
+  use crate::fix_testing::{fix, warnings};
+
+  const RULE: &str = "color-function-notation";
+
+  #[test]
+  fn fixes_to_modern_notation() {
+    let modern = || json!(["modern"]);
+    assert_eq!(
+      fix(
+        RULE,
+        modern(),
+        "a { color: rgba(12, 122, 231, 0.2) }",
+        Syntax::Css
+      ),
+      "a { color: rgb(12 122 231 / 0.2) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        modern(),
+        "a { color: HSLA(120,100%,50%,.5) }",
+        Syntax::Css
+      ),
+      "a { color: HSL(120 100% 50% / .5) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        modern(),
+        "a { color: rgb(0 ,\n  0 , 0) }",
+        Syntax::Css
+      ),
+      "a { color: rgb(0\n  0 0) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        modern(),
+        "a { background: linear-gradient(rgb(0,0,0), hsl(0,0%,0%)) }",
+        Syntax::Css
+      ),
+      "a { background: linear-gradient(rgb(0 0 0), hsl(0 0% 0%)) }"
+    );
   }
-  assert!(
-    d.len() >= 2,
-    "Expected at least 2 diagnostics, got {}",
-    d.len()
-  );
+
+  #[test]
+  fn legacy_is_reported_without_a_fix() {
+    let source = "a { color: rgb(0 0 0 / 50%) }";
+    assert_eq!(
+      warnings(RULE, json!(["legacy"]), source, Syntax::Css).len(),
+      1
+    );
+    assert_eq!(fix(RULE, json!(["legacy"]), source, Syntax::Css), source);
+  }
+
+  #[test]
+  fn skips_preprocessor_arguments_and_var_when_asked() {
+    let modern = || json!(["modern"]);
+    assert!(warnings(RULE, modern(), "a { color: rgba($a, 0.5) }", Syntax::Scss).is_empty());
+    assert!(warnings(RULE, modern(), "a { color: rgb(white, .5); }", Syntax::Css).is_empty());
+    let ignore_var = json!(["modern", { "ignore": ["with-var-inside"] }]);
+    assert!(
+      warnings(
+        RULE,
+        ignore_var,
+        "a { color: rgba(var(--a), 0.5, 0, 1) }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = json!(["modern", { "disableFix": true }]);
+    let source = "a { color: rgb(0, 0, 0) }";
+    assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
+    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+  }
 }

@@ -204,6 +204,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -307,6 +308,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);

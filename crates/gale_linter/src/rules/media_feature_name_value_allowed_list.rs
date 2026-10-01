@@ -148,6 +148,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = media_at_rule("(width: 50px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
@@ -163,6 +164,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = media_at_rule("(width: 100px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
@@ -177,6 +179,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     // "min-width" does not match "width" -- strict matching, no constraint = no diagnostic
     let node = media_at_rule("(min-width: 100px)");
@@ -192,6 +195,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
 
     let node_ok = media_at_rule("(resolution: 300dpi)");
@@ -211,6 +215,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = media_at_rule("(min-width: 50px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);

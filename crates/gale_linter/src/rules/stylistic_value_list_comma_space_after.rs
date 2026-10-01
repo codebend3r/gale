@@ -194,6 +194,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     rule.check_root(&[], &ctx)
   }

@@ -25,9 +25,9 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Less | Lint `.less` files | ✅ Built in, no plugin needed | ✅ Via `postcss-less` custom syntax |
 | Sass indented syntax | Lint `.sass` files | ⚠️ Converted to SCSS internally; problems are mapped back to the `.sass` file, but `--fix` does not change it | ✅ Via `postcss-sass` custom syntax |
 | CSS-in-JS | Lint styles embedded in JS/TS (styled-components, etc.) | ❌ Matched files are skipped with a warning | ✅ Via `postcss-styled-syntax` and similar |
-| HTML / Vue / Svelte / Astro | Lint `<style>` blocks in markup | ❌ Matched files are skipped with a warning | ✅ Via `postcss-html` |
+| HTML / Vue / Svelte / Astro | Lint `<style>` blocks and `style` attributes in markup | ✅ Built in, by file extension; `lang="scss"`, `less` and `sass` blocks use that parser, other languages are skipped with a warning | ✅ Via `postcss-html` |
 | Markdown | Lint fenced CSS code blocks | ❌ Matched files are skipped with a warning | ✅ Via `postcss-markdown` |
-| `customSyntax` config key | Choose a parser per file pattern | ⚠️ Accepts `postcss`, `postcss-scss`, `postcss-sass`, `postcss-less`; other values skip the matching files with a warning | ✅ Any PostCSS syntax package |
+| `customSyntax` config key | Choose a parser per file pattern | ⚠️ Accepts `postcss`, `postcss-scss`, `postcss-sass`, `postcss-less`, `postcss-html`; other values skip the matching files with a warning | ✅ Any PostCSS syntax package |
 | CSS nesting | Parse and lint nested style rules | ✅ | ✅ |
 | Parse-error recovery | Keep linting after a syntax error | ✅ | ✅ Reports `parseErrors` |
 

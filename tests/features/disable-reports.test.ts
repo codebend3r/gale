@@ -274,3 +274,32 @@ describe("reportDisables secondary option", () => {
     expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toHaveLength(0);
   });
 });
+
+describe("where the reports point", () => {
+  // Stylelint reports a comment problem from the first character of the
+  // comment's node to its last, the node being the declaration, rule or
+  // at-rule when the comment sits in its value, selector or params.
+  const options = { reportInvalidScopeDisables: true };
+
+  test("at the whole comment", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config(RULES, options),
+      "a.css": "/* stylelint-disable color-named */\na { color: red; }\n",
+    });
+
+    expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toEqual([
+      expect.objectContaining({ line: 1, column: 1, endLine: 1, endColumn: 35 }),
+    ]);
+  });
+
+  test("at the declaration holding the comment", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config(RULES, options),
+      "a.css": "a {\n  color: /* stylelint-disable-line color-named */ red;\n}\n",
+    });
+
+    expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings()).toEqual([
+      expect.objectContaining({ line: 2, column: 3, endLine: 2, endColumn: 54 }),
+    ]);
+  });
+});
