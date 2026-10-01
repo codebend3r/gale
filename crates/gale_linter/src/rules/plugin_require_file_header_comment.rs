@@ -130,6 +130,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -223,6 +224,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let nodes: Vec<CssNode> = vec![];
     let diags = rule.check_root(&nodes, &ctx);

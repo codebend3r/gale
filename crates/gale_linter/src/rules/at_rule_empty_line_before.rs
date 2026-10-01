@@ -41,7 +41,7 @@ impl Rule for AtRuleEmptyLineBefore {
     let secondary = ctx.secondary_options();
     let except = |name: &str| option_matches(secondary.and_then(|s| s.get("except")), name);
     let ignore = |name: &str| option_matches(secondary.and_then(|s| s.get("ignore")), name);
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -123,6 +123,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(&options),
+      cache: None,
     };
     AtRuleEmptyLineBefore
       .check_root(&[], &ctx)

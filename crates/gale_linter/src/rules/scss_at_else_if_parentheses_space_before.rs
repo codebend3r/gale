@@ -142,6 +142,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(options),
+      cache: None,
     }
   }
 
@@ -151,6 +152,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -211,6 +213,7 @@ mod tests {
       source: "@else if($y) { }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssAtElseIfParenthesesSpaceBefore

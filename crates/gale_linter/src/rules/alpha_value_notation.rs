@@ -3,7 +3,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::js_number::{parse_number, to_js_string, to_precision};
 use crate::pattern::option_matches;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
@@ -72,7 +71,7 @@ impl Rule for AlphaValueNotation {
       _ => return Vec::new(),
     };
     let secondary = ctx.secondary_options();
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for decl in tree.decls() {

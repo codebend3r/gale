@@ -288,6 +288,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -335,6 +336,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
@@ -404,6 +406,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&result.nodes, &ctx);
     assert_eq!(diags.len(), 1, "should detect duplicate .foo in SCSS");
@@ -419,6 +422,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&result.nodes, &ctx);
     // Each `& {}` expands to `.parent`, which duplicates the parent rule.
@@ -460,6 +464,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &ctx);
     assert!(
@@ -492,6 +497,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &ctx);
     assert!(

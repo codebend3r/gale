@@ -282,6 +282,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -368,6 +369,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -388,6 +390,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);

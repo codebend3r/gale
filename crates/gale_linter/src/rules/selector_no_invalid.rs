@@ -257,6 +257,7 @@ mod tests {
       source: css,
       syntax,
       options: Some(&serde_json::Value::Bool(true)),
+      cache: None,
     };
     let index = SourceLineIndex::build(css);
     SelectorNoInvalid

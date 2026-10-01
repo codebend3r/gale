@@ -134,6 +134,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(options),
+      cache: None,
     }
   }
 
@@ -143,6 +144,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -187,6 +189,7 @@ mod tests {
       source: "@function foo($x) { }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssAtFunctionParenthesesSpaceBefore

@@ -1,7 +1,6 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_color_function;
 use crate::value_parser::{self, NodeKind, ValueNode};
@@ -47,7 +46,7 @@ impl Rule for ColorFunctionAliasNotation {
     } else {
       WITH_ALPHA
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for decl in tree.decls() {

@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::js_number::parse_number;
 use crate::pattern::option_matches;
-use crate::postcss_tree::{Node, PostcssTree};
+use crate::postcss_tree::Node;
 use crate::rule::{Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
@@ -59,7 +59,7 @@ impl Rule for FontWeightNotation {
       ctx.secondary_options().and_then(|s| s.get("ignore")),
       "relative",
     );
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for decl in tree.decls() {
       self.check_decl(decl, ctx, notation, ignore_relative, &mut diags);

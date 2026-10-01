@@ -418,7 +418,7 @@ impl Rule for DeclarationBlockNoRedundantLonghandProperties {
   /// rewrites the block the way Stylelint's fix leaves it.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let options = Options::new(ctx.secondary_options());
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     // Stylelint visits blocks through rules and at-rules only, so nothing
     // under an SCSS nested property counts.
@@ -600,7 +600,7 @@ struct Block<'a> {
 impl<'a> Block<'a> {
   /// The block of `parent` (the root for `None`), if it holds a declaration
   /// and its text can be rebuilt from its children.
-  fn read(tree: &'a PostcssTree<'a>, ctx: &RuleContext<'a>, parent: Option<usize>) -> Option<Self> {
+  fn read(tree: &PostcssTree<'a>, ctx: &RuleContext<'a>, parent: Option<usize>) -> Option<Self> {
     let children = tree.children_of(parent);
     if !children
       .iter()

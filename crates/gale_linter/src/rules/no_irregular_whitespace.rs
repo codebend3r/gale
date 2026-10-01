@@ -154,6 +154,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
@@ -169,6 +170,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
@@ -183,6 +185,7 @@ mod tests {
       source: "a { color: red; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());

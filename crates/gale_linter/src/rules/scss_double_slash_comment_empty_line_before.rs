@@ -520,6 +520,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -529,6 +530,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(opts),
+      cache: None,
     }
   }
 
@@ -621,6 +623,7 @@ mod tests {
       source: ".foo {}\n// comment",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssDoubleSlashCommentEmptyLineBefore

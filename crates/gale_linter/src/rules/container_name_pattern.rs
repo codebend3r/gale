@@ -218,6 +218,7 @@ mod tests {
       source,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     let mut out = Vec::new();
     let mut stack: Vec<CssNode> = parsed.nodes.clone();

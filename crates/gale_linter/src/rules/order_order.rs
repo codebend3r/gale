@@ -422,7 +422,7 @@ impl Rule for OrderOrder {
     let Some(config) = parsed.as_ref() else {
       return vec![];
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for (block, children) in blocks(&tree) {
       self.check_block(&tree, config, block, children, &mut diags);
@@ -606,6 +606,7 @@ mod tests {
       source,
       syntax,
       options: Some(&options),
+      cache: None,
     };
     OrderOrder
       .check_root(&[], &ctx)

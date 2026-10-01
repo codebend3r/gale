@@ -318,7 +318,16 @@ impl<'l> Collector<'l> {
     if !may_have_directives(text) {
       return;
     }
-    for directive in directives(text, syntax, base, self.line_of) {
+    self.scan_tree(&PostcssTree::parse(text, syntax), syntax, base);
+  }
+
+  /// [`Self::scan`] over a style sheet already parsed as `syntax` into
+  /// `tree`, such as the one the rules shared.
+  pub(crate) fn scan_tree(&mut self, tree: &PostcssTree, syntax: Syntax, base: usize) {
+    if !may_have_directives(tree.source()) {
+      return;
+    }
+    for directive in directives(tree, syntax, base, self.line_of) {
       self.apply(&directive);
     }
   }
@@ -562,15 +571,15 @@ impl<'l> Collector<'l> {
 // Finding the comments
 // ---------------------------------------------------------------------------
 
-/// The configuration comments of `text` in document order, the way
-/// Stylelint's walk meets them.
+/// The configuration comments of the style sheet `tree` was parsed from,
+/// as `syntax`, in document order, the way Stylelint's walk meets them.
 fn directives(
-  text: &str,
+  tree: &PostcssTree,
   syntax: Syntax,
   base: usize,
   line_of: &dyn Fn(usize) -> usize,
 ) -> Vec<Directive> {
-  let tree = PostcssTree::parse(text, syntax);
+  let text = tree.source();
   let line = |offset: usize| line_of(base + offset);
   // The last end of a run of `//` comments that has been merged into the
   // command before it (Stylelint's `inlineEnd`).
@@ -586,7 +595,7 @@ fn directives(
           }
           continue;
         }
-        let (directive, merged) = comment_directive(&tree, i, base, &line);
+        let (directive, merged) = comment_directive(tree, i, base, &line);
         merged_until = merged;
         found.push(directive);
       }
@@ -601,7 +610,7 @@ fn directives(
         };
         let owner = DirectiveNode::new(text, node.start, node.end, base);
         let header = header_start.min(header_end)..header_end;
-        comments_in_node(&tree, header, owner, syntax, &line, &mut found);
+        comments_in_node(tree, header, owner, syntax, &line, &mut found);
       }
     }
   }

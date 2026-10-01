@@ -184,6 +184,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = media_at_rule("(min-width: 100px)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
@@ -200,6 +201,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = media_at_rule("(min-width: 100em)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
@@ -214,6 +216,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = media_at_rule("(color: 8)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
@@ -227,6 +230,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = media_at_rule("(min-width: 100px)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
@@ -241,6 +245,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = CssNode::AtRule(AtRule {
       name: "supports".to_string(),

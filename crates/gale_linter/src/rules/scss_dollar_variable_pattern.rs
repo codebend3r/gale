@@ -263,6 +263,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -316,6 +317,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let nodes = vec![dollar_var("$myVar")];
     assert!(
@@ -429,6 +431,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&opts),
+      cache: None,
     };
 
     // Variable inside a @mixin — should be ignored
@@ -459,6 +462,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&opts),
+      cache: None,
     };
 
     // Top-level variable that doesn't match — should still be reported
@@ -477,6 +481,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: Some(&opts),
+      cache: None,
     };
 
     let nodes = vec![CssNode::AtRule(ParserAtRule {

@@ -2,7 +2,6 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::stylelint_version::{installed_at_least, stylelint_major_version};
@@ -877,7 +876,7 @@ impl Rule for ValueKeywordCase {
   /// directly inside at-rules, SCSS variables and nested properties, and
   /// ones whose value the CSS parser would reject.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
 
     let expect_upper = ctx.primary_option_str().is_some_and(|s| s == "upper");
 
@@ -1068,6 +1067,7 @@ mod tests {
       source,
       syntax,
       options,
+      cache: None,
     };
     ValueKeywordCase.check_root(&[], &ctx)
   }

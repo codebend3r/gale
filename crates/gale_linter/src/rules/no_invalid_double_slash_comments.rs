@@ -105,6 +105,7 @@ mod tests {
       source: "a { color: red; } // bad comment",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
@@ -119,6 +120,7 @@ mod tests {
       source: "// this is fine in SCSS",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -132,6 +134,7 @@ mod tests {
       source: "/* this is fine */ a { color: red; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -145,6 +148,7 @@ mod tests {
       source: "a { content: \"//not-a-comment\"; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -158,6 +162,7 @@ mod tests {
       source: "/* // inside block */ a { color: red; }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());

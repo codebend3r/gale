@@ -5,6 +5,7 @@ use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisableReports};
+use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
@@ -200,7 +201,8 @@ impl LintRunner {
   /// offsets the source map takes back to `source` so that lines are those
   /// of the file the author wrote.  In a style sheet embedded in an
   /// HTML-like file the host applies the ranges of the whole document
-  /// instead, so only the reports are added here.
+  /// instead, so only the reports are added here.  The comments are found
+  /// in the statement tree the rules share, `cache`, built for that text.
   ///
   /// Returns Stylelint's `CssSyntaxError` for a comment it rejects (an
   /// `enable` with nothing disabled, say), which replaces every other
@@ -211,12 +213,12 @@ impl LintRunner {
     diagnostics: &mut Vec<Diagnostic>,
     source: &str,
     parsed: &ParseResult,
-    syntax: Syntax,
+    cache: &FileCache,
     file_path: &str,
     is_configured: &dyn Fn(&str) -> bool,
     forbids_disable: &dyn Fn(&str) -> bool,
   ) -> Option<Diagnostic> {
-    let text = parsed.source.as_str();
+    let text = cache.source();
     if !disables::may_have_directives(text) {
       return None;
     }
@@ -226,7 +228,7 @@ impl LintRunner {
       None => lines.line(offset),
     };
     let mut collector = disables::Collector::new(&line_of);
-    collector.scan(text, syntax, 0);
+    collector.scan_tree(&cache.postcss_tree(), cache.syntax(), 0);
     let (ranges, rejected) = collector.finish();
     let embedded = crate::embedded::in_embedded_root();
     if let Some(rejected) = rejected.filter(|_| !embedded) {
@@ -359,14 +361,8 @@ impl LintRunner {
       .map(|rule| self.rule_options.get(rule.name()))
       .collect();
 
-    let mut run = RuleRun::new(
-      &active_rules,
-      options.clone(),
-      options,
-      file_path,
-      text,
-      syntax,
-    );
+    let cache = FileCache::new(text, syntax);
+    let mut run = RuleRun::new(&active_rules, options.clone(), options, file_path, &cache);
 
     // Run document-level checks (check_root).
     let t1 = Instant::now();
@@ -421,7 +417,7 @@ impl LintRunner {
       &mut diagnostics,
       source,
       &parse_result,
-      syntax,
+      &cache,
       file_path,
       &|rule_name| self.is_configured_rule(&[], rule_name),
       &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
@@ -532,14 +528,8 @@ impl LintRunner {
       .map(|rule| merged_options.get(rule.name()))
       .collect();
 
-    let mut run = RuleRun::new(
-      &active_rules,
-      root_options,
-      node_options,
-      file_path,
-      text,
-      syntax,
-    );
+    let cache = FileCache::new(text, syntax);
+    let mut run = RuleRun::new(&active_rules, root_options, node_options, file_path, &cache);
 
     let t1 = Instant::now();
     run.check_root(&nodes, debug);
@@ -611,7 +601,7 @@ impl LintRunner {
       &mut diagnostics,
       source,
       &parse_result,
-      syntax,
+      &cache,
       file_path,
       &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
       &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
@@ -775,6 +765,8 @@ struct RuleRun<'a> {
   file_path: &'a str,
   source: &'a str,
   syntax: Syntax,
+  /// What the rules share for this file, built from `source`.
+  cache: &'a FileCache<'a>,
   /// `failed[i]` once `rules[i]` has panicked on this file.
   failed: Vec<bool>,
   /// What the rules reported.
@@ -787,22 +779,23 @@ struct RuleRun<'a> {
 }
 
 impl<'a> RuleRun<'a> {
-  /// Prepare a pass of `rules` over one file.
+  /// Prepare a pass of `rules` over one file, the text `cache` was built
+  /// for.
   fn new(
     rules: &'a [&'a dyn Rule],
     root_options: Vec<Option<&'a serde_json::Value>>,
     node_options: Vec<Option<&'a serde_json::Value>>,
     file_path: &'a str,
-    source: &'a str,
-    syntax: Syntax,
+    cache: &'a FileCache<'a>,
   ) -> Self {
     let mut run = Self {
       rules,
       root_options,
       node_options,
       file_path,
-      source,
-      syntax,
+      source: cache.source(),
+      syntax: cache.syntax(),
+      cache,
       failed: vec![false; rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
@@ -835,6 +828,7 @@ impl<'a> RuleRun<'a> {
       source: self.source,
       syntax: self.syntax,
       options,
+      cache: Some(self.cache),
     }
   }
 
@@ -1172,6 +1166,171 @@ mod tests {
       .collect();
     assert!(rules.contains(&"test/panics"), "{rules:?}");
     assert!(rules.contains(&"color-named"), "{rules:?}");
+  }
+
+  // -- Panics and the artifacts rules share --
+
+  /// A rule that reports every style rule in the shared statement tree, at
+  /// its start.
+  struct ReportsTreeRules;
+
+  impl Rule for ReportsTreeRules {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/tree-rules"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Reports every style rule in the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Reports each style rule of the shared tree.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let tree = ctx.postcss_tree();
+      tree
+        .nodes
+        .iter()
+        .filter(|node| node.kind == crate::postcss_tree::NodeKind::Rule)
+        .map(|node| Diagnostic::new(self.name(), "rule").span(Span::new(node.start, 1)))
+        .collect()
+    }
+  }
+
+  /// A rule that is first to ask for the shared tree and whose build of it
+  /// panics, standing in for a bug in the tree's parser.
+  struct BreaksTreeBuild;
+
+  impl Rule for BreaksTreeBuild {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/breaks-tree-build"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while building the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Builds the shared tree with a builder that panics.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let cache = ctx.cache.expect("the runner shares a cache");
+      cache.postcss_tree_built_by(|| panic!("tree build failed"));
+      vec![]
+    }
+  }
+
+  /// A rule that panics while it holds the shared tree.
+  struct PanicsHoldingTree;
+
+  impl Rule for PanicsHoldingTree {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/panics-holding-tree"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while holding the shared statement tree"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Takes the shared tree, then panics.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      let tree = ctx.postcss_tree();
+      panic!("crashed holding {} statements", tree.nodes.len());
+    }
+  }
+
+  /// A runner over `rules`, in that order, with the test rules above
+  /// registered.
+  fn runner_with_tree_rules(rules: &[&str]) -> LintRunner {
+    let mut registry = RuleRegistry::default();
+    registry.register(Box::new(ReportsTreeRules));
+    registry.register(Box::new(BreaksTreeBuild));
+    registry.register(Box::new(PanicsHoldingTree));
+    LintRunner::new(registry, rules.iter().map(|r| r.to_string()).collect())
+  }
+
+  /// The messages of `rule`'s problems, by offset.
+  fn problems_of<'r>(result: &'r LintResult, rule: &str) -> Vec<(usize, &'r str)> {
+    result
+      .diagnostics
+      .iter()
+      .filter(|d| d.rule_name == rule)
+      .map(|d| (d.span.offset, d.message.as_str()))
+      .collect()
+  }
+
+  /// A rule whose build of the shared tree panics reports an internal
+  /// error; the next rule to ask builds the tree, and so do the disable
+  /// comments read after the rules.
+  #[test]
+  fn a_shared_build_that_panics_is_built_again_for_the_next_rule() {
+    let runner = runner_with_tree_rules(&["test/breaks-tree-build", "test/tree-rules"]);
+    // The disable comment is read from the same shared tree, after the
+    // failed build: it must still apply.
+    let src = "a {}
+/* stylelint-disable-next-line test/tree-rules */
+b {}
+c {}
+";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+
+    let crashes = problems_of(&result, "test/breaks-tree-build");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("tree build failed"),
+      "{}",
+      crashes[0].1
+    );
+
+    let c = src.find("c {").unwrap();
+    assert_eq!(
+      problems_of(&result, "test/tree-rules"),
+      vec![(0, "rule"), (c, "rule")],
+      "the next rule builds the tree and the disable comment applies"
+    );
+  }
+
+  /// A rule that panics while holding the shared tree only drops its
+  /// reference; the other rules still get the tree.
+  #[test]
+  fn a_rule_that_panics_holding_the_shared_tree_leaves_it_to_the_others() {
+    let runner = runner_with_tree_rules(&["test/panics-holding-tree", "test/tree-rules"]);
+    let result = runner.lint_source(
+      "a {}
+b {}
+",
+      "test.css",
+      Syntax::Css,
+    );
+
+    let crashes = problems_of(&result, "test/panics-holding-tree");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("crashed holding 2 statements"),
+      "{}",
+      crashes[0].1
+    );
+    assert_eq!(
+      problems_of(&result, "test/tree-rules"),
+      vec![(0, "rule"), (5, "rule")]
+    );
   }
 
   #[test]

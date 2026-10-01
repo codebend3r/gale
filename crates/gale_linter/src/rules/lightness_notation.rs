@@ -2,7 +2,6 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::js_number::{parse_float, to_js_string, to_precision};
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
@@ -43,7 +42,7 @@ impl Rule for LightnessNotation {
       Some("number") => false,
       _ => return Vec::new(),
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for decl in tree.decls() {

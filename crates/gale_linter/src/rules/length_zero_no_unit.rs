@@ -104,7 +104,7 @@ impl Rule for LengthZeroNoUnit {
       ignore_functions: secondary.and_then(|s| s.get("ignoreFunctions")),
       ignore_prelude_of_at_rules: secondary.and_then(|s| s.get("ignorePreludeOfAtRules")),
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for i in 0..tree.nodes.len() {
@@ -255,6 +255,7 @@ mod tests {
       source,
       syntax,
       options: options.as_ref(),
+      cache: None,
     };
     LengthZeroNoUnit
       .check_root(&[], &ctx)

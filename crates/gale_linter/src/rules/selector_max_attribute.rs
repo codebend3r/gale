@@ -231,6 +231,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(&options),
+      cache: None,
     };
     let max = options
       .as_array()

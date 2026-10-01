@@ -70,6 +70,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -98,6 +99,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&options),
+      cache: None,
     };
     assert!(AtRuleNoUnknown.check(&at("theme"), &ctx).is_empty());
     assert!(AtRuleNoUnknown.check(&at("config"), &ctx).is_empty());
@@ -125,6 +127,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -134,6 +137,7 @@ mod tests {
       source: "",
       syntax: Syntax::Less,
       options: None,
+      cache: None,
     }
   }
 

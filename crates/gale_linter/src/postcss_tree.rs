@@ -15,6 +15,11 @@
 //! would throw, it carries on the way `postcss-safe-parser` does, folding
 //! the stray text into the next node's `raws.before`.
 //!
+//! A rule gets the file's tree from
+//! [`RuleContext::postcss_tree`](crate::rule::RuleContext::postcss_tree),
+//! which parses it once per file for every rule (and the disable comments)
+//! to share, rather than parsing it again.
+//!
 //! Offsets are byte offsets into the source and always fall on character
 //! boundaries: every token ends at an ASCII delimiter or at the end of the
 //! input.

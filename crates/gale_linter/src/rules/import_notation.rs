@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::postcss_tree::{NodeKind as StatementKind, PostcssTree};
+use crate::postcss_tree::NodeKind as StatementKind;
 use crate::rule::{Rule, RuleContext};
 use crate::value_parser::{self, NodeKind};
 
@@ -34,7 +34,7 @@ impl Rule for ImportNotation {
       Some("url") => false,
       _ => return Vec::new(),
     };
-    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for at_rule in tree

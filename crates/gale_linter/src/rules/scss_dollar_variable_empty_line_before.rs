@@ -275,6 +275,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -284,6 +285,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: Some(options),
+      cache: None,
     }
   }
 
@@ -356,6 +358,7 @@ mod tests {
       source: ".foo {\n  color: red;\n  $var: 1;\n}",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssDollarVariableEmptyLineBefore
