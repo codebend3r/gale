@@ -381,6 +381,13 @@ fn is_after_declaration(source: &str, offset: usize) -> bool {
   // Track nesting depth for parentheses — when we encounter `)` or `);`
   // we need to walk back to find the matching `(` to skip the whole group.
   let mut paren_depth: i32 = 0;
+  // Whether the lines walked so far continue a multi-line value.  A `//`
+  // line met then sits inside that value, as in
+  //   background: linear-gradient(...) padding-box,
+  //     // explanation
+  //     linear-gradient(...) border-box;
+  // where PostCSS keeps the comment in the value, not as a sibling node.
+  let mut inside_value = false;
 
   // Walk backwards to find the previous meaningful line
   for line in before.lines().rev() {
@@ -405,7 +412,7 @@ fn is_after_declaration(source: &str, offset: usize) -> bool {
       if let Some(comment_pos) = stripped.find("//") {
         let before_comment = stripped[..comment_pos].trim_end();
         if before_comment.is_empty() {
-          if paren_depth == 0 {
+          if paren_depth == 0 && !inside_value {
             // Standalone `//` line at top level → non-shared-line comment
             return false;
           }
@@ -428,7 +435,7 @@ fn is_after_declaration(source: &str, offset: usize) -> bool {
       }
     } else {
       // Pure `//` comment line
-      if paren_depth == 0 {
+      if paren_depth == 0 && !inside_value {
         return false;
       }
       continue;
@@ -493,6 +500,7 @@ fn is_after_declaration(source: &str, offset: usize) -> bool {
 
     // If we're inside unclosed parens, keep walking back
     if paren_depth > 0 {
+      inside_value = true;
       continue;
     }
 
@@ -506,6 +514,7 @@ fn is_after_declaration(source: &str, offset: usize) -> bool {
     // and looks like an indented value continuation — e.g. comma-separated
     // multi-line values), keep walking back to find the property line.
     if is_value_continuation(stripped) {
+      inside_value = true;
       continue;
     }
 
@@ -960,6 +969,20 @@ mod tests {
       is_after_declaration(src, anim_offset),
       "animation should be recognized as after a multi-line box-shadow declaration"
     );
+  }
+
+  #[test]
+  fn line_comment_inside_a_multiline_value_is_part_of_it() {
+    // carbon's `dropdown.scss`.
+    let source = "a {\n  background:\n    linear-gradient(red, red)\n      padding-box,\n    // the border gradient\n    linear-gradient(\n        to bottom,\n        blue 100%\n      )\n      border-box;\n  border-color: transparent;\n}\n";
+    let offset = source.find("border-color").unwrap();
+    assert!(is_after_declaration(source, offset));
+    // A `//` line between two declarations is still a comment node.
+    let source = "a {\n  color: red;\n  // note\n  margin: 0;\n}\n";
+    assert!(!is_after_declaration(
+      source,
+      source.find("margin").unwrap()
+    ));
   }
 
   #[test]
