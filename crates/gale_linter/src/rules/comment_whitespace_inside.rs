@@ -3,6 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Rule, RuleContext};
+use crate::stylelint_version::installed_at_least;
 
 /// Require or disallow whitespace on the inside of comment markers.
 ///
@@ -24,13 +25,23 @@ enum Problem {
 }
 
 impl Problem {
-  /// Stylelint's message for the problem.
+  /// Stylelint's message for the problem, worded as the installed version
+  /// words it.
   fn message(self) -> &'static str {
-    match self {
-      Problem::ExpectedOpening => "Expected whitespace after \"/*\"",
-      Problem::RejectedOpening => "Expected no whitespace after \"/*\"",
-      Problem::ExpectedClosing => "Expected whitespace before \"*/\"",
-      Problem::RejectedClosing => "Expected no whitespace before \"*/\"",
+    self.message_for(installed_at_least(17, 7))
+  }
+
+  /// The message in Stylelint 17.7 and later (`reworded`), which says
+  /// `Expected no whitespace` where earlier versions say `Unexpected
+  /// whitespace`.
+  fn message_for(self, reworded: bool) -> &'static str {
+    match (self, reworded) {
+      (Problem::ExpectedOpening, _) => "Expected whitespace after \"/*\"",
+      (Problem::RejectedOpening, true) => "Expected no whitespace after \"/*\"",
+      (Problem::RejectedOpening, false) => "Unexpected whitespace after \"/*\"",
+      (Problem::ExpectedClosing, _) => "Expected whitespace before \"*/\"",
+      (Problem::RejectedClosing, true) => "Expected no whitespace before \"*/\"",
+      (Problem::RejectedClosing, false) => "Unexpected whitespace before \"*/\"",
     }
   }
 }
@@ -219,6 +230,26 @@ fn js_space_suffix_start(text: &str) -> usize {
 mod tests {
   use super::*;
   use crate::empty_lines::fix_with;
+
+  #[test]
+  fn rejected_wording_follows_the_stylelint_version() {
+    assert_eq!(
+      Problem::RejectedOpening.message_for(true),
+      "Expected no whitespace after \"/*\""
+    );
+    assert_eq!(
+      Problem::RejectedOpening.message_for(false),
+      "Unexpected whitespace after \"/*\""
+    );
+    assert_eq!(
+      Problem::RejectedClosing.message_for(false),
+      "Unexpected whitespace before \"*/\""
+    );
+    assert_eq!(
+      Problem::ExpectedClosing.message_for(false),
+      "Expected whitespace before \"*/\""
+    );
+  }
   use gale_css_parser::Syntax;
 
   /// The messages for `source` in `syntax` with `option`, with their

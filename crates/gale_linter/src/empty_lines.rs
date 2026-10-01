@@ -9,6 +9,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::PostcssTree;
+use crate::stylelint_version::installed_at_least;
 
 /// Stylelint's `hasEmptyLine`: whether `text` holds a line with nothing but
 /// spaces, tabs or carriage returns on it (`/\n[\r\t ]*\n/`).
@@ -90,10 +91,21 @@ pub fn fix_empty_lines_before(tree: &PostcssTree, node: usize, action: EmptyLine
   )
 }
 
+/// The message for an empty line Stylelint wants gone: `Expected no empty
+/// line before <what>` since Stylelint 17.7 reworded its messages, and
+/// `Unexpected empty line before <what>` in the versions before it.
+pub fn rejected_message(what: &str, reworded: bool) -> String {
+  if reworded {
+    format!("Expected no empty line before {what}")
+  } else {
+    format!("Unexpected empty line before {what}")
+  }
+}
+
 /// The report an `*-empty-line-before` rule makes when `node` does not
-/// match the expectation: `Expected empty line before <what>` or `Expected
-/// no empty line before <what>`, at the node, with the fix that adds or
-/// removes the empty line.
+/// match the expectation: `Expected empty line before <what>`, or the
+/// [`rejected_message`] the installed Stylelint words, at the node, with
+/// the fix that adds or removes the empty line.
 pub fn empty_line_report(
   rule_name: &str,
   severity: Severity,
@@ -109,7 +121,7 @@ pub fn empty_line_report(
     )
   } else {
     (
-      format!("Expected no empty line before {what}"),
+      rejected_message(what, installed_at_least(17, 7)),
       EmptyLineAction::Remove,
     )
   };
@@ -154,6 +166,18 @@ pub(crate) fn fix_with(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn rejected_wording_follows_the_stylelint_version() {
+    assert_eq!(
+      rejected_message("custom property", true),
+      "Expected no empty line before custom property"
+    );
+    assert_eq!(
+      rejected_message("custom property", false),
+      "Unexpected empty line before custom property"
+    );
+  }
 
   #[test]
   fn empty_lines_are_lines_of_spaces_tabs_or_carriage_returns() {
