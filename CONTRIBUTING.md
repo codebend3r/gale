@@ -48,8 +48,8 @@ installs itself when you run `bun install`; if the hooks ever go missing, run
 | `pre-push` | `cargo test --workspace`, the bun feature suite against a debug build | around ten seconds |
 
 Jobs are filtered by glob, so a docs-only commit skips the Rust checks
-entirely. Release builds, the npm package matrix, and benchmarks are left to
-CI.
+entirely. Release builds and the npm package matrix are left to CI, and the
+benchmark runs weekly alongside the compatibility matrix.
 
 To bypass a hook once:
 
@@ -101,12 +101,21 @@ See `tests/differential/` for more details.
 
 1. Fork the repo and create a branch from `main`
 2. Make your changes
-3. Make sure `cargo test --workspace` passes
-4. Make sure `cargo clippy --workspace -- -D warnings` is clean
-5. Make sure `cargo fmt --check` passes
+3. Make sure `bun run test` passes (build first with `cargo build --release`)
+4. Make sure `bun run lint` is clean (clippy on every target, warnings denied)
+5. Make sure `bun run fmt:check` passes
 6. Open a PR with a clear description of what you changed and why
 
 Steps 3 to 5 run on their own if you have the hooks installed (see
 [Hooks](#hooks)).
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs these same
+`package.json` scripts on every pull request and every push to `main`, plus the
+npm package smoke tests on every supported Node version. Changes that touch
+only Markdown, `docs/`, `.claude/`, or `LICENSE` skip CI.
+
+## Releasing
+
+Releases are tag-driven: see [PUBLISHING.md](PUBLISHING.md).
 
 That's it. We try to keep the process lightweight.
