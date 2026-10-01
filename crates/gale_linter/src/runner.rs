@@ -201,6 +201,10 @@ impl LintRunner {
   /// of the file the author wrote.  In a style sheet embedded in an
   /// HTML-like file the host applies the ranges of the whole document
   /// instead, so only the reports are added here.
+  ///
+  /// Returns Stylelint's `CssSyntaxError` for a comment it rejects (an
+  /// `enable` with nothing disabled, say), which replaces every other
+  /// problem in the file, `ignoreDisables` or not.
   #[allow(clippy::too_many_arguments)]
   fn apply_disables(
     &self,
@@ -211,10 +215,10 @@ impl LintRunner {
     file_path: &str,
     is_configured: &dyn Fn(&str) -> bool,
     forbids_disable: &dyn Fn(&str) -> bool,
-  ) {
+  ) -> Option<Diagnostic> {
     let text = parsed.source.as_str();
-    if !self.needs_disabled_ranges() || !disables::may_have_directives(text) {
-      return;
+    if !disables::may_have_directives(text) {
+      return None;
     }
     let lines = SourceLineIndex::build(source);
     let line_of = |offset: usize| match &parsed.source_map {
@@ -223,15 +227,23 @@ impl LintRunner {
     };
     let mut collector = disables::Collector::new(&line_of);
     collector.scan(text, syntax, 0);
-    let (ranges, _rejected) = collector.finish();
+    let (ranges, rejected) = collector.finish();
+    let embedded = crate::embedded::in_embedded_root();
+    if let Some(rejected) = rejected.filter(|_| !embedded) {
+      return Some(rejected.to_diagnostic(file_path));
+    }
+    if !self.needs_disabled_ranges() {
+      return None;
+    }
     let settings = disables::DisableSettings {
-      suppress: !self.ignore_disables && !crate::embedded::in_embedded_root(),
+      suppress: !self.ignore_disables && !embedded,
       reports: self.disable_reports(),
       is_configured,
       forbids_disable,
       file_path,
     };
     disables::apply(diagnostics, &ranges, &line_of, &settings);
+    None
   }
 
   /// Whether the comment reports need the disabled ranges at all.
@@ -405,7 +417,7 @@ impl LintRunner {
     // report needless disable comments.  When `ignore_disables` is true,
     // skip filtering entirely so all diagnostics are reported.
     let t4 = Instant::now();
-    self.apply_disables(
+    if let Some(rejected) = self.apply_disables(
       &mut diagnostics,
       source,
       &parse_result,
@@ -413,7 +425,9 @@ impl LintRunner {
       file_path,
       &|rule_name| self.is_configured_rule(&[], rule_name),
       &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
-    );
+    ) {
+      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
+    }
     if debug {
       eprintln!("[perf] disable-filter: {:.3}s", t4.elapsed().as_secs_f64());
     }
@@ -593,7 +607,7 @@ impl LintRunner {
       }
     }
 
-    self.apply_disables(
+    if let Some(rejected) = self.apply_disables(
       &mut diagnostics,
       source,
       &parse_result,
@@ -601,7 +615,9 @@ impl LintRunner {
       file_path,
       &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
       &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
-    );
+    ) {
+      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
+    }
 
     // Rule crashes go in last, as in `lint_source`, under the rule name the
     // config used.
@@ -1296,6 +1312,36 @@ mod tests {
       problem_lines(&runner, src, "test.css", Syntax::Css),
       vec![4]
     );
+  }
+
+  #[test]
+  fn a_rejected_command_replaces_every_problem_like_stylelint() {
+    let mut runner = runner_for(&["block-no-empty", "not-a-rule"]);
+    runner.set_default_severity(Some(Severity::Warning));
+    runner.set_ignore_disables(true);
+    let src = "a {}\n/* stylelint-enable */\nb {}\n";
+    for result in [
+      runner.lint_source(src, "test.css", Syntax::Css),
+      runner.lint_source_with_rules(
+        src,
+        "test.css",
+        Syntax::Css,
+        &["block-no-empty".to_string()],
+        &HashMap::new(),
+        &HashMap::new(),
+      ),
+    ] {
+      assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+      let d = &result.diagnostics[0];
+      assert_eq!(d.rule_name, "CssSyntaxError");
+      assert_eq!(d.message, "No rules have been disabled");
+      assert_eq!(d.severity, Severity::Error);
+      assert_eq!(&src[d.span.offset..d.span.end()], "/* stylelint-enable */");
+      assert_eq!(
+        d.stylelint_text(),
+        "No rules have been disabled (CssSyntaxError)"
+      );
+    }
   }
 
   #[test]

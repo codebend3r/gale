@@ -114,6 +114,71 @@ describe("stylelint-enable", () => {
   });
 });
 
+describe("commands Stylelint rejects", () => {
+  // Stylelint stops linting the file at such a comment and reports a
+  // CssSyntaxError spanning it in place of every other problem.
+  const cases: Array<[string, string, object]> = [
+    [
+      "an enable with nothing disabled",
+      "a {}\n/* stylelint-enable */\nb {}\n",
+      { line: 2, column: 1, endLine: 2, endColumn: 23, text: "No rules have been disabled (CssSyntaxError)" },
+    ],
+    [
+      "a rule disabled twice",
+      "/* stylelint-disable block-no-empty */\na {}\n/* stylelint-disable block-no-empty */\n",
+      {
+        line: 3,
+        column: 1,
+        endLine: 3,
+        endColumn: 39,
+        text: '"block-no-empty" has already been disabled (CssSyntaxError)',
+      },
+    ],
+    [
+      "an enable for a rule that is not disabled",
+      "/* stylelint-enable block-no-empty */\na {}\n",
+      {
+        line: 1,
+        column: 1,
+        endLine: 1,
+        endColumn: 38,
+        text: '"block-no-empty" has not been disabled (CssSyntaxError)',
+      },
+    ],
+    [
+      "a second blanket disable",
+      "/* stylelint-disable */\na {}\n/* stylelint-disable */\n",
+      { line: 3, column: 1, endLine: 3, endColumn: 24, text: "All rules have already been disabled (CssSyntaxError)" },
+    ],
+  ];
+
+  test.each(cases)("%s", (_name, source, expected) => {
+    const project = makeProject({ ".stylelintrc.json": config(RULES), "a.css": source });
+    const result = runGaleJson(["a.css"], { cwd: project.dir });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.warnings()).toEqual([
+      { ...expected, rule: "CssSyntaxError", severity: "error" },
+    ]);
+  });
+
+  test("ignoreDisables does not let them through", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config(RULES, { ignoreDisables: true }),
+      "a.css": "a {}\n/* stylelint-enable */\n",
+    });
+
+    expect(runGaleJson(["a.css"], { cwd: project.dir }).warnings().map((w) => w.rule)).toEqual([
+      "CssSyntaxError",
+    ]);
+  });
+
+  test("an enable for a disable in an earlier style block is fine", () => {
+    const vue = "<style>\n/* stylelint-disable block-no-empty */\n</style>\n<style>\n/* stylelint-enable block-no-empty */\na {}\n</style>\n";
+    expect(lines({ "App.vue": vue }, "App.vue")).toEqual(["6 block-no-empty"]);
+  });
+});
+
 describe("// comments", () => {
   test("are commands in SCSS and Less", () => {
     const source = "// stylelint-disable-next-line block-no-empty\na {}\nb {}\n";
