@@ -1,36 +1,44 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::style_rules::scan_at_rules;
 
 /// Specify context or prefix notation for media feature ranges.
 ///
 /// Equivalent to Stylelint's `media-feature-range-notation` rule.
 ///
 /// Primary option:
-///   - `"context"` (default): Expect range notation (e.g. `width >= 768px`)
-///   - `"prefix"`: Expect prefix notation (e.g. `min-width: 768px`)
+///   - `"context"`: expect range notation (e.g. `width >= 768px`); the fix
+///     rewrites `min-`/`max-` features in place (`(min-width: 1px)` becomes
+///     `(width >= 1px)`).
+///   - `"prefix"`: expect prefix notation (e.g. `min-width: 768px`); range
+///     features are reported but cannot be fixed.
+///
+/// Secondary option `except: ["exact-value"]` flips the expectation for
+/// exact values: `(width: 1px)` under `"prefix"` becomes `(width = 1px)`.
+///
+/// Media queries are read as written and parsed the way
+/// `@csstools/media-query-list-parser` reads them, so invalid queries and
+/// features whose value is not a plain value (preprocessor variables, math)
+/// are skipped.
 pub struct MediaFeatureRangeNotation;
 
-/// Prefixes that indicate the old min/max notation.
-const RANGE_PREFIXES: &[&str] = &["min-", "max-"];
-
-/// Media features that support range notation.
+/// Stylelint's `rangeTypeMediaFeatureNames`.
 const RANGE_FEATURES: &[&str] = &[
-  "width",
-  "height",
-  "device-width",
-  "device-height",
   "aspect-ratio",
-  "device-aspect-ratio",
   "color",
   "color-index",
+  "device-aspect-ratio",
+  "device-height",
+  "device-width",
+  "height",
+  "horizontal-viewport-segments",
   "monochrome",
   "resolution",
+  "vertical-viewport-segments",
+  "width",
 ];
-
-/// Range comparison operators used in context notation.
-const RANGE_OPS: &[&str] = &[">=", "<=", ">", "<"];
 
 impl Rule for MediaFeatureRangeNotation {
   fn name(&self) -> &'static str {
@@ -45,206 +53,713 @@ impl Rule for MediaFeatureRangeNotation {
     Severity::Warning
   }
 
-  /// Flags media features written in the notation the option forbids. Queries
-  /// holding preprocessor variables or math are skipped as unresolvable.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if at.name != "media" {
-      return vec![];
-    }
-
-    // Skip media queries containing SCSS/Less variables, interpolation,
-    // or SCSS math expressions — the actual values are unknown until
-    // compilation, so range notation cannot be determined.
-    if at.params.contains('$') || at.params.contains("#{") || at.params.contains("@{") {
-      return vec![];
-    }
-    // In SCSS/Less, skip if params contain SCSS math operators (like `(124px + 300px)`)
-    if ctx.syntax != gale_css_parser::Syntax::Css
-      && (at.params.contains(" + ") || at.params.contains(" - ") || at.params.contains(" * "))
-    {
-      return vec![];
-    }
-
-    let notation = parse_notation(ctx.options);
-
-    // If "prefix" notation, skip entirely — Gale does not currently detect
-    // range→prefix violations (requires parsing range syntax which is rare).
-    if notation == Notation::Prefix {
-      return vec![];
-    }
-
-    // Determine the notation option string for the message
-    let notation_str = ctx
-      .options
-      .and_then(|v| v.as_str())
-      .or_else(|| {
-        ctx
-          .options
-          .and_then(|v| v.as_array())
-          .and_then(|a| a.first())
-          .and_then(|v| v.as_str())
-      })
-      .unwrap_or("context");
-
+  /// Flags media features written in the notation the option forbids, in
+  /// every `@media` query as written (nested ones included).
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    let mut seen_offsets = std::collections::HashSet::new();
-
-    let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-    let at_src = &ctx.source[at.span.offset..at_src_end];
-    let at_src_lower = at_src.to_ascii_lowercase();
-    for &prefix in RANGE_PREFIXES {
-      for &feature in RANGE_FEATURES {
-        let prefixed = format!("{prefix}{feature}");
-        // Search for `(min-width` or `( min-width` — the prefixed feature
-        // MUST follow an opening paren to be a media feature (not a CSS
-        // property like `min-width: 100px` inside the rule body).
-        let paren_search = format!("({prefixed}");
-        let paren_off = at_src_lower.find(&paren_search).or_else(|| {
-          // Try with whitespace between `(` and feature name
-          at_src_lower.find(&prefixed).and_then(|p| {
-            // Walk backwards from the match to find `(`
-            let before = &at_src_lower[..p];
-            let trimmed = before.trim_end();
-            if trimmed.ends_with('(') {
-              Some(trimmed.len() - 1)
-            } else {
-              None
-            }
-          })
-        });
-        if let Some(paren_off) = paren_off {
-          let abs_offset = at.span.offset + paren_off;
-          if seen_offsets.insert(abs_offset) {
-            diags.push(
-              Diagnostic::new(
-                self.name(),
-                format!("Expected \"{notation_str}\" media feature range notation"),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(abs_offset, 1)),
-            );
-          }
-        }
+    for at in scan_at_rules(ctx.source, ctx.syntax) {
+      if at.name.eq_ignore_ascii_case("media") {
+        self.check_params(&at.params, at.params_offset, ctx, &mut diags);
       }
     }
     diags
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Notation {
-  Context,
-  Prefix,
+impl MediaFeatureRangeNotation {
+  /// Check the params of one `@media` rule, which start at byte
+  /// `params_start` of the source.
+  fn check_params(
+    &self,
+    params: &str,
+    params_start: usize,
+    ctx: &RuleContext,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    let prefix = ctx.primary_option_str() == Some("prefix");
+    let except_exact_value = ctx
+      .secondary_options()
+      .and_then(|v| v.get("except"))
+      .and_then(|v| v.as_array())
+      .is_some_and(|items| items.iter().any(|v| v.as_str() == Some("exact-value")));
+
+    // Stylelint only parses params that could hold a problem.
+    if !except_exact_value {
+      let could_offend = if prefix {
+        params.contains(['<', '>'])
+      } else {
+        let lower = params.to_ascii_lowercase();
+        lower.contains("min-") || lower.contains("max-")
+      };
+      if !could_offend {
+        return;
+      }
+    }
+
+    let message = |expected_prefix: bool| {
+      format!(
+        "Expected \"{}\" media feature range notation",
+        if expected_prefix { "prefix" } else { "context" }
+      )
+    };
+
+    let tokens = tokenize(params);
+    for query in tokens.split(|t| t.kind == Tok::Comma) {
+      let mut features = Vec::new();
+      if !media_query(query, &mut features) {
+        continue;
+      }
+      for feature in features {
+        let name = feature.name(params);
+        let unprefixed = strip_min_max(name);
+        if !RANGE_FEATURES.contains(&unprefixed) {
+          continue;
+        }
+        let is_plain = matches!(feature.form, Form::Plain { .. });
+        let mut expect_prefix = prefix;
+        if except_exact_value {
+          let exact_range = matches!(feature.form, Form::Range { exact: true });
+          let plain_unprefixed = is_plain && name.len() == unprefixed.len();
+          if exact_range || plain_unprefixed {
+            expect_prefix = !expect_prefix;
+          }
+        }
+        if expect_prefix == is_plain {
+          continue;
+        }
+        let span = Span::from_range(
+          params_start + feature.open,
+          params_start + feature.close + 1,
+        );
+        let mut diag = Diagnostic::new(self.name(), message(expect_prefix))
+          .severity(self.default_severity())
+          .span(span);
+        if let Form::Plain { colon } = feature.form
+          && !expect_prefix
+        {
+          let lower = name.to_ascii_lowercase();
+          let operator = if lower.starts_with("min-") {
+            ">="
+          } else if lower.starts_with("max-") {
+            "<="
+          } else {
+            "="
+          };
+          let after = params.get(feature.name_end..colon).unwrap_or("");
+          let after = if after.is_empty() { " " } else { after };
+          diag = diag.fix(Fix::new(
+            format!("Write \"{unprefixed} {operator}\""),
+            vec![Edit::new(
+              Span::from_range(params_start + feature.name_start, params_start + colon + 1),
+              format!("{unprefixed}{after}{operator}"),
+            )],
+          ));
+        }
+        diags.push(diag);
+      }
+    }
+  }
 }
 
-/// Maps the primary option; anything but "prefix" means context notation.
-fn parse_notation(options: Option<&serde_json::Value>) -> Notation {
-  let Some(value) = options else {
-    return Notation::Context;
+/// `name` without a leading `min-` or `max-` (any case).
+fn strip_min_max(name: &str) -> &str {
+  let lower = name.to_ascii_lowercase();
+  if lower.starts_with("min-") || lower.starts_with("max-") {
+    &name[4..]
+  } else {
+    name
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tokens
+// ---------------------------------------------------------------------------
+
+/// A token kind, as far as media queries care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tok {
+  /// Whitespace or a comment.
+  Trivia,
+  Ident,
+  /// A number, percentage or dimension.
+  Number,
+  /// `(...)`, with its contents in `children`.
+  Block,
+  /// `name(...)`.
+  Function,
+  Colon,
+  Comma,
+  /// Any other single character.
+  Delim(u8),
+  /// A string, an unmatched `)`, or anything else that is never valid.
+  Bad,
+}
+
+/// A token, its text and its byte range in the params.
+#[derive(Debug, Clone)]
+struct Token<'a> {
+  kind: Tok,
+  text: &'a str,
+  start: usize,
+  end: usize,
+  children: Vec<Token<'a>>,
+}
+
+/// Whether `b` can start an identifier.
+fn is_name_start(b: u8) -> bool {
+  b.is_ascii_alphabetic() || b == b'_' || b >= 0x80
+}
+
+/// Whether `b` can continue an identifier.
+fn is_name_char(b: u8) -> bool {
+  is_name_start(b) || b.is_ascii_digit() || b == b'-'
+}
+
+/// Tokenize `text` into media-query tokens; parenthesised groups nest.
+fn tokenize(text: &str) -> Vec<Token<'_>> {
+  let (tokens, _) = tokenize_from(text, 0, false);
+  tokens
+}
+
+/// Tokenize from `pos`; inside a block, stop at its `)` and return the
+/// position after it.
+fn tokenize_from(text: &str, mut pos: usize, in_block: bool) -> (Vec<Token<'_>>, usize) {
+  let bytes = text.as_bytes();
+  let slice = |start: usize, end: usize| text.get(start..end).unwrap_or("");
+  let mut tokens = Vec::new();
+  while pos < bytes.len() {
+    let start = pos;
+    let b = bytes[pos];
+    let kind = if b.is_ascii_whitespace() {
+      while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+        pos += 1;
+      }
+      Tok::Trivia
+    } else if b == b'/' && bytes.get(pos + 1) == Some(&b'*') {
+      pos = find_comment_end(bytes, pos);
+      Tok::Trivia
+    } else if b == b'(' {
+      let (children, after) = tokenize_from(text, pos + 1, true);
+      tokens.push(Token {
+        kind: Tok::Block,
+        text: slice(start, after),
+        start,
+        end: after,
+        children,
+      });
+      pos = after;
+      continue;
+    } else if b == b')' {
+      if in_block {
+        return (tokens, pos + 1);
+      }
+      pos += 1;
+      Tok::Bad
+    } else if b == b'"' || b == b'\'' {
+      pos += 1;
+      while pos < bytes.len() && bytes[pos] != b {
+        pos += if bytes[pos] == b'\\' { 2 } else { 1 };
+      }
+      pos = (pos + 1).min(bytes.len());
+      Tok::Bad
+    } else if b == b':' {
+      pos += 1;
+      Tok::Colon
+    } else if b == b',' {
+      pos += 1;
+      Tok::Comma
+    } else if starts_number(bytes, pos) {
+      pos = consume_number(bytes, pos);
+      Tok::Number
+    } else if starts_ident(bytes, pos) {
+      pos = consume_name(bytes, pos);
+      if bytes.get(pos) == Some(&b'(') {
+        let (children, after) = tokenize_from(text, pos + 1, true);
+        tokens.push(Token {
+          kind: Tok::Function,
+          text: slice(start, after),
+          start,
+          end: after,
+          children,
+        });
+        pos = after;
+        continue;
+      }
+      Tok::Ident
+    } else {
+      pos += 1;
+      Tok::Delim(b)
+    };
+    tokens.push(Token {
+      kind,
+      text: slice(start, pos),
+      start,
+      end: pos,
+      children: Vec::new(),
+    });
+  }
+  // An unclosed block is never valid.
+  if in_block {
+    tokens.push(Token {
+      kind: Tok::Bad,
+      text: "",
+      start: pos,
+      end: pos,
+      children: Vec::new(),
+    });
+  }
+  (tokens, pos)
+}
+
+/// The offset just past the comment starting at `pos`.
+fn find_comment_end(bytes: &[u8], pos: usize) -> usize {
+  let mut i = pos + 2;
+  while i + 1 < bytes.len() {
+    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+      return i + 2;
+    }
+    i += 1;
+  }
+  bytes.len()
+}
+
+/// Whether an identifier starts at `pos`.
+fn starts_ident(bytes: &[u8], pos: usize) -> bool {
+  match bytes[pos] {
+    b'-' => match bytes.get(pos + 1) {
+      Some(b'-') => true,
+      Some(&next) => is_name_start(next) || next == b'\\',
+      None => false,
+    },
+    b'\\' => true,
+    b => is_name_start(b),
+  }
+}
+
+/// The offset just past the identifier starting at `pos`.
+fn consume_name(bytes: &[u8], mut pos: usize) -> usize {
+  while pos < bytes.len() {
+    if bytes[pos] == b'\\' {
+      pos += 2;
+    } else if is_name_char(bytes[pos]) {
+      pos += 1;
+    } else {
+      break;
+    }
+  }
+  pos.min(bytes.len())
+}
+
+/// Whether a number starts at `pos`.
+fn starts_number(bytes: &[u8], pos: usize) -> bool {
+  let digit_at = |i: usize| bytes.get(i).is_some_and(u8::is_ascii_digit);
+  match bytes[pos] {
+    b'+' | b'-' => digit_at(pos + 1) || (bytes.get(pos + 1) == Some(&b'.') && digit_at(pos + 2)),
+    b'.' => digit_at(pos + 1),
+    b => b.is_ascii_digit(),
+  }
+}
+
+/// The offset just past the number, percentage or dimension at `pos`.
+fn consume_number(bytes: &[u8], mut pos: usize) -> usize {
+  if matches!(bytes[pos], b'+' | b'-') {
+    pos += 1;
+  }
+  while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+    pos += 1;
+  }
+  if bytes.get(pos) == Some(&b'.') && bytes.get(pos + 1).is_some_and(u8::is_ascii_digit) {
+    pos += 1;
+    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+      pos += 1;
+    }
+  }
+  if matches!(bytes.get(pos), Some(b'e' | b'E')) {
+    let mut i = pos + 1;
+    if matches!(bytes.get(i), Some(b'+' | b'-')) {
+      i += 1;
+    }
+    if bytes.get(i).is_some_and(u8::is_ascii_digit) {
+      pos = i;
+      while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+        pos += 1;
+      }
+    }
+  }
+  if bytes.get(pos) == Some(&b'%') {
+    pos + 1
+  } else if pos < bytes.len() && starts_ident(bytes, pos) {
+    consume_name(bytes, pos)
+  } else {
+    pos
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Media query grammar
+// ---------------------------------------------------------------------------
+
+/// How a media feature is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+  /// `name: value`; `colon` is the colon's offset.
+  Plain { colon: usize },
+  /// A range; `exact` when it is `name = value` or `value = name`.
+  Range { exact: bool },
+}
+
+/// A plain or range media feature found in a query.
+#[derive(Debug, Clone, Copy)]
+struct Feature {
+  /// Offsets of the parentheses around it.
+  open: usize,
+  close: usize,
+  /// Byte range of its name.
+  name_start: usize,
+  name_end: usize,
+  form: Form,
+}
+
+impl Feature {
+  /// The feature's name as written.
+  fn name<'a>(&self, params: &'a str) -> &'a str {
+    params.get(self.name_start..self.name_end).unwrap_or("")
+  }
+}
+
+/// The tokens that are not whitespace or comments.
+fn significant<'t, 'a>(tokens: &'t [Token<'a>]) -> Vec<&'t Token<'a>> {
+  tokens.iter().filter(|t| t.kind != Tok::Trivia).collect()
+}
+
+/// Whether `token` is the keyword `word`, ignoring case.
+fn is_keyword(token: &Token, word: &str) -> bool {
+  token.kind == Tok::Ident && token.text.eq_ignore_ascii_case(word)
+}
+
+/// Validate one media query (the tokens between two commas) and collect its
+/// plain and range features.  `false` for a query the parser rejects, whose
+/// features Stylelint never sees.
+fn media_query(tokens: &[Token], features: &mut Vec<Feature>) -> bool {
+  let tokens = significant(tokens);
+  let Some(first) = tokens.first() else {
+    return false;
   };
-  match value {
-    serde_json::Value::String(s) => {
-      if s == "prefix" {
-        Notation::Prefix
-      } else {
-        Notation::Context
+  if first.kind == Tok::Block
+    || (is_keyword(first, "not") && tokens.get(1).is_some_and(|t| t.kind == Tok::Block))
+  {
+    return condition(&tokens, true, features);
+  }
+  // `[not | only]? <media-type> [and <condition-without-or>]?`
+  let mut i = 0;
+  if is_keyword(tokens[0], "not") || is_keyword(tokens[0], "only") {
+    i = 1;
+  }
+  let Some(media_type) = tokens.get(i) else {
+    return false;
+  };
+  if media_type.kind != Tok::Ident
+    || ["and", "or", "not", "only", "layer"]
+      .iter()
+      .any(|k| is_keyword(media_type, k))
+  {
+    return false;
+  }
+  match tokens.get(i + 1) {
+    None => true,
+    Some(and) if is_keyword(and, "and") => condition(&tokens[i + 2..], false, features),
+    Some(_) => false,
+  }
+}
+
+/// A `<media-condition>` (or, without `allow_or`, a
+/// `<media-condition-without-or>`): `not <in-parens>`, or in-parens joined
+/// by only `and` or only `or`.
+fn condition(tokens: &[&Token], allow_or: bool, features: &mut Vec<Feature>) -> bool {
+  let Some(first) = tokens.first() else {
+    return false;
+  };
+  if is_keyword(first, "not") {
+    return tokens.len() == 2 && in_parens(tokens[1], features);
+  }
+  let mut joiner: Option<&str> = None;
+  let mut expect_parens = true;
+  for token in tokens {
+    if expect_parens {
+      if !in_parens(token, features) {
+        return false;
+      }
+    } else {
+      let word = ["and", "or"].into_iter().find(|w| is_keyword(token, w));
+      match (word, joiner) {
+        (Some("or"), _) if !allow_or => return false,
+        (Some(w), None) => joiner = Some(w),
+        (Some(w), Some(j)) if w == j => {}
+        _ => return false,
       }
     }
-    serde_json::Value::Array(arr) => {
-      if let Some(s) = arr.first().and_then(|v| v.as_str())
-        && s == "prefix"
-      {
-        return Notation::Prefix;
-      }
-      Notation::Context
+    expect_parens = !expect_parens;
+  }
+  !expect_parens
+}
+
+/// A `<media-in-parens>`: a nested condition, a media feature, or anything
+/// else in parentheses (general enclosed), which is valid but no feature.
+/// Functions count as general enclosed too.
+fn in_parens(token: &Token, features: &mut Vec<Feature>) -> bool {
+  match token.kind {
+    Tok::Function => return true,
+    Tok::Block => {}
+    _ => return false,
+  }
+  // An unclosed block ends in an empty `Bad` token.
+  if token
+    .children
+    .last()
+    .is_some_and(|t| t.kind == Tok::Bad && t.start == t.end)
+  {
+    return false;
+  }
+  let inner = significant(&token.children);
+  let nested = inner.first().is_some_and(|t| {
+    t.kind == Tok::Block
+      || (is_keyword(t, "not") && inner.get(1).is_some_and(|n| n.kind == Tok::Block))
+  });
+  if nested {
+    let mut found = Vec::new();
+    if condition(&inner, true, &mut found) {
+      features.extend(found);
     }
-    _ => Notation::Context,
+    return true;
+  }
+  if let Some(feature) = media_feature(token, &inner) {
+    features.push(feature);
+  }
+  true
+}
+
+/// Whether the tokens are a valid `<mf-value>`: a number, dimension,
+/// identifier or function, or a ratio of two numbers or functions.
+fn is_mf_value(tokens: &[&Token]) -> bool {
+  let single = |t: &Token| matches!(t.kind, Tok::Number | Tok::Ident | Tok::Function);
+  match tokens {
+    [only] => single(only),
+    [a, slash, b] => {
+      slash.kind == Tok::Delim(b'/')
+        && matches!(a.kind, Tok::Number | Tok::Function)
+        && matches!(b.kind, Tok::Number | Tok::Function)
+    }
+    _ => false,
+  }
+}
+
+/// The comparison operator starting at `tokens[i]`, as the number of tokens
+/// it spans and whether it is a lone `=`.
+fn operator_at(tokens: &[&Token], i: usize) -> Option<(usize, bool)> {
+  let first = tokens.get(i)?;
+  match first.kind {
+    Tok::Delim(b'=') => Some((1, true)),
+    Tok::Delim(b'<' | b'>') => {
+      let eq = tokens
+        .get(i + 1)
+        .is_some_and(|t| t.kind == Tok::Delim(b'=') && t.start == first.end);
+      Some((if eq { 2 } else { 1 }, false))
+    }
+    _ => None,
+  }
+}
+
+/// The plain or range feature in a `(...)` block, if its contents are one.
+fn media_feature(block: &Token, inner: &[&Token]) -> Option<Feature> {
+  let feature = |name: &Token, form| Feature {
+    open: block.start,
+    close: block.end - 1,
+    name_start: name.start,
+    name_end: name.end,
+    form,
+  };
+  // `name: value`
+  if let [name, colon, value @ ..] = inner
+    && name.kind == Tok::Ident
+    && colon.kind == Tok::Colon
+  {
+    return is_mf_value(value).then(|| feature(name, Form::Plain { colon: colon.start }));
+  }
+  // Ranges: split at the operators.
+  let mut parts: Vec<Vec<&Token>> = vec![Vec::new()];
+  let mut operators = Vec::new();
+  let mut i = 0;
+  while i < inner.len() {
+    if let Some((len, exact)) = operator_at(inner, i) {
+      operators.push(exact);
+      parts.push(Vec::new());
+      i += len;
+    } else {
+      parts.last_mut().expect("never empty").push(inner[i]);
+      i += 1;
+    }
+  }
+  let is_name = |part: &[&Token]| matches!(part, [t] if t.kind == Tok::Ident);
+  match (parts.as_slice(), operators.as_slice()) {
+    ([name, value], [exact]) if is_name(name) && is_mf_value(value) => {
+      Some(feature(name[0], Form::Range { exact: *exact }))
+    }
+    ([value, name], [exact]) if is_mf_value(value) && is_name(name) => {
+      Some(feature(name[0], Form::Range { exact: *exact }))
+    }
+    ([low, name, high], [_, _]) if is_mf_value(low) && is_name(name) && is_mf_value(high) => {
+      Some(feature(name[0], Form::Range { exact: false }))
+    }
+    _ => None,
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use std::collections::HashMap;
 
-  /// Build a context whose `source` covers the at-rule text so the rule
-  /// can scan the original (un-normalised) source.
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` as `syntax` with only this rule enabled, configured with
+  /// `options`.
+  fn lint_as(
+    css: &str,
+    syntax: Syntax,
+    options: serde_json::Value,
+  ) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "media-feature-range-notation".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", syntax).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let diags = lint_as(&current, Syntax::Css, options.clone());
+      let (next, applied) = apply_fixes(&current, &diags);
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
     }
-  }
-
-  /// Build a media at-rule node whose span covers `[0..source.len()]`.
-  /// `params` may be the lightningcss-normalised form (e.g. `width >= 768px`),
-  /// while `source` is the original text the rule will scan.
-  fn media_with_source(params: &str, source_len: usize) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: ParserSpan::new(0, source_len),
-      children: vec![],
-    })
+    current
   }
 
   #[test]
-  fn reports_min_width_prefix() {
-    // lightningcss normalises `(min-width: 768px)` → `(width >= 768px)` in params,
-    // but the source text still has the original prefix notation.
-    let source = "@media (min-width: 768px) {}";
-    let node = media_with_source("(width >= 768px)", source.len());
-    let ctx = ctx_with_source(source);
-    let d = MediaFeatureRangeNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("media feature range notation"));
+  fn context_rewrites_prefixed_features() {
+    let context = serde_json::json!("context");
+    assert_eq!(
+      fix("@media not print, ( min-width  : 1px ) {}", context.clone()),
+      "@media not print, ( width  >= 1px ) {}"
+    );
+    assert_eq!(
+      fix(
+        "@media (min-width: 1px)\n  and (max-width: 2px)\n  and (width: 3px) {}",
+        context.clone()
+      ),
+      "@media (width >= 1px)\n  and (width <= 2px)\n  and (width = 3px) {}"
+    );
+    assert_eq!(
+      fix(
+        "@media (min-width: 1px) and (not (max-width: 2px)), (MIN-WIDTH: 3px) {}",
+        context.clone()
+      ),
+      "@media (width >= 1px) and (not (width <= 2px)), (MIN-WIDTH: 3px) {}"
+    );
+    let warnings = lint_as(
+      "@media screen and (min-width: 1px) {}",
+      Syntax::Css,
+      context,
+    );
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (18, 16));
   }
 
   #[test]
-  fn allows_range_syntax() {
-    let source = "@media (width >= 768px) {}";
-    let node = media_with_source("(width >= 768px)", source.len());
-    let ctx = ctx_with_source(source);
-    let d = MediaFeatureRangeNotation.check(&node, &ctx);
-    assert!(d.is_empty());
+  fn reads_media_rules_nested_in_style_rules() {
+    assert_eq!(
+      fix(
+        "a { @media (min-width: 1px) { b: c } }",
+        serde_json::json!("context")
+      ),
+      "a { @media (width >= 1px) { b: c } }"
+    );
   }
 
   #[test]
-  fn skips_scss_variables() {
-    let source = "@media (min-width: $breakpoint) {}";
-    let node = media_with_source("(min-width: $breakpoint)", source.len());
-    let ctx = ctx_with_source(source);
-    let d = MediaFeatureRangeNotation.check(&node, &ctx);
-    assert!(d.is_empty());
+  fn skips_invalid_queries_and_values_that_are_not_plain() {
+    let context = serde_json::json!("context");
+    for css in [
+      "@media (min-width: 1px) and invalid stuff (x) {}",
+      "@media (min-width: 1px) and (max-width: 3px) or (x) {}",
+      "@media (min-width: \"a\") {}",
+      "@media (min-width: 1px 2px) {}",
+      "@media (min-color) {}",
+      "@media (pointer: fine) {}",
+    ] {
+      assert!(
+        lint_as(css, Syntax::Css, context.clone()).is_empty(),
+        "{css}"
+      );
+    }
+    for css in [
+      "@media (min-width: $var) {}",
+      "@media (min-width: (124px + 300px)) {}",
+    ] {
+      assert!(
+        lint_as(css, Syntax::Scss, context.clone()).is_empty(),
+        "{css}"
+      );
+    }
+    assert_eq!(
+      fix(
+        "@media (min-width: calc(1px)), (min-aspect-ratio: 16/9) {}",
+        context
+      ),
+      "@media (width >= calc(1px)), (aspect-ratio >= 16/9) {}"
+    );
   }
 
   #[test]
-  fn prefix_notation_allows_prefix() {
-    let source = "@media (min-width: 768px) {}";
-    let opts = serde_json::json!("prefix");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&opts),
-    };
-    let node = media_with_source("(width >= 768px)", source.len());
-    let d = MediaFeatureRangeNotation.check(&node, &ctx);
-    assert!(d.is_empty());
+  fn prefix_reports_ranges_without_fixing_them() {
+    let prefix = serde_json::json!("prefix");
+    for css in ["@media (width >= 1px) {}", "@media (1px < width <= 2px) {}"] {
+      let warnings = lint_as(css, Syntax::Css, prefix.clone());
+      assert_eq!(warnings.len(), 1, "{css}");
+      assert!(warnings[0].fix.is_none(), "{css}");
+    }
+    assert!(lint_as("@media (min-width: 1px) {}", Syntax::Css, prefix).is_empty());
   }
 
   #[test]
-  fn reports_max_height_prefix() {
-    let source = "@media (max-height: 500px) {}";
-    let node = media_with_source("(height <= 500px)", source.len());
-    let ctx = ctx_with_source(source);
-    let d = MediaFeatureRangeNotation.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("media feature range notation"));
+  fn exact_values_flip_with_except() {
+    let prefix = serde_json::json!(["prefix", { "except": ["exact-value"] }]);
+    assert_eq!(
+      fix("@media (width: 1px), (width: 2px) {}", prefix.clone()),
+      "@media (width = 1px), (width = 2px) {}"
+    );
+    assert!(lint_as("@media (width = 1px) {}", Syntax::Css, prefix).is_empty());
+    let context = serde_json::json!(["context", { "except": ["exact-value"] }]);
+    let warnings = lint_as("@media (1px = width) {}", Syntax::Css, context.clone());
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].fix.is_none());
+    assert!(lint_as("@media (width: 1px) {}", Syntax::Css, context).is_empty());
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["context", { "disableFix": true }]);
+    let css = "@media (min-width: 1px) {}";
+    assert_eq!(lint_as(css, Syntax::Css, options.clone()).len(), 1);
+    assert_eq!(fix(css, options), css);
   }
 }
