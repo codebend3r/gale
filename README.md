@@ -3,7 +3,7 @@
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
 [![npm version](https://img.shields.io/npm/v/@codebend3r/gale)](https://www.npmjs.com/package/@codebend3r/gale)
-[![CI](https://github.com/codebend3r/gale/actions/workflows/sanity-check.yml/badge.svg)](https://github.com/codebend3r/gale/actions)
+[![CI](https://github.com/codebend3r/gale/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/codebend3r/gale/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **10-50x faster** on real projects.

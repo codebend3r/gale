@@ -1,12 +1,31 @@
-name: 🧪 Pull request checks
+name: 🧪 CI
 
+# Pull requests and pushes to main run the same checks. Docs-only changes skip
+# CI entirely; nothing they touch is built or tested.
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "LICENSE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "LICENSE"
+  workflow_dispatch:
 
-# A new push to the same PR supersedes the run in flight.
+permissions:
+  contents: read
+
+# A new push to a pull request supersedes the run in flight. Every push to main
+# gets its own run and verdict, keyed by commit, so none is cancelled or queued.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +34,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -33,16 +53,16 @@ jobs:
 
       - name: Build release
         # test:api and test:features both run the release binary.
-        run: cargo build --release
+        run: bun run build:release
 
       - name: Run the full test suite
-        # Same as `bun run system-check` minus fmt/clippy/build, which have
-        # their own jobs: cargo tests, npm API tests, and bun feature tests.
+        # cargo tests, npm API tests, and bun feature tests.
         run: bun run test
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -52,12 +72,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Run clippy
-        run: cargo clippy --workspace -- -D warnings
+        # The same command as the pre-commit hook: every target, warnings denied.
+        run: bun run lint
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
@@ -65,12 +89,15 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Check formatting
-        run: cargo fmt --check
+        run: bun run fmt:check
 
   build-binary:
     name: Build binary for the npm package
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -78,8 +105,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Build gale
-        run: cargo build --release
+        run: bun run build:release
 
       - uses: actions/upload-artifact@v7
         with:
@@ -91,6 +120,7 @@ jobs:
     name: npm package (Node ${{ matrix.node }})
     needs: build-binary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -118,3 +148,23 @@ jobs:
       - name: Check the published file list
         run: npm pack --dry-run
         working-directory: npm
+
+  result:
+    # One stable check to require in branch protection, and a verdict in the
+    # run summary. Skipped only when the whole run is cancelled.
+    name: CI result
+    needs: [test, clippy, fmt, build-binary, npm-package]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summarize
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key) (\(.value.result))"] | join(", ")' <<<"$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "💥 ${GITHUB_SHA:0:7} did not pass: $failed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "✅ ${GITHUB_SHA:0:7} is clean: fmt, clippy, every test suite, and the npm package all green." >> "$GITHUB_STEP_SUMMARY"
