@@ -855,8 +855,12 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
           ignore::WalkState::Continue
         })
       });
-      files.extend(matched_files.into_inner().unwrap_or_default());
-      skipped.extend(skipped_files.into_inner().unwrap_or_default());
+      let mut matched = matched_files.into_inner().unwrap_or_default();
+      breadth_first(&mut matched);
+      files.extend(matched);
+      let mut skipped_here = skipped_files.into_inner().unwrap_or_default();
+      skipped_here.sort_by(|a, b| breadth_first_order(&a.path, &b.path));
+      skipped.extend(skipped_here);
       continue;
     }
 
@@ -971,10 +975,47 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
         ignore::WalkState::Continue
       })
     });
-    files.extend(dir_matched.into_inner().unwrap_or_default());
+    let mut matched = dir_matched.into_inner().unwrap_or_default();
+    breadth_first(&mut matched);
+    files.extend(matched);
   }
 
+  // A file that several arguments match is linted and reported once, at
+  // its first match, as Stylelint's globby does.
+  let mut seen = std::collections::HashSet::new();
+  files.retain(|file| seen.insert(without_cur_dir(file)));
+
   Discovery { files, skipped }
+}
+
+/// Order one walk's files the way Stylelint's glob lists them: breadth
+/// first, so a directory's own files come before anything in its
+/// subdirectories, and by path within a depth.
+///
+/// The walk itself runs in parallel and yields files in whatever order its
+/// threads reach them; without this the report order changed between runs.
+/// Stylelint's own order within a depth depends on when each directory read
+/// completes, so the path order there is the deterministic stand-in.
+fn breadth_first(files: &mut [PathBuf]) {
+  files.sort_by(|a, b| breadth_first_order(a, b));
+}
+
+/// The comparison behind [`breadth_first`]: fewer path components first,
+/// then by path.
+fn breadth_first_order(a: &Path, b: &Path) -> std::cmp::Ordering {
+  a.components()
+    .count()
+    .cmp(&b.components().count())
+    .then_with(|| a.cmp(b))
+}
+
+/// `path` without `.` components, so `./a.css` and `a.css` count as the
+/// same file.
+fn without_cur_dir(path: &Path) -> PathBuf {
+  path
+    .components()
+    .filter(|c| !matches!(c, std::path::Component::CurDir))
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -2208,6 +2249,67 @@ mod tests {
       .collect();
     assert!(names.contains(&"a.css".to_string()));
     assert!(names.contains(&"d.css".to_string()));
+  }
+
+  #[test]
+  fn discovered_files_are_breadth_first_in_argument_order_and_unique() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for file in [
+      "z.css",
+      "a/b/deep.css",
+      "a/x.css",
+      "a/b.css",
+      "m.css",
+      "b/y.css",
+      "a/b/c/deeper.css",
+    ] {
+      let path = root.join(file);
+      fs::create_dir_all(path.parent().unwrap()).unwrap();
+      fs::write(&path, "a {}").unwrap();
+    }
+    let rel = |files: &[PathBuf]| -> Vec<String> {
+      files
+        .iter()
+        .map(|p| p.strip_prefix(root).unwrap().display().to_string())
+        .collect()
+    };
+
+    // The walk is parallel, so check the order holds run after run.
+    let glob = format!("{}/**/*.css", root.display());
+    for _ in 0..5 {
+      let files = discover_files(std::slice::from_ref(&glob), &default_opts()).files;
+      assert_eq!(
+        rel(&files),
+        [
+          "m.css",
+          "z.css",
+          "a/b.css",
+          "a/x.css",
+          "b/y.css",
+          "a/b/deep.css",
+          "a/b/c/deeper.css",
+        ]
+      );
+    }
+
+    // Arguments keep their order, and a file several of them match is
+    // listed once, where it first appears.
+    let explicit = root.join("z.css").display().to_string();
+    let dir = root.join("a").display().to_string();
+    let files = discover_files(&[explicit, dir, glob], &default_opts()).files;
+    assert_eq!(
+      rel(&files),
+      [
+        "z.css",
+        "a/b.css",
+        "a/x.css",
+        "a/b/deep.css",
+        "a/b/c/deeper.css",
+        "m.css",
+        "b/y.css",
+      ]
+    );
   }
 
   #[test]
