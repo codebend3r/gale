@@ -674,7 +674,8 @@ fn has_explicit_severity_in_value(v: &RuleConfigValue) -> bool {
 // ---------------------------------------------------------------------------
 
 /// All rule names that exist in the linter registry.
-/// Kept in sync with `gale_linter::rules::register_all`.
+/// Kept in sync with `gale_linter::rules::register_all`; a test in
+/// `gale_cli`, which sees both crates, fails when the two drift apart.
 const ALL_RULE_NAMES: &[&str] = &[
   "@stylistic/at-rule-name-case",
   "@stylistic/at-rule-name-space-after",
@@ -922,7 +923,9 @@ const ALL_RULE_NAMES: &[&str] = &[
   "selector-max-type",
   "selector-max-universal",
   "selector-nested-pattern",
+  "selector-no-invalid",
   "selector-no-qualifying-type",
+  "selector-no-unmatchable",
   "selector-no-vendor-prefix",
   "selector-not-notation",
   "selector-pseudo-class-allowed-list",

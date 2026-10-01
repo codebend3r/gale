@@ -2112,6 +2112,28 @@ mod tests {
   }
 
   #[test]
+  fn gale_all_preset_enables_every_registered_rule() {
+    // `gale:all` lives in gale_config, which cannot see the registry, so
+    // the two lists are kept in step by hand.  This catches drift.
+    let preset: BTreeSet<String> = gale_config::resolve_preset("gale:all")
+      .unwrap()
+      .into_keys()
+      .collect();
+    let registered: BTreeSet<String> = RuleRegistry::default()
+      .all()
+      .iter()
+      .map(|rule| rule.name().to_string())
+      .collect();
+    let missing: Vec<&String> = registered.difference(&preset).collect();
+    let extra: Vec<&String> = preset.difference(&registered).collect();
+    assert!(
+      missing.is_empty() && extra.is_empty(),
+      "gale:all is out of step with the registry; add {missing:?} to and remove {extra:?} from \
+       ALL_RULE_NAMES in gale_config"
+    );
+  }
+
+  #[test]
   fn test_is_glob_pattern() {
     assert!(is_glob_pattern("**/*.css"));
     assert!(is_glob_pattern("src/*.scss"));
