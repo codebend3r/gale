@@ -6,6 +6,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::pattern::option_matches;
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
 use crate::rule::{Rule, RuleContext};
+use crate::stylelint_version::installed_at_least_patch;
 use crate::value_parser;
 
 /// Disallow longhand properties that can be combined into one shorthand
@@ -889,13 +890,20 @@ fn simulate(block: &Block<'_>, options: &Options, fix: bool) -> Simulation {
         }
         (None, true) => {}
         (_, false) => {
-          // Contiguous longhands are reported from the first, others from
-          // the last; the problem runs to the end of the last.
-          let contiguous = last_slot - first_slot + 1 == nodes.len();
-          let start = block.slots[if contiguous { first_slot } else { last_slot }].start;
+          let span = if installed_at_least_patch(17, 11, 1) {
+            // Contiguous longhands are reported from the first, others from
+            // the last; the problem runs to the end of the last.
+            let contiguous = last_slot - first_slot + 1 == nodes.len();
+            let start = block.slots[if contiguous { first_slot } else { last_slot }].start;
+            Span::from_range(start, block.slots[last_slot].end_with_semicolon)
+          } else {
+            // Before 17.11.1 Stylelint reported the property of the
+            // declaration that completes the set.
+            decl.prop_span
+          };
           problems.push(Problem {
             message: format!("Expected shorthand property \"{prefixed}\""),
-            span: Span::from_range(start, block.slots[last_slot].end_with_semicolon),
+            span,
           });
         }
       }
