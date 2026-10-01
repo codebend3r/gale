@@ -885,6 +885,8 @@ impl<'a> RuleRun<'a> {
   /// rules are wrapped as nodes without copying their subtrees.
   fn walk(&mut self, node: CssNode) {
     let offset = node.span().offset;
+    // `node` stays put until `leave_node`, as `enter_node` requires.
+    self.cache.enter_node(&node);
     for index in 0..self.rules.len() {
       if self.failed[index] {
         continue;
@@ -894,6 +896,7 @@ impl<'a> RuleRun<'a> {
       let outcome = panic_guard::catch(|| rule.check(&node, &context));
       self.record(index, outcome, offset);
     }
+    self.cache.leave_node();
 
     // Recurse into children based on node type.
     match node {
@@ -1256,6 +1259,65 @@ mod tests {
     }
   }
 
+  /// A rule that reports every declaration of the node it checks, read
+  /// through the shared per-node cache, at its property.
+  struct ReportsDeclarations;
+
+  impl Rule for ReportsDeclarations {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/declarations"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Reports every declaration of the node it checks"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Reports each declaration of `node` by property.
+    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+      ctx
+        .written_declarations(node)
+        .iter()
+        .map(|decl| Diagnostic::new(self.name(), decl.prop).span(Span::new(decl.prop_start, 1)))
+        .collect()
+    }
+  }
+
+  /// A rule that panics while it holds a node's shared declarations.
+  struct PanicsHoldingDeclarations;
+
+  impl Rule for PanicsHoldingDeclarations {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/panics-holding-declarations"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Panics while holding a node's shared declarations"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Takes the node's declarations, then panics if there are any.
+    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+      let found = ctx.written_declarations(node);
+      if !found.is_empty() {
+        panic!("crashed holding {} declarations", found.len());
+      }
+      vec![]
+    }
+  }
+
   /// A runner over `rules`, in that order, with the test rules above
   /// registered.
   fn runner_with_tree_rules(rules: &[&str]) -> LintRunner {
@@ -1263,6 +1325,8 @@ mod tests {
     registry.register(Box::new(ReportsTreeRules));
     registry.register(Box::new(BreaksTreeBuild));
     registry.register(Box::new(PanicsHoldingTree));
+    registry.register(Box::new(ReportsDeclarations));
+    registry.register(Box::new(PanicsHoldingDeclarations));
     LintRunner::new(registry, rules.iter().map(|r| r.to_string()).collect())
   }
 
@@ -1331,6 +1395,28 @@ b {}
       problems_of(&result, "test/tree-rules"),
       vec![(0, "rule"), (5, "rule")]
     );
+  }
+
+  /// A rule that panics while holding a node's shared declarations does
+  /// not lock them: the next rule reads them for that node and every other.
+  #[test]
+  fn a_rule_that_panics_holding_shared_declarations_leaves_them_to_the_others() {
+    let runner = runner_with_tree_rules(&["test/panics-holding-declarations", "test/declarations"]);
+    let src = "a { color: red; top: 0 }\nb { left: 0 }\n";
+    let result = runner.lint_source(src, "test.css", Syntax::Css);
+
+    let crashes = problems_of(&result, "test/panics-holding-declarations");
+    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
+    assert!(
+      crashes[0].1.contains("crashed holding 2 declarations"),
+      "{}",
+      crashes[0].1
+    );
+    let props: Vec<&str> = problems_of(&result, "test/declarations")
+      .into_iter()
+      .map(|(_, prop)| prop)
+      .collect();
+    assert_eq!(props, ["color", "top", "left"]);
   }
 
   #[test]

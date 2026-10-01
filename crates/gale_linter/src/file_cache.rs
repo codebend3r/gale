@@ -7,6 +7,11 @@
 //! rule through [`RuleContext`](crate::rule::RuleContext); the first rule
 //! to ask for an artifact builds it and the others share it.
 //!
+//! Some artifacts belong to a node rather than the file: the declarations
+//! of the node every rule's `check` is looking at, say.  The runner marks
+//! the node it is checking ([`FileCache::enter_node`]) and those artifacts
+//! are shared until it moves on to the next one.
+//!
 //! # Panics in a build
 //!
 //! Rules run inside [`panic_guard::catch`](crate::panic_guard::catch), and
@@ -15,16 +20,19 @@
 //! never poisoned: a build that panics leaves its cell empty, the rule that
 //! asked reports the internal error, and the next rule to ask builds the
 //! artifact again.  Builds are deterministic, so that rule panics the same
-//! way, exactly as when every rule built its own copy.  The accessors hand
-//! out `Rc` clones and hold no borrow while a rule runs, so a rule that
-//! panics while using an artifact cannot lock it for the others either.
+//! way, exactly as when every rule built its own copy.  A node's artifacts
+//! are built before their `RefCell` is borrowed, so the same holds for
+//! them.  The accessors hand out `Rc` clones and hold no borrow while a
+//! rule runs, so a rule that panics while using an artifact cannot lock it
+//! for the others either.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
-use gale_css_parser::Syntax;
+use gale_css_parser::{CssNode, Syntax};
 
 use crate::postcss_tree::PostcssTree;
+use crate::source_text::{self, WrittenDeclaration};
 use crate::style_rules::{self, ScannedRules};
 
 /// The artifacts shared by every rule linting one file.
@@ -40,6 +48,11 @@ pub struct FileCache<'a> {
   postcss_tree: OnceCell<Rc<PostcssTree<'a>>>,
   /// The style rules and at-rules as written.
   scanned_rules: OnceCell<Rc<ScannedRules>>,
+  /// The node the runner is checking, null between nodes.  Only compared,
+  /// never dereferenced.
+  current_node: Cell<*const CssNode>,
+  /// The declarations of `current_node`, once a rule has asked.
+  node_declarations: RefCell<Option<Rc<Vec<WrittenDeclaration<'a>>>>>,
 }
 
 impl<'a> FileCache<'a> {
@@ -50,6 +63,8 @@ impl<'a> FileCache<'a> {
       syntax,
       postcss_tree: OnceCell::new(),
       scanned_rules: OnceCell::new(),
+      current_node: Cell::new(std::ptr::null()),
+      node_declarations: RefCell::new(None),
     }
   }
 
@@ -81,6 +96,46 @@ impl<'a> FileCache<'a> {
     shared(&self.scanned_rules, || {
       style_rules::scan(self.source, self.syntax)
     })
+  }
+
+  /// Start sharing the artifacts of `node`, the node every rule is about to
+  /// check, dropping those of the node before.
+  ///
+  /// The caller must keep `node` where it is until [`Self::leave_node`]:
+  /// no other node can then have its address, which is what identifies it.
+  pub(crate) fn enter_node(&self, node: &CssNode) {
+    self.current_node.set(node);
+    self.node_declarations.replace(None);
+  }
+
+  /// Stop sharing the artifacts of the node [`Self::enter_node`] marked.
+  pub(crate) fn leave_node(&self) {
+    self.current_node.set(std::ptr::null());
+    self.node_declarations.replace(None);
+  }
+
+  /// The declarations `node` holds directly, as written (see
+  /// [`source_text::written_declarations`]).  Shared while `node` is the
+  /// node the runner is checking, and read afresh for any other node.
+  pub fn written_declarations(&self, node: &CssNode) -> Rc<Vec<WrittenDeclaration<'a>>> {
+    let read = || {
+      Rc::new(source_text::written_declarations(
+        self.source,
+        node,
+        self.syntax,
+      ))
+    };
+    if !std::ptr::eq(node, self.current_node.get()) {
+      return read();
+    }
+    if let Some(found) = self.node_declarations.borrow().as_ref() {
+      return Rc::clone(found);
+    }
+    // Read before borrowing, so that a read that panics leaves nothing
+    // cached and nothing borrowed.
+    let found = read();
+    self.node_declarations.replace(Some(Rc::clone(&found)));
+    found
   }
 
   /// [`Self::postcss_tree`], built by `build` if it is still to be built,
@@ -165,6 +220,44 @@ mod tests {
     assert_eq!(preludes, ["a", "b"]);
     let at_rules: Vec<&str> = scanned.at_rules.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(at_rules, ["media", "include"]);
+  }
+
+  /// The current node's declarations are read once and shared until the
+  /// runner leaves it; any other node's are read afresh.
+  #[test]
+  fn declarations_are_shared_for_the_node_being_checked() {
+    let source = "a { color: red; top: 0 }\nb { left: 1px }\n";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).unwrap();
+    let [a, b] = &parsed.nodes[..] else {
+      panic!("two rules: {:?}", parsed.nodes);
+    };
+    let cache = FileCache::new(source, Syntax::Css);
+    let props = |found: &[WrittenDeclaration]| -> Vec<String> {
+      found.iter().map(|d| d.prop.to_string()).collect()
+    };
+
+    // Outside any node nothing is shared.
+    assert!(!Rc::ptr_eq(
+      &cache.written_declarations(a),
+      &cache.written_declarations(a)
+    ));
+
+    cache.enter_node(a);
+    let first = cache.written_declarations(a);
+    assert_eq!(props(&first), ["color", "top"]);
+    assert!(Rc::ptr_eq(&first, &cache.written_declarations(a)));
+    let other = cache.written_declarations(b);
+    assert_eq!(props(&other), ["left"]);
+    assert!(!Rc::ptr_eq(&other, &cache.written_declarations(b)));
+
+    cache.enter_node(b);
+    let second = cache.written_declarations(b);
+    assert_eq!(props(&second), ["left"]);
+    assert!(Rc::ptr_eq(&second, &cache.written_declarations(b)));
+    assert_eq!(props(&cache.written_declarations(a)), ["color", "top"]);
+
+    cache.leave_node();
+    assert!(!Rc::ptr_eq(&second, &cache.written_declarations(b)));
   }
 
   /// `is_for` matches the very same text and syntax only.

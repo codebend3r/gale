@@ -8,6 +8,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
 use crate::postcss_tree::PostcssTree;
+use crate::source_text::{self, WrittenDeclaration};
 use crate::style_rules::{self, ScannedRules};
 
 /// Context passed to each rule when checking a node.
@@ -113,6 +114,20 @@ impl<'a> RuleContext<'a> {
     match self.cache() {
       Some(cache) => cache.scanned_rules(),
       None => Rc::new(style_rules::scan(self.source, self.syntax)),
+    }
+  }
+
+  /// The declarations `node` holds directly, as written (see
+  /// [`source_text::written_declarations`]).  Every rule checking the node
+  /// the runner is on shares one reading of them.
+  pub fn written_declarations(&self, node: &CssNode) -> Rc<Vec<WrittenDeclaration<'a>>> {
+    match self.cache() {
+      Some(cache) => cache.written_declarations(node),
+      None => Rc::new(source_text::written_declarations(
+        self.source,
+        node,
+        self.syntax,
+      )),
     }
   }
 }

@@ -3,7 +3,6 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::source_text;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Stylelint's `DEPRECATED_PROPS_REMAP`: deprecated properties and their
@@ -108,7 +107,7 @@ impl Rule for PropertyNoDeprecated {
       .secondary_options()
       .and_then(|v| v.get("ignoreProperties"));
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
+    for &decl in ctx.written_declarations(node).iter() {
       let prop = decl.prop;
       // Sass and Less variables are not properties.
       if prop.starts_with('$') || (prop.starts_with('@') && !prop.starts_with("@{")) {
