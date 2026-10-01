@@ -115,7 +115,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "color-function-alias-notation";
 
@@ -148,7 +148,7 @@ mod tests {
   #[test]
   fn skips_preprocessor_arguments() {
     assert!(
-      warnings(
+      lint(
         RULE,
         json!(["without-alpha"]),
         "a { color: rgba($c, 0.5) }",
@@ -163,6 +163,6 @@ mod tests {
     let options = json!(["without-alpha", { "disableFix": true }]);
     let source = "a { color: rgba(0 0 0) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

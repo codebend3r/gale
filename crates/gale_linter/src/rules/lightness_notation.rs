@@ -193,7 +193,7 @@ mod tests {
   use serde_json::json;
 
   use super::round_to_number_of_digits;
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "lightness-notation";
 
@@ -273,7 +273,7 @@ mod tests {
   fn ignores_variables_and_other_functions() {
     let percentage = || json!(["percentage"]);
     assert!(
-      warnings(
+      lint(
         RULE,
         percentage(),
         "a { color: oklch($l 0.2 120) }",
@@ -282,7 +282,7 @@ mod tests {
       .is_empty()
     );
     assert!(
-      warnings(
+      lint(
         RULE,
         percentage(),
         "a { color: hsl(120 60 70) }",
@@ -297,6 +297,6 @@ mod tests {
     let options = json!(["percentage", { "disableFix": true }]);
     let source = "a { color: oklch(0.5 0.2 120) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

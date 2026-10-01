@@ -77,6 +77,12 @@ That line is the only registration there is. It registers the rule, adds it to
 file for the list). Tests fail if a rule file is missing from the table, or if
 the rule counts in the README and docs go stale.
 
+For the tests, use the shared helpers in `crates/gale_linter/src/testing.rs`
+rather than writing your own: `ctx()`, `scss_ctx_with_source(...)`,
+`ctx_with_options(...)` and the rest build the `RuleContext` for a test that
+calls the rule directly, and `lint` and `fix` run a snippet through the real
+parser and runner with only your rule enabled.
+
 A few habits keep a rule from failing on real input:
 
 - **Slice the source with `ctx.source_slice` / `ctx.source_from`**, which return `None` instead of panicking when an offset lands inside a multibyte character. Offsets built from parsed text (a re-serialised selector's length, say) do not always line up with what the author wrote; `ctx.selector_source` gives a style rule's selector as written.
