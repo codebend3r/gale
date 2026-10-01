@@ -40,7 +40,15 @@ The script checks for all prerequisites and tells you what's missing.
 
 # Clean cloned repos and start fresh
 ./benchmarks/benchmark.sh --clean
+
+# Use repos cloned elsewhere, and keep both linters' caches out of them
+./benchmarks/benchmark.sh --repos-dir ~/corpus --cache-dir /tmp/gale-bench-cache
 ```
+
+`--cache-dir` matters for repos whose Stylelint config turns `cache` on
+(spectrum-css): each linter gets its own cache file there, deleted before
+every run, so every timed run is cold and nothing is written into the clone.
+Without it those repos are timed against a warm cache kept in the clone.
 
 ## What it measures
 
@@ -50,6 +58,12 @@ Uses [hyperfine](https://github.com/sharkdp/hyperfine) with:
 - **3 warmup runs** to fill OS/disk caches
 - **5+ measured runs** for statistical reliability
 - Both tools run on the **same files** with the **repo's own Stylelint config**
+
+A linter run that exits with anything other than 0 (clean) or 2 (problems
+found) has failed, for instance with 78 when its config cannot be loaded or
+101 when Gale panics. Such a repo is shown as `FAIL (exit N)` and is not
+timed, since a run that stops early is not a lint time. The results header
+records the load average at the start and end of the run.
 
 ### Correctness (Parity)
 
