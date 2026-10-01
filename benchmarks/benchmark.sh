@@ -175,6 +175,39 @@ count_files() {
   { find "$dir/$search_dir" -not -path "*/node_modules/*" -not -path "*/.git/*" \( -name "*.scss" -o -name "*.css" -o -name "*.less" \) 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 
+# Both linters exit 0 when clean and 2 when they report problems. Anything
+# else means the run failed (78: a config that would not load, 101: a Gale
+# panic, 1: a fatal error), so it produced no lint result and its time means
+# nothing.
+lint_ok() {
+  [ "$1" -eq 0 ] || [ "$1" -eq 2 ]
+}
+
+# Appended to every timed command so that hyperfine stops on a failed run
+# instead of timing it: exit 0 for the two lint statuses, 1 for anything else.
+LINT_STATUS_CHECK='case $? in 0|2) ;; *) exit 1 ;; esac'
+
+# Time one linter command with hyperfine, writing its JSON export. Fails when
+# any run of the command fails.
+time_linter() {
+  local label="$1" command="$2" json="$3"
+  hyperfine \
+    --warmup "$WARMUP" \
+    --min-runs "$MIN_RUNS" \
+    --export-json "$json" \
+    --command-name "$label" \
+    "$command >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log; $LINT_STATUS_CHECK"
+}
+
+# Mean time in seconds from a hyperfine JSON export, or N/A.
+mean_time() {
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    print(f\"{json.load(f)['results'][0]['mean']:.3f}\")
+" "$1" 2>/dev/null || echo "N/A"
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisites check
 # ---------------------------------------------------------------------------
@@ -264,7 +297,6 @@ run_benchmark_for_repo() {
   local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5" cwd="${6:-}"
   local clone_dir="$CLONES_DIR/$name"
   local work_dir="$clone_dir${cwd:+/$cwd}"
-  local hyperfine_json="$SCRIPT_DIR/.hyperfine-${name}.json"
 
   info "Benchmarking: $name"
 
@@ -295,58 +327,56 @@ run_benchmark_for_repo() {
   file_count=$(count_files "$clone_dir" "$search_dir")
   echo "    Files matching pattern: $file_count"
 
-  # Pre-run validation: run both linters once and verify non-empty output
-  info "Validating both linters produce output..."
+  # Pre-run validation: run both linters once. A linter that fails is
+  # reported as failed rather than timed: a crash or a config that will not
+  # load finishes quickly and would otherwise be published as a speedup.
+  info "Validating both linters run successfully..."
 
-  local stylelint_check gale_check
-  stylelint_check=$(cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>&1 || true)
-  gale_check=$(cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>&1 || true)
-
-  if [ -z "$stylelint_check" ]; then
-    warn "Stylelint produced no output for $name. Skipping this repo."
-    echo "$name|$file_count|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
+  local check_out="$SCRIPT_DIR/.check-${name}.out" check_err="$SCRIPT_DIR/.check-${name}.err"
+  local stylelint_status=0 gale_status=0
+  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json) \
+    >"$check_out" 2>"$check_err" || stylelint_status=$?
+  if ! lint_ok "$stylelint_status"; then
+    warn "Stylelint failed on $name (exit $stylelint_status). Not timing this repo:"
+    tail -5 "$check_err" | sed 's/^/    /'
+    echo "$name|$file_count|FAIL (exit $stylelint_status)|-|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    rm -f "$check_out" "$check_err"
     return 0
   fi
 
-  if [ -z "$gale_check" ]; then
-    warn "Gale produced no output for $name. Skipping this repo."
-    echo "$name|$file_count|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
+  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json) \
+    >"$check_out" 2>"$check_err" || gale_status=$?
+  if ! lint_ok "$gale_status"; then
+    warn "Gale failed on $name (exit $gale_status). Not timing this repo:"
+    tail -5 "$check_err" | sed 's/^/    /'
+    echo "$name|$file_count|-|FAIL (exit $gale_status)|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    rm -f "$check_out" "$check_err"
     return 0
   fi
+  rm -f "$check_out" "$check_err"
 
-  success "Both linters produced output. Proceeding with benchmark."
+  success "Both linters ran successfully. Proceeding with benchmark."
 
-  # Run hyperfine
+  # Run hyperfine, one linter at a time so a failure is attributed.
   info "Running hyperfine ($MIN_RUNS runs, $WARMUP warmup)..."
 
-  hyperfine \
-    --warmup "$WARMUP" \
-    --min-runs "$MIN_RUNS" \
-    --export-json "$hyperfine_json" \
-    --command-name "stylelint" \
-    "cd $work_dir && $stylelint_bin '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true" \
-    --command-name "gale" \
-    "cd $work_dir && $GALE_BIN '$glob_pattern' >/dev/null 2>>$SCRIPT_DIR/.benchmark-stderr.log || true"
+  local stylelint_json="$SCRIPT_DIR/.hyperfine-${name}-stylelint.json"
+  local gale_json="$SCRIPT_DIR/.hyperfine-${name}-gale.json"
+  if ! time_linter stylelint "cd $work_dir && $stylelint_bin '$glob_pattern'" "$stylelint_json"; then
+    warn "A timed Stylelint run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
+    echo "$name|$file_count|FAIL (timed run)|-|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    return 0
+  fi
+  if ! time_linter gale "cd $work_dir && $GALE_BIN '$glob_pattern'" "$gale_json"; then
+    warn "A timed Gale run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
+    echo "$name|$file_count|-|FAIL (timed run)|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
+    return 0
+  fi
 
   # Parse results from JSON
   local stylelint_mean gale_mean speedup
-  stylelint_mean=$(python3 -c "
-import json, sys
-with open('$hyperfine_json') as f:
-    data = json.load(f)
-for r in data['results']:
-    if r['command'] == 'stylelint':
-        print(f\"{r['mean']:.3f}\")
-" 2>/dev/null || echo "N/A")
-
-  gale_mean=$(python3 -c "
-import json, sys
-with open('$hyperfine_json') as f:
-    data = json.load(f)
-for r in data['results']:
-    if r['command'] == 'gale':
-        print(f\"{r['mean']:.3f}\")
-" 2>/dev/null || echo "N/A")
+  stylelint_mean=$(mean_time "$stylelint_json")
+  gale_mean=$(mean_time "$gale_json")
 
   if [ "$stylelint_mean" != "N/A" ] && [ "$gale_mean" != "N/A" ]; then
     speedup=$(python3 -c "print(f'{$stylelint_mean / $gale_mean:.1f}')" 2>/dev/null || echo "?")
@@ -384,8 +414,23 @@ run_parity_test() {
   local gale_tmp="$SCRIPT_DIR/.parity-gale-${name}.json"
   local gale_err="$SCRIPT_DIR/.parity-gale-${name}.stderr"
 
-  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json 2>"$stylelint_err" || true) > "$stylelint_tmp"
-  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json 2>"$gale_err" || true) > "$gale_tmp"
+  local stylelint_status=0 gale_status=0
+  (cd "$work_dir" && "$stylelint_bin" "$glob_pattern" --formatter json) \
+    >"$stylelint_tmp" 2>"$stylelint_err" || stylelint_status=$?
+  (cd "$work_dir" && "$GALE_BIN" "$glob_pattern" --formatter json) \
+    >"$gale_tmp" 2>"$gale_err" || gale_status=$?
+
+  # A failed run has no result to compare; an empty one would count every
+  # warning of the other linter as a mismatch.
+  local failed=""
+  lint_ok "$stylelint_status" || failed="Stylelint exit $stylelint_status"
+  lint_ok "$gale_status" || failed="${failed:+$failed, }Gale exit $gale_status"
+  if [ -n "$failed" ]; then
+    rm -f "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err"
+    echo "$name|FAIL ($failed)|-|-" >> "$SCRIPT_DIR/.parity-results.txt"
+    echo "    Not compared: $failed"
+    return 0
+  fi
 
   # Compare using Python for robust JSON diffing
   local parity_result
@@ -397,7 +442,14 @@ import json, os, sys
 WORK_DIR = sys.argv[5]
 
 def read_report(stdout_path, stderr_path):
-    """Return the JSON report text, whichever stream it was written to."""
+    """Return the parsed JSON report, whichever stream it was written to.
+
+    Stylelint 16+ writes the report to stderr, where Node also prints its
+    own warnings, e.g. "(node:123) [DEP0040] DeprecationWarning: ...". A
+    bracket in such a line is not the report, so try each `[` in turn until
+    one decodes to a list of per-file results. Returns None if none does.
+    """
+    decoder = json.JSONDecoder()
     for path in (stdout_path, stderr_path):
         try:
             with open(path) as f:
@@ -405,19 +457,26 @@ def read_report(stdout_path, stderr_path):
         except FileNotFoundError:
             continue
         start = text.find("[")
-        if start != -1 and text[start:].lstrip().startswith(("[{", "[]")):
-            return text[start:].strip()
-    return ""
+        while start != -1:
+            try:
+                data, _ = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, list) and all(
+                isinstance(entry, dict) and "warnings" in entry for entry in data
+            ):
+                return data
+            start = text.find("[", start + 1)
+    return None
 
-def parse_warnings(stdout_path, stderr_path):
+def parse_warnings(stdout_path, stderr_path, linter):
     """Extract (file, line, column, rule) tuples from linter JSON output."""
-    text = read_report(stdout_path, stderr_path)
-    if not text:
-        return set()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return set()
+    data = read_report(stdout_path, stderr_path)
+    if data is None:
+        # Without a report every warning of the other linter would count
+        # as a mismatch; fail the comparison instead.
+        print(f"no JSON report from {linter}", file=sys.stderr)
+        sys.exit(3)
     warnings = set()
     for entry in data:
         source = entry.get("source", "")
@@ -430,8 +489,8 @@ def parse_warnings(stdout_path, stderr_path):
             warnings.add((source, line, col, rule))
     return warnings
 
-stylelint_w = parse_warnings(sys.argv[1], sys.argv[2])
-gale_w = parse_warnings(sys.argv[3], sys.argv[4])
+stylelint_w = parse_warnings(sys.argv[1], sys.argv[2], "Stylelint")
+gale_w = parse_warnings(sys.argv[3], sys.argv[4], "Gale")
 
 # Only compare rules that Gale implements (all 161 from ALL_RULE_NAMES)
 gale_rules = {
@@ -543,7 +602,7 @@ total_files = len({w[0] for w in stylelint_filtered | gale_filtered})
 
 print(f"{total_files}|{len(false_positives)}|{len(false_negatives)}")
 PYEOF
-  ) || parity_result="ERR|ERR|ERR"
+  ) || parity_result="FAIL (no JSON report)|-|-"
 
   rm -f "$stylelint_tmp" "$gale_tmp"
 
@@ -600,6 +659,7 @@ EOF
 ---
 
 *False Positives = Gale reports but Stylelint does not. False Negatives = Stylelint reports but Gale misses.*
+*FAIL = the linter exited with something other than 0 (clean) or 2 (problems found), e.g. 78 for a config it could not load or 101 for a crash. Failed runs are neither timed nor compared.*
 *Only rules implemented in Gale are compared. Plugin-only rules are excluded.*
 
 Reproduce these results: `./benchmarks/benchmark.sh`
