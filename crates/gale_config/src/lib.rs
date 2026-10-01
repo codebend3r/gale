@@ -42,16 +42,6 @@ pub enum Severity {
   Off,
 }
 
-/// Output formatter type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum FormatterType {
-  #[default]
-  Text,
-  Json,
-  Compact,
-}
-
 // ---------------------------------------------------------------------------
 // Resolved config (public API)
 // ---------------------------------------------------------------------------
@@ -144,7 +134,10 @@ pub enum FixMode {
 pub struct GaleConfig {
   pub rules: HashMap<String, RuleConfig>,
   pub ignore_patterns: Vec<String>,
-  pub formatter: FormatterType,
+  /// Stylelint's `formatter`, exactly as the config wrote it.  The CLI
+  /// validates the name (an unknown one is an error) and uses it when no
+  /// `--formatter` flag is given.
+  pub formatter: Option<String>,
   pub overrides: Vec<ResolvedOverride>,
   /// Directory containing the config file.  Used by [`rules_for_file`] to
   /// resolve override glob patterns relative to the config location.
@@ -315,7 +308,7 @@ impl Default for GaleConfig {
     Self {
       rules: HashMap::new(),
       ignore_patterns: Vec::new(),
-      formatter: FormatterType::Text,
+      formatter: None,
       overrides: Vec::new(),
       config_dir: None,
       plugins: Vec::new(),
@@ -4068,15 +4061,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     ignore_patterns.extend(ignore_files);
   }
 
-  let formatter = raw
-    .formatter
-    .as_deref()
-    .map(|s| match s.to_lowercase().as_str() {
-      "json" => FormatterType::Json,
-      "compact" => FormatterType::Compact,
-      _ => FormatterType::Text,
-    })
-    .unwrap_or_default();
+  let formatter = raw.formatter;
 
   // 3. Resolve overrides.
   //    Extended configs' overrides come first, then the user's own overrides.
@@ -4421,7 +4406,7 @@ mod tests {
     let cfg = GaleConfig::default();
     assert!(cfg.rules.is_empty());
     assert!(cfg.ignore_patterns.is_empty());
-    assert_eq!(cfg.formatter, FormatterType::Text);
+    assert_eq!(cfg.formatter, None);
   }
 
   #[test]
@@ -4466,7 +4451,7 @@ mod tests {
     let cfg = resolve_raw(raw, Path::new("."));
     assert_eq!(cfg.rules.len(), 3);
     assert_eq!(cfg.ignore_patterns.len(), 2);
-    assert_eq!(cfg.formatter, FormatterType::Json);
+    assert_eq!(cfg.formatter.as_deref(), Some("json"));
   }
 
   #[test]
@@ -4483,7 +4468,7 @@ mod tests {
     // block-no-empty is "off" so it gets removed; only color-no-invalid-hex remains.
     assert_eq!(cfg.rules.len(), 1);
     assert!(cfg.rules.contains_key("color-no-invalid-hex"));
-    assert_eq!(cfg.formatter, FormatterType::Compact);
+    assert_eq!(cfg.formatter.as_deref(), Some("compact"));
   }
 
   #[test]
@@ -4500,7 +4485,7 @@ formatter: text
     let cfg = resolve_raw(raw, Path::new("."));
     assert_eq!(cfg.rules.len(), 2);
     assert_eq!(cfg.ignore_patterns.len(), 1);
-    assert_eq!(cfg.formatter, FormatterType::Text);
+    assert_eq!(cfg.formatter.as_deref(), Some("text"));
   }
 
   // -----------------------------------------------------------------------

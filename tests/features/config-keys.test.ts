@@ -189,6 +189,43 @@ describe("cache and cacheLocation config keys", () => {
   });
 });
 
+describe("formatter config key", () => {
+  test("picks the output format when no --formatter flag is given", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config({ "block-no-empty": true }, { formatter: "compact" }),
+      "a.css": EMPTY_BLOCK,
+    });
+
+    const result = runGale(["a.css"], { cwd: project.dir });
+    expect(result.stdout).toBe(
+      "a.css: line 1, col 3, error - Unexpected empty block (block-no-empty)\n",
+    );
+  });
+
+  test("gives way to the --formatter flag", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config({ "block-no-empty": true }, { formatter: "compact" }),
+      "a.css": EMPTY_BLOCK,
+    });
+
+    const warnings = runGaleJson(["a.css"], { cwd: project.dir }).warnings();
+    expect(warnings.map((w) => w.rule)).toEqual(["block-no-empty"]);
+  });
+
+  test("an unknown name is a configuration error, not a fallback to text", () => {
+    const project = makeProject({
+      ".stylelintrc.json": config({ "block-no-empty": true }, { formatter: "nope" }),
+      "a.css": EMPTY_BLOCK,
+    });
+
+    const result = runGale(["a.css"], { cwd: project.dir });
+    expect(result.exitCode).toBe(78);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain('formatter "nope"');
+    expect(result.stderr).toContain("You must use a valid formatter option:");
+  });
+});
+
 describe("extends config key", () => {
   test("warns once about each entry it cannot resolve", () => {
     const project = makeProject({

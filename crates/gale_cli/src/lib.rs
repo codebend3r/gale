@@ -62,7 +62,7 @@ pub struct Cli {
   #[arg(short, long)]
   config: Option<PathBuf>,
 
-  /// Output format
+  /// Output format [default: the config's `formatter`, else text]
   ///
   /// Restricted to the implemented set so a typo (or a formatter Gale does
   /// not have) is rejected outright rather than silently falling back to
@@ -70,10 +70,9 @@ pub struct Cli {
   #[arg(
         short = 'f',
         long,
-        default_value = "text",
         value_parser = clap::builder::PossibleValuesParser::new(gale_formatter::FORMATTER_NAMES)
     )]
-  formatter: String,
+  formatter: Option<String>,
 
   /// Maximum number of warnings before erroring
   #[arg(long)]
@@ -234,6 +233,31 @@ fn resolve_syntax(
   }
 
   Some(detect_syntax(file_path))
+}
+
+/// The formatter to use: the `--formatter` flag, else the config's
+/// `formatter`, else `text`.
+///
+/// The flag is already restricted to known names by clap.  A config value
+/// that names no formatter is an error carrying Stylelint's wording, which
+/// lists the valid names, rather than a silent fallback to text.
+fn choose_formatter(cli: Option<&str>, config: Option<&str>) -> Result<String, String> {
+  match (cli, config) {
+    (Some(name), _) => Ok(name.to_string()),
+    (None, Some(name)) if gale_formatter::FORMATTER_NAMES.contains(&name) => Ok(name.to_string()),
+    (None, Some(name)) => {
+      let valid = gale_formatter::FORMATTER_NAMES
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+      Err(format!(
+        "The config's formatter \"{name}\" is not a formatter gale has. \
+         You must use a valid formatter option: {valid}"
+      ))
+    }
+    (None, None) => Ok("text".to_string()),
+  }
 }
 
 /// Decide whether the human-readable formatters colour their output.
@@ -1032,6 +1056,18 @@ pub fn run() -> Result<()> {
     return Ok(());
   }
 
+  // The formatter: `--formatter` wins, then the config's `formatter`, then
+  // text.  An unknown name in the config is a configuration error, as an
+  // unknown `--formatter` is a usage error; neither falls back to text.
+  let formatter_name = match choose_formatter(cli.formatter.as_deref(), config.formatter.as_deref())
+  {
+    Ok(name) => name,
+    Err(message) => {
+      eprintln!("Error: {message}");
+      process::exit(EXIT_INVALID_CONFIG);
+    }
+  };
+
   // Gale never emits deprecation warnings, so the flag only needs accepting.
   if cli.quiet_deprecation_warnings {
     debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
@@ -1679,7 +1715,7 @@ pub fn run() -> Result<()> {
     std::io::IsTerminal::is_terminal(&std::io::stdout()),
     |name| std::env::var(name).ok(),
   );
-  let formatter = create_formatter_with_color(&cli.formatter, color);
+  let formatter = create_formatter_with_color(&formatter_name, color);
   let output = gale_formatter::Formatter::format(&*formatter, &results);
   if std::env::var("GALE_DEBUG_PERF").as_deref() == Ok("1") {
     eprintln!("[perf] format: {:.3}s", t_fmt.elapsed().as_secs_f64());
@@ -2051,6 +2087,25 @@ mod tests {
     );
     assert_eq!(files.len(), 1);
     assert!(files[0].ends_with("a.css"));
+  }
+
+  #[test]
+  fn formatter_comes_from_the_flag_then_the_config_then_text() {
+    assert_eq!(choose_formatter(Some("json"), Some("tap")).unwrap(), "json");
+    assert_eq!(choose_formatter(None, Some("tap")).unwrap(), "tap");
+    assert_eq!(choose_formatter(None, None).unwrap(), "text");
+    // An unknown config value is an error, not a quiet switch to text.
+    let err = choose_formatter(None, Some("nope")).unwrap_err();
+    assert!(err.contains("\"nope\""), "{err}");
+    assert!(
+      err.contains("You must use a valid formatter option: \"text\""),
+      "{err}"
+    );
+    // A flag overrides even an unknown config value.
+    assert_eq!(
+      choose_formatter(Some("unix"), Some("nope")).unwrap(),
+      "unix"
+    );
   }
 
   #[test]
