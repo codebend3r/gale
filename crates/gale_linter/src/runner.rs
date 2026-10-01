@@ -1282,6 +1282,23 @@ mod tests {
   }
 
   #[test]
+  fn a_plain_enable_turns_rules_disabled_by_name_back_on() {
+    let runner = runner_for(&["color-no-invalid-hex"]);
+    let src = "/* stylelint-disable color-no-invalid-hex */\na { color: #ab; }\n/* stylelint-enable */\na { color: #ab; }\n";
+    assert_eq!(
+      problem_lines(&runner, src, "test.css", Syntax::Css),
+      vec![4]
+    );
+    // And enabling one rule under a blanket disable turns on just that one.
+    let runner = runner_for(&["color-no-invalid-hex", "block-no-empty"]);
+    let src = "/* stylelint-disable */\na {}\n/* stylelint-enable color-no-invalid-hex */\nb { color: #ab; }\nc {}\n";
+    assert_eq!(
+      problem_lines(&runner, src, "test.css", Syntax::Css),
+      vec![4]
+    );
+  }
+
+  #[test]
   fn double_slash_commands_need_scss_or_less() {
     let runner = runner_for(&["block-no-empty"]);
     let src = "// stylelint-disable-next-line block-no-empty\na {}\nb {}\n";

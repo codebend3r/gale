@@ -15,7 +15,8 @@
 //! line and `disable-next-line` the line after its last.  Every rule keeps
 //! its own list of ranges, seeded from the blanket ones when it is first
 //! named, and a problem is checked against its rule's list when there is
-//! one and the blanket list otherwise.
+//! one and the blanket list otherwise.  A plain `enable` ends the open range
+//! of every rule, named ones included.
 //!
 //! [`apply`] then drops the problems those ranges cover and adds Stylelint's
 //! reports about the comments themselves.
@@ -472,19 +473,57 @@ impl<'l> Collector<'l> {
     }
   }
 
-  /// An `enable` for one rule (or [`ALL`]): close that list's open range
+  /// Stylelint's `processEnableCommand` for one rule (or [`ALL`]): back on
   /// after `line`.
+  ///
+  /// A plain `enable` ends the open range of every rule, the ones disabled
+  /// by name included.  Enabling one rule while every rule is disabled
+  /// gives that rule a list of its own, copied from the blanket ranges, and
+  /// ends it, so the other rules stay off.
   fn enable(&mut self, node: usize, line: usize, rule: &str) {
+    if rule == ALL {
+      let any_open = self
+        .ranges
+        .rules
+        .iter()
+        .any(|(_, list)| list.last().is_some_and(|range| range.end.is_none()));
+      if !any_open {
+        self.fail(node, "No rules have been disabled".to_string());
+        return;
+      }
+      for (i, name) in self.rule_names().into_iter().enumerate() {
+        let open = self.ranges.rules[i]
+          .1
+          .last()
+          .is_some_and(|range| range.end.is_none());
+        if open {
+          self.end(line, &name, name == ALL);
+        }
+      }
+      return;
+    }
+    if self.is_disabled(ALL) && self.rule_index(rule).is_none() {
+      // Stylelint points these copies at the enable comment.
+      let copies = self
+        .ranges
+        .all()
+        .iter()
+        .map(|range| DisabledRange {
+          node,
+          strict_start: false,
+          strict_end: Some(false),
+          ..range.clone()
+        })
+        .collect();
+      self.ranges.rules.push((rule.to_string(), copies));
+      self.end(line, rule, true);
+      return;
+    }
     if self.is_disabled(rule) {
       self.end(line, rule, true);
       return;
     }
-    let message = if rule == ALL {
-      "No rules have been disabled".to_string()
-    } else {
-      format!("\"{rule}\" has not been disabled")
-    };
-    self.fail(node, message);
+    self.fail(node, format!("\"{rule}\" has not been disabled"));
   }
 }
 
@@ -1072,6 +1111,39 @@ mod tests {
   }
 
   #[test]
+  fn a_plain_enable_ends_named_disables_too() {
+    let (ranges, error) = ranges_of(
+      "/* stylelint-disable a */\nx {}\n/* stylelint-enable */\nx {}\n",
+      Syntax::Css,
+    );
+    assert_eq!(ranges, vec![closed("a", 1, 3)]);
+    assert_eq!(error, None);
+  }
+
+  #[test]
+  fn enabling_one_rule_under_a_blanket_disable_leaves_the_rest_off() {
+    let (ranges, error) = ranges_of(
+      "/* stylelint-disable */\nx {}\n/* stylelint-enable a */\nx {}\n",
+      Syntax::Css,
+    );
+    assert_eq!(ranges, vec![open("all", 1), closed("a", 1, 3)]);
+    assert_eq!(error, None);
+  }
+
+  #[test]
+  fn a_plain_enable_ends_only_the_last_range_of_each_rule() {
+    // `a` keeps its first range open, as in Stylelint.
+    let (ranges, _) = ranges_of(
+      "/* stylelint-disable a */\n/* stylelint-disable */\n/* stylelint-enable */\n",
+      Syntax::Css,
+    );
+    assert_eq!(
+      ranges,
+      vec![closed("all", 2, 3), open("a", 1), closed("a", 2, 3)]
+    );
+  }
+
+  #[test]
   fn a_blanket_disable_opens_a_range_for_every_named_rule() {
     let (ranges, _) = ranges_of(
       "/* stylelint-disable a */\n/* stylelint-disable */\n",
@@ -1111,7 +1183,7 @@ mod tests {
 
   #[test]
   fn problems_check_their_rule_list_first() {
-    let text = "/* stylelint-disable */\n/* stylelint-enable */\n/* stylelint-disable a */\nx\n";
+    let text = "/* stylelint-disable */\n/* stylelint-enable */\n/* stylelint-disable a */\nx {}\n";
     let index = SourceLineIndex::build(text);
     let line_of = |offset: usize| index.line(offset);
     let mut collector = Collector::new(&line_of);
