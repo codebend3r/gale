@@ -20,7 +20,8 @@ use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::{LintRunner, RuleRegistry};
 
 use crate::cache::{
-  CacheStrategy, LintCache, compute_config_hash, compute_fingerprint, resolve_cache_path,
+  CacheStrategy, LintCache, combine_hashes, compute_hash, compute_params_hash, compute_run_hash,
+  metadata_fingerprint, resolve_cache_path,
 };
 
 // ---------------------------------------------------------------------------
@@ -1218,7 +1219,6 @@ pub fn run() -> Result<()> {
 
   // Set up caching if --cache is enabled.
   let cache_path = resolve_cache_path(cache_location.as_deref());
-  let config_hash = compute_config_hash(&config.rules);
   let mut lint_cache = if use_cache {
     debug!("Loading cache from {}", cache_path.display());
     LintCache::load(&cache_path, cache_strategy)
@@ -1285,6 +1285,22 @@ pub fn run() -> Result<()> {
     })
     .collect();
 
+  // The cache key part shared by every file: the root config, whose rules
+  // and switches the runner falls back on, its options as the runner gets
+  // them, and the command-line flags that change results.
+  let run_hash = compute_run_hash(
+    &config,
+    &rule_options,
+    cli_custom_syntax,
+    [
+      cli.report_needless_disables,
+      cli.report_invalid_scope_disables,
+      cli.report_descriptionless_disables,
+      cli.report_unscoped_disables,
+      cli.ignore_disables,
+    ],
+  );
+
   let mut runner = LintRunner::with_options_and_severities(
     registry,
     enabled_rules.clone(),
@@ -1324,6 +1340,9 @@ pub fn run() -> Result<()> {
     rule_options: std::collections::HashMap<String, serde_json::Value>,
     rule_severities: std::collections::HashMap<String, gale_diagnostics::Severity>,
     has_overrides: bool,
+    /// The cache key part for files using this config: the config and its
+    /// options as the runner gets them.
+    cache_key: u64,
   }
 
   /// Build `ResolvedLintParams` from a `GaleConfig`, pre-computing enabled
@@ -1394,12 +1413,14 @@ pub fn run() -> Result<()> {
         })
       })
       .collect();
+    let cache_key = compute_params_hash(&config, &rule_options);
     Arc::new(ResolvedLintParams {
       config,
       enabled_rules,
       rule_options,
       rule_severities,
       has_overrides,
+      cache_key,
     })
   }
 
@@ -1653,40 +1674,54 @@ pub fn run() -> Result<()> {
     }
 
     if use_cache {
-      // With caching: read files, check cache, skip clean ones.
+      // With caching: check the cache, skip clean files, lint the rest.
       let cache_mutex = Mutex::new(&mut lint_cache);
       let results: Vec<LintResult> = lintable
         .par_iter()
         .filter_map(|(file, syntax)| {
           let syntax = *syntax;
-          let source = std::fs::read_to_string(file).ok()?;
           let file_path = file.display().to_string();
-
-          let content_hash = compute_fingerprint(file, &source, cache_strategy, config_hash);
-
-          // Check cache: skip only files that were clean (0 diagnostics).
-          {
-            let cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.is_clean(&file_path, content_hash) {
-              debug!("Cache hit (clean): {file_path}");
-              return None;
-            }
-          }
-
-          let result = if let Some(ref dp) = dir_params {
+          let params = dir_params.as_ref().and_then(|dp| {
             let abs = if file.is_absolute() {
               file.clone()
             } else {
               cwd.join(file)
             };
             let dir = abs.parent().unwrap_or(Path::new("."));
-            if let Some(params) = dp.get(dir) {
-              lint_file_with_params(&runner, &source, &file_path, syntax, params)
-            } else {
-              lint_file(&runner, &source, &file_path, syntax, &config, has_overrides)
+            dp.get(dir)
+          });
+
+          // The key covers everything that changes this file's result.
+          let config_hash = combine_hashes(&[run_hash, params.map_or(0, |p| p.cache_key)]);
+
+          // Check cache: skip only files that were clean (0 diagnostics).
+          // The metadata strategy needs only the file's size and mtime, so
+          // a clean file is skipped without reading it.
+          let is_clean = |fingerprint: u64| {
+            let cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
+            cache.is_clean(&file_path, fingerprint)
+          };
+          let early = metadata_fingerprint(file, cache_strategy, config_hash);
+          if early.is_some_and(is_clean) {
+            debug!("Cache hit (clean): {file_path}");
+            return None;
+          }
+          let source = std::fs::read_to_string(file).ok()?;
+          let content_hash = match early {
+            Some(fingerprint) => fingerprint,
+            None => {
+              let fingerprint = compute_hash(&source, config_hash);
+              if is_clean(fingerprint) {
+                debug!("Cache hit (clean): {file_path}");
+                return None;
+              }
+              fingerprint
             }
-          } else {
-            lint_file(&runner, &source, &file_path, syntax, &config, has_overrides)
+          };
+
+          let result = match params {
+            Some(params) => lint_file_with_params(&runner, &source, &file_path, syntax, params),
+            None => lint_file(&runner, &source, &file_path, syntax, &config, has_overrides),
           };
 
           // Update cache with the new result.  A file with an invalid

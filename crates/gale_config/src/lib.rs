@@ -117,6 +117,11 @@ impl ResolvedOverride {
     let path = Path::new(file_path);
     self.exclude_matchers.iter().any(|m| m.is_match(path))
   }
+
+  /// The override's `ignoreFiles` patterns that compiled, as written.
+  pub fn ignore_patterns(&self) -> impl Iterator<Item = &str> {
+    self.exclude_matchers.iter().map(|m| m.glob().glob())
+  }
 }
 
 /// How autofix behaves when it is switched on from the config file.
