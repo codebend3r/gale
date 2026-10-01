@@ -3,6 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
 use crate::selector::postcss::{self, Kind};
+use crate::standard_syntax::is_standard_syntax_selector;
 use crate::style_rules::scan_style_rules;
 
 /// Enforces a specific colon notation (`::` or `:`) for pseudo-elements that
@@ -41,7 +42,7 @@ impl Rule for SelectorPseudoElementColonNotation {
 
     let mut diags = Vec::new();
     for rule in scan_style_rules(ctx.source, ctx.syntax) {
-      if !rule.prelude.contains(':') || !postcss::is_standard_syntax_selector(&rule.prelude) {
+      if !rule.prelude.contains(':') || !is_standard_syntax_selector(&rule.prelude) {
         continue;
       }
       let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
