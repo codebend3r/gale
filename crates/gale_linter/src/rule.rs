@@ -1,3 +1,8 @@
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity};
 
@@ -157,9 +162,88 @@ pub trait Rule: Send + Sync {
   }
 }
 
+/// Identifies one memoized parse: the rule, the type it parses its options
+/// into, and the address of the options value.
+type OptionsKey = (&'static str, TypeId, usize);
+
+thread_local! {
+  /// Options parsed for the file being linted on this thread, or `None`
+  /// while no [`PerFileOptions`] guard is held.
+  static FILE_OPTIONS: RefCell<Option<HashMap<OptionsKey, Rc<dyn Any>>>> =
+    const { RefCell::new(None) };
+}
+
+/// Lets rules memoize parsed options with [`per_file`] on this thread until
+/// dropped.
+///
+/// The runner holds one while it lints a file.  It lints a file on one
+/// thread and keeps every options value it hands to rules alive and
+/// unchanged until the file is done, which is what lets [`per_file`]
+/// identify an options value by its address.
+pub(crate) struct PerFileOptions {
+  /// The enclosing memo (normally none), restored on drop.
+  saved: Option<HashMap<OptionsKey, Rc<dyn Any>>>,
+  /// Pins the guard to the thread whose memo it manages.
+  _thread_bound: std::marker::PhantomData<Rc<()>>,
+}
+
+impl PerFileOptions {
+  /// Start memoizing with an empty memo for a new file.
+  pub(crate) fn begin() -> Self {
+    let saved = FILE_OPTIONS.with(|memo| memo.replace(Some(HashMap::new())));
+    Self {
+      saved,
+      _thread_bound: std::marker::PhantomData,
+    }
+  }
+}
+
+impl Drop for PerFileOptions {
+  /// Discards the file's memo and restores the enclosing one, even when a
+  /// rule panicked.
+  fn drop(&mut self) {
+    let saved = self.saved.take();
+    FILE_OPTIONS.with(|memo| *memo.borrow_mut() = saved);
+  }
+}
+
+/// Parse a rule's options at most once per file.
+///
+/// `check` runs once per node, so a rule whose options take real work to
+/// interpret (long lists, lookup tables) can wrap that work in this to do it
+/// once for the whole file instead.  `parse` must depend only on `options`
+/// and the file, never on the node being checked.  Outside the runner (a
+/// rule's own tests, say) every call parses afresh.
+pub fn per_file<T: 'static>(
+  rule: &'static str,
+  options: Option<&serde_json::Value>,
+  parse: impl FnOnce() -> T,
+) -> Rc<T> {
+  let address = options.map_or(0, |value| std::ptr::from_ref(value) as usize);
+  let key = (rule, TypeId::of::<T>(), address);
+  let cached = FILE_OPTIONS.with(|memo| {
+    let memo = memo.borrow();
+    let entry = memo.as_ref()?.get(&key)?;
+    Rc::clone(entry).downcast::<T>().ok()
+  });
+  if let Some(parsed) = cached {
+    return parsed;
+  }
+  // Parse without holding the memo borrowed, so a panicking parse cannot
+  // leave it locked.
+  let parsed = Rc::new(parse());
+  FILE_OPTIONS.with(|memo| {
+    if let Some(memo) = memo.borrow_mut().as_mut() {
+      memo.insert(key, Rc::clone(&parsed) as Rc<dyn Any>);
+    }
+  });
+  parsed
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::cell::Cell;
 
   /// A context over `source` with no options.
   fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
@@ -203,5 +287,66 @@ mod tests {
     // Plain CSS has no line comments, so `//` is just text.
     let css = context("a // b { }", Syntax::Css);
     assert_eq!(css.selector_source(0), Some("a // b"));
+  }
+
+  /// Calls `per_file` for `options`, counting how often it had to parse.
+  fn parse_counting(options: &serde_json::Value, parses: &Cell<usize>) -> Rc<usize> {
+    per_file("test-rule", Some(options), || {
+      parses.set(parses.get() + 1);
+      options.as_array().map_or(0, Vec::len)
+    })
+  }
+
+  #[test]
+  fn per_file_parses_every_time_without_a_guard() {
+    let options = serde_json::json!([1, 2, 3]);
+    let parses = Cell::new(0);
+    assert_eq!(*parse_counting(&options, &parses), 3);
+    assert_eq!(*parse_counting(&options, &parses), 3);
+    assert_eq!(parses.get(), 2);
+  }
+
+  #[test]
+  fn per_file_parses_once_per_options_value_while_a_file_is_linted() {
+    let first = serde_json::json!([1, 2, 3]);
+    let second = serde_json::json!([1]);
+    let parses = Cell::new(0);
+    {
+      let _file = PerFileOptions::begin();
+      for _ in 0..5 {
+        assert_eq!(*parse_counting(&first, &parses), 3);
+        assert_eq!(*parse_counting(&second, &parses), 1);
+      }
+      assert_eq!(parses.get(), 2);
+
+      // Another rule, or another parsed type, gets its own entry.
+      let other = per_file("other-rule", Some(&first), || 7usize);
+      assert_eq!(*other, 7);
+      let as_string = per_file("test-rule", Some(&first), || "parsed".to_string());
+      assert_eq!(*as_string, "parsed");
+    }
+
+    // The next file starts with an empty memo.
+    let _file = PerFileOptions::begin();
+    assert_eq!(*parse_counting(&first, &parses), 3);
+    assert_eq!(parses.get(), 3);
+  }
+
+  #[test]
+  fn the_memo_is_restored_when_a_guard_is_dropped() {
+    let options = serde_json::json!([1, 2]);
+    let parses = Cell::new(0);
+    let outer = PerFileOptions::begin();
+    parse_counting(&options, &parses);
+    {
+      let _inner = PerFileOptions::begin();
+      parse_counting(&options, &parses);
+    }
+    // Back in the outer file, its memo is intact.
+    parse_counting(&options, &parses);
+    assert_eq!(parses.get(), 2);
+    drop(outer);
+    parse_counting(&options, &parses);
+    assert_eq!(parses.get(), 3);
   }
 }

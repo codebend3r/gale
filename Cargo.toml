@@ -80,3 +80,17 @@ path = "src/main.rs"
 [dependencies]
 gale_cli = { workspace = true }
 anyhow = { workspace = true }
+# Gale makes many small, short-lived allocations from every rayon worker;
+# mimalloc handles that far better than the platform allocators.
+mimalloc = { version = "0.1", default-features = false }
+
+# Symbol tables are about a quarter of the binary and shipped binaries do
+# not need them. Panic messages keep their file and line; only backtraces
+# lose function names.
+#
+# Measured and left out (mimalloc build, load 40-130): thin LTO saves about
+# 2.5% CPU, within noise, while doubling incremental release rebuilds;
+# fat LTO and codegen-units = 1 show no consistent gain and double clean
+# builds. `panic` must stay `unwind` so a panicking rule can be caught.
+[profile.release]
+strip = true
