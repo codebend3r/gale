@@ -10,7 +10,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 
-import { cleanupProjects, config, makeProject, runGaleJson } from "./helpers";
+import { cleanupProjects, config, makeProject, relativeSource, runGaleJson } from "./helpers";
 
 afterAll(cleanupProjects);
 
@@ -34,13 +34,13 @@ function project() {
 }
 
 /**
- * The `source` of every result, in report order. Files a glob finds are
- * reported as `./path`, the ones named outright as written; drop the `./`.
+ * The `source` of every result, in report order, relative to the project
+ * (gale reports absolute paths, as Stylelint does).
  */
 function sources(args: string[], dir: string): string[] {
   return runGaleJson(args, { cwd: dir })
     .json()
-    .map((result) => result.source.replace(/^\.\//, ""));
+    .map((result) => relativeSource(dir, result.source));
 }
 
 describe("report order", () => {

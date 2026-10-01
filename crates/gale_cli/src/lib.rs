@@ -56,9 +56,10 @@ pub struct Cli {
   #[arg(long)]
   stdin: bool,
 
-  /// Virtual filename for stdin input (used for syntax detection and diagnostics)
-  #[arg(long, default_value = "stdin.css")]
-  stdin_filename: String,
+  /// Virtual filename for stdin input (used for syntax detection and
+  /// diagnostics) [default: stdin.css]
+  #[arg(long)]
+  stdin_filename: Option<String>,
 
   /// Config file path
   #[arg(short, long)]
@@ -1017,6 +1018,39 @@ fn breadth_first_order(a: &Path, b: &Path) -> std::cmp::Ordering {
     .then_with(|| a.cmp(b))
 }
 
+/// The name stdin is linted under without `--stdin-filename`.
+const DEFAULT_STDIN_FILENAME: &str = "stdin.css";
+
+/// The path Stylelint reports a source under: `path` joined to `cwd` when
+/// relative, with `.` and `..` resolved without touching the file system
+/// (Node's `path.join`), so symlinks stay as written.
+///
+/// Stylelint normalises an absolute path it found on disk too, but takes an
+/// absolute `codeFilename` (`--stdin-filename`) as given;
+/// `normalize_absolute` says which this is.
+fn reported_path(cwd: &Path, path: &str, normalize_absolute: bool) -> String {
+  let path = Path::new(path);
+  if path.is_absolute() && !normalize_absolute {
+    return path.display().to_string();
+  }
+  let joined = if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    cwd.join(path)
+  };
+  let mut normal = PathBuf::new();
+  for component in joined.components() {
+    match component {
+      std::path::Component::CurDir => {}
+      std::path::Component::ParentDir => {
+        normal.pop();
+      }
+      other => normal.push(other),
+    }
+  }
+  normal.display().to_string()
+}
+
 /// `path` without `.` components, so `./a.css` and `a.css` count as the
 /// same file.
 fn without_cur_dir(path: &Path) -> PathBuf {
@@ -1586,7 +1620,10 @@ pub fn run() -> Result<()> {
     let mut source = String::new();
     std::io::stdin().read_to_string(&mut source)?;
 
-    let file_path = &cli.stdin_filename;
+    let file_path = cli
+      .stdin_filename
+      .as_deref()
+      .unwrap_or(DEFAULT_STDIN_FILENAME);
     match resolve_syntax(cli_custom_syntax, &config, file_path) {
       Ok(syntax) => {
         let blocks = embedded::skipped_blocks(Path::new(file_path), &source);
@@ -1929,6 +1966,18 @@ pub fn run() -> Result<()> {
     lint_cache.save(&cache_path);
   }
 
+  // Stylelint reports each source by its absolute path, whatever form the
+  // file was named in.  Fixes have been written and the cache saved under
+  // the path as discovered, so only the report changes.  Without a
+  // `--stdin-filename` there is no path to report, and the default name
+  // stays as it is.
+  if !cli.stdin || cli.stdin_filename.is_some() {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    for result in &mut results {
+      result.file_path = reported_path(&cwd, &result.file_path, !cli.stdin);
+    }
+  }
+
   // Format & print.
   let t_fmt = std::time::Instant::now();
   let color = color_enabled(
@@ -2090,6 +2139,24 @@ fn detect_legacy_unknown_units(cwd: &Path) -> Option<Vec<String>> {
 mod tests {
   use super::*;
   use std::fs;
+
+  #[test]
+  fn sources_are_reported_by_absolute_path_like_stylelint() {
+    let cwd = Path::new("/work/project");
+    for (given, reported) in [
+      ("src/a.css", "/work/project/src/a.css"),
+      ("./src/a.css", "/work/project/src/a.css"),
+      ("src/sub/../a.css", "/work/project/src/a.css"),
+      ("../other/b.css", "/work/other/b.css"),
+      ("/abs/./x/../c.css", "/abs/c.css"),
+    ] {
+      assert_eq!(reported_path(cwd, given, true), reported, "{given}");
+    }
+    // An absolute `--stdin-filename` is taken as given, as Stylelint takes
+    // `codeFilename`; a relative one is joined to the working directory.
+    assert_eq!(reported_path(cwd, "/abs/./c.css", false), "/abs/./c.css");
+    assert_eq!(reported_path(cwd, "./x.css", false), "/work/project/x.css");
+  }
 
   /// Helper: create a temporary directory tree with CSS files for glob tests.
   fn create_test_tree(base: &Path) {
