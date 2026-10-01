@@ -1,0 +1,192 @@
+name: 🧪 CI
+
+# Pull requests and pushes to main run the same checks. Docs-only changes skip
+# CI entirely; nothing they touch is built or tested.
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "LICENSE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request supersedes the run in flight. Every push to main
+# gets its own run and verdict, keyed by commit, so none is cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Caching: every Rust job restores a cache keyed by what it builds (shared-key)
+  # rather than by job id, and only runs on main save it. Pull requests can read
+  # main's caches, so they start warm instead of compiling every dependency cold.
+
+  checks:
+    name: Format, clippy, and Rust tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Clippy's check build and the debug test build.
+          shared-key: debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Each check below runs even if an earlier one failed, so one run reports
+      # every problem instead of the first.
+
+      - name: Check formatting
+        run: bun run fmt:check
+
+      - name: Check the hook config
+        # A malformed lefthook.yml silently skips local checks, so catch it here.
+        if: ${{ !cancelled() }}
+        run: bunx lefthook validate
+
+      - name: Clippy
+        # The same command as the pre-commit hook: every target, warnings denied.
+        if: ${{ !cancelled() }}
+        run: bun run lint
+
+      - name: Rust tests
+        if: ${{ !cancelled() }}
+        run: bun run test:rust
+
+  build:
+    # The one release build in CI. The jobs that need the binary download it
+    # rather than compiling it again.
+    name: Release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Also restored by the compatibility workflow, which builds the same binary.
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build gale
+        run: bun run build:release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release/gale
+          if-no-files-found: error
+
+  feature-tests:
+    name: API and feature tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release
+
+      - name: Restore the executable bit
+        # Artifacts do not keep file modes.
+        run: chmod +x target/release/gale
+
+      - name: API tests
+        run: bun run test:api
+
+      - name: Feature tests
+        if: ${{ !cancelled() }}
+        run: bun run test:features
+
+  npm-package:
+    name: npm package (Node ${{ matrix.node }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every supported Node major: the oldest we accept via engines.node
+        # through the version pinned in .nvmrc.
+        node: [20, 22, 24, 26]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: artifact
+
+      - name: Stage binary for the current platform
+        run: install -Dm755 artifact/gale npm/bin/x86_64-unknown-linux-gnu/gale
+
+      - name: Run programmatic API smoke tests
+        run: node npm/test.mjs
+
+      - name: Check the published file list
+        run: npm pack --dry-run
+        working-directory: npm
+
+  result:
+    # One stable check to require in branch protection, and a verdict in the
+    # run summary. Skipped only when the whole run is cancelled.
+    name: CI result
+    needs: [checks, build, feature-tests, npm-package]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summarize
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key) (\(.value.result))"] | join(", ")' <<<"$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "💥 ${GITHUB_SHA:0:7} did not pass: $failed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "✅ ${GITHUB_SHA:0:7} is clean: fmt, clippy, every test suite, and the npm package all green." >> "$GITHUB_STEP_SUMMARY"

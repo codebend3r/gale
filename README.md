@@ -3,7 +3,7 @@
 **An extremely fast CSS linter. Drop-in replacement for Stylelint.**
 
 [![npm version](https://img.shields.io/npm/v/@codebend3r/gale)](https://www.npmjs.com/package/@codebend3r/gale)
-[![CI](https://github.com/codebend3r/gale/actions/workflows/sanity-check.yml/badge.svg)](https://github.com/codebend3r/gale/actions)
+[![CI](https://github.com/codebend3r/gale/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/codebend3r/gale/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Gale reads your existing `.stylelintrc`, runs the same rules, and produces the same output — typically **10-50x faster** on real projects.
@@ -104,9 +104,9 @@ npm install -D @codebend3r/gale
 
 The npm package ships prebuilt binaries, so install does not run a postinstall
 script or download executables. A small Node launcher picks the right one.
-Bundled platforms: macOS (arm64, x64) and Linux (x64, arm64). Windows is not
-bundled in the npm package; install it with `cargo install gale-lint` or build
-from source.
+Bundled platforms: macOS (arm64, x64), Linux (x64, arm64), and Windows (x64,
+arm64). Releases published by hand, before the release workflow ran, bundle
+macOS and Linux only; on Windows, use a newer release or build from source.
 
 ### Cargo
 
@@ -114,7 +114,7 @@ from source.
 cargo install gale-lint
 ```
 
-The crate is named `gale-lint` on crates.io (since `gale` was taken), but the installed binary is called `gale`.
+The crate is named `gale-lint` on crates.io (since `gale` was taken), but the installed binary is called `gale`. The release workflow publishes it alongside the npm package; until it has run once, crates.io carries an older version than npm, so build from source for the latest.
 
 ### From source
 
@@ -127,7 +127,7 @@ cargo build --release
 
 ### GitHub releases
 
-Download pre-built binaries from [GitHub Releases](https://github.com/codebend3r/gale/releases).
+Download pre-built binaries for all six platforms, with a `SHA256SUMS` file, from [GitHub Releases](https://github.com/codebend3r/gale/releases).
 
 ## What's supported
 
@@ -496,27 +496,36 @@ request.
 
 ## Releasing
 
-Releases are automated via GitHub Actions when you push a version tag. See
-[PUBLISHING.md](PUBLISHING.md) for the package layout, the manual publish path,
-and troubleshooting.
+Pushing a version tag publishes a release. See [PUBLISHING.md](PUBLISHING.md)
+for the one-time setup, dry runs, re-running a failed release, the local
+fallback, and troubleshooting.
 
 ```bash
-# 1. Update the version in Cargo.toml (workspace.package.version)
-# 2. Commit the version bump
+# 1. Bump every version reference to X.Y.Z in one commit named X.Y.Z:
+#    Cargo.toml (workspace version and internal crate pins), Cargo.lock,
+#    package.json, npm/package.json
+# 2. Optionally dry-run the whole pipeline without publishing
+gh workflow run release.yml --ref main -f dry-run=true
 # 3. Tag and push
-git tag v0.2.4
-git push && git push --tags
+git tag -a vX.Y.Z -m X.Y.Z
+git push origin main vX.Y.Z
 ```
 
-The [release workflow](.github/workflows/release.yml) will:
+The [release workflow](.github/workflows/release.yml) then:
 
-1. Build binaries for Linux (x64, arm64), macOS (x64, arm64), and Windows (x64)
-2. Create a GitHub Release with the binaries
-3. Stage those binaries inside `npm/bin/<target>/`
-4. Publish the npm package (`@codebend3r/gale`) with the matching version
-5. Publish the `gale-lint` crate to crates.io
+1. Checks the tag matches every version in the repo, and stops if one differs
+2. Builds binaries for macOS (arm64, x64), Linux (x64, arm64), and Windows (x64, arm64)
+3. Publishes `@codebend3r/gale` to npm with every binary bundled, with provenance
+4. Publishes `gale-lint` and its member crates to crates.io
+5. Creates the GitHub Release with the binaries and their checksums
+
+Each publish step skips what is already published, so a failed run can be
+re-run once its cause is fixed.
 
 ### Manual npm build
+
+For local testing, and for the local publish fallback in
+[PUBLISHING.md](PUBLISHING.md):
 
 ```bash
 # Build and stage the current platform binary in npm/bin/<target>/gale

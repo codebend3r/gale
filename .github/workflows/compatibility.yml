@@ -1,21 +1,56 @@
 name: 🧩 Compatibility Matrix
 
+# Weekly parity check against real repositories, plus the quick benchmark.
 on:
   schedule:
     - cron: '0 6 * * 1' # Every Monday at 6am UTC
   workflow_dispatch: # Manual trigger
 
 permissions:
-  contents: write
+  contents: read
 
 # A manual dispatch or the next schedule tick supersedes the run in flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Matches CI, whose cache key includes the CARGO_* environment.
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test-repos:
+  build:
+    # Built once; the parity jobs and the benchmark download this binary.
+    name: Release build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restores the release cache CI saves from main. CI owns saving it.
+          shared-key: release
+          save-if: false
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build gale
+        run: bun run build:release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release/gale
+          if-no-files-found: error
+
+  test-repos:
+    name: Parity (${{ matrix.repo.name }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,71 +79,125 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v6
+      - uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release
 
-      - name: Build Gale
-        run: cargo build --release
+      - name: Restore the executable bit
+        # Artifacts do not keep file modes.
+        run: chmod +x target/release/gale
 
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
 
-      - name: Setup pnpm
-        run: npm install -g pnpm corepack && corepack enable
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install corepack
+        # The harness runs `corepack enable` so repos pinned to a yarn or pnpm
+        # release through `packageManager` get that release. Node 25+ no longer
+        # bundles corepack, so install it with bun; its yarn and pnpm shims land
+        # in ~/.bun/bin, ahead of the runner's global yarn 1.
+        run: |
+          bun add -g corepack
+          corepack enable
 
       - name: Run compatibility test
-        id: test
+        env:
+          REPO: ${{ matrix.repo.name }}
+        # No pipefail on purpose: a crashed run still uploads its log, which the
+        # matrix generator turns into a "run failed" row instead of dropping it.
         run: |
-          python3 tests/differential/run.py ${{ matrix.repo.name }} --skip-build --benchmark 2>&1 | tee result.txt
-
-          # Extract metrics
-          GALE_WARNINGS=$(grep "Gale:" result.txt | grep -oE '[0-9]+ warnings' | grep -oE '[0-9]+' || echo "?")
-          STYLELINT_WARNINGS=$(grep "Stylelint:" result.txt | grep -oE '[0-9]+ warnings' | grep -oE '[0-9]+' || echo "?")
-          FILES_MATCH=$(grep "Files matching:" result.txt | grep -oE '[0-9]+' || echo "0")
-          FILES_TOTAL=$(grep "Files analyzed:" result.txt | grep -oE '[0-9]+' || echo "0")
-          FP=$(grep "Gale-only" result.txt | grep -oE '[0-9]+' || echo "?")
-          FN=$(grep "Stylelint-only" result.txt | grep -oE '[0-9]+' || echo "?")
-
-          echo "files_match=$FILES_MATCH" >> $GITHUB_OUTPUT
-          echo "files_total=$FILES_TOTAL" >> $GITHUB_OUTPUT
-          echo "fp=$FP" >> $GITHUB_OUTPUT
-          echo "fn=$FN" >> $GITHUB_OUTPUT
+          python3 tests/differential/run.py "$REPO" --skip-build --benchmark 2>&1 | tee result.txt
 
       - name: Upload result
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: result-${{ matrix.repo.name }}
           path: result.txt
 
-  update-matrix:
-    needs: test-repos
+  benchmark:
+    # Weekly rather than per pull request: it is the slowest job CI had, gated
+    # nothing, and shared runners are too noisy to compare one PR against another.
+    name: Benchmark
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download all results
+      - uses: actions/download-artifact@v8
+        with:
+          name: gale-x86_64-unknown-linux-gnu
+          path: target/release
+
+      - name: Restore the executable bit
+        # benchmark-quick.sh builds gale only when target/release/gale is missing.
+        run: chmod +x target/release/gale
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install hyperfine
+        # Without it benchmark-quick.sh silently degrades to `time`, whose output
+        # is too noisy on shared runners to be worth reading.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine
+
+      - name: Run benchmark
+        shell: bash # -o pipefail, so tee cannot hide a failing script
+        run: |
+          bash benchmarks/benchmark-quick.sh | tee benchmark.txt
+          {
+            echo '## Quick benchmark'
+            echo
+            echo '```'
+            cat benchmark.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  update-matrix:
+    name: Update COMPATIBILITY.md
+    needs: test-repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the parity results
         uses: actions/download-artifact@v8
         with:
+          pattern: result-*
           path: results
 
-      - name: Generate compatibility matrix
+      - name: Generate the matrix
+        id: matrix
         run: |
-          python3 scripts/generate-compatibility-matrix.py results/ > COMPATIBILITY.md
+          python3 scripts/generate-compatibility-matrix.py results/ > "$RUNNER_TEMP/COMPATIBILITY.md"
+          cat "$RUNNER_TEMP/COMPATIBILITY.md" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Commit updated matrix
+          # A parity change is a change to any row's repository, stars, files,
+          # pass rate, FP, or FN. The date and the Speedup column move on every
+          # run, so on their own they never justify a commit to main.
+          parity() { grep '^| \[' "$1" | cut -d'|' -f2-7; }
+          if diff <(parity COMPATIBILITY.md) <(parity "$RUNNER_TEMP/COMPATIBILITY.md"); then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            printf '\n> Parity is unchanged from the committed COMPATIBILITY.md, so nothing was committed.\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit the new matrix
+        # A dispatch on another branch reports in the summary but commits nothing.
+        if: steps.matrix.outputs.changed == 'true' && github.ref == 'refs/heads/main'
         run: |
+          cp "$RUNNER_TEMP/COMPATIBILITY.md" COMPATIBILITY.md
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add COMPATIBILITY.md
-          git diff --staged --quiet || git commit -m "Update compatibility matrix [skip ci]"
+          git commit -m "Update compatibility matrix [skip ci]"
           git push
