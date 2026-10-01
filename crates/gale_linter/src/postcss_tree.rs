@@ -74,6 +74,22 @@ pub struct Node {
   pub variable: bool,
   /// A Less `:extend` rule or `&:extend(...)` declaration.
   pub extend: bool,
+  /// Where [`Self::name`] is written: a declaration's property (after any
+  /// `*` or `_` hack), a rule's selector without the whitespace and
+  /// comments before its `{`, or an at-rule's name without the `@`.
+  pub name_span: Range<usize>,
+  /// A declaration's raw value as Stylelint's `getDeclarationValue` reads
+  /// it (comments kept, `!important` left out), or an at-rule's raw params
+  /// (`getAtRuleParams`).  Empty for other nodes.
+  pub value_span: Range<usize>,
+  /// A declaration's `decl.value`: the raw value with the comments PostCSS
+  /// drops (those next to whitespace) removed.
+  pub value: String,
+  /// Whether a declaration is `!important`.
+  pub important: bool,
+  /// For a node with a block, PostCSS's `raws.semicolon`: whether its last
+  /// non-comment child ended with `;`.
+  pub semicolon: bool,
 }
 
 /// The parsed statements of one stylesheet.
@@ -85,6 +101,9 @@ pub struct PostcssTree<'a> {
   pub nodes: Vec<Node>,
   /// The top-level nodes.
   pub root: Vec<usize>,
+  /// The root's `raws.semicolon`: whether its last non-comment node ended
+  /// with `;`.
+  pub root_semicolon: bool,
   /// Offset where each line starts; line 1 starts at 0.
   line_starts: Vec<usize>,
 }
@@ -112,6 +131,7 @@ impl<'a> PostcssTree<'a> {
       source,
       nodes: parser.nodes,
       root: parser.root,
+      root_semicolon: parser.root_semicolon,
       line_starts,
     }
   }
@@ -151,6 +171,19 @@ impl<'a> PostcssTree<'a> {
   pub fn text(&self, i: usize) -> &'a str {
     let node = &self.nodes[i];
     self.source.get(node.start..node.end).unwrap_or("")
+  }
+
+  /// Every declaration, in document order.
+  pub fn decls(&self) -> impl Iterator<Item = &Node> {
+    self.nodes.iter().filter(|n| n.kind == NodeKind::Decl)
+  }
+
+  /// The children of node `parent`, or the top-level nodes for `None`.
+  pub fn children_of(&self, parent: Option<usize>) -> &[usize] {
+    match parent {
+      Some(i) => self.nodes[i].children.as_deref().unwrap_or(&[]),
+      None => &self.root,
+    }
   }
 
   /// The nodes sharing the node's parent, the node included.
@@ -868,6 +901,11 @@ struct Parser<'a> {
   spaces: Option<usize>,
   /// Rules that already took a free semicolon (`raws.ownSemicolon`).
   own_semicolon: Vec<bool>,
+  /// PostCSS's `this.semicolon`: whether the last non-comment node ended
+  /// with `;`, recorded as the block's `raws.semicolon` when it closes.
+  semicolon: bool,
+  /// The root's `raws.semicolon`, set at the end of the input.
+  root_semicolon: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -882,6 +920,8 @@ impl<'a> Parser<'a> {
       current: None,
       spaces: None,
       own_semicolon: Vec::new(),
+      semicolon: false,
+      root_semicolon: false,
     }
   }
 
@@ -916,7 +956,25 @@ impl<'a> Parser<'a> {
     // Close any block left open at the end of the input.
     while let Some(open) = self.current {
       self.nodes[open].end = self.css.len();
+      self.record_semicolon(Some(open));
       self.current = self.nodes[open].parent;
+    }
+    self.record_semicolon(None);
+  }
+
+  /// PostCSS's `raws.semicolon` for the block of `node` (the root for
+  /// `None`), taken when the block closes.
+  fn record_semicolon(&mut self, node: Option<usize>) {
+    let semicolon = std::mem::take(&mut self.semicolon);
+    match node {
+      Some(node) => {
+        let has_children = self.nodes[node]
+          .children
+          .as_ref()
+          .is_some_and(|c| !c.is_empty());
+        self.nodes[node].semicolon = has_children && semicolon;
+      }
+      None => self.root_semicolon = !self.root.is_empty() && semicolon,
     }
   }
 
@@ -945,8 +1003,16 @@ impl<'a> Parser<'a> {
       mixin: false,
       variable: false,
       extend: false,
+      name_span: start..start,
+      value_span: start..start,
+      value: String::new(),
+      important: false,
+      semicolon: false,
     });
     self.own_semicolon.push(false);
+    if kind != NodeKind::Comment {
+      self.semicolon = false;
+    }
     match self.current {
       Some(parent) => self.nodes[parent]
         .children
@@ -988,7 +1054,10 @@ impl<'a> Parser<'a> {
     self.spaces = None;
     if let Some(open) = self.current {
       self.nodes[open].end = token.end;
+      self.record_semicolon(Some(open));
       self.current = self.nodes[open].parent;
+    } else {
+      self.semicolon = false;
     }
   }
 
@@ -1047,6 +1116,9 @@ impl<'a> Parser<'a> {
     let node = self.init(NodeKind::AtRule, token.start);
     self.nodes[node].name = name.to_string();
     self.nodes[node].end = token.end;
+    let name_start = token.end - name.len().min(token.end - token.start);
+    self.nodes[node].name_span = name_start..token.end;
+    self.nodes[node].value_span = token.end..token.end;
     let mut params: Vec<Token> = Vec::new();
     let mut brackets: Vec<Tok> = Vec::new();
     let mut open = None;
@@ -1068,6 +1140,7 @@ impl<'a> Parser<'a> {
         match token.kind {
           Tok::Semicolon => {
             self.nodes[node].end = token.end;
+            self.semicolon = true;
             break;
           }
           Tok::OpenCurly => {
@@ -1101,6 +1174,9 @@ impl<'a> Parser<'a> {
       let after_name = leading_space_or_comments(&params);
       self.nodes[node].after_name = self.join(&params[..after_name]);
       let params = &params[after_name..];
+      if let (Some(first), Some(last)) = (params.first(), params.last()) {
+        self.nodes[node].value_span = first.start..last.end;
+      }
       self.nodes[node].params = self.raw_value(params, false);
       if last {
         if let Some(prev) = params.last() {
@@ -1124,6 +1200,7 @@ impl<'a> Parser<'a> {
       return;
     }
     n.name.pop();
+    n.name_span.end = n.name_span.end.saturating_sub(1).max(n.name_span.start);
     n.after_name.insert(0, ':');
     n.variable = true;
   }
@@ -1327,6 +1404,9 @@ impl<'a> Parser<'a> {
     let node = self.init(NodeKind::Rule, first.start);
     let between = trailing_space_or_comments(&tokens);
     tokens.truncate(tokens.len() - between);
+    if let Some(last) = tokens.last() {
+      self.nodes[node].name_span = first.start..last.end;
+    }
     let selector = self.raw_value(&tokens, false);
     if self.flavor == Flavor::Less && selector.to_ascii_lowercase().contains(":extend(") {
       self.nodes[node].extend = has_extend_call(&selector, true);
@@ -1391,6 +1471,7 @@ impl<'a> Parser<'a> {
     if tokens.last().is_some_and(|t| t.kind == Tok::Semicolon) {
       self.nodes[node].end = tokens.last().map_or(first.end, |t| t.end);
       tokens.pop();
+      self.semicolon = true;
     } else {
       self.nodes[node].end = tokens
         .iter()
@@ -1421,16 +1502,96 @@ impl<'a> Parser<'a> {
       .position(|t| matches!(t.kind, Tok::Colon | Tok::Space) || t.is_comment())
       .unwrap_or(tokens.len());
     let mut prop = self.join(&tokens[..prop_end]);
+    let mut prop_start = word.start;
     if prop.starts_with('_') || prop.starts_with('*') {
       // The hack character joins `raws.before`; the node still starts on it.
       self.nodes[node].before.end = word.start + 1;
       prop.remove(0);
+      prop_start += 1;
     }
+    let prop_stop = prop_end
+      .checked_sub(1)
+      .map_or(prop_start, |last| tokens[last].end.max(prop_start));
+    self.nodes[node].name_span = prop_start..prop_stop;
+    let custom_property = prop.starts_with("--");
     self.nodes[node].name = prop;
     let colon = tokens.iter().position(|t| t.kind == Tok::Colon);
     if let Some(colon) = colon {
       self.nodes[node].params = self.join(&tokens[colon + 1..]).trim().to_string();
+      self.declaration_value(
+        node,
+        tokens[colon].end,
+        &tokens[colon + 1..],
+        custom_property,
+      );
     }
+  }
+
+  /// PostCSS's handling of what follows a declaration's colon: leading
+  /// whitespace and comments go to `raws.between` (unless nothing else
+  /// follows), a trailing `!important` is split off, and the rest is the
+  /// raw value, cleaned into `decl.value`.
+  fn declaration_value(
+    &mut self,
+    node: usize,
+    colon_end: usize,
+    rest: &[Token],
+    custom_property: bool,
+  ) {
+    let first_spaces = leading_space_or_comments(rest);
+    let mut tokens: Vec<Token> = rest[first_spaces..].to_vec();
+    let mut important = false;
+    let mut i = tokens.len();
+    while i > 0 {
+      i -= 1;
+      let token = tokens[i];
+      let lower = self.text(token).to_ascii_lowercase();
+      if lower == "!important" {
+        important = true;
+        tokens.truncate(i);
+        while tokens.last().is_some_and(|t| t.kind == Tok::Space) {
+          tokens.pop();
+        }
+        break;
+      }
+      if lower == "important" {
+        // Collect tokens from the end until the text gathered starts with
+        // `!` and the next one is not whitespace, as PostCSS does.
+        let mut cache = tokens.clone();
+        let mut gathered = String::new();
+        let mut j = i;
+        while j > 0 {
+          if gathered.trim_start().starts_with('!') && cache[j].kind != Tok::Space {
+            break;
+          }
+          let Some(popped) = cache.pop() else {
+            break;
+          };
+          gathered.insert_str(0, self.text(popped));
+          j -= 1;
+        }
+        if gathered.trim_start().starts_with('!') {
+          important = true;
+          tokens = cache;
+        }
+      }
+      if !token.is_space_or_comment() {
+        break;
+      }
+    }
+    let has_word = tokens.iter().any(|t| !t.is_space_or_comment());
+    // Without a word, the leading whitespace and comments stay in the value.
+    let value: &[Token] = if has_word {
+      &tokens
+    } else {
+      &rest[..first_spaces + tokens.len()]
+    };
+    self.nodes[node].important = important;
+    self.nodes[node].value_span = match (value.first(), value.last()) {
+      (Some(first), Some(last)) => first.start..last.end,
+      _ => colon_end..colon_end,
+    };
+    self.nodes[node].value = self.raw_value(value, custom_property);
   }
 
   /// PostCSS's `raw`: the clean value of `tokens`, with comments between
@@ -1609,6 +1770,94 @@ mod tests {
       !tree.is_after_comment(kids[1]),
       "the comment shares the brace line"
     );
+  }
+
+  /// `(prop, raw value, important, clean value)` for every declaration.
+  fn decls(source: &str, syntax: Syntax) -> Vec<(String, String, bool, String)> {
+    let tree = PostcssTree::parse(source, syntax);
+    tree
+      .decls()
+      .map(|d| {
+        (
+          source[d.name_span.clone()].to_string(),
+          source[d.value_span.clone()].to_string(),
+          d.important,
+          d.value.clone(),
+        )
+      })
+      .collect()
+  }
+
+  #[test]
+  fn declarations_keep_their_raw_value_and_important() {
+    assert_eq!(
+      decls(
+        "a { color: red ; margin : 0 /* c */ 1px !important; top: 1px ! important }",
+        Syntax::Css
+      ),
+      vec![
+        ("color".into(), "red ".into(), false, "red".into()),
+        (
+          "margin".into(),
+          "0 /* c */ 1px".into(),
+          true,
+          "0  1px".into()
+        ),
+        ("top".into(), "1px".into(), true, "1px".into()),
+      ]
+    );
+    assert_eq!(
+      decls("a { *zoom: 1; color: /* x */; }", Syntax::Css),
+      vec![
+        ("zoom".into(), "1".into(), false, "1".into()),
+        ("color".into(), " /* x */".into(), false, " ".into()),
+      ]
+    );
+    assert_eq!(
+      decls("$a: rgb(0 0 0 / 50%); .b { #{$p}: 1px; }", Syntax::Scss),
+      vec![
+        (
+          "$a".into(),
+          "rgb(0 0 0 / 50%)".into(),
+          false,
+          "rgb(0 0 0 / 50%)".into()
+        ),
+        ("#{$p}".into(), "1px".into(), false, "1px".into()),
+      ]
+    );
+  }
+
+  #[test]
+  fn at_rule_params_and_selectors_are_located() {
+    let source =
+      "@import url(a;b.css) /* c */ screen;\n@media (x: 1) { a:hover /* c */ { top: 0; } }";
+    let tree = PostcssTree::parse(source, Syntax::Css);
+    let import = &tree.nodes[tree.root[0]];
+    assert_eq!(&source[import.name_span.clone()], "import");
+    assert_eq!(
+      &source[import.value_span.clone()],
+      "url(a;b.css) /* c */ screen"
+    );
+    assert_eq!(import.params, "url(a;b.css)  screen");
+    let media = &tree.nodes[tree.root[1]];
+    assert_eq!(&source[media.value_span.clone()], "(x: 1)");
+    let rule = &tree.nodes[tree.children_of(Some(tree.root[1]))[0]];
+    assert_eq!(&source[rule.name_span.clone()], "a:hover");
+    assert!(rule.semicolon);
+    assert!(!media.semicolon, "its last child is a rule");
+  }
+
+  #[test]
+  fn raws_semicolon_follows_the_last_non_comment_node() {
+    let tree = PostcssTree::parse(
+      "a { color: red; /* c */ } b { color: red /* c */ } top: 0;",
+      Syntax::Scss,
+    );
+    let a = &tree.nodes[tree.root[0]];
+    let b = &tree.nodes[tree.root[1]];
+    assert!(a.semicolon);
+    assert!(!b.semicolon);
+    assert!(tree.root_semicolon);
   }
 
   #[test]

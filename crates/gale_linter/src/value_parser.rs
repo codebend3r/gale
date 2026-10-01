@@ -70,6 +70,11 @@ impl ValueNode<'_> {
     self.kind == NodeKind::Div && self.value == "/"
   }
 
+  /// Whether this is the `,` divider.
+  pub fn is_comma(&self) -> bool {
+    self.kind == NodeKind::Div && self.value == ","
+  }
+
   /// Whether this is a function named `name`, ignoring ASCII case.
   pub fn is_function_named(&self, name: &str) -> bool {
     self.is_function() && self.value.eq_ignore_ascii_case(name)
@@ -147,6 +152,10 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
   let mut before_len = 0usize;
   // Whitespace before the `)` about to close a function.
   let mut after = "";
+  // Upstream appends the missing quote or `)` of an unclosed string or
+  // `url(` to its copy of the input, and functions still open at the end
+  // run to the end of that longer text.
+  let mut value_len = max;
   let mut pos = 0usize;
 
   while pos < max {
@@ -206,6 +215,9 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         }
       };
       let end = close.unwrap_or(max);
+      if close.is_none() {
+        value_len += 1;
+      }
       let mut string = leaf(
         NodeKind::String,
         &input[pos + 1..end],
@@ -289,23 +301,30 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         );
         function.before = &input[open + 1..next];
         function.unclosed = close.is_none();
-        if content_end > pos {
-          function.nodes.push(leaf(
-            NodeKind::Word,
-            &input[pos..content_end],
-            pos,
-            content_end,
-          ));
+        if close.is_none() {
+          value_len += 1;
         }
-        if close.is_none() && content_end < end {
-          function.nodes.push(leaf(
-            NodeKind::Space,
-            &input[content_end..end],
-            content_end,
-            end,
-          ));
-        } else if content_end > open + 1 {
-          function.after = &input[content_end..end];
+        // Upstream only looks inside when something other than whitespace
+        // follows the `(`.
+        if content_end > open + 1 {
+          if content_end > pos {
+            function.nodes.push(leaf(
+              NodeKind::Word,
+              &input[pos..content_end],
+              pos,
+              content_end,
+            ));
+          }
+          if close.is_none() && content_end < end {
+            function.nodes.push(leaf(
+              NodeKind::Space,
+              &input[content_end..end],
+              content_end,
+              end,
+            ));
+          } else {
+            function.after = &input[content_end..end];
+          }
         }
         push(&mut stack, function);
         pos = close.map_or(max, |c| c + 1);
@@ -352,15 +371,21 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
           break;
         }
       }
+      // Upstream's `sourceEndIndex` is this unclamped `next`, one past the
+      // end when the text ends in a backslash.
+      let token_end = next.max(pos + 1);
       let next = next.min(max);
       let end = floor_boundary(input, next);
       let token = &input[pos..end];
       if at(next) == Some(b'(') {
         name = token;
       } else if is_unicode_range(token) {
-        push(&mut stack, leaf(NodeKind::UnicodeRange, token, pos, end));
+        push(
+          &mut stack,
+          leaf(NodeKind::UnicodeRange, token, pos, token_end),
+        );
       } else {
-        push(&mut stack, leaf(NodeKind::Word, token, pos, end));
+        push(&mut stack, leaf(NodeKind::Word, token, pos, token_end));
       }
       pos = end.max(pos + 1);
     }
@@ -370,7 +395,7 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
   while stack.len() > 1 {
     let mut done = stack.pop().expect("open function");
     done.unclosed = true;
-    done.source_end_index = max;
+    done.source_end_index = value_len;
     stack.last_mut().expect("root frame").nodes.push(done);
   }
   stack.pop().map(|root| root.nodes).unwrap_or_default()
