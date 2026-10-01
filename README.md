@@ -86,6 +86,14 @@ Change one line in `package.json`:
 
 Your `.stylelintrc` stays exactly the same. Gale reads the same config files, follows the same `extends` chains, honors `/* stylelint-disable */` comments, and produces the same JSON output format.
 
+Gale never drops part of your config silently. On stderr, once per run, it names:
+
+- Stylelint and plugin rules it does not implement yet, and rules Stylelint itself has removed (`linebreaks`, `function-whitelist`); these are skipped, so the run does not fail on them.
+- `extends` entries it cannot resolve, such as a package that is not installed.
+- Files it cannot lint yet: styles in `.vue`, `.svelte`, `.html`, `.astro`, `.md` or JavaScript files, or under a `customSyntax` other than `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`.
+
+A rule name that is no rule at all is reported the way Stylelint reports it, as an `Unknown rule <name>.` error at the top of each file, and a regular expression option that does not compile is an invalid option (`Invalid option value ...`), which fails the run as it does in Stylelint.
+
 ## Installation
 
 ### npm (recommended)
@@ -166,7 +174,7 @@ Gale walks up from the working directory and uses the first config it finds, in 
 ### Feature overview
 
 - **CSS, SCSS, and Less** out of the box (no plugins needed)
-- **Sass indented syntax** (`.sass`) via an internal Sass-to-SCSS conversion (see caveat below)
+- **Sass indented syntax** (`.sass`) via an internal Sass-to-SCSS conversion; problems are reported at their position in the `.sass` file (see the autofix caveat below)
 - **Autofix** via `--fix`, applied repeatedly until the file stops changing
 - **File caching** via `--cache` (skips unchanged files)
 - **LSP server** for editor integration (`--lsp`)
@@ -174,6 +182,8 @@ Gale walks up from the working directory and uses the first config it finds, in 
 - **Inline disable comments** (`stylelint-disable` and `gale-disable`)
 - **Text, string, JSON, compact, verbose, TAP, and unix** output formatters; JSON matches Stylelint's result shape field-for-field
 - **Programmatic Node.js API** (`lint()`, `resolveConfig()`, `formatters`) modeled on `stylelint.lint()`, usable from both ESM and CommonJS
+- **JavaScript regular expressions** in rule options, including lookahead, lookbehind and backreferences, as a bare pattern or a `/pattern/flags` literal
+- **Crash isolation**: a bug in one rule is reported as an `Internal error` problem on the file that triggered it, and every other rule and file is still linted
 - **`extends`** with built-in presets, npm packages, and relative paths
 - **`.stylelintignore` and `.galeignore`** files (gitignore syntax) for custom exclusions
 
@@ -207,8 +217,9 @@ console.log(result.results);        // LintResult[]
 console.log(result.report);         // formatted string
 ```
 
-The API shells out to the `gale` binary and reshapes its JSON output. Stylelint
-fields Gale does not populate (`deprecations`, `invalidOptionWarnings`,
+The API shells out to the `gale` binary and reshapes its JSON output.
+`invalidOptionWarnings` lists rule options Gale could not use, such as a pattern
+that does not compile. Stylelint fields Gale does not populate (`deprecations`,
 `parseErrors`, `ruleMetadata`) are present but always empty. `createPlugin()`
 exists as a no-op compatibility stub and warns when called.
 
@@ -222,7 +233,8 @@ const { lint } = require('@codebend3r/gale');
 
 - **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 271 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
 - **Dynamic JavaScript configs.** See the config compatibility note above.
-- **Accurate positions in `.sass` files.** `.sass` sources are converted to SCSS before parsing, so reported line/column numbers refer to the converted text and drift from the original file. Rules fire correctly; the coordinates are not trustworthy.
+- **Autofix in `.sass` files.** `.sass` sources are converted to SCSS before parsing. Problems are mapped back to their line and column in the `.sass` file, but fixes are computed against the converted SCSS, so `--fix` leaves `.sass` files unchanged.
+- **Vue, Svelte, HTML, Astro, Markdown and CSS-in-JS sources.** Such files that your patterns match, and files under a `customSyntax` Gale cannot parse, are skipped with a warning naming them. They still count as input, so matching only such files is not an error.
 - **Custom JS formatters.** There is no `--custom-formatter` flag; use one of the built-in formatters.
 - **Stylelint v17 message wording.** See [Parity with Stylelint](#parity-with-stylelint) above.
 
@@ -284,6 +296,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | `"cache": true` | `--cache` |
 | `"cacheLocation": "path"` | `--cache-location path` |
 | `"cacheStrategy": "content"` | `--cache-strategy content` |
+| `"formatter": "json"` | `--formatter json` |
 
 ### Built-in presets
 
@@ -310,6 +323,8 @@ The `extends` field supports:
 
 Resolution is recursive with cycle detection. Later `extends` entries override earlier ones. User `rules` always override extended rules.
 
+In a JavaScript config, `require('pkg')` and `require.resolve('pkg')` resolve like the string `'pkg'`. An entry Gale cannot resolve — a package that is not installed, or an expression it cannot evaluate statically — is skipped with a warning naming it.
+
 ## CLI reference
 
 ```
@@ -322,7 +337,7 @@ gale [OPTIONS] [FILES]...
 | `--fix` | Automatically fix problems (default: strict — skips files with parse errors) |
 | `--fix=lax` | Also fix files that have parse errors |
 | `-q, --quiet` | Only report errors |
-| `-f, --formatter <type>` | Output: `text` (default), `string`, `json`, `compact`, `verbose`, `tap`, `unix`. An unknown value is rejected |
+| `-f, --formatter <type>` | Output: `text`, `string`, `json`, `compact`, `verbose`, `tap`, `unix`. Defaults to the config's `formatter`, else `text`. An unknown value is rejected, on the command line or in the config |
 | `-c, --config <path>` | Config file path |
 | `--max-warnings <n>` | Error if warnings exceed threshold |
 | `--cache` | Skip unchanged files |
@@ -341,7 +356,7 @@ gale [OPTIONS] [FILES]...
 | `--report-descriptionless-disables` | Report disable comments without a description |
 | `--report-unscoped-disables` | Report disable comments that name no rule |
 | `--color` / `--no-color` | Force colour on or off in the text and verbose formatters |
-| `--custom-syntax <name>` | Parse every file as `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`; any other syntax skips every file |
+| `--custom-syntax <name>` | Parse every file as `postcss`, `postcss-scss`, `postcss-less` or `postcss-sass`; any other syntax skips every file, with a warning |
 | `-o, --output-file <path>` | Write the report to a file (colour stripped) as well as printing it |
 | `--quiet-deprecation-warnings` | Accepted for compatibility; Gale emits no deprecation warnings |
 | `--print-config <file>` | Print resolved config as JSON |
@@ -355,9 +370,9 @@ Exit codes match Stylelint's:
 |-----:|---------|
 | `0` | No error-severity problems |
 | `1` | Fatal error, including no files matching the patterns (pass `--allow-empty-input` to make an empty match succeed) |
-| `2` | Error-severity problems found, or `--max-warnings` exceeded |
+| `2` | Error-severity problems found (including `Unknown rule` and internal errors), an invalid rule option, or `--max-warnings` exceeded |
 | `64` | Invalid command line, such as an unknown flag or formatter |
-| `78` | A config file that exists but cannot be loaded |
+| `78` | A config file that exists but cannot be loaded, or names an unknown `formatter` |
 
 Colour in the `text` and `verbose` formatters follows the same rule as Stylelint:
 `NO_COLOR` or `--no-color` turn it off; otherwise `FORCE_COLOR`, `--color`, or `CI`
@@ -430,6 +445,7 @@ cargo run -- --formatter json src/   # JSON output
 ```bash
 GALE_DEBUG_PERF=1 cargo run --release -- src/   # Per-phase timings to stderr
 GALE_LOG=debug cargo run -- src/                # Tracing/logging output
+GALE_DEBUG_PANIC=color-named cargo run -- src/  # Make a rule panic on files containing `gale-debug-panic`
 ```
 
 ### Differential testing
