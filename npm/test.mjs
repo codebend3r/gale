@@ -8,7 +8,7 @@
  * Requires a working gale binary (either in npm/bin/ or on PATH).
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -306,6 +306,44 @@ async function testLintVueFiles() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 10: sources are absolute paths, as in Stylelint
+// ---------------------------------------------------------------------------
+
+async function testSourcePaths() {
+  section("Test 10: sources are absolute paths");
+
+  const dir = mkdtempSync(join(tmpdir(), "gale-api-"));
+  try {
+    // The binary resolves paths from the working directory it runs in,
+    // which is the real path of the temporary directory.
+    const real = realpathSync(dir);
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "a.css"), "a {}\n");
+    const config = { rules: { "block-no-empty": true } };
+
+    const fromCode = await lint({ code: "a {}\n", codeFilename: "./src/x.css", cwd: dir, config });
+    assert(
+      fromCode.results[0]?.source === join(real, "src", "x.css"),
+      `codeFilename is resolved from cwd (got ${fromCode.results[0]?.source})`,
+    );
+
+    const fromFiles = await lint({ files: ["./src/*.css"], cwd: dir, config });
+    assert(
+      fromFiles.results[0]?.source === join(real, "src", "a.css"),
+      `a glob reports absolute paths (got ${fromFiles.results[0]?.source})`,
+    );
+
+    const string = await formatters.string;
+    const report = await string(fromFiles.results, { cwd: real });
+    assert(report.startsWith("src/a.css\n"), `the string formatter names files from cwd (got ${report})`);
+  } catch (err) {
+    fail(`ERROR: ${err.message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Run all tests
 // ---------------------------------------------------------------------------
 
@@ -319,6 +357,7 @@ async function main() {
   await testCommonJsEntry();
   await testLintVueCode();
   await testLintVueFiles();
+  await testSourcePaths();
 
   console.log(`\n${passed} passed, ${failed} failed (Node ${process.versions.node})`);
 

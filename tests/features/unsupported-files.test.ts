@@ -10,7 +10,15 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 
-import { EMPTY_BLOCK, cleanupProjects, config, makeProject, runGale, runGaleJson } from "./helpers";
+import {
+  EMPTY_BLOCK,
+  cleanupProjects,
+  config,
+  makeProject,
+  reportedPath,
+  runGale,
+  runGaleJson,
+} from "./helpers";
 
 afterAll(cleanupProjects);
 
@@ -43,7 +51,7 @@ describe("a file type gale cannot lint yet", () => {
     const result = runGaleJson(["src/*.{css,md,jsx}"], { cwd: project.dir });
 
     expect(result.exitCode).toBe(2);
-    expect(result.json().map((r) => r.source)).toEqual(["src/a.css"]);
+    expect(result.json().map((r) => r.source)).toEqual([reportedPath(project.dir, "src/a.css")]);
     const warning = result.stderr.split("\n");
     expect(warning[0]).toBe("warning: Skipped 2 files that gale cannot lint yet:");
     expect(warning).toContain("  src/c.jsx (CSS-in-JS files are not supported)");
@@ -72,7 +80,7 @@ describe("a customSyntax gale cannot parse", () => {
 
     const result = runGaleJson(["a.css", "b.lit.css"], { cwd: project.dir });
 
-    expect(result.json().map((r) => r.source)).toEqual(["a.css"]);
+    expect(result.json().map((r) => r.source)).toEqual([reportedPath(project.dir, "a.css")]);
     expect(result.stderr).toContain(
       '  b.lit.css (customSyntax "postcss-lit" is not supported)',
     );

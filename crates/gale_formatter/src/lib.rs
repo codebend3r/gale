@@ -1,3 +1,5 @@
+use std::path::{Component, Path, PathBuf};
+
 use gale_diagnostics::{LintResult, Severity, SourceLineIndex, SourceLocation};
 use owo_colors::OwoColorize;
 use serde::Serialize;
@@ -20,6 +22,51 @@ pub trait Formatter {
 pub fn compute_location(source: &str, offset: usize) -> (usize, usize) {
   let loc = SourceLocation::from_offset(source, offset);
   (loc.line, loc.column)
+}
+
+// ---------------------------------------------------------------------------
+// Helper: display_path
+// ---------------------------------------------------------------------------
+
+/// How Stylelint's string formatter names a source in its header: relative
+/// to `cwd`, with `/` between the parts (Node's `path.relative`).  A name in
+/// angle brackets, such as `<input css 1>`, is no path and stays as it is.
+pub fn display_path(path: &str, cwd: &Path) -> String {
+  if path.starts_with('<') {
+    return path.to_string();
+  }
+  let absolute = lexically_normal(&cwd.join(path));
+  let base = lexically_normal(cwd);
+  let parts: Vec<Component> = absolute.components().collect();
+  let base_parts: Vec<Component> = base.components().collect();
+  let common = parts
+    .iter()
+    .zip(&base_parts)
+    .take_while(|(a, b)| a == b)
+    .count();
+  std::iter::repeat_n("..".to_string(), base_parts.len() - common)
+    .chain(
+      parts[common..]
+        .iter()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+    )
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+/// `path` with `.` and `..` resolved without touching the file system.
+fn lexically_normal(path: &Path) -> PathBuf {
+  let mut normal = PathBuf::new();
+  for component in path.components() {
+    match component {
+      Component::CurDir => {}
+      Component::ParentDir => {
+        normal.pop();
+      }
+      other => normal.push(other),
+    }
+  }
+  normal
 }
 
 // ---------------------------------------------------------------------------
@@ -128,8 +175,8 @@ fn invalid_options_section(results: &[LintResult], paint: Palette) -> String {
 
 impl Formatter for TextFormatter {
   /// Lists invalid options first, as Stylelint does, then groups warnings
-  /// under an underlined file header and appends a
-  /// `N problems (E errors, W warnings)` summary.
+  /// under an underlined file header (the path relative to the working
+  /// directory) and appends a `N problems (E errors, W warnings)` summary.
   fn format(&self, results: &[LintResult]) -> String {
     let paint = Palette {
       enabled: self.color,
@@ -137,6 +184,8 @@ impl Formatter for TextFormatter {
     let mut output = invalid_options_section(results, paint);
     let mut total_errors: usize = 0;
     let mut total_warnings: usize = 0;
+    // Stylelint names each file relative to the working directory.
+    let cwd = std::env::current_dir().unwrap_or_default();
 
     for result in results {
       if result.diagnostics.is_empty() {
@@ -145,7 +194,7 @@ impl Formatter for TextFormatter {
 
       let line_index = SourceLineIndex::build(&result.source);
 
-      output.push_str(&paint.underline(&result.file_path));
+      output.push_str(&paint.underline(&display_path(&result.file_path, &cwd)));
       output.push('\n');
 
       for diag in &result.diagnostics {
@@ -674,6 +723,17 @@ mod tests {
     let warning = &parsed[0]["warnings"][0];
     assert_eq!(warning["column"], 33);
     assert_eq!(warning["endColumn"], 35);
+  }
+
+  #[test]
+  fn display_paths_are_relative_to_the_working_directory() {
+    let cwd = Path::new("/work/project");
+    assert_eq!(display_path("/work/project/src/a.css", cwd), "src/a.css");
+    assert_eq!(display_path("/work/other/b.css", cwd), "../other/b.css");
+    assert_eq!(display_path("/work/project/src/../a.css", cwd), "a.css");
+    assert_eq!(display_path("./src/a.css", cwd), "src/a.css");
+    assert_eq!(display_path("stdin.css", cwd), "stdin.css");
+    assert_eq!(display_path("<input css 1>", cwd), "<input css 1>");
   }
 
   #[test]
