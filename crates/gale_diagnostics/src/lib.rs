@@ -84,34 +84,47 @@ impl SourceLocation {
     }
   }
 
-  /// Resolve a byte offset into a `SourceLocation` given the full source text.
+  /// Resolve a byte offset into a `SourceLocation` given the full source
+  /// text, with the column counted the way Stylelint counts it (see
+  /// [`SourceLineIndex::offset_to_location`]).
   pub fn from_offset(source: &str, offset: usize) -> Self {
-    let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in source.char_indices() {
-      if i == offset {
-        break;
-      }
-      if ch == '\n' {
-        line += 1;
-        col = 1;
-      } else {
-        col += 1;
-      }
-    }
+    let (line, column) = SourceLineIndex::build(source).offset_to_location(offset);
     Self {
       line,
-      column: col,
+      column,
       offset,
     }
   }
 }
 
+/// A character outside ASCII, which takes more bytes than UTF-16 units.
+#[derive(Debug, Clone, Copy)]
+struct WideChar {
+  /// Byte offset where the character starts.
+  start: usize,
+  /// Byte offset just past it.
+  end: usize,
+  /// How many more bytes than UTF-16 code units the text up to and
+  /// including this character takes.
+  extra_after: usize,
+}
+
 /// Pre-built index for O(log n) byte-offset to line/column lookups.
+///
+/// Offsets are bytes, as every span in gale is.  Columns are what Stylelint
+/// reports: PostCSS counts JavaScript string indices, which are UTF-16 code
+/// units, so a character outside the Basic Multilingual Plane (an emoji)
+/// takes two columns and any other character one, whatever its UTF-8
+/// length.
 pub struct SourceLineIndex {
   /// `line_starts[i]` is the byte offset where line `i` (0-indexed) begins.
   /// Line 0 always starts at byte 0.
   line_starts: Vec<usize>,
+  /// The non-ASCII characters, in order.
+  wide: Vec<WideChar>,
+  /// Bytes taken by a byte order mark at the very start, which PostCSS
+  /// drops before counting columns.
+  bom: usize,
 }
 
 impl SourceLineIndex {
@@ -123,7 +136,28 @@ impl SourceLineIndex {
         line_starts.push(i + 1);
       }
     }
-    Self { line_starts }
+    let mut wide = Vec::new();
+    if !source.is_ascii() {
+      let mut extra = 0;
+      for (start, ch) in source.char_indices().filter(|(_, ch)| !ch.is_ascii()) {
+        extra += ch.len_utf8() - ch.len_utf16();
+        wide.push(WideChar {
+          start,
+          end: start + ch.len_utf8(),
+          extra_after: extra,
+        });
+      }
+    }
+    let bom = if source.starts_with('\u{FEFF}') {
+      '\u{FEFF}'.len_utf8()
+    } else {
+      0
+    };
+    Self {
+      line_starts,
+      wide,
+      bom,
+    }
   }
 
   /// The 1-indexed line holding byte offset `offset`.
@@ -134,16 +168,52 @@ impl SourceLineIndex {
     }
   }
 
-  /// Convert a byte offset to a 1-indexed (line, column) pair.
+  /// Convert a byte offset to the 1-indexed (line, column) Stylelint
+  /// reports: the column counts UTF-16 code units from the start of the
+  /// line, not counting a byte order mark at the start of the file.
+  ///
+  /// An offset inside a multibyte character (a rule bug) counts from the
+  /// start of that character.  One past the end of the text counts as
+  /// though the text went on in ASCII.
   pub fn offset_to_location(&self, offset: usize) -> (usize, usize) {
-    // Binary search for the line containing `offset`.
-    let line_idx = match self.line_starts.binary_search(&offset) {
-      Ok(exact) => exact,
-      Err(insert) => insert - 1,
+    let line = self.line(offset);
+    let mut line_start = self.line_starts[line - 1];
+    if line == 1 {
+      line_start = self.bom.min(offset);
+    }
+    (line, self.units_between(line_start, offset) + 1)
+  }
+
+  /// Convert a byte offset to a 1-indexed line and a 0-indexed UTF-16
+  /// column counting every character of the line, a byte order mark
+  /// included: the `Position` the Language Server Protocol uses, but for
+  /// the 1-based line.
+  pub fn offset_to_utf16_position(&self, offset: usize) -> (usize, usize) {
+    let line = self.line(offset);
+    let line_start = self.line_starts[line - 1];
+    (line, self.units_between(line_start, offset))
+  }
+
+  /// UTF-16 code units in the text from byte `from` to byte `to`.
+  fn units_between(&self, from: usize, to: usize) -> usize {
+    self
+      .units_before(to)
+      .saturating_sub(self.units_before(from))
+  }
+
+  /// UTF-16 code units in the text before byte `offset`.
+  fn units_before(&self, offset: usize) -> usize {
+    // The characters that start before the offset.
+    let count = self.wide.partition_point(|ch| ch.start < offset);
+    let Some(last) = count.checked_sub(1).map(|i| self.wide[i]) else {
+      return offset;
     };
-    let line = line_idx + 1; // 1-indexed
-    let col = offset - self.line_starts[line_idx] + 1; // 1-indexed
-    (line, col)
+    if offset < last.end {
+      // Inside `last`: count from its start.
+      let extra_before = count.checked_sub(2).map_or(0, |i| self.wide[i].extra_after);
+      return last.start - extra_before;
+    }
+    offset - last.extra_after
   }
 }
 
@@ -490,6 +560,47 @@ mod tests {
     let loc = SourceLocation::from_offset(src, 5); // 'e' in "def"
     assert_eq!(loc.line, 2);
     assert_eq!(loc.column, 2);
+  }
+
+  #[test]
+  fn columns_count_utf16_units_like_stylelint() {
+    // `é` and `中` take one column, an emoji two, whatever their bytes.
+    let src = "a { content: \"é中😀\"; }\nb {}";
+    let index = SourceLineIndex::build(src);
+    let close = src.find('}').unwrap();
+    assert_eq!(index.offset_to_location(close), (1, 22));
+    assert_eq!(index.offset_to_location(close + 1), (1, 23));
+    // Lines after the text keep counting from their own start.
+    assert_eq!(index.offset_to_location(src.rfind('{').unwrap()), (2, 3));
+    assert_eq!(SourceLocation::from_offset(src, close).column, 22);
+  }
+
+  #[test]
+  fn columns_skip_a_byte_order_mark_like_postcss() {
+    let src = "\u{FEFF}a {}\nb {}";
+    let index = SourceLineIndex::build(src);
+    assert_eq!(index.offset_to_location(0), (1, 1));
+    assert_eq!(index.offset_to_location(3), (1, 1));
+    assert_eq!(index.offset_to_location(src.find('{').unwrap()), (1, 3));
+    assert_eq!(index.offset_to_location(src.rfind('{').unwrap()), (2, 3));
+    // The LSP position counts it.
+    assert_eq!(
+      index.offset_to_utf16_position(src.find('{').unwrap()),
+      (1, 3)
+    );
+  }
+
+  #[test]
+  fn columns_inside_or_past_a_character_stay_put() {
+    let src = "a😀b";
+    let index = SourceLineIndex::build(src);
+    // Every offset inside the emoji is the emoji's column.
+    for offset in 1..5 {
+      assert_eq!(index.offset_to_location(offset), (1, 2), "{offset}");
+    }
+    assert_eq!(index.offset_to_location(5), (1, 4));
+    assert_eq!(index.offset_to_location(6), (1, 5));
+    assert_eq!(index.offset_to_location(9), (1, 8));
   }
 
   #[test]
