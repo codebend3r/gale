@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::to_json::js_object_to_json;
-use crate::{resolve_package_exports, split_npm_package_subpath};
+use crate::extends::{resolve_package_exports, split_npm_package_subpath};
 
 /// Extract import bindings from JS source.
 ///
