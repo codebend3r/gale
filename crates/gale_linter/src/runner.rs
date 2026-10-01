@@ -677,7 +677,7 @@ fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::V
     return;
   };
   if let Some(message) = secondary.get("message").and_then(|v| v.as_str()) {
-    diag.message = message.to_string();
+    crate::custom_message::apply(diag, message);
   }
   if let Some(url) = secondary.get("url").and_then(|v| v.as_str()) {
     diag.url = Some(url.to_string());

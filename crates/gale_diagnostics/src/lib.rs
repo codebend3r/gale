@@ -202,6 +202,15 @@ pub struct Diagnostic {
   /// the `url` field of a Stylelint warning.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub url: Option<String>,
+  /// What Stylelint passes the rule's message as `messageArgs`, such as the
+  /// offending name and the pattern for a `*-pattern` rule.  A custom
+  /// `message` option is filled in from these.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub message_args: Vec<String>,
+  /// Whether the message is printed as is, without the ` (rule-name)`
+  /// suffix: a custom message under a Stylelint older than 16.25.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub bare_message: bool,
 }
 
 /// The `rule_name` that marks a [`Diagnostic`] as an invalid rule option
@@ -253,7 +262,11 @@ impl Diagnostic {
   /// `(rule-name)` (a custom `message` written that way) is left as is
   /// rather than getting the suffix twice.
   pub fn stylelint_text(&self) -> String {
-    if self.is_comment_problem() || self.is_unknown_rule() || self.ends_with_rule_name() {
+    if self.bare_message
+      || self.is_comment_problem()
+      || self.is_unknown_rule()
+      || self.ends_with_rule_name()
+    {
       self.message.clone()
     } else {
       format!("{} ({})", self.message, self.rule_name)
@@ -279,7 +292,20 @@ impl Diagnostic {
       file_path: String::new(),
       fix: None,
       url: None,
+      message_args: Vec::new(),
+      bare_message: false,
     }
+  }
+
+  /// Sets the values a custom `message` is filled in from (Stylelint's
+  /// `messageArgs`). Builder method.
+  pub fn message_args<I, S>(mut self, args: I) -> Self
+  where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+  {
+    self.message_args = args.into_iter().map(Into::into).collect();
+    self
   }
 
   /// Sets the severity. Builder method.
@@ -607,6 +633,19 @@ mod tests {
       middle.stylelint_text(),
       "(block-no-empty) here (block-no-empty)"
     );
+  }
+
+  #[test]
+  fn bare_messages_get_no_rule_suffix() {
+    let mut d = Diagnostic::new("keyframes-name-pattern", "Expected kebab-case")
+      .message_args(["slideIn", "^[a-z-]+$"]);
+    assert_eq!(d.message_args, vec!["slideIn", "^[a-z-]+$"]);
+    assert_eq!(
+      d.stylelint_text(),
+      "Expected kebab-case (keyframes-name-pattern)"
+    );
+    d.bare_message = true;
+    assert_eq!(d.stylelint_text(), "Expected kebab-case");
   }
 
   #[test]

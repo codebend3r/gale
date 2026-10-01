@@ -6,6 +6,7 @@
   dead_code
 )]
 
+pub mod custom_message;
 pub mod data;
 pub mod known_rules;
 pub mod panic_guard;
