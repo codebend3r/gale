@@ -65,6 +65,9 @@ pub struct ResolvedOverride {
   /// `None` means no custom syntax was specified (use default detection).
   /// `Some(name)` is the raw string value (e.g. `"postcss-markdown"`).
   pub custom_syntax: Option<String>,
+  /// The override this one came from through its `extends`, which it only
+  /// applies within: a file must match both.
+  scope: Option<Box<ResolvedOverride>>,
 }
 
 impl ResolvedOverride {
@@ -90,7 +93,28 @@ impl ResolvedOverride {
       exclude_matchers,
       rules,
       custom_syntax,
+      scope: None,
     }
+  }
+
+  /// This override, applying only to files `outer` matches too.
+  fn within(mut self, outer: &ResolvedOverride) -> Self {
+    self.scope = Some(Box::new(match self.scope.take() {
+      Some(scope) => scope.within(outer),
+      None => ResolvedOverride {
+        rules: HashMap::new(),
+        ..outer.clone()
+      },
+    }));
+    self
+  }
+
+  /// Whether the file is inside the override this one is scoped to, if any.
+  fn in_scope(&self, file_path: &str) -> bool {
+    self
+      .scope
+      .as_ref()
+      .is_none_or(|scope| scope.matches(file_path))
   }
 
   /// Check whether a file path matches any of this override's glob patterns
@@ -102,13 +126,13 @@ impl ResolvedOverride {
       return false;
     }
     // Check exclusions
-    !self.exclude_matchers.iter().any(|m| m.is_match(path))
+    !self.exclude_matchers.iter().any(|m| m.is_match(path)) && self.in_scope(file_path)
   }
 
   /// Check whether a file path matches the override's `files` patterns.
   pub fn matches_files(&self, file_path: &str) -> bool {
     let path = Path::new(file_path);
-    self.matchers.iter().any(|m| m.is_match(path))
+    self.matchers.iter().any(|m| m.is_match(path)) && self.in_scope(file_path)
   }
 
   /// Check whether a file path is excluded by this override's `ignoreFiles`
@@ -3375,13 +3399,11 @@ fn remove_spread_entries(s: &str) -> String {
       continue;
     }
 
-    // Detect `...identifier`
+    // Detect `...operand`: an identifier, a member chain such as
+    // `...base.overrides`, a call, or a parenthesised expression such as
+    // `...(cond ? { a: 1 } : {})`.
     if c == '.' && i + 2 < len && chars[i + 1] == '.' && chars[i + 2] == '.' {
-      // Skip `...` and the following identifier
-      i += 3;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
-        i += 1;
-      }
+      i = skip_spread_operand(&chars, i + 3);
       // Also skip a trailing comma if present
       // Skip whitespace first
       while i < len && chars[i].is_ascii_whitespace() {
@@ -3398,6 +3420,69 @@ fn remove_spread_entries(s: &str) -> String {
   }
 
   result
+}
+
+/// The index just past the operand of a spread that starts at `i`: an
+/// identifier or a bracketed expression, followed by any number of `.member`
+/// accesses and index expressions.
+fn skip_spread_operand(chars: &[char], mut i: usize) -> usize {
+  let len = chars.len();
+  let skip_space = |mut i: usize| {
+    while i < len && chars[i].is_whitespace() {
+      i += 1;
+    }
+    i
+  };
+  i = skip_space(i);
+  loop {
+    match chars.get(i) {
+      Some('(' | '[' | '{') => i = skip_bracketed(chars, i),
+      Some(&c) if c.is_alphanumeric() || c == '_' || c == '$' => {
+        while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+          i += 1;
+        }
+      }
+      _ => return i,
+    }
+    // What may follow: `.member`, `?.member`, a call or an index.
+    let next = skip_space(i);
+    match chars.get(next) {
+      Some('.') if chars.get(next + 1) != Some(&'.') => i = skip_space(next + 1),
+      Some('?') if chars.get(next + 1) == Some(&'.') => i = skip_space(next + 2),
+      Some('(' | '[') => i = next,
+      _ => return i,
+    }
+  }
+}
+
+/// The index just past the bracket that closes the one at `open`, skipping
+/// quoted strings.  The end of the input when it never closes.
+fn skip_bracketed(chars: &[char], open: usize) -> usize {
+  let mut depth = 0usize;
+  let mut i = open;
+  while i < chars.len() {
+    match chars[i] {
+      quote @ ('"' | '\'' | '`') => {
+        i += 1;
+        while i < chars.len() && chars[i] != quote {
+          if chars[i] == '\\' {
+            i += 1;
+          }
+          i += 1;
+        }
+      }
+      '(' | '[' | '{' => depth += 1,
+      ')' | ']' | '}' => {
+        depth -= 1;
+        if depth == 0 {
+          return i + 1;
+        }
+      }
+      _ => {}
+    }
+    i += 1;
+  }
+  chars.len()
 }
 
 /// Replace bare identifier values with `null` in a JSON-like string.
@@ -4068,50 +4153,6 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
 
   // 3. Resolve overrides.
   //    Extended configs' overrides come first, then the user's own overrides.
-  let resolve_override = |ov: ConfigOverride| -> Option<ResolvedOverride> {
-    let file_patterns = ov.files.unwrap_or_default();
-    if file_patterns.is_empty() {
-      return None;
-    }
-
-    // Start with rules from the override's extends.
-    let mut ov_rules: HashMap<String, RuleConfig> = HashMap::new();
-    if let Some(ref extends) = ov.extends {
-      let mut visited = HashSet::new();
-      let (ext_rules, _ext_overrides) = collect_rules_from_extends(extends, base_dir, &mut visited);
-      ov_rules = ext_rules;
-      // Note: nested overrides within an override's extends are not
-      // propagated (matching Stylelint behavior).
-    }
-
-    // Overlay the override's own rules on top.
-    for (name, value) in ov.rules.unwrap_or_default() {
-      let resolved = value.resolve();
-      if resolved.severity == Some(Severity::Off) {
-        // For overrides, keep Off entries so they can remove
-        // base rules when applied per-file.
-        ov_rules.insert(name, resolved);
-      } else {
-        ov_rules.insert(name, resolved);
-      }
-    }
-
-    let ignore_patterns = ov.ignore_files.unwrap_or_default();
-
-    // Extract customSyntax as a string (if present).
-    let custom_syntax = ov
-      .custom_syntax
-      .as_ref()
-      .and_then(|v| v.as_str().map(String::from));
-
-    Some(ResolvedOverride::new(
-      file_patterns,
-      ignore_patterns,
-      ov_rules,
-      custom_syntax,
-    ))
-  };
-
   // Combine: extended overrides first, then user overrides.
   let mut all_raw_overrides = extended_overrides;
   if let Some(user_overrides) = raw.overrides {
@@ -4120,7 +4161,7 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
 
   let overrides: Vec<ResolvedOverride> = all_raw_overrides
     .into_iter()
-    .filter_map(resolve_override)
+    .flat_map(|ov| resolve_override(ov, base_dir, 0))
     .collect();
 
   // 4. Extract plugin names from the config.
@@ -4178,6 +4219,76 @@ fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     cache_location,
     cache_strategy: raw.cache_strategy,
   }
+}
+
+/// How deep overrides may nest through `extends` before gale stops
+/// following them, as a guard against configs that extend each other.
+const MAX_OVERRIDE_NESTING: usize = 8;
+
+/// Resolve one `overrides` entry into the overrides gale applies, in order.
+///
+/// The override's `extends` supply rules under its own.  When an extended
+/// config has `overrides` of its own (`stylelint-config-standard-vue`
+/// extends `stylelint-config-recommended-vue`, whose Vue rules sit in an
+/// override), Stylelint applies those too, to the files both match.  Such
+/// an entry becomes three steps with Stylelint's precedence: the extended
+/// rules, then the extended configs' overrides, then the entry's own rules.
+fn resolve_override(ov: ConfigOverride, base_dir: &Path, depth: usize) -> Vec<ResolvedOverride> {
+  let file_patterns = ov.files.unwrap_or_default();
+  if file_patterns.is_empty() {
+    return Vec::new();
+  }
+  let ignore_patterns = ov.ignore_files.unwrap_or_default();
+  let custom_syntax = ov
+    .custom_syntax
+    .as_ref()
+    .and_then(|v| v.as_str().map(String::from));
+
+  // Rules from the override's extends, and the overrides they bring.
+  let (mut ov_rules, nested) = match ov.extends {
+    Some(ref extends) => collect_rules_from_extends(extends, base_dir, &mut HashSet::new()),
+    None => (HashMap::new(), Vec::new()),
+  };
+  // The override's own rules.  Off entries are kept so they can remove
+  // base rules when applied per-file.
+  let own_rules: HashMap<String, RuleConfig> = ov
+    .rules
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(name, value)| (name, value.resolve()))
+    .collect();
+
+  if nested.is_empty() || depth >= MAX_OVERRIDE_NESTING {
+    ov_rules.extend(own_rules);
+    return vec![ResolvedOverride::new(
+      file_patterns,
+      ignore_patterns,
+      ov_rules,
+      custom_syntax,
+    )];
+  }
+
+  let outer = ResolvedOverride::new(
+    file_patterns.clone(),
+    ignore_patterns.clone(),
+    ov_rules,
+    custom_syntax,
+  );
+  let mut resolved = vec![outer.clone()];
+  for inner in nested {
+    resolved.extend(
+      resolve_override(inner, base_dir, depth + 1)
+        .into_iter()
+        .map(|r| r.within(&outer)),
+    );
+  }
+  resolved.push(ResolvedOverride::new(
+    file_patterns,
+    ignore_patterns,
+    own_rules,
+    None,
+  ));
+  resolved
 }
 
 /// Interpret one of Stylelint's `report*Disables` settings.
@@ -4875,6 +4986,31 @@ module.exports = {
     let raw = parse_js_config(js, None).unwrap();
     let rules = raw.rules.unwrap();
     assert!(rules.contains_key("block-no-empty"));
+  }
+
+  #[test]
+  fn js_config_spreads_of_members_calls_and_expressions_are_skipped() {
+    // The shapes stylelint-config-html and stylelint-config-recommended-vue
+    // use: spreads gale cannot evaluate statically must not break the rest.
+    let js = r#"
+const config = {
+  overrides: [...html.overrides, ...vue?.overrides],
+  rules: {
+    'block-no-empty': true,
+    ...(semver.gte(version, "16.13.0")
+      ? { 'color-named': [true, { ignore: ["inside-function"] }] }
+      : {}),
+    'color-no-invalid-hex': true,
+  },
+};
+export default config;
+"#;
+    let raw = parse_js_config(js, None).unwrap();
+    let rules = raw.rules.unwrap();
+    assert!(rules.contains_key("block-no-empty"));
+    assert!(rules.contains_key("color-no-invalid-hex"));
+    assert!(!rules.contains_key("color-named"));
+    assert_eq!(raw.overrides.unwrap().len(), 0);
   }
 
   #[test]
@@ -5595,6 +5731,52 @@ module.exports = {
     assert_eq!(cfg.overrides.len(), 1);
     assert!(cfg.overrides[0].matches("main.scss"));
     assert!(!cfg.overrides[0].matches("main.css"));
+  }
+
+  #[test]
+  fn overrides_inside_an_overrides_extends_apply_to_files_both_match() {
+    // The shape of stylelint-config-standard-vue: an override for `*.vue`
+    // extends a config whose own Vue rules sit in an override.
+    let tmp = tempfile::tempdir().unwrap();
+    let nm = tmp.path().join("node_modules");
+    let write = |rel: &str, body: &str| {
+      let path = nm.join(rel);
+      std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+      std::fs::write(path, body).unwrap();
+    };
+    write(
+      "base-config/index.json",
+      r#"{ "rules": { "selector-pseudo-class-no-unknown": true, "color-named": "never" } }"#,
+    );
+    write(
+      "vue-config/index.json",
+      r#"{ "overrides": [
+        { "files": ["*.vue", "**/*.vue", "**/*.html"], "extends": ["base-config"],
+          "rules": { "selector-pseudo-class-no-unknown": [true, { "ignorePseudoClasses": ["deep"] }] } }
+      ] }"#,
+    );
+    let raw: ConfigFile = serde_json::from_str(
+      r#"{ "overrides": [
+        { "files": ["**/*.vue"], "extends": ["base-config", "vue-config"],
+          "rules": { "color-named": null } }
+      ] }"#,
+    )
+    .unwrap();
+    let cfg = resolve_raw(raw, tmp.path());
+
+    let vue = cfg.rules_for_file("src/App.vue");
+    // The nested override beats the outer override's extended rules...
+    assert_eq!(
+      vue["selector-pseudo-class-no-unknown"].options,
+      Some(serde_json::json!({ "ignorePseudoClasses": ["deep"] }))
+    );
+    // ...and the outer override's own rules beat both.
+    assert!(!vue.contains_key("color-named"));
+
+    // The nested override names `*.html`, but only reaches files the outer
+    // `*.vue` override matches.
+    assert!(cfg.rules_for_file("src/index.html").is_empty());
+    assert!(cfg.rules_for_file("src/a.css").is_empty());
   }
 
   #[test]
