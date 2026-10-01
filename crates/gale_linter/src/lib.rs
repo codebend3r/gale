@@ -6,6 +6,7 @@
   dead_code
 )]
 
+pub mod autoprefixable;
 pub mod custom_message;
 pub mod data;
 pub mod known_rules;

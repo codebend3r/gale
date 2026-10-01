@@ -36,6 +36,23 @@ pub fn declaration_value<'a>(source: &'a str, decl: &Declaration) -> Option<(&'a
   Some((value, value_start))
 }
 
+/// The property of `decl` as written in `source`, and its byte offset
+/// there.
+///
+/// Like PostCSS's `decl.prop`: the name up to the first whitespace, comment
+/// or `:`, in the author's case (the CSS parser lower-cases it).  `None`
+/// when the declaration's span does not point at `property: value`.
+pub fn declaration_property<'a>(source: &'a str, decl: &Declaration) -> Option<(&'a str, usize)> {
+  let start = decl.span.offset;
+  let rest = source.get(start..)?;
+  let name = &rest[..find_colon(rest)?];
+  let end = name
+    .find(|c: char| c.is_ascii_whitespace())
+    .unwrap_or(name.len())
+    .min(name.find("/*").unwrap_or(name.len()));
+  (end > 0).then(|| (&name[..end], start))
+}
+
 /// The params of `at` as written in `source`, and their byte offset there.
 ///
 /// Like PostCSS's `atRule.params`: the text after the at-rule name and the
@@ -196,6 +213,21 @@ mod tests {
       got,
       vec!["color-mix(\n    in srgb,\n    red 50%,\n    blue)", "#{$z}"]
     );
+  }
+
+  #[test]
+  fn reads_the_property_as_written() {
+    let source = "a { -WEBKIT-Transform : none; b/* c */: d; }";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let CssNode::Style(rule) = &parsed.nodes[0] else {
+      panic!("a style rule");
+    };
+    let props: Vec<(&str, usize)> = rule
+      .declarations
+      .iter()
+      .filter_map(|decl| declaration_property(source, decl))
+      .collect();
+    assert_eq!(props[0], ("-WEBKIT-Transform", 4));
   }
 
   #[test]
