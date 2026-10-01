@@ -8,12 +8,37 @@
 /// * Comments (`//` and `/* */`) are preserved as-is
 /// * Blank lines are passed through
 ///
-/// Source-map accuracy is *not* preserved — byte offsets in the resulting SCSS
-/// will differ from the original Sass.  That is acceptable for an initial
-/// implementation (diagnostics may point to slightly wrong columns).
+/// Byte offsets in the resulting SCSS differ from the original Sass; use
+/// [`convert_sass_to_scss_with_map`] to translate them back.
+#[cfg(test)]
 pub fn convert_sass_to_scss(input: &str) -> String {
+  convert_sass_to_scss_with_map(input).0
+}
+
+/// [`convert_sass_to_scss`], plus a [`SourceMap`] from offsets in the SCSS
+/// back to offsets in `input`.
+///
+/// Rules lint the SCSS, so every span they report points into it.  The map
+/// lets the runner report those spans against the file the author wrote.
+pub fn convert_sass_to_scss_with_map(input: &str) -> (String, SourceMap) {
   let lines: Vec<&str> = input.lines().collect();
   let mut out = String::with_capacity(input.len() * 2);
+  let mut map = SourceMap::default();
+
+  // Byte offset in `input` where each of `lines` starts.  `lines()` drops
+  // the `\n` (and a `\r` before it), so walk the newline-inclusive pieces.
+  let line_starts: Vec<usize> = input
+    .split_inclusive('\n')
+    .scan(0usize, |offset, piece| {
+      let start = *offset;
+      *offset += piece.len();
+      Some(start)
+    })
+    .collect();
+
+  // Where generated closing braces point: the end of the last line that
+  // carried real content.
+  let mut last_content_end = 0usize;
 
   // We track a stack of indentation levels.  Each entry is the column-width
   // of the indentation at that nesting depth.
@@ -26,10 +51,13 @@ pub fn convert_sass_to_scss(input: &str) -> String {
   let mut inside_block_comment = false;
 
   for (i, raw_line) in lines.iter().enumerate() {
+    let line_start = line_starts.get(i).copied().unwrap_or(input.len());
     // ── Block comments ────────────────────────────────────────────
     if inside_block_comment {
+      map.copied(out.len(), out.len(), line_start, raw_line.len(), 0, 0);
       out.push_str(raw_line);
       out.push('\n');
+      last_content_end = line_start + raw_line.len();
       if raw_line.contains("*/") {
         inside_block_comment = false;
       }
@@ -37,17 +65,23 @@ pub fn convert_sass_to_scss(input: &str) -> String {
     }
     if raw_line.trim_start().starts_with("/*") && !raw_line.contains("*/") {
       inside_block_comment = true;
+      map.copied(out.len(), out.len(), line_start, raw_line.len(), 0, 0);
       out.push_str(raw_line);
       out.push('\n');
+      last_content_end = line_start + raw_line.len();
       continue;
     }
 
     // ── Blank / whitespace-only lines ─────────────────────────────
     let trimmed = raw_line.trim();
     if trimmed.is_empty() {
+      map.copied(out.len(), out.len(), line_start, 0, 0, 0);
       out.push('\n');
       continue;
     }
+    // Where `trimmed` starts and ends in `input`.
+    let text_start = line_start + (raw_line.len() - raw_line.trim_start().len());
+    let text_end = text_start + trimmed.len();
 
     // ── Measure indentation ───────────────────────────────────────
     let indent = measure_indent(raw_line, indent_unit);
@@ -56,40 +90,41 @@ pub fn convert_sass_to_scss(input: &str) -> String {
     while let Some(&top) = indent_stack.last() {
       if indent <= top {
         indent_stack.pop();
+        map.generated(out.len(), last_content_end);
         push_indent(&mut out, indent_stack.len(), indent_unit);
         out.push_str("}\n");
       } else {
         break;
       }
     }
+    last_content_end = text_end;
 
     // ── Line-level transformations ────────────────────────────────
 
-    // Pure line comment — pass through.
-    if trimmed.starts_with("//") {
+    // Pure line comment — pass through.  Inline `/* ... */` single-line
+    // comment — pass through.
+    if trimmed.starts_with("//") || (trimmed.starts_with("/*") && trimmed.contains("*/")) {
+      let line_out = out.len();
       push_indent(&mut out, indent_stack.len(), indent_unit);
+      map.copied(line_out, out.len(), text_start, trimmed.len(), 0, 0);
       out.push_str(trimmed);
       out.push('\n');
       continue;
     }
 
-    // Inline `/* ... */` single-line comment — pass through.
-    if trimmed.starts_with("/*") && trimmed.contains("*/") {
-      push_indent(&mut out, indent_stack.len(), indent_unit);
-      out.push_str(trimmed);
-      out.push('\n');
-      continue;
-    }
-
-    // Sass shorthand: `=mixin-name(...)` → `@mixin mixin-name(...)`
-    let line = if let Some(rest) = trimmed.strip_prefix('=') {
-      format!("@mixin {rest}")
-    // Sass shorthand: `+mixin-name` → `@include mixin-name`
-    } else if trimmed.starts_with('+') && !trimmed.starts_with("+-") {
-      format!("@include {}", &trimmed[1..])
+    // Sass shorthand: `=mixin-name(...)` → `@mixin mixin-name(...)`, and
+    // `+mixin-name` → `@include mixin-name`.  `prefix` is how many bytes
+    // of the original the rewritten prefix replaces.
+    let (line, prefix) = if let Some(rest) = trimmed.strip_prefix('=') {
+      (format!("@mixin {rest}"), 1)
+    } else if let Some(rest) = trimmed.strip_prefix('+')
+      && !trimmed.starts_with("+-")
+    {
+      (format!("@include {rest}"), 1)
     } else {
-      trimmed.to_string()
+      (trimmed.to_string(), 0)
     };
+    let prefix_out = line.len() - (trimmed.len() - prefix);
 
     // Determine whether this line starts a new block.  A block-opener is
     // any line followed by a more-indented line (unless it is a property
@@ -98,7 +133,16 @@ pub fn convert_sass_to_scss(input: &str) -> String {
     let next_indent = next_non_empty_indent(&lines, i + 1, indent_unit);
     let opens_block = next_indent.is_some_and(|ni| ni > indent);
 
+    let line_out = out.len();
     push_indent(&mut out, indent_stack.len(), indent_unit);
+    map.copied(
+      line_out,
+      out.len(),
+      text_start,
+      trimmed.len(),
+      prefix_out,
+      prefix,
+    );
 
     if opens_block {
       out.push_str(&line);
@@ -118,11 +162,94 @@ pub fn convert_sass_to_scss(input: &str) -> String {
 
   // Close any remaining open blocks.
   while indent_stack.pop().is_some() {
+    map.generated(out.len(), last_content_end);
     push_indent(&mut out, indent_stack.len(), indent_unit);
     out.push_str("}\n");
   }
 
-  out
+  (out, map)
+}
+
+/// Maps byte offsets in converted SCSS back to the Sass it was converted
+/// from.
+///
+/// The conversion is line by line: each output line either copies one input
+/// line's text (re-indented, perhaps with a rewritten `=`/`+` prefix and a
+/// trailing `;` or ` {`), or is a generated closing brace.  Offsets inside
+/// copied text map to the same character in the input; offsets in added
+/// indentation, prefixes or punctuation map to the nearest edge of the copied
+/// text; generated lines map to the end of the content they close.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceMap {
+  /// One entry per output line, in output order.
+  lines: Vec<LineMapping>,
+}
+
+/// How one output line relates to the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineMapping {
+  /// Output offset where the line starts.
+  out_start: usize,
+  /// Output offset where the copied text starts, after the indentation.
+  out_text: usize,
+  /// Input offset of the copied text.
+  in_text: usize,
+  /// Length in bytes of the copied text in the input.
+  in_len: usize,
+  /// Bytes of output the rewritten prefix takes up (`@mixin `, say).
+  prefix_out: usize,
+  /// Bytes of input the rewritten prefix replaced (`=`).
+  prefix_in: usize,
+}
+
+impl SourceMap {
+  /// Record an output line, starting at `out_start`, whose text from
+  /// `out_text` copies `in_len` bytes of input starting at `in_text`.
+  fn copied(
+    &mut self,
+    out_start: usize,
+    out_text: usize,
+    in_text: usize,
+    in_len: usize,
+    prefix_out: usize,
+    prefix_in: usize,
+  ) {
+    self.lines.push(LineMapping {
+      out_start,
+      out_text,
+      in_text,
+      in_len,
+      prefix_out,
+      prefix_in,
+    });
+  }
+
+  /// Record a generated output line starting at `out_start` whose every
+  /// offset maps to `anchor` in the input.
+  fn generated(&mut self, out_start: usize, anchor: usize) {
+    self.copied(out_start, out_start, anchor, 0, 0, 0);
+  }
+
+  /// The input offset that output offset `offset` came from.
+  ///
+  /// Always lands within the copied text of the line (or on its anchor), so
+  /// the result is a character boundary in the input whenever `offset` is
+  /// one in the output.
+  pub fn to_original(&self, offset: usize) -> usize {
+    let index = match self.lines.binary_search_by(|l| l.out_start.cmp(&offset)) {
+      Ok(exact) => exact,
+      Err(0) => return 0,
+      Err(after) => after - 1,
+    };
+    let line = self.lines[index];
+    let Some(into_text) = offset.checked_sub(line.out_text) else {
+      return line.in_text;
+    };
+    let Some(past_prefix) = into_text.checked_sub(line.prefix_out) else {
+      return line.in_text;
+    };
+    line.in_text + (line.prefix_in + past_prefix).min(line.in_len)
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -351,6 +478,70 @@ mod tests {
   #[test]
   fn empty_input() {
     assert_eq!(convert_sass_to_scss(""), "");
+  }
+
+  /// Every char-boundary offset of `scss` that falls inside copied text maps
+  /// to the same character in `sass`.
+  fn assert_copied_text_maps_back(sass: &str) {
+    let (scss, map) = convert_sass_to_scss_with_map(sass);
+    for (offset, ch) in scss.char_indices() {
+      let back = map.to_original(offset);
+      assert!(back <= sass.len(), "{offset} -> {back} past the end");
+      assert!(
+        sass.is_char_boundary(back),
+        "{offset} -> {back} splits a char"
+      );
+      if ch.is_alphanumeric() && !"mixinclude".contains(ch) {
+        assert_eq!(
+          sass[back..].chars().next(),
+          Some(ch),
+          "offset {offset} ({ch:?}) maps to {back} in {sass:?} / {scss:?}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn offsets_map_back_to_the_sass_source() {
+    let sass = "// héllo\n.foo\n  content: \"→ ✓\"\n  color: red\n  .bar\n    font-family: Ärial\n\n.baz\n  color: #FFF\n";
+    assert_copied_text_maps_back(sass);
+
+    let (scss, map) = convert_sass_to_scss_with_map(sass);
+    let color = scss.find("color: red").unwrap();
+    assert_eq!(map.to_original(color), sass.find("color: red").unwrap());
+    // The `;` the converter adds maps to the end of the declaration.
+    let semi = scss[color..].find(';').unwrap() + color;
+    assert_eq!(
+      map.to_original(semi),
+      sass.find("color: red").unwrap() + "color: red".len()
+    );
+  }
+
+  #[test]
+  fn offsets_map_back_through_rewritten_prefixes_and_crlf() {
+    let sass = "=border-radius($r)\r\n  border-radius: $r\r\n\r\n.box\r\n  +border-radius(5px)\r\n";
+    assert_copied_text_maps_back(sass);
+
+    let (scss, map) = convert_sass_to_scss_with_map(sass);
+    let include = scss.find("@include").unwrap();
+    let plus = sass.find('+').unwrap();
+    assert_eq!(map.to_original(include), plus, "prefix maps to its start");
+    let name = scss.find("border-radius(5px)").unwrap();
+    assert_eq!(map.to_original(name), plus + 1);
+  }
+
+  #[test]
+  fn generated_braces_map_to_the_end_of_the_block_they_close() {
+    let sass = ".a\n  color: red\n.b\n  color: blue";
+    let (scss, map) = convert_sass_to_scss_with_map(sass);
+    let first_close = scss.find('}').unwrap();
+    assert_eq!(
+      map.to_original(first_close),
+      sass.find('\n').unwrap() + "\n  color: red".len()
+    );
+    let last_close = scss.rfind('}').unwrap();
+    assert_eq!(map.to_original(last_close), sass.len());
+    assert_eq!(map.to_original(scss.len() + 10), sass.len());
   }
 
   #[test]

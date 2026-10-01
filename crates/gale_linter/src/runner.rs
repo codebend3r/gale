@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use gale_css_parser::{CssNode, Syntax, parse};
+use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::panic_guard::{self, Caught, ISSUES_URL};
@@ -939,6 +939,9 @@ impl LintRunner {
     if debug {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
+    // Rules read the text the parser saw, which for Sass is the converted
+    // SCSS that every node span points into.  `finish` maps the spans back.
+    let text = parse_result.source.as_str();
 
     // Collect enabled rules from the registry.
     let active_rules: Vec<&dyn Rule> = self
@@ -956,7 +959,7 @@ impl LintRunner {
       options.clone(),
       options,
       file_path,
-      source,
+      text,
       syntax,
     );
 
@@ -1009,8 +1012,8 @@ impl LintRunner {
     // skip filtering entirely so all diagnostics are reported.
     let t4 = Instant::now();
     if self.needs_disabled_ranges() {
-      let line_index = SourceLineIndex::build(source);
-      let disabled_ranges = collect_disabled_ranges(source, &line_index);
+      let line_index = SourceLineIndex::build(text);
+      let disabled_ranges = collect_disabled_ranges(text, &line_index);
       filter_disabled_and_report(
         &mut diagnostics,
         &disabled_ranges,
@@ -1029,24 +1032,13 @@ impl LintRunner {
     // `message` option cannot hide or soften them.
     diagnostics.extend(failures);
 
-    // Sort diagnostics by position for consistent output.  The rule name
-    // breaks ties: rules run in the order `enabled_rules` happens to hold
-    // them, which comes from a HashMap and so varies between processes.
-    // Without a tiebreaker two warnings at the same offset swap places
-    // between runs.
     let t5 = Instant::now();
-    diagnostics.sort_by(|a, b| {
-      a.span
-        .offset
-        .cmp(&b.span.offset)
-        .then_with(|| a.rule_name.cmp(&b.rule_name))
-    });
+    let result = finish(file_path, source, &parse_result, diagnostics);
     if debug {
       eprintln!("[perf] sort: {:.3}s", t5.elapsed().as_secs_f64());
-      eprintln!("[perf] total diagnostics: {}", diagnostics.len());
+      eprintln!("[perf] total diagnostics: {}", result.diagnostics.len());
     }
-
-    LintResult::new(file_path, source, diagnostics)
+    result
   }
 
   /// Parse and lint a CSS source string using a custom set of enabled rule
@@ -1103,6 +1095,9 @@ impl LintRunner {
     if debug {
       eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
     }
+    // Rules read the text the parser saw, which for Sass is the converted
+    // SCSS that every node span points into.  `finish` maps the spans back.
+    let text = parse_result.source.as_str();
 
     let active_rules: Vec<&dyn Rule> = enabled_rules
       .iter()
@@ -1135,7 +1130,7 @@ impl LintRunner {
       root_options,
       node_options,
       file_path,
-      source,
+      text,
       syntax,
     );
 
@@ -1205,8 +1200,8 @@ impl LintRunner {
     }
 
     if self.needs_disabled_ranges() {
-      let line_index = SourceLineIndex::build(source);
-      let disabled_ranges = collect_disabled_ranges(source, &line_index);
+      let line_index = SourceLineIndex::build(text);
+      let disabled_ranges = collect_disabled_ranges(text, &line_index);
       filter_disabled_and_report(
         &mut diagnostics,
         &disabled_ranges,
@@ -1227,16 +1222,44 @@ impl LintRunner {
     }
     diagnostics.extend(failures);
 
-    // Tie-broken by rule name for the same reason as in `lint_source`.
-    diagnostics.sort_by(|a, b| {
-      a.span
-        .offset
-        .cmp(&b.span.offset)
-        .then_with(|| a.rule_name.cmp(&b.rule_name))
-    });
-
-    LintResult::new(file_path, source, diagnostics)
+    finish(file_path, source, &parse_result, diagnostics)
   }
+}
+
+/// Turn a file's diagnostics into its [`LintResult`] against the source the
+/// caller passed in.
+///
+/// When the parser linted converted text (Sass), every span is mapped back
+/// to the original and autofixes are dropped: their edits target the
+/// converted SCSS, so applying them to the Sass file would corrupt it.
+///
+/// Diagnostics are sorted by position.  The rule name breaks ties: rules run
+/// in the order `enabled_rules` happens to hold them, which comes from a
+/// HashMap and so varies between processes.  Without a tiebreaker two
+/// warnings at the same offset swap places between runs.
+fn finish(
+  file_path: &str,
+  source: &str,
+  parsed: &ParseResult,
+  mut diagnostics: Vec<Diagnostic>,
+) -> LintResult {
+  if let Some(map) = &parsed.source_map {
+    for diag in &mut diagnostics {
+      let start = clamp_to_char_boundary(source, map.to_original(diag.span.offset));
+      let end = clamp_to_char_boundary(source, map.to_original(diag.span.end()));
+      diag.span = Span::new(start, end.saturating_sub(start));
+      diag.fix = None;
+    }
+  }
+
+  diagnostics.sort_by(|a, b| {
+    a.span
+      .offset
+      .cmp(&b.span.offset)
+      .then_with(|| a.rule_name.cmp(&b.rule_name))
+  });
+
+  LintResult::new(file_path, source, diagnostics)
 }
 
 /// The problem reported in place of a rule that panicked.
@@ -1684,6 +1707,33 @@ mod tests {
     assert!(
       !has_parse_error,
       "Sass should now parse successfully via with_rules, but got parse-error diagnostic"
+    );
+  }
+
+  #[test]
+  fn sass_spans_point_into_the_original_file() {
+    // Multibyte text before the problem used to push spans (computed on the
+    // converted SCSS) into the middle of characters of the Sass source.
+    let src =
+      "// héllo wörld ünïcödé\n.foo\n  content: \"→ ✓ ★\"\n  color: red\n\n.baz\n  color: #FFF\n";
+    let mut options = HashMap::new();
+    options.insert("color-hex-case".to_string(), serde_json::json!("lower"));
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec!["color-hex-case".to_string()],
+      options,
+    );
+    let result = runner.lint_source(src, "test.sass", Syntax::Sass);
+
+    assert_eq!(result.source, src, "results carry the Sass, not the SCSS");
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let d = &result.diagnostics[0];
+    assert_eq!(d.rule_name, "color-hex-case");
+    assert_eq!(d.span.offset, src.find("#FFF").unwrap());
+    assert_eq!(&src[d.span.offset..d.span.end()], "#FFF");
+    assert!(
+      d.fix.is_none(),
+      "fixes target the SCSS, so they are dropped"
     );
   }
 
