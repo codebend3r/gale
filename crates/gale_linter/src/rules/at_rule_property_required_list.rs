@@ -102,13 +102,14 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
 
-  fn ctx_with_options(options: serde_json::Value) -> (serde_json::Value, RuleContext<'static>) {
+  fn ctx_with_options<'a>(options: serde_json::Value) -> (serde_json::Value, RuleContext<'a>) {
     // We need to return owned value so the reference lives long enough.
     let ctx = RuleContext {
       file_path: "t.css",
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     (options, ctx)
   }
@@ -177,6 +178,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = at_rule_with_decls("font-face", vec![]);
     let d = AtRulePropertyRequiredList.check(&node, &ctx);

@@ -93,7 +93,8 @@ impl Rule for SelectorClassPattern {
           diags.push(
             Diagnostic::new(self.name(), msg)
               .severity(self.default_severity())
-              .span(Span::new(offset, class.len() + 1)), // +1 for the dot
+              .span(Span::new(offset, class.len() + 1)) // +1 for the dot
+              .message_args([format!(".{class}"), pattern_str.to_string()]),
           );
         }
       }
@@ -278,6 +279,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -287,6 +289,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 

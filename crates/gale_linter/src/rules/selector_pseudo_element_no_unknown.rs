@@ -19,14 +19,21 @@ impl Rule for SelectorPseudoElementNoUnknown {
     Severity::Warning
   }
 
-  /// Flags pseudo-elements that are not standard. Vendor-prefixed names are skipped.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags pseudo-elements that are not standard. Vendor-prefixed names,
+  /// and names the `ignorePseudoElements` option lists, are skipped.
+  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
+    let ignored: Vec<&str> = ctx
+      .secondary_options()
+      .and_then(|s| s.get("ignorePseudoElements"))
+      .and_then(|v| v.as_array())
+      .map(|names| names.iter().filter_map(|v| v.as_str()).collect())
+      .unwrap_or_default();
     let mut diags = Vec::new();
     for name in extract_pseudo_elements(&rule.selector) {
-      if name.starts_with('-') {
+      if name.starts_with('-') || is_ignored(&name, &ignored) {
         continue;
       }
       if !is_known_pseudo_element(&name) {
@@ -42,6 +49,14 @@ impl Rule for SelectorPseudoElementNoUnknown {
     }
     diags
   }
+}
+
+/// Whether an `ignorePseudoElements` entry, an exact name or a `/regex/`,
+/// matches `name`.
+fn is_ignored(name: &str, ignored: &[&str]) -> bool {
+  ignored
+    .iter()
+    .any(|entry| crate::pattern::match_regex_entry(entry, name).unwrap_or_else(|| *entry == name))
 }
 
 /// Extract pseudo-element names from a selector string (::name patterns).
@@ -75,12 +90,13 @@ mod tests {
   use super::*;
   use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn ctx() -> RuleContext<'static> {
+  fn ctx<'a>() -> RuleContext<'a> {
     RuleContext {
       file_path: "t.css",
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -103,6 +119,30 @@ mod tests {
     let d = SelectorPseudoElementNoUnknown.check(&style_with_selector("a::beforre"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("::beforre"));
+  }
+
+  #[test]
+  fn ignore_pseudo_elements_skips_listed_names() {
+    let options = serde_json::json!([true, { "ignorePseudoElements": ["v-deep", "/^my-/"] }]);
+    let ctx = RuleContext {
+      options: Some(&options),
+      ..ctx()
+    };
+    let rule = SelectorPseudoElementNoUnknown;
+    assert!(
+      rule
+        .check(&style_with_selector(".a::v-deep"), &ctx)
+        .is_empty()
+    );
+    assert!(
+      rule
+        .check(&style_with_selector(".a::my-thing"), &ctx)
+        .is_empty()
+    );
+    assert_eq!(
+      rule.check(&style_with_selector(".a::v-global"), &ctx).len(),
+      1
+    );
   }
 
   #[test]

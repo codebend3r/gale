@@ -1,147 +1,82 @@
+use std::sync::OnceLock;
+
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::pattern;
+use crate::pattern::option_matches;
+use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Rule, RuleContext};
+use crate::value_parser::{self, ValueNode};
 
-/// Reports units on zero lengths (e.g. `0px` → `0`).
+/// Disallow units for zero lengths (`0px` → `0`).
 ///
-/// Equivalent to Stylelint's `length-zero-no-unit` rule.
-///
+/// Equivalent to Stylelint's `length-zero-no-unit` rule, autofix included.
 /// Secondary options:
-///   - `ignore`: array, may include `"custom-properties"` to skip `--foo: 0px`.
-///   - `ignoreFunctions`: array of function name strings/regexes. Units inside
-///     matching functions are not checked (e.g. `var`, `/^--/`).
+///   - `ignore`: `custom-properties`
+///   - `ignoreFunctions`: names or `/regex/` entries; nothing inside a
+///     matching function is checked
+///   - `ignorePreludeOfAtRules`: at-rule names or `/regex/` entries whose
+///     params are not checked
+///
+/// Like Stylelint, it walks every declaration value and at-rule prelude in
+/// the [`PostcssTree`] of the source with postcss-value-parser, so values
+/// the CSS parser rejects, declarations directly inside at-rules and Sass
+/// `@include` arguments are checked too.  `line-height` and `flex` values,
+/// the line height in a `font` shorthand and everything inside math
+/// functions keep their units.
 pub struct LengthZeroNoUnit;
 
+/// Stylelint's `lengthUnits`.
 const LENGTH_UNITS: &[&str] = &[
-  "px", "em", "rem", "ex", "ch", "vw", "vh", "vmin", "vmax", "cm", "mm", "in", "pt", "pc", "q",
-  "cap", "ic", "rlh", "lh", "vi", "vb", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax", "dvw", "dvh",
-  "lvw", "lvh", "svw", "svh",
+  "cap", "ch", "em", "ex", "ic", "lh", "rcap", "rch", "rem", "rex", "ric", "rlh", "dvb", "dvh",
+  "dvi", "dvmax", "dvmin", "dvw", "lvb", "lvh", "lvi", "lvmax", "lvmin", "lvw", "svb", "svh",
+  "svi", "svmax", "svmin", "svw", "vb", "vh", "vi", "vw", "vmin", "vmax", "vm", "px", "mm", "cm",
+  "in", "pt", "pc", "q", "mozmm", "fr", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
 ];
 
-/// Duration and other units that are NOT lengths — `0s`, `0ms`, `0%` etc.
-/// are not reported by this rule (Stylelint only reports zero *lengths*).
-/// Angle, time, frequency, resolution units are excluded.
-
-/// Properties where `0<unit>` is intentionally allowed because removing the
-/// unit changes the semantics. Stylelint excludes these:
-/// - `line-height`: `0` is a multiplier, `0px` is a length — different meaning.
-/// - `flex` / `flex-basis`: `0` means "flex factor", `0px` means "0 length".
-/// - `font` shorthand: contains a `line-height` component where `0px` is meaningful.
-const ZERO_UNIT_EXEMPT_PROPERTIES: &[&str] = &[
-  "line-height",
-  "flex",
-  "flex-basis",
-  "font",
-  "grid-template-columns",
-  "grid-template-rows",
-  "grid-auto-columns",
-  "grid-auto-rows",
-  "transition",
-  "transition-delay",
-  "transition-duration",
-  "animation",
-  "animation-delay",
-  "animation-duration",
-];
-
-/// Whether `prop` is one where a zero still needs its unit, such as `flex`.
-fn is_exempt_property(prop: &str) -> bool {
-  let lower = prop.to_ascii_lowercase();
-  ZERO_UNIT_EXEMPT_PROPERTIES.iter().any(|&p| lower == p)
-}
-
-/// Math functions where `0<unit>` must keep its unit because the function
-/// requires typed values for dimensional analysis.
+/// Stylelint's `mathFunctions`.
 const MATH_FUNCTIONS: &[&str] = &[
-  "calc",
-  "min",
-  "max",
-  "clamp",
   "abs",
-  "sign",
-  "round",
-  "mod",
-  "rem",
-  "sin",
-  "cos",
-  "tan",
-  "asin",
   "acos",
+  "asin",
   "atan",
-  "atan2",
-  "pow",
+  "calc",
+  "cos",
+  "exp",
+  "sign",
+  "sin",
   "sqrt",
+  "tan",
+  "atan2",
+  "calc-size",
+  "clamp",
   "hypot",
   "log",
-  "exp",
-  "-webkit-calc",
-  "-moz-calc",
+  "max",
+  "min",
+  "mod",
+  "pow",
+  "rem",
+  "round",
 ];
 
-/// Whether `name` is a math function, where units on zero are meaningful.
-fn is_math_function(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  MATH_FUNCTIONS.iter().any(|&f| lower == f)
+/// Stylelint's `mayIncludeRegexes.zeroLength`: a quick test for a zero
+/// length anywhere in the text.
+fn may_include_zero_length(text: &str) -> bool {
+  static ZERO_LENGTH: OnceLock<regex::Regex> = OnceLock::new();
+  ZERO_LENGTH
+    .get_or_init(|| {
+      let units = LENGTH_UNITS.join("|");
+      regex::Regex::new(&format!(r"(?i)\b[+-]?(?:0+|0*\.\d+)(?:{units})\b")).expect("valid regex")
+    })
+    .is_match(text)
 }
 
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
-
-struct Options {
+/// The rule's secondary options.
+struct Options<'a> {
   ignore_custom_properties: bool,
-  ignore_functions: Vec<String>,
-}
-
-/// Reads the `ignore` and `ignoreFunctions` secondaries.
-fn parse_options(ctx: &RuleContext) -> Options {
-  let secondary = ctx.secondary_options();
-  let mut ignore_custom_properties = false;
-  let mut ignore_functions = Vec::new();
-
-  if let Some(sec) = secondary {
-    if let Some(v) = sec.get("ignore") {
-      if let Some(arr) = v.as_array() {
-        for item in arr {
-          if item.as_str() == Some("custom-properties") {
-            ignore_custom_properties = true;
-          }
-        }
-      }
-    }
-    if let Some(v) = sec.get("ignoreFunctions") {
-      ignore_functions = parse_string_list(v);
-    }
-  }
-
-  Options {
-    ignore_custom_properties,
-    ignore_functions,
-  }
-}
-
-/// Normalises a string or array-of-strings option into a `Vec`.
-fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
-  match val {
-    serde_json::Value::Array(arr) => arr
-      .iter()
-      .filter_map(|v| v.as_str().map(|s| s.to_string()))
-      .collect(),
-    serde_json::Value::String(s) => vec![s.clone()],
-    _ => Vec::new(),
-  }
-}
-
-/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
-fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
-  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
-}
-
-/// Whether any `ignoreFunctions` pattern matches this function name.
-fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
-  patterns.iter().any(|p| matches_pattern_ci(func_name, p))
+  ignore_functions: Option<&'a serde_json::Value>,
+  ignore_prelude_of_at_rules: Option<&'a serde_json::Value>,
 }
 
 impl Rule for LengthZeroNoUnit {
@@ -157,543 +92,275 @@ impl Rule for LengthZeroNoUnit {
     Severity::Warning
   }
 
-  /// Flags units on zero lengths, skipping exempt properties, math functions, and
-  /// anything the ignore options cover.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let opts = parse_options(ctx);
+  /// Checks every at-rule prelude, then every declaration value, as
+  /// Stylelint's `walkAtRules` and `walkDecls` do.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let secondary = ctx.secondary_options();
+    let options = Options {
+      ignore_custom_properties: option_matches(
+        secondary.and_then(|s| s.get("ignore")),
+        "custom-properties",
+      ),
+      ignore_functions: secondary.and_then(|s| s.get("ignoreFunctions")),
+      ignore_prelude_of_at_rules: secondary.and_then(|s| s.get("ignorePreludeOfAtRules")),
+    };
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    match node {
-      CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          // Check ignore: ["custom-properties"]
-          if decl.property.starts_with("--") {
-            if opts.ignore_custom_properties {
-              continue;
-            }
-            // Custom properties are checked only if not ignored
-          }
-
-          // Skip exempt properties
-          if is_exempt_property(&decl.property) {
-            continue;
-          }
-
-          let decl_start = decl.span.offset;
-          let decl_end = decl_start + decl.span.length;
-          let search_area = if decl_end <= ctx.source.len() && decl_start < decl_end {
-            &ctx.source[decl_start..decl_end]
-          } else {
-            &decl.value
-          };
-
-          find_zero_units_contextual(
-            search_area,
-            decl_start,
-            decl_end <= ctx.source.len() && decl_start < decl_end,
-            &opts,
-            self.name(),
-            self.default_severity(),
-            &mut diags,
-          );
-        }
+    for i in 0..tree.nodes.len() {
+      let node = &tree.nodes[i];
+      if node.kind != NodeKind::AtRule
+        || !may_include_zero_length(&node.params)
+        || !tree.is_standard_syntax_at_rule(i)
+        || option_matches(options.ignore_prelude_of_at_rules, &node.name)
+      {
+        continue;
       }
-      CssNode::AtRule(at_rule) => {
-        // Check @media params for `0px` etc.
-        if !at_rule.params.is_empty() {
-          let at_name = at_rule.name.to_ascii_lowercase();
-          if at_name != "font-face" {
-            find_zero_units_contextual(
-              &at_rule.params,
-              at_rule.span.offset,
-              false,
-              &opts,
-              self.name(),
-              self.default_severity(),
-              &mut diags,
-            );
-          }
-        }
-      }
-      CssNode::Declaration(decl) => {
-        if decl.property.starts_with("--") && opts.ignore_custom_properties {
-          return vec![];
-        }
-        if is_exempt_property(&decl.property) {
-          return vec![];
-        }
+      self.check_value(ctx, &tree, i, &options, false, &mut diags);
+    }
 
-        let decl_start = decl.span.offset;
-        let decl_end = decl_start + decl.span.length;
-        let search_area = if decl_end <= ctx.source.len() && decl_start < decl_end {
-          &ctx.source[decl_start..decl_end]
-        } else {
-          &decl.value
-        };
-
-        find_zero_units_contextual(
-          search_area,
-          decl_start,
-          decl_end <= ctx.source.len() && decl_start < decl_end,
-          &opts,
-          self.name(),
-          self.default_severity(),
-          &mut diags,
-        );
+    for i in 0..tree.nodes.len() {
+      let node = &tree.nodes[i];
+      if node.kind != NodeKind::Decl
+        || !may_include_zero_length(&node.value)
+        || !tree.is_standard_syntax_declaration(i)
+      {
+        continue;
       }
-      _ => {}
+      let prop = node.name.to_ascii_lowercase();
+      if prop == "line-height"
+        || prop == "flex"
+        || (options.ignore_custom_properties && node.name.starts_with("--"))
+      {
+        continue;
+      }
+      self.check_value(ctx, &tree, i, &options, prop == "font", &mut diags);
     }
     diags
   }
 }
 
-/// Find `0<unit>` patterns in a value string, respecting function context.
-///
-/// Skips:
-/// - Inside math functions (calc, min, max, clamp, etc.)
-/// - Inside quoted strings
-/// - Inside CSS comments
-/// - Inside functions matched by `ignoreFunctions`
-fn find_zero_units_contextual(
-  value: &str,
-  base_offset: usize,
-  has_source_mapping: bool,
-  opts: &Options,
-  rule_name: &str,
-  severity: Severity,
-  diags: &mut Vec<Diagnostic>,
-) {
-  let chars: Vec<char> = value.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
-  let mut func_stack: Vec<String> = Vec::new();
-
-  // We need byte offsets for spans, so also track byte position.
-  let bytes = value.as_bytes();
-  let byte_len = bytes.len();
-
-  // Build a char-index → byte-offset mapping
-  let mut char_to_byte: Vec<usize> = Vec::with_capacity(len + 1);
-  {
-    let mut byte_pos = 0;
-    for ch in value.chars() {
-      char_to_byte.push(byte_pos);
-      byte_pos += ch.len_utf8();
-    }
-    char_to_byte.push(byte_pos);
+impl LengthZeroNoUnit {
+  /// Walk the raw value (or prelude) of node `i` and report every zero
+  /// length with a unit.  `font` skips the word right after a `/`, the
+  /// line height.
+  fn check_value(
+    &self,
+    ctx: &RuleContext,
+    tree: &PostcssTree,
+    i: usize,
+    options: &Options,
+    font: bool,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    let span = &tree.nodes[i].value_span;
+    let Some(text) = ctx.source_slice(span.start, span.end) else {
+      return;
+    };
+    let parsed = value_parser::parse(text);
+    self.walk(&parsed, span.start, options, font, diags);
   }
 
-  while i < len {
-    // --- Skip quoted strings ---
-    if chars[i] == '"' || chars[i] == '\'' {
-      let quote = chars[i];
-      i += 1;
-      while i < len && chars[i] != quote {
-        if chars[i] == '\\' {
-          i += 1;
-        }
-        i += 1;
-      }
-      if i < len {
-        i += 1;
-      }
-      continue;
-    }
-
-    // --- Skip CSS comments ---
-    if i + 1 < len && chars[i] == '/' && chars[i + 1] == '*' {
-      i += 2;
-      while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
-        i += 1;
-      }
-      if i + 1 < len {
-        i += 2;
-      }
-      continue;
-    }
-
-    // --- Skip SCSS/Less interpolation blocks ---
-    if i + 1 < len && ((chars[i] == '#' || chars[i] == '@') && chars[i + 1] == '{') {
-      i += 2;
-      let mut depth = 1;
-      while i < len && depth > 0 {
-        if chars[i] == '{' {
-          depth += 1;
-        } else if chars[i] == '}' {
-          depth -= 1;
-        }
-        i += 1;
-      }
-      continue;
-    }
-
-    // --- Track function calls ---
-    if chars[i] == '(' {
-      let fn_end = i;
-      let mut fn_start = i;
-      if fn_end > 0 {
-        fn_start = fn_end;
-        let mut j = fn_end as isize - 1;
-        while j >= 0
-          && (chars[j as usize].is_ascii_alphanumeric()
-            || chars[j as usize] == '-'
-            || chars[j as usize] == '_'
-            || chars[j as usize] == '.')
-        {
-          fn_start = j as usize;
-          j -= 1;
-        }
-      }
-      let func_name: String = if fn_start < fn_end {
-        chars[fn_start..fn_end]
-          .iter()
-          .collect::<String>()
-          .to_ascii_lowercase()
-      } else {
-        String::new()
-      };
-      func_stack.push(func_name);
-      i += 1;
-      continue;
-    }
-
-    if chars[i] == ')' {
-      func_stack.pop();
-      i += 1;
-      continue;
-    }
-
-    // --- Skip SCSS variables ---
-    if chars[i] == '$' {
-      i += 1;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // --- Skip custom property names ---
-    if i + 1 < len && chars[i] == '-' && chars[i + 1] == '-' {
-      i += 2;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // --- Check for zero followed by a length unit ---
-    if chars[i] == '0' {
-      // Ensure it's not preceded by a digit or dot (part of a larger number)
-      let is_start = i == 0 || (!chars[i - 1].is_ascii_digit() && chars[i - 1] != '.');
-
-      if is_start {
-        // Skip decimals: `0.5px` is not zero
-        let mut j = i + 1;
-
-        // Handle `0.000` patterns: skip additional zeros and dots
-        // `0.000px` IS zero, `0.5px` is not
-        let mut is_zero = true;
-        if j < len && chars[j] == '.' {
-          j += 1;
-          while j < len && chars[j] == '0' {
-            j += 1;
-          }
-          // If we stopped at a non-zero digit, this is not zero
-          if j < len && chars[j].is_ascii_digit() && chars[j] != '0' {
-            is_zero = false;
-          }
-        }
-
-        // Also check for `.0rem` pattern: the number is just `.0`
-        // which equals zero. But this is handled by checking if the
-        // "zero" is exactly `0` at position i.
-
-        if !is_zero {
-          i = j;
-          // skip past the rest of the number
-          while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
-            i += 1;
-          }
-          // skip past the unit too
-          while i < len && (chars[i].is_ascii_alphabetic() || chars[i] == '%') {
-            i += 1;
-          }
-          continue;
-        }
-
-        // j now points to the first char after the zero (and any trailing decimal zeros)
-        // Check if followed by a length unit
-        let unit_start = j;
-        if unit_start < len && chars[unit_start].is_ascii_alphabetic() {
-          let mut unit_end = unit_start;
-          while unit_end < len && chars[unit_end].is_ascii_alphabetic() {
-            unit_end += 1;
-          }
-
-          // Check it's not part of an identifier (followed by `-`, `_`, `(`, or alphanum)
-          if unit_end < len
-            && (chars[unit_end] == '-'
-              || chars[unit_end] == '_'
-              || chars[unit_end] == '('
-              || chars[unit_end].is_ascii_alphanumeric())
-          {
-            i = unit_end;
-            continue;
-          }
-
-          let unit: String = chars[unit_start..unit_end].iter().collect::<String>();
-          let unit_lower = unit.to_ascii_lowercase();
-
-          // Only report length units (not %, s, ms, deg, etc.)
-          if LENGTH_UNITS.iter().any(|&u| u == unit_lower) {
-            // Check if inside a math function — skip
-            let in_math = func_stack.iter().any(|f| is_math_function(f));
-            if in_math {
-              i = unit_end;
-              continue;
-            }
-
-            // Check if inside a SCSS module function (namespace.func) — skip.
-            // Stylelint doesn't parse inside these.
-            let in_scss_module = func_stack.iter().any(|f| f.contains('.'));
-            if in_scss_module {
-              i = unit_end;
-              continue;
-            }
-
-            // Check ignoreFunctions
-            let in_ignored_func = func_stack
-              .iter()
-              .any(|f| function_is_ignored(f, &opts.ignore_functions));
-            if in_ignored_func {
-              i = unit_end;
-              continue;
-            }
-
-            // Found a reportable `0<unit>`
-            let byte_start = char_to_byte[i];
-            let byte_end = char_to_byte[unit_end];
-            let zero_unit_byte_len = byte_end - byte_start;
-
-            let abs_offset = if has_source_mapping {
-              base_offset + byte_start
-            } else {
-              base_offset
-            };
-
-            // Stylelint points to the unit part (after the zero)
-            let unit_byte_start = char_to_byte[unit_start];
-            let unit_abs_offset = if has_source_mapping {
-              base_offset + unit_byte_start
-            } else {
-              base_offset
-            };
-            let unit_byte_len = byte_end - unit_byte_start;
-
-            diags.push(
-              Diagnostic::new(rule_name, "Unexpected unit".to_string())
-                .severity(severity)
-                .span(Span::new(unit_abs_offset, unit_byte_len))
-                .fix(Fix::new(
-                  "Remove unit",
-                  vec![Edit::new(Span::new(abs_offset, zero_unit_byte_len), "0")],
-                )),
-            );
-            i = unit_end;
-            continue;
-          }
-        }
-        i = j.max(i + 1);
+  /// postcss-value-parser's `walk` over `nodes`, with Stylelint's `check`
+  /// for each node.  `offset` is where the parsed text starts.
+  fn walk(
+    &self,
+    nodes: &[ValueNode],
+    offset: usize,
+    options: &Options,
+    font: bool,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    for (index, node) in nodes.iter().enumerate() {
+      let after_slash = font && index > 0 && nodes[index - 1].is_slash();
+      if !after_slash && !self.check(node, offset, options, diags) {
         continue;
       }
-    }
-
-    // --- Handle `.0rem` pattern (starts with dot) ---
-    if chars[i] == '.' && i + 1 < len && chars[i + 1] == '0' {
-      // Check it's not preceded by a digit (would be part of 1.0)
-      let is_start = i == 0 || !chars[i - 1].is_ascii_digit();
-      if is_start {
-        let mut j = i + 1; // skip the dot
-        // skip zeros
-        while j < len && chars[j] == '0' {
-          j += 1;
-        }
-        // If we reach a non-zero digit, this is not zero
-        if j < len && chars[j].is_ascii_digit() && chars[j] != '0' {
-          i = j;
-          continue;
-        }
-        // Check for unit
-        if j < len && chars[j].is_ascii_alphabetic() {
-          let unit_start = j;
-          let mut unit_end = j;
-          while unit_end < len && chars[unit_end].is_ascii_alphabetic() {
-            unit_end += 1;
-          }
-          if unit_end < len
-            && (chars[unit_end] == '-' || chars[unit_end] == '_' || chars[unit_end] == '(')
-          {
-            i = unit_end;
-            continue;
-          }
-          let unit: String = chars[unit_start..unit_end].iter().collect();
-          let unit_lower = unit.to_ascii_lowercase();
-          if LENGTH_UNITS.iter().any(|&u| u == unit_lower) {
-            let in_math = func_stack.iter().any(|f| is_math_function(f));
-            if in_math {
-              i = unit_end;
-              continue;
-            }
-            let in_scss_module = func_stack.iter().any(|f| f.contains('.'));
-            if in_scss_module {
-              i = unit_end;
-              continue;
-            }
-            let in_ignored_func = func_stack
-              .iter()
-              .any(|f| function_is_ignored(f, &opts.ignore_functions));
-            if in_ignored_func {
-              i = unit_end;
-              continue;
-            }
-
-            let byte_start = char_to_byte[i];
-            let byte_end = char_to_byte[unit_end];
-            let zero_unit_byte_len = byte_end - byte_start;
-
-            let abs_offset = if has_source_mapping {
-              base_offset + byte_start
-            } else {
-              base_offset
-            };
-
-            let unit_byte_start = char_to_byte[unit_start];
-            let unit_abs_offset = if has_source_mapping {
-              base_offset + unit_byte_start
-            } else {
-              base_offset
-            };
-            let unit_byte_len = byte_end - unit_byte_start;
-
-            diags.push(
-              Diagnostic::new(rule_name, "Unexpected unit".to_string())
-                .severity(severity)
-                .span(Span::new(unit_abs_offset, unit_byte_len))
-                .fix(Fix::new(
-                  "Remove unit",
-                  vec![Edit::new(Span::new(abs_offset, zero_unit_byte_len), "0")],
-                )),
-            );
-            i = unit_end;
-            continue;
-          }
-        }
+      if node.is_function() {
+        self.walk(&node.nodes, offset, options, font, diags);
       }
     }
-
-    i += 1;
   }
+
+  /// Stylelint's `check` for one value node: report a zero length with a
+  /// unit.  Returns `false` to skip a function's arguments (math functions
+  /// and `ignoreFunctions`).
+  fn check(
+    &self,
+    node: &ValueNode,
+    offset: usize,
+    options: &Options,
+    diags: &mut Vec<Diagnostic>,
+  ) -> bool {
+    if node.is_function() {
+      let name = node.value.to_ascii_lowercase();
+      return !(MATH_FUNCTIONS.contains(&name.as_str())
+        || option_matches(options.ignore_functions, node.value));
+    }
+    if !node.is_word() {
+      return true;
+    }
+    let Some((number, unit)) = value_parser::unit(node.value) else {
+      return true;
+    };
+    let unit_lower = unit.to_ascii_lowercase();
+    if !is_zero(number)
+      || unit.is_empty()
+      || !LENGTH_UNITS.contains(&unit_lower.as_str())
+      || unit_lower == "fr"
+    {
+      return true;
+    }
+    let start = offset + node.source_index;
+    let index = start + number.len();
+    // The fix keeps the number, without the leading `.` of `.0`.
+    let fixed = number.strip_prefix('.').unwrap_or(number);
+    diags.push(
+      Diagnostic::new(self.name(), "Unexpected unit")
+        .severity(self.default_severity())
+        .span(Span::from_range(index, index + unit.len()))
+        .fix(Fix::new(
+          "Remove the unit",
+          vec![Edit::new(
+            Span::from_range(start, index + unit.len()),
+            fixed.to_string(),
+          )],
+        )),
+    );
+    true
+  }
+}
+
+/// JavaScript's `Number.parseFloat(number) === 0` for the number part of a
+/// dimension (digits, an optional sign, fraction and exponent).
+fn is_zero(number: &str) -> bool {
+  let mantissa = number
+    .split(['e', 'E'])
+    .next()
+    .unwrap_or("")
+    .trim_start_matches(['+', '-']);
+  mantissa.bytes().any(|b| b.is_ascii_digit()) && mantissa.bytes().all(|b| b == b'0' || b == b'.')
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use crate::empty_lines::fix_with;
+  use gale_css_parser::Syntax;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
+  /// The offsets of the units reported in `source`.
+  fn reports(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
+    let ctx = RuleContext {
       file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
+      source,
+      syntax,
+      options: options.as_ref(),
+      cache: None,
+    };
+    LengthZeroNoUnit
+      .check_root(&[], &ctx)
+      .into_iter()
+      .map(|d| d.span.offset)
+      .collect()
   }
 
-  fn style_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
-
-  #[test]
-  fn reports_zero_with_unit() {
-    let d = LengthZeroNoUnit.check(&style_decl("margin", "0px"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].fix.is_some());
+  /// `source` fixed with the rule on.
+  fn fix(source: &str, syntax: Syntax) -> String {
+    fix_with(
+      "length-zero-no-unit",
+      serde_json::json!(true),
+      source,
+      syntax,
+    )
   }
 
   #[test]
-  fn allows_zero_without_unit() {
+  fn reports_the_unit_of_a_zero_length() {
+    assert_eq!(reports("a { margin: 0px; }", Syntax::Css, None), vec![13]);
     assert!(
-      LengthZeroNoUnit
-        .check(&style_decl("margin", "0"), &ctx())
-        .is_empty()
+      reports(
+        "a { margin: 0; top: 10px; transition: 0s; }",
+        Syntax::Css,
+        None
+      )
+      .is_empty()
     );
+    assert!(reports("a { grid-template-columns: 0fr; }", Syntax::Css, None).is_empty());
+    assert_eq!(reports("a { --x: 0px; }", Syntax::Css, None).len(), 1);
+    let ignore = serde_json::json!([true, { "ignore": ["custom-properties"] }]);
+    assert!(reports("a { --x: 0px; }", Syntax::Css, Some(ignore)).is_empty());
   }
 
   #[test]
-  fn allows_non_zero_with_unit() {
+  fn keeps_units_where_they_matter() {
+    assert!(reports("a { line-height: 0px; flex: 1 1 0px; }", Syntax::Css, None).is_empty());
     assert!(
-      LengthZeroNoUnit
-        .check(&style_decl("margin", "10px"), &ctx())
-        .is_empty()
+      reports(
+        "a { padding: calc(0px + 1px) min(0in, 1px); }",
+        Syntax::Css,
+        None
+      )
+      .is_empty()
     );
-  }
-
-  #[test]
-  fn skips_custom_properties_when_ignored() {
-    // Without ignore option, custom properties ARE checked
-    let d = LengthZeroNoUnit.check(&style_decl("--my-var", "0px"), &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn allows_zero_in_calc() {
-    let d = LengthZeroNoUnit.check(&style_decl("padding", "calc(0px + 10px)"), &ctx());
-    assert!(
-      d.is_empty(),
-      "Expected no diagnostics inside calc(), got: {:?}",
-      d
-    );
-  }
-
-  #[test]
-  fn allows_zero_in_line_height() {
-    let d = LengthZeroNoUnit.check(&style_decl("line-height", "0px"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_zero_in_flex() {
-    let d = LengthZeroNoUnit.check(&style_decl("flex", "0px"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_zero_unit_before_scss_interpolation() {
-    let d = LengthZeroNoUnit.check(&style_decl("padding", "0px #{$var}"), &ctx());
     assert_eq!(
-      d.len(),
-      1,
-      "Should report 0px even when SCSS interpolation follows"
+      fix("a { font: normal 400 0px / 0px cursive; }", Syntax::Css),
+      "a { font: normal 400 0 / 0px cursive; }"
+    );
+    let ignore = serde_json::json!([true, { "ignoreFunctions": ["/^--/", "var"] }]);
+    assert!(
+      reports(
+        "a { top: var(--a, 0px) --b(0px); }",
+        Syntax::Css,
+        Some(ignore)
+      )
+      .is_empty()
     );
   }
 
   #[test]
-  fn reports_zero_unit_after_scss_interpolation() {
-    let d = LengthZeroNoUnit.check(&style_decl("margin", "#{$var} 0px"), &ctx());
+  fn checks_preludes_and_declarations_the_css_parser_drops() {
     assert_eq!(
-      d.len(),
-      1,
-      "Should report 0px even when SCSS interpolation precedes"
+      fix(
+        "@media (min-width: 0px /* c */) { a { top: 0em } }",
+        Syntax::Css
+      ),
+      "@media (min-width: 0 /* c */) { a { top: 0 } }"
     );
+    assert_eq!(
+      fix("@include border-radius($r: 0px);", Syntax::Scss),
+      "@include border-radius($r: 0);"
+    );
+    assert_eq!(
+      fix("padding: calc(1in + 0in) 0px;", Syntax::Css),
+      "padding: calc(1in + 0in) 0;"
+    );
+    assert_eq!(
+      fix("a { grid-template-columns: 0px 0fr 1fr };", Syntax::Css),
+      "a { grid-template-columns: 0 0fr 1fr };"
+    );
+    let ignore = serde_json::json!([true, { "ignorePreludeOfAtRules": ["media"] }]);
+    assert!(reports("@media (min-width: 0px) {}", Syntax::Css, Some(ignore)).is_empty());
+  }
+
+  #[test]
+  fn fix_keeps_the_number_as_written() {
+    assert_eq!(
+      fix("a { top: 0.000px; left: .0em; right: -0PX; }", Syntax::Css),
+      "a { top: 0.000; left: 0; right: -0; }"
+    );
+    assert_eq!(
+      fix("a { margin: 0px #{$var} 0px; }", Syntax::Scss),
+      "a { margin: 0 #{$var} 0; }"
+    );
+  }
+
+  #[test]
+  fn zero_follows_parse_float() {
+    assert!(is_zero("0"));
+    assert!(is_zero("-0.00"));
+    assert!(is_zero(".0"));
+    assert!(is_zero("0e5"));
+    assert!(!is_zero("0.5"));
+    assert!(!is_zero("10"));
   }
 }

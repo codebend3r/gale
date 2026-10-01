@@ -122,6 +122,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert_eq!(diags.len(), 1);
@@ -150,6 +151,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
@@ -184,6 +186,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
@@ -212,6 +215,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
@@ -239,6 +243,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert!(
@@ -275,6 +280,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());

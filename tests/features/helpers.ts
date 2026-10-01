@@ -12,12 +12,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
 export const REPO_ROOT = resolve(import.meta.dir, "../..");
@@ -199,6 +200,20 @@ export function cleanupProjects(): void {
 // ---------------------------------------------------------------------------
 // Small assertions and fixtures
 // ---------------------------------------------------------------------------
+
+/**
+ * The `source` gale reports for `rel` when run in `dir`.  Like Stylelint it
+ * reports every source by its absolute path, resolved from the working
+ * directory the process sees: the real path of the temporary directory.
+ */
+export function reportedPath(dir: string, rel: string): string {
+  return join(realpathSync(dir), rel);
+}
+
+/** A reported `source` relative to `dir`, the way the tests name files. */
+export function relativeSource(dir: string, source: string): string {
+  return relative(realpathSync(dir), source);
+}
 
 /** Serialise a Stylelint config object for a `.stylelintrc.json` fixture. */
 export function config(rules: Record<string, unknown>, extra: Record<string, unknown> = {}): string {

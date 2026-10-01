@@ -2,8 +2,15 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_at_rule_for_syntax;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+use crate::stylelint_version::stylelint_major_version;
 
+/// Disallow unknown at-rules.
+///
+/// Equivalent to Stylelint's `at-rule-no-unknown` rule, including its
+/// `ignoreAtRules` option (names or `/regex/` entries, matched against the
+/// name as written, without the `@`).
 pub struct AtRuleNoUnknown;
 
 impl Rule for AtRuleNoUnknown {
@@ -20,7 +27,7 @@ impl Rule for AtRuleNoUnknown {
   }
 
   /// Flags at-rules that are not standard for the file's syntax. Vendor-prefixed
-  /// names are left alone.
+  /// names and those in `ignoreAtRules` are left alone.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];
@@ -29,18 +36,26 @@ impl Rule for AtRuleNoUnknown {
     if at.name.starts_with('-') {
       return vec![];
     }
-    if !is_known_at_rule_for_syntax(&at.name, ctx.syntax) {
-      vec![
-        Diagnostic::new(
-          self.name(),
-          format!("Unexpected unknown at-rule \"@{}\"", at.name),
-        )
-        .severity(self.default_severity())
-        .span(Span::new(at.span.offset, at.span.length)),
-      ]
-    } else {
-      vec![]
+    let ignore = ctx
+      .secondary_options()
+      .and_then(|secondary| secondary.get("ignoreAtRules"));
+    if pattern::option_matches(ignore, &at.name)
+      || is_known_at_rule_for_syntax(&at.name, ctx.syntax)
+    {
+      return vec![];
     }
+    let at_rule = format!("@{}", at.name);
+    let message = if stylelint_major_version() >= 17 {
+      format!("Unknown at-rule \"{at_rule}\"")
+    } else {
+      format!("Unexpected unknown at-rule \"{at_rule}\"")
+    };
+    vec![
+      Diagnostic::new(self.name(), message)
+        .severity(self.default_severity())
+        .span(Span::new(at.span.offset, at.span.length))
+        .message_args([at_rule]),
+    ]
   }
 }
 
@@ -55,6 +70,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -72,6 +88,22 @@ mod tests {
     let d = AtRuleNoUnknown.check(&at("tailwind"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("@tailwind"));
+  }
+
+  #[test]
+  fn ignore_at_rules_skips_listed_names() {
+    // material-ui's config, for Tailwind's at-rules.
+    let options = serde_json::json!([true, { "ignoreAtRules": ["theme", "/^conf/"] }]);
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source: "",
+      syntax: Syntax::Css,
+      options: Some(&options),
+      cache: None,
+    };
+    assert!(AtRuleNoUnknown.check(&at("theme"), &ctx).is_empty());
+    assert!(AtRuleNoUnknown.check(&at("config"), &ctx).is_empty());
+    assert_eq!(AtRuleNoUnknown.check(&at("tailwind"), &ctx).len(), 1);
   }
 
   #[test]
@@ -95,6 +127,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -104,6 +137,7 @@ mod tests {
       source: "",
       syntax: Syntax::Less,
       options: None,
+      cache: None,
     }
   }
 

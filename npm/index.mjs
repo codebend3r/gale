@@ -7,7 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -162,9 +162,9 @@ function parseJsonOutput(jsonString) {
  * Lint CSS files or code, returning a Stylelint-compatible `LinterResult`.
  *
  * @param {object} options
- * @param {string|string[]} [options.files]        - Glob pattern(s) for files to lint
- * @param {string}          [options.code]         - CSS code string to lint instead of files
- * @param {string}          [options.codeFilename] - Virtual filename for `code` (for syntax detection)
+ * @param {string|string[]} [options.files]        - Glob pattern(s) for files to lint (style sheets, or Vue, Svelte, Astro and HTML files)
+ * @param {string}          [options.code]         - Source to lint instead of files
+ * @param {string}          [options.codeFilename] - Virtual filename for `code`; `x.vue` lints the styles embedded in it
  * @param {object}          [options.config]       - Inline config object
  * @param {string}          [options.configFile]   - Path to config file
  * @param {boolean|string}  [options.fix]          - Enable autofix (true, "strict", or "lax")
@@ -441,10 +441,12 @@ function createFormatterFn(formatName) {
       return output;
     }
 
-    // "string" / "verbose" / default: human-readable
+    // "string" / "verbose" / default: human-readable.  Like Stylelint's
+    // string formatter, name each file relative to the working directory.
+    const cwd = returnValue?.cwd || process.cwd();
     for (const r of results) {
       if (r.warnings.length === 0) continue;
-      output += `${r.source}\n`;
+      output += `${displayPath(r.source, cwd)}\n`;
       for (const w of r.warnings) {
         const icon = w.severity === "error" ? "\u2716" : "\u26A0";
         output += `  ${w.line}:${w.column}  ${icon}  ${w.text}  ${w.rule}\n`;
@@ -470,6 +472,15 @@ function createFormatterFn(formatName) {
 
     return output;
   };
+}
+
+/**
+ * How Stylelint's string formatter names a source: relative to `cwd`, with
+ * `/` separators.  A name in angle brackets is no path and stays as it is.
+ */
+function displayPath(source, cwd) {
+  if (!source || source.startsWith("<")) return source;
+  return relative(cwd, source).split(sep).join("/");
 }
 
 /**

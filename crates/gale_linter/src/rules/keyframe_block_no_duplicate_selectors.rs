@@ -70,6 +70,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -190,6 +191,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let mut all_diags = Vec::new();
     for node in &result.nodes {

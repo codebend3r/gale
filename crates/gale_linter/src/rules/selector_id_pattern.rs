@@ -37,10 +37,9 @@ impl Rule for SelectorIdPattern {
       return vec![];
     };
 
-    let pattern_str = ctx
-      .options
-      .and_then(|v| v.as_str())
-      .unwrap_or(DEFAULT_PATTERN);
+    // The pattern is the primary option, also when written as
+    // `[pattern, { message }]`.
+    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
 
     // A pattern that does not compile is reported as an invalid option,
     // as Stylelint does, rather than silently switching the rule off.
@@ -66,7 +65,8 @@ impl Rule for SelectorIdPattern {
             format!("Expected ID selector \"#{id}\" to match pattern \"{pattern_str}\""),
           )
           .severity(self.default_severity())
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          .span(Span::new(rule.span.offset, rule.span.length))
+          .message_args([format!("#{id}"), pattern_str.to_string()]),
         );
       }
     }
@@ -140,6 +140,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -149,6 +150,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(opts),
+      cache: None,
     }
   }
 

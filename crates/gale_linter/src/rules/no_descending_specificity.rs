@@ -544,12 +544,22 @@ fn last_compound_selector_without_pseudo_classes(selector: &str) -> String {
             ci += 1;
           }
         } else {
+          let name_start = ci;
           while ci < clen
             && (compound_chars[ci].is_alphanumeric()
               || compound_chars[ci] == '-'
               || compound_chars[ci] == '_')
           {
             ci += 1;
+          }
+          // A pseudo-element written with one colon (`:after`, as the CSS
+          // parser also prints `::after`) is no pseudo-class: Stylelint
+          // keeps it in the reference selector.
+          let name: String = compound_chars[name_start..ci].iter().collect();
+          if crate::data::is_known_pseudo_element(&name) {
+            result.push(':');
+            result.push_str(&name);
+            continue;
           }
           // Handle functional pseudo-class: :nth-child(...)
           if ci < clen && compound_chars[ci] == '(' {
@@ -788,6 +798,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -846,6 +857,34 @@ mod tests {
     assert!(
       diags.is_empty(),
       "different last compound selectors should not be compared"
+    );
+  }
+
+  #[test]
+  fn pseudo_elements_belong_to_the_reference_selector() {
+    // docusaurus: `.x::after` then `.x`.  The CSS parser prints the first
+    // as `.x:after`; it targets the pseudo-element, not `.x`.
+    let source = ".x::after { content: 'a'; }\n.x { color: red; }\n";
+    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
+      syntax: Syntax::Css,
+      options: None,
+      cache: None,
+    };
+    assert!(
+      NoDescendingSpecificity
+        .check_root(&parsed.nodes, &ctx)
+        .is_empty()
+    );
+    assert_eq!(
+      last_compound_selector_without_pseudo_classes(".x:after"),
+      ".x:after"
+    );
+    assert_eq!(
+      last_compound_selector_without_pseudo_classes(".x:hover"),
+      ".x"
     );
   }
 
@@ -922,6 +961,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -1099,6 +1139,7 @@ mod tests {
       source,
       syntax: Syntax::Less,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&nodes, &less_context);
     assert_eq!(

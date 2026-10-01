@@ -9,7 +9,9 @@ use tracing::debug;
 
 use gale_config::GaleConfig;
 use gale_css_parser::detect_syntax;
+use gale_css_parser::embedded::HostLanguage;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
+use gale_linter::embedded::{HostOptions, lint_host};
 use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::panic_guard;
 use gale_linter::{LintRunner, RuleRegistry};
@@ -18,47 +20,18 @@ use gale_linter::{LintRunner, RuleRegistry};
 // UTF-16 column conversion
 // ---------------------------------------------------------------------------
 
-/// Convert a byte-based column offset to a UTF-16 code-unit offset.
-///
-/// The LSP specification requires `Position.character` to be measured in UTF-16
-/// code units. `SourceLineIndex` returns byte-based columns, so we must convert
-/// by iterating through the characters on the line and summing `len_utf16()`.
-///
-/// `line_start_byte` is the byte offset where the line begins and `byte_col` is
-/// the number of bytes from that start (0-indexed).
-///
-/// An offset that lands inside a multibyte character (a rule bug) is pulled
-/// back to the start of that character rather than panicking.
-fn byte_col_to_utf16(source: &str, line_start_byte: usize, byte_col: usize) -> u32 {
-  let start = source.floor_char_boundary(line_start_byte.min(source.len()));
-  let end = source.floor_char_boundary((line_start_byte + byte_col).min(source.len()));
-  source
-    .get(start..end.max(start))
-    .unwrap_or_default()
-    .chars()
-    .map(|ch| ch.len_utf16() as u32)
-    .sum()
-}
-
-/// Convert a byte span in `source` to an LSP range (0-indexed lines, UTF-16
-/// characters).
-fn span_to_range(source: &str, line_index: &SourceLineIndex, span: Span) -> Range {
-  let (start_line, start_col) = line_index.offset_to_location(span.offset);
-  let (end_line, end_col) = line_index.offset_to_location(span.end());
-
-  // SourceLineIndex returns 1-indexed line/col where col is byte-based.
-  let start_line_byte = span.offset - (start_col - 1);
-  let end_line_byte = span.end() - (end_col - 1);
-
+/// Convert a byte span to an LSP range: 0-indexed lines and UTF-16
+/// characters, as the protocol counts them.  `SourceLineIndex` does the
+/// counting, so an offset inside a multibyte character (a rule bug) is
+/// pulled back to the start of that character rather than panicking.
+fn span_to_range(line_index: &SourceLineIndex, span: Span) -> Range {
+  let position = |offset: usize| {
+    let (line, character) = line_index.offset_to_utf16_position(offset);
+    Position::new(line.saturating_sub(1) as u32, character as u32)
+  };
   Range {
-    start: Position {
-      line: start_line.saturating_sub(1) as u32,
-      character: byte_col_to_utf16(source, start_line_byte, start_col - 1),
-    },
-    end: Position {
-      line: end_line.saturating_sub(1) as u32,
-      character: byte_col_to_utf16(source, end_line_byte, end_col - 1),
-    },
+    start: position(span.offset),
+    end: position(span.end()),
   }
 }
 
@@ -177,7 +150,6 @@ impl GaleLspServer {
   /// Convert one of Gale's diagnostics to the LSP shape.
   fn to_lsp_diagnostic(
     d: &GaleDiagnostic,
-    source: &str,
     line_index: &SourceLineIndex,
   ) -> tower_lsp::lsp_types::Diagnostic {
     let severity = match d.severity {
@@ -188,7 +160,7 @@ impl GaleLspServer {
     };
 
     tower_lsp::lsp_types::Diagnostic {
-      range: span_to_range(source, line_index, d.span),
+      range: span_to_range(line_index, d.span),
       severity,
       code: Some(NumberOrString::String(d.rule_name.clone())),
       source: Some("gale".to_string()),
@@ -198,6 +170,9 @@ impl GaleLspServer {
   }
 
   /// Lint source text (sync part), returning Gale's own diagnostics.
+  ///
+  /// A Vue, Svelte, Astro or HTML document is linted one style block at a
+  /// time, with every diagnostic (and fix) placed in the document.
   fn lint(&self, uri: &Url, source: &str) -> Vec<GaleDiagnostic> {
     let runner_guard = self.runner.read().unwrap_or_else(|e| e.into_inner());
     let Some(runner) = runner_guard.as_ref() else {
@@ -209,8 +184,16 @@ impl GaleLspServer {
       .map(|p| p.display().to_string())
       .unwrap_or_else(|_| uri.to_string());
 
-    let syntax = detect_syntax(&file_path);
-    let result = runner.lint_source(source, &file_path, syntax);
+    let result = match HostLanguage::from_path(&file_path) {
+      Some(host) => lint_host(
+        source,
+        &file_path,
+        host,
+        HostOptions::default(),
+        |text, syntax| runner.lint_source(text, &file_path, syntax),
+      ),
+      None => runner.lint_source(source, &file_path, detect_syntax(&file_path)),
+    };
     // An invalid rule option (a pattern that does not compile, say) is not
     // a problem in the document, but the editor is the only place to say so:
     // show it at the top of the file.
@@ -236,7 +219,7 @@ impl GaleLspServer {
       let line_index = SourceLineIndex::build(source);
       let lsp_diagnostics: Vec<tower_lsp::lsp_types::Diagnostic> = diagnostics
         .iter()
-        .map(|d| Self::to_lsp_diagnostic(d, source, &line_index))
+        .map(|d| Self::to_lsp_diagnostic(d, &line_index))
         .collect();
       (diagnostics, lsp_diagnostics)
     });
@@ -290,7 +273,7 @@ impl GaleLspServer {
       .iter()
       .filter_map(|d| {
         let fix = d.fix.as_ref()?;
-        let diag_range = span_to_range(&doc.text, &line_index, d.span);
+        let diag_range = span_to_range(&line_index, d.span);
         if !ranges_overlap(&diag_range, range) {
           return None;
         }
@@ -299,7 +282,7 @@ impl GaleLspServer {
           .edits
           .iter()
           .map(|edit| TextEdit {
-            range: span_to_range(&doc.text, &line_index, edit.span),
+            range: span_to_range(&line_index, edit.span),
             new_text: edit.new_text.clone(),
           })
           .collect();
@@ -309,7 +292,7 @@ impl GaleLspServer {
         Some(CodeActionOrCommand::CodeAction(CodeAction {
           title: format!("Fix: {}", d.message),
           kind: Some(CodeActionKind::QUICKFIX),
-          diagnostics: Some(vec![Self::to_lsp_diagnostic(d, &doc.text, &line_index)]),
+          diagnostics: Some(vec![Self::to_lsp_diagnostic(d, &line_index)]),
           edit: Some(WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()
@@ -505,22 +488,35 @@ mod tests {
   fn span_to_range_uses_zero_based_lines_and_utf16_columns() {
     let source = "a { color: #FFF; }\nb { }\n";
     let line_index = SourceLineIndex::build(source);
-    let range = span_to_range(source, &line_index, Span::new(11, 4));
+    let range = span_to_range(&line_index, Span::new(11, 4));
     assert_eq!(range.start, Position::new(0, 11));
     assert_eq!(range.end, Position::new(0, 15));
 
-    let range = span_to_range(source, &line_index, Span::new(23, 1));
+    let range = span_to_range(&line_index, Span::new(23, 1));
     assert_eq!(range.start, Position::new(1, 4));
   }
 
   #[test]
   fn span_to_range_survives_offsets_inside_a_multibyte_character() {
-    // `é` is two bytes; offsets 6 and 7 fall inside and past it.
+    // `é` is bytes 7 and 8; offset 8 falls inside it, and the span runs
+    // past the end of the text.
     let source = "a { b: é; }\n";
     let line_index = SourceLineIndex::build(source);
-    let range = span_to_range(source, &line_index, Span::new(8, 40));
+    let range = span_to_range(&line_index, Span::new(8, 40));
     assert_eq!(range.start, Position::new(0, 7));
-    assert_eq!(byte_col_to_utf16(source, 0, 8), 7);
+  }
+
+  #[test]
+  fn span_to_range_counts_utf16_once() {
+    // An emoji is four bytes and two UTF-16 units; a byte order mark is
+    // part of the document the editor counts in.
+    let source = "\u{FEFF}a { content: \"😀\"; b: c }\n";
+    let line_index = SourceLineIndex::build(source);
+    let b = source.find("b:").unwrap();
+    let range = span_to_range(&line_index, Span::new(b, 1));
+    // BOM, `a { content: "`, two units of emoji, `"; `.
+    assert_eq!(range.start, Position::new(0, 20));
+    assert_eq!(range.end, Position::new(0, 21));
   }
 
   #[test]

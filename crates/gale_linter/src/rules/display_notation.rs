@@ -1,44 +1,82 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::standard_syntax::is_standard_syntax_value;
 
-/// Require specific display notation (short or long form).
+/// Specify short or full notation for the `display` property.
 ///
-/// Equivalent to Stylelint's `declaration-property-value-disallowed-list` for display,
-/// or a dedicated `display-notation` rule.
-///
-/// In "short" mode (default): flags multi-keyword display values when a short
-/// equivalent exists. In "long" mode: flags short values when a long equivalent exists.
-///
-/// Mappings:
-/// - `block flow` <-> `block`
-/// - `inline flow` <-> `inline`
-/// - `run-in flow` <-> `run-in`
-/// - `block flex` <-> `flex`
-/// - `block grid` <-> `grid`
-/// - `inline flex` <-> `inline-flex`
-/// - `inline grid` <-> `inline-grid`
-/// - `block flow-root` <-> `flow-root`
-/// - `inline flow-root` <-> `inline-block`
-/// - `block table` <-> `table`
-/// - `inline table` <-> `inline-table`
+/// Equivalent to Stylelint's `display-notation` rule, including its
+/// autofix.  Primary option `"short"` wants the single-keyword forms
+/// (`block`, `inline-flex`), `"full"` the multi-keyword ones (`block flow`,
+/// `inline flex`).  Only values made purely of keywords are checked; the fix
+/// swaps the keywords and keeps any comments between them.
 pub struct DisplayNotation;
 
-/// (multi-keyword form, single-keyword form) pairs.
-const DISPLAY_MAPPINGS: &[(&str, &str)] = &[
-  ("block flow", "block"),
-  ("block flex", "flex"),
-  ("block flow-root", "flow-root"),
-  ("block grid", "grid"),
-  ("block ruby", "ruby"),
-  ("block table", "table"),
-  ("inline flow", "inline"),
-  ("inline flex", "inline-flex"),
-  ("inline flow-root", "inline-block"),
-  ("inline grid", "inline-grid"),
-  ("inline table", "inline-table"),
-  ("run-in flow", "run-in"),
+/// `display-outside` keywords, which sort first.
+const OUTSIDE: &[&str] = &["block", "inline", "run-in"];
+
+/// `display-inside` keywords, which sort second.
+const INSIDE: &[&str] = &["flow", "flow-root", "table", "flex", "grid", "ruby"];
+
+/// Keywords whose presence makes a value worth tokenizing (Stylelint's
+/// `displayKeyword` regex: list-item, outside, inside and legacy keywords).
+const DISPLAY_KEYWORDS: &[&str] = &[
+  "list-item",
+  "block",
+  "inline",
+  "run-in",
+  "flow",
+  "flow-root",
+  "table",
+  "flex",
+  "grid",
+  "ruby",
+  "inline-block",
+  "inline-table",
+  "inline-flex",
+  "inline-grid",
+];
+
+/// Stylelint's `SHORT_TO_LONG`: normalized value → full notation.
+const SHORT_TO_LONG: &[(&str, &[&str])] = &[
+  ("block list-item", &["block", "flow", "list-item"]),
+  ("block", &["block", "flow"]),
+  ("flex", &["block", "flex"]),
+  ("flow list-item", &["block", "flow", "list-item"]),
+  ("flow", &["block", "flow"]),
+  ("flow-root", &["block", "flow-root"]),
+  ("grid", &["block", "grid"]),
+  ("inline list-item", &["inline", "flow", "list-item"]),
+  ("inline", &["inline", "flow"]),
+  ("inline-block", &["inline", "flow-root"]),
+  ("inline-flex", &["inline", "flex"]),
+  ("inline-grid", &["inline", "grid"]),
+  ("inline-table", &["inline", "table"]),
+  ("list-item", &["block", "flow", "list-item"]),
+  ("ruby", &["inline", "ruby"]),
+  ("run-in", &["run-in", "flow"]),
+  ("table", &["block", "table"]),
+];
+
+/// Stylelint's `LONG_TO_SHORT`: normalized value → short notation.
+const LONG_TO_SHORT: &[(&str, &[&str])] = &[
+  ("block flex", &["flex"]),
+  ("block flow list-item", &["list-item"]),
+  ("block flow", &["block"]),
+  ("block flow-root", &["flow-root"]),
+  ("block grid", &["grid"]),
+  ("block list-item", &["list-item"]),
+  ("block table", &["table"]),
+  ("flow list-item", &["list-item"]),
+  ("inline flex", &["inline-flex"]),
+  ("inline flow list-item", &["inline", "list-item"]),
+  ("inline flow", &["inline"]),
+  ("inline flow-root", &["inline-block"]),
+  ("inline grid", &["inline-grid"]),
+  ("inline ruby", &["ruby"]),
+  ("inline table", &["inline-table"]),
+  ("run-in flow", &["run-in"]),
 ];
 
 impl Rule for DisplayNotation {
@@ -54,196 +92,330 @@ impl Rule for DisplayNotation {
     Severity::Warning
   }
 
-  /// Flags `display` values written in the notation the primary option forbids,
-  /// using the short/long mapping table above.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
+  /// Reports `display` values in the other notation, with a fix that
+  /// rewrites the keywords.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let table = match ctx.primary_option_str() {
+      Some("short") => LONG_TO_SHORT,
+      Some("full") => SHORT_TO_LONG,
+      _ => return Vec::new(),
     };
-
-    let mode = ctx
-      .primary_option_str()
-      .or_else(|| ctx.options.and_then(|v| v.as_str()))
-      .unwrap_or("single-keyword");
-
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      if !decl.property.eq_ignore_ascii_case("display") {
+
+    for decl in tree.decls() {
+      let (Some(prop), Some(value)) = (
+        ctx.source_slice(decl.name_span.start, decl.name_span.end),
+        ctx.source_slice(decl.value_span.start, decl.value_span.end),
+      ) else {
+        continue;
+      };
+      if !prop.eq_ignore_ascii_case("display")
+        || !mentions_display_keyword(value)
+        || !is_standard_syntax_value(value)
+      {
         continue;
       }
-
-      let value = decl.value.trim().to_ascii_lowercase();
-
-      match mode {
-        "single-keyword" | "short" => {
-          // Flag multi-keyword forms that have a single-keyword equivalent
-          for &(multi, single) in DISPLAY_MAPPINGS {
-            if value == multi {
-              diags.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{single}\" instead of \"{multi}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(decl.span.offset, decl.span.length)),
-              );
-              break;
-            }
-          }
-        }
-        "multi-keyword" | "long" => {
-          // Flag single-keyword forms that have a multi-keyword equivalent
-          for &(multi, single) in DISPLAY_MAPPINGS {
-            if value == single {
-              diags.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{multi}\" instead of \"{single}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(decl.span.offset, decl.span.length)),
-              );
-              break;
-            }
-          }
-        }
-        _ => {}
-      }
+      // Only whitespace, comments and keywords.
+      let Some(tokens) = tokenize(value) else {
+        continue;
+      };
+      let keywords: Vec<&Token> = tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Ident)
+        .collect();
+      let (Some(first), Some(last)) = (keywords.first(), keywords.last()) else {
+        continue;
+      };
+      let mut names: Vec<&str> = keywords.iter().map(|t| t.value.as_str()).collect();
+      names.sort_by_key(|name| keyword_order(name));
+      let normalized = names.join(" ").to_lowercase();
+      let Some((_, replacement)) = table.iter().find(|(from, _)| *from == normalized) else {
+        continue;
+      };
+      let replacement = replacement.join(" ");
+      let comments: String = tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Comment && t.start > first.start && t.end <= last.start)
+        .map(|t| &value[t.start..t.end])
+        .collect();
+      let span = Span::from_range(
+        decl.value_span.start + first.start,
+        decl.value_span.start + last.end,
+      );
+      diags.push(
+        Diagnostic::new(
+          self.name(),
+          format!("Expected \"{normalized}\" to be \"{replacement}\""),
+        )
+        .severity(self.default_severity())
+        .span(span)
+        .fix(Fix::new(
+          format!("Replace with \"{replacement}\""),
+          vec![Edit::new(span, format!("{replacement}{comments}"))],
+        )),
+      );
     }
     diags
   }
 }
 
+/// Whether `value` holds a display keyword between word boundaries.
+fn mentions_display_keyword(value: &str) -> bool {
+  let lower = value.to_ascii_lowercase();
+  let bytes = lower.as_bytes();
+  let is_word = |i: usize| {
+    bytes
+      .get(i)
+      .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+  };
+  DISPLAY_KEYWORDS.iter().any(|word| {
+    lower
+      .match_indices(word)
+      .any(|(start, _)| (start == 0 || !is_word(start - 1)) && !is_word(start + word.len()))
+  })
+}
+
+/// Sort key of a keyword: outside, then inside, then `list-item`, with
+/// anything else first.
+fn keyword_order(keyword: &str) -> u8 {
+  let is = |list: &[&str]| list.iter().any(|k| k.eq_ignore_ascii_case(keyword));
+  if is(OUTSIDE) {
+    1
+  } else if is(INSIDE) {
+    2
+  } else if keyword.eq_ignore_ascii_case("list-item") {
+    3
+  } else {
+    0
+  }
+}
+
+/// The kinds of CSS token a keyword-only value can hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+  Whitespace,
+  Comment,
+  Ident,
+}
+
+/// One token of a `display` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Token {
+  kind: TokenKind,
+  /// Byte offset of the token in the value.
+  start: usize,
+  /// Byte offset just past the token.
+  end: usize,
+  /// An ident's name with escapes resolved.
+  value: String,
+}
+
+/// Split `css` into whitespace, comment and ident tokens following CSS
+/// Syntax 3, or `None` as soon as any other token (a number, string,
+/// function, delimiter, ...) appears.
+fn tokenize(css: &str) -> Option<Vec<Token>> {
+  let bytes = css.as_bytes();
+  let mut tokens = Vec::new();
+  let mut pos = 0;
+  while pos < bytes.len() {
+    let start = pos;
+    let b = bytes[pos];
+    if is_whitespace(b) {
+      while pos < bytes.len() && is_whitespace(bytes[pos]) {
+        pos += 1;
+      }
+      tokens.push(Token {
+        kind: TokenKind::Whitespace,
+        start,
+        end: pos,
+        value: String::new(),
+      });
+    } else if css[pos..].starts_with("/*") {
+      pos = css[pos + 2..]
+        .find("*/")
+        .map_or(bytes.len(), |i| pos + 2 + i + 2);
+      tokens.push(Token {
+        kind: TokenKind::Comment,
+        start,
+        end: pos,
+        value: String::new(),
+      });
+    } else if starts_ident(&css[pos..]) {
+      let (value, end) = consume_ident(css, pos);
+      // `name(` is a function (or `url(`), not a keyword.
+      if bytes.get(end) == Some(&b'(') {
+        return None;
+      }
+      pos = end;
+      tokens.push(Token {
+        kind: TokenKind::Ident,
+        start,
+        end,
+        value,
+      });
+    } else {
+      return None;
+    }
+  }
+  Some(tokens)
+}
+
+/// CSS whitespace: space, tab and newlines.
+fn is_whitespace(b: u8) -> bool {
+  matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+}
+
+/// Whether `c` may start an identifier.
+fn is_ident_start(c: char) -> bool {
+  c.is_ascii_alphabetic() || c == '_' || !c.is_ascii()
+}
+
+/// Whether `c` may continue an identifier.
+fn is_name_char(c: char) -> bool {
+  is_ident_start(c) || c.is_ascii_digit() || c == '-'
+}
+
+/// Whether `text` starts with a valid escape: `\` not followed by a newline.
+fn starts_escape(text: &str) -> bool {
+  let mut chars = text.chars();
+  chars.next() == Some('\\') && !matches!(chars.next(), Some('\n' | '\r' | '\x0c'))
+}
+
+/// Whether `text` starts an ident sequence (CSS Syntax 3 §4.3.9).
+fn starts_ident(text: &str) -> bool {
+  let mut chars = text.chars();
+  match chars.next() {
+    Some('-') => {
+      let rest = &text[1..];
+      match rest.chars().next() {
+        Some(c) if is_ident_start(c) || c == '-' => true,
+        _ => starts_escape(rest),
+      }
+    }
+    Some('\\') => starts_escape(text),
+    Some(c) => is_ident_start(c),
+    None => false,
+  }
+}
+
+/// Consume the ident sequence at `pos`, returning its name with escapes
+/// resolved and the offset just past it.
+fn consume_ident(css: &str, mut pos: usize) -> (String, usize) {
+  let mut name = String::new();
+  while let Some(c) = css[pos..].chars().next() {
+    if is_name_char(c) {
+      name.push(c);
+      pos += c.len_utf8();
+    } else if starts_escape(&css[pos..]) {
+      let (escaped, end) = consume_escape(css, pos + 1);
+      name.push(escaped);
+      pos = end;
+    } else {
+      break;
+    }
+  }
+  (name, pos)
+}
+
+/// Consume the escape whose `\` sits just before `pos`: up to six hex
+/// digits and one optional whitespace, or any single character.
+fn consume_escape(css: &str, pos: usize) -> (char, usize) {
+  let hex: String = css[pos..]
+    .chars()
+    .take_while(char::is_ascii_hexdigit)
+    .take(6)
+    .collect();
+  if hex.is_empty() {
+    return match css[pos..].chars().next() {
+      Some(c) => (c, pos + c.len_utf8()),
+      None => ('\u{FFFD}', pos),
+    };
+  }
+  let mut end = pos + hex.len();
+  if css[end..].starts_with("\r\n") {
+    end += 2;
+  } else if css.as_bytes().get(end).is_some_and(|b| is_whitespace(*b)) {
+    end += 1;
+  }
+  let code = u32::from_str_radix(&hex, 16).unwrap_or(0);
+  let c = match code {
+    0 => '\u{FFFD}',
+    _ => char::from_u32(code).unwrap_or('\u{FFFD}'),
+  };
+  (c, end)
+}
+
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
-  }
+  use crate::fix_testing::{fix, warnings};
 
-  fn ctx_with_options(options: serde_json::Value) -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(Box::leak(Box::new(options))),
-    }
-  }
-
-  fn style_with_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, prop.len() + val.len() + 2),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
+  const RULE: &str = "display-notation";
 
   #[test]
-  fn single_keyword_mode_flags_multi_keyword_form() {
-    // Default mode is "single-keyword"
-    let d = DisplayNotation.check(&style_with_decl("display", "block flow"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"block\""));
-  }
-
-  #[test]
-  fn single_keyword_mode_allows_single_keyword_form() {
-    let d = DisplayNotation.check(&style_with_decl("display", "block"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn multi_keyword_mode_flags_single_keyword_form() {
-    let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-    let d = DisplayNotation.check(&style_with_decl("display", "flex"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"block flex\""));
-  }
-
-  #[test]
-  fn multi_keyword_mode_allows_multi_keyword_form() {
-    let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-    let d = DisplayNotation.check(&style_with_decl("display", "block flex"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_non_display_properties() {
-    let d = DisplayNotation.check(&style_with_decl("color", "block flow"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn inline_block_mapping() {
-    let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-    let d = DisplayNotation.check(&style_with_decl("display", "inline-block"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"inline flow-root\""));
-  }
-
-  #[test]
-  fn ruby_mapping() {
-    let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-    let d = DisplayNotation.check(&style_with_decl("display", "ruby"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"block ruby\""));
-  }
-
-  #[test]
-  fn no_equivalent_values_are_skipped() {
-    // Values like list-item, contents, none have no multi-keyword equivalent
-    let ctx = ctx_with_options(serde_json::json!("multi-keyword"));
-    assert!(
-      DisplayNotation
-        .check(&style_with_decl("display", "list-item"), &ctx)
-        .is_empty()
+  fn fixes_to_short_notation() {
+    let short = || json!(["short"]);
+    assert_eq!(
+      fix(RULE, short(), "a { display: block flow; }", Syntax::Css),
+      "a { display: block; }"
     );
-    assert!(
-      DisplayNotation
-        .check(&style_with_decl("display", "contents"), &ctx)
-        .is_empty()
+    assert_eq!(
+      fix(
+        RULE,
+        short(),
+        "a { display: flow-root INLINE; }",
+        Syntax::Css
+      ),
+      "a { display: inline-block; }"
     );
-    assert!(
-      DisplayNotation
-        .check(&style_with_decl("display", "none"), &ctx)
-        .is_empty()
+    assert_eq!(
+      fix(
+        RULE,
+        short(),
+        "a { display: inline /* x */ flow /* y */ list-item; }",
+        Syntax::Css
+      ),
+      "a { display: inline list-item/* x *//* y */; }"
     );
   }
 
   #[test]
-  fn inline_ruby_has_no_single_keyword_equivalent() {
-    // "inline ruby" has no single-keyword equivalent, so single-keyword mode should not flag it
-    let d = DisplayNotation.check(&style_with_decl("display", "inline ruby"), &ctx());
-    assert!(d.is_empty(), "inline ruby has no single-keyword equivalent");
+  fn fixes_to_full_notation() {
+    assert_eq!(
+      fix(
+        RULE,
+        json!(["full"]),
+        "a { display: inline-flex !important; }",
+        Syntax::Css
+      ),
+      "a { display: inline flex !important; }"
+    );
   }
 
   #[test]
-  fn backward_compat_short_long_options() {
-    // "short" and "long" should still work as aliases
-    let ctx = ctx_with_options(serde_json::json!("short"));
-    let d = DisplayNotation.check(&style_with_decl("display", "block flow"), &ctx);
-    assert_eq!(d.len(), 1);
-
-    let ctx = ctx_with_options(serde_json::json!("long"));
-    let d = DisplayNotation.check(&style_with_decl("display", "flex"), &ctx);
-    assert_eq!(d.len(), 1);
+  fn skips_values_that_are_not_just_keywords() {
+    let short = || json!(["short"]);
+    assert!(
+      warnings(
+        RULE,
+        short(),
+        "a { display: block var(--foo, flow); }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
+    assert!(warnings(RULE, short(), "a { display: $block flow; }", Syntax::Scss).is_empty());
+    assert!(warnings(RULE, short(), "a { display: none; }", Syntax::Css).is_empty());
   }
 
   #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(DisplayNotation.name(), "display-notation");
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = json!(["short", { "disableFix": true }]);
+    let source = "a { display: block flow; }";
+    assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
+    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

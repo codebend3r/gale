@@ -118,6 +118,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
 
@@ -142,6 +143,7 @@ mod tests {
       source: ".foo { font: { weight: bold; } }",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     assert!(
       ScssDeclarationNestedProperties

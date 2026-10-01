@@ -120,6 +120,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = style_with_selector_and_decl("my-component", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
@@ -135,6 +136,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = style_with_selector_and_decl(".other", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
@@ -149,6 +151,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = style_with_selector_and_decl("my-component", "display", "block");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
@@ -163,6 +166,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&opts),
+      cache: None,
     };
     let node = style_with_selector_and_decl(".foo", "margin", "10px");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
@@ -177,6 +181,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     };
     let node = style_with_selector_and_decl(".foo", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);

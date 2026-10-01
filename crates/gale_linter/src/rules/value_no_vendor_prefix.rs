@@ -1,40 +1,22 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::autoprefixable;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+use crate::standard_syntax::is_standard_syntax_property;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Reports vendor-prefixed values (e.g. `-webkit-flex`).
 ///
-/// Equivalent to Stylelint's `value-no-vendor-prefix` rule.
+/// Equivalent to Stylelint's `value-no-vendor-prefix` rule: every keyword
+/// or function name in a value that Autoprefixer would prefix is reported,
+/// and the fix strips the prefix, keeping the rest as written.
 pub struct ValueNoVendorPrefix;
 
-const VENDOR_PREFIXES: &[&str] = &["-webkit-", "-moz-", "-ms-", "-o-"];
-
-/// Known CSS values that have standard unprefixed equivalents (from Autoprefixer data).
-/// Only vendor-prefixed versions of these values should be flagged.
-/// Values that Stylelint's value-no-vendor-prefix actually flags.
-/// Note: box, element, fill-available, flexbox, and inline-box are NOT
-/// flagged by Stylelint even though they have vendor-prefixed variants.
-const KNOWN_PREFIXABLE_VALUES: &[&str] = &[
-  "calc",        // -webkit-calc()
-  "cross-fade",  // -webkit-cross-fade()
-  "fit-content", // -webkit-fit-content
-  "flex",        // display: -webkit-flex
-  "grab",        // cursor: -webkit-grab
-  "grabbing",    // cursor: -webkit-grabbing
-  "image-set",   // -webkit-image-set()
-  "inline-flex", // display: -webkit-inline-flex
-  "isolate",     // unicode-bidi: -moz-isolate
-  "linear-gradient",
-  "max-content", // width: -webkit-max-content
-  "min-content", // width: -webkit-min-content
-  "plaintext",   // unicode-bidi: -moz-plaintext
-  "radial-gradient",
-  "repeating-linear-gradient",
-  "repeating-radial-gradient",
-  "sticky",   // position: -webkit-sticky
-  "zoom-in",  // cursor: -webkit-zoom-in
-  "zoom-out", // cursor: -webkit-zoom-out
+/// Stylelint's `prefixes`, which a value must mention to be looked at.
+const PREFIXES: &[&str] = &[
+  "-webkit-", "-moz-", "-ms-", "-o-", "-xv-", "-apple-", "-wap-", "-khtml-",
 ];
 
 impl Rule for ValueNoVendorPrefix {
@@ -53,294 +35,168 @@ impl Rule for ValueNoVendorPrefix {
   /// Flags vendor-prefixed values that have a standard equivalent, skipping any
   /// listed in `ignoreValues`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    // Read ignoreValues from options (secondary option object).
-    let ignore_values: Vec<String> = ctx
-      .secondary_options()
-      .or(ctx.options)
-      .and_then(|v| v.get("ignoreValues"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(|s| s.to_ascii_lowercase()))
-          .collect()
-      })
-      .unwrap_or_default();
-
+    let ignore_values = ctx.secondary_options().and_then(|v| v.get("ignoreValues"));
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
+    for &decl in ctx.written_declarations(node).iter() {
       let lower = decl.value.to_ascii_lowercase();
-      for prefix in VENDOR_PREFIXES {
-        if lower.contains(prefix) {
-          // Extract the unprefixed value part
-          let unprefixed = extract_unprefixed_value(&lower, prefix);
-
-          // Only flag known autoprefixable values
-          if !KNOWN_PREFIXABLE_VALUES.iter().any(|v| *v == unprefixed) {
-            continue;
-          }
-
-          // Build the vendor-prefixed identifier (e.g. "-moz-radial-gradient")
-          let prefixed_ident = {
-            let pos = lower.find(prefix).unwrap();
-            let after_prefix = &lower[pos + prefix.len()..];
-            let ident_end = after_prefix
-              .find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ')' || c == '(')
-              .unwrap_or(after_prefix.len());
-            // Use original (non-lowered) value to preserve case
-            let orig_pos = pos;
-            let orig_end = pos + prefix.len() + ident_end;
-            decl.value[orig_pos..orig_end].to_string()
-          };
-
-          // Check if the value is in the ignore list.
-          // v17: ignoreValues checks values as-is (no prefix stripping).
-          // E.g. ignoreValues: ["-webkit-flex"] matches, but ["flex"] does NOT.
-          let prefixed_lower = prefixed_ident.to_ascii_lowercase();
-          if ignore_values.iter().any(|v| v == &prefixed_lower) {
-            continue;
-          }
-
-          // Try to find the prefixed value in source for span + fix
-          let decl_start = decl.span.offset;
-          let decl_end = decl_start + decl.span.length;
-          let (vendor_span, fix) = if decl_end <= ctx.source.len() && decl_start < decl_end {
-            let search_area = &ctx.source[decl_start..decl_end];
-            let lower_search = search_area.to_ascii_lowercase();
-            if let Some(rel_offset) = lower_search.find(prefix) {
-              let abs_offset = decl_start + rel_offset;
-              let span = Span::new(abs_offset, prefixed_ident.len());
-              let fix = Fix::new(
-                format!("Remove vendor prefix \"{}\"", prefix.trim_end_matches('-')),
-                vec![Edit::new(Span::new(abs_offset, prefix.len()), "")],
-              );
-              (Some(span), Some(fix))
-            } else {
-              (None, None)
-            }
-          } else {
-            (None, None)
-          };
-
-          let diag_span =
-            vendor_span.unwrap_or_else(|| Span::new(decl.span.offset, decl.span.length));
-
-          let mut diag = Diagnostic::new(
+      if !PREFIXES.iter().any(|prefix| lower.contains(prefix)) {
+        continue;
+      }
+      if !is_standard_syntax_property(decl.prop) {
+        continue;
+      }
+      let nodes = value_parser::parse(decl.value);
+      value_parser::walk(&nodes, &mut |node: &ValueNode| {
+        if !autoprefixable::property_value(node.value)
+          || pattern::option_matches(ignore_values, node.value)
+        {
+          return true;
+        }
+        // Where the node's text starts: inside a string's quotes or a
+        // comment's delimiters.
+        let text_offset = match node.kind {
+          NodeKind::String => 1,
+          NodeKind::Comment => 2,
+          _ => 0,
+        };
+        let start = decl.value_start + node.source_index;
+        let text = Span::new(start + text_offset, node.value.len());
+        diags.push(
+          Diagnostic::new(
             self.name(),
-            format!("Unexpected vendor-prefixed value \"{}\"", prefixed_ident),
+            format!("Unexpected vendor-prefixed value \"{}\"", node.value),
           )
           .severity(self.default_severity())
-          .span(diag_span);
-
-          if let Some(f) = fix {
-            diag = diag.fix(f);
-          }
-
-          diags.push(diag);
-          break;
-        }
-      }
+          .span(Span::new(start, node.value.len()))
+          .fix(Fix::new(
+            format!("Remove the vendor prefix from \"{}\"", node.value),
+            vec![Edit::new(text, autoprefixable::unprefix(node.value))],
+          )),
+        );
+        true
+      });
     }
     diags
   }
 }
 
-/// Extract the unprefixed value identifier from a CSS value containing a vendor prefix.
-/// E.g. "-webkit-flex" -> "flex", "-webkit-match-parent" -> "match-parent"
-fn extract_unprefixed_value(lower_value: &str, prefix: &str) -> String {
-  // Find the prefix in the value and return what follows it
-  if let Some(pos) = lower_value.find(prefix) {
-    let after = &lower_value[pos + prefix.len()..];
-    // Take until whitespace, comma, or paren
-    let end = after
-      .find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ')' || c == '(')
-      .unwrap_or(after.len());
-    after[..end].to_string()
-  } else {
-    lower_value.to_string()
-  }
-}
-
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` as `syntax` with only this rule enabled, configured with
+  /// `options`.
+  fn lint_as(
+    css: &str,
+    syntax: Syntax,
+    options: serde_json::Value,
+  ) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "value-no-vendor-prefix".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", syntax).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let diags = lint_as(&current, Syntax::Css, options.clone());
+      let (next, applied) = apply_fixes(&current, &diags);
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
+  }
+
+  #[test]
+  fn strips_the_prefix_keeping_the_rest_as_written() {
+    let on = serde_json::json!(true);
+    assert_eq!(
+      fix(".a { display: -wEbKiT-fLeX; }", on.clone()),
+      ".a { display: fLeX; }"
+    );
+    assert_eq!(
+      fix(
+        ".a { background: -webkit-linear-gradient(bottom, #000, #fff); }",
+        on.clone()
+      ),
+      ".a { background: linear-gradient(bottom, #000, #fff); }"
+    );
+    assert_eq!(
+      fix(".a { speak: -xv-digits; }", on.clone()),
+      ".a { speak: digits; }"
+    );
+    assert_eq!(
+      fix(".a { -webkit-user-select: -moz-all; }", on.clone()),
+      ".a { -webkit-user-select: all; }"
+    );
+    let warnings = lint_as(".a { display: -webkit-flex; }", Syntax::Css, on);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (14, 12));
+  }
+
+  #[test]
+  fn leaves_unlisted_values_and_variables_alone() {
+    let on = serde_json::json!(true);
+    for css in [
+      ".a { display: -webkit-box; }",
+      "a { white-space: -pre-wrap; }",
+      "a { list-style-type: -moz-ethiopic-halehame; }",
+    ] {
+      assert!(lint_as(css, Syntax::Css, on.clone()).is_empty(), "{css}");
+    }
+    for css in [
+      "a { $foo: -webkit-plaintext; }",
+      "a { #{$foo}: -webkit-plaintext; }",
+    ] {
+      assert!(lint_as(css, Syntax::Scss, on.clone()).is_empty(), "{css}");
     }
   }
 
-  fn style_decl(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "display".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
-
   #[test]
-  fn reports_webkit_prefix_value() {
-    let d = ValueNoVendorPrefix.check(&style_decl("-webkit-flex"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(
-      d[0].message.contains("-webkit-flex"),
-      "message was: {}",
-      d[0].message
-    );
-    // Message should contain just the identifier, not trailing args
-    assert!(
-      !d[0].message.contains("("),
-      "message should not contain function args"
-    );
-  }
-
-  #[test]
-  fn reports_ms_prefix_value() {
-    // -ms-flexbox is not flagged by Stylelint (flexbox isn't in its list)
-    let d = ValueNoVendorPrefix.check(&style_decl("-ms-flexbox"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_ms_inline_flex() {
-    let d = ValueNoVendorPrefix.check(&style_decl("-ms-inline-flex"), &ctx());
-    // This is not in KNOWN_PREFIXABLE_VALUES as "inline-flex" variant
-    // Note: -webkit-inline-flex would be flagged since inline-flex is in the list
-  }
-
-  #[test]
-  fn reports_webkit_inline_flex() {
-    let d = ValueNoVendorPrefix.check(&style_decl("-webkit-inline-flex"), &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn allows_standard_value() {
-    assert!(
-      ValueNoVendorPrefix
-        .check(&style_decl("flex"), &ctx())
-        .is_empty()
-    );
-  }
-
-  #[test]
-  fn emits_fix_for_vendor_prefixed_value() {
-    let source = "a { display: -webkit-flex; }";
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    };
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "display".to_string(),
-        value: "-webkit-flex".to_string(),
-        span: ParserSpan::new(4, 22),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = ValueNoVendorPrefix.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].fix.is_some());
-    let fix = d[0].fix.as_ref().unwrap();
-    assert_eq!(fix.edits.len(), 1);
-    // The fix removes the "-webkit-" prefix, leaving "flex"
-    assert_eq!(fix.edits[0].new_text, "");
-    assert_eq!(fix.edits[0].span.length, "-webkit-".len());
-  }
-
-  #[test]
-  fn span_points_to_vendor_value_not_property() {
-    // Simulates: "a {\n  background: -moz-radial-gradient(center, ellipse cover, #f1f1f1 0, #ee2a00 100%);\n}"
-    let source =
-      "a {\n  background: -moz-radial-gradient(center, ellipse cover, #f1f1f1 0, #ee2a00 100%);\n}";
-    // "background: -moz-..." starts at offset 6
-    let decl_offset = 6;
-    let decl_text =
-      "background: -moz-radial-gradient(center, ellipse cover, #f1f1f1 0, #ee2a00 100%)";
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    };
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: "-moz-radial-gradient(center, ellipse cover, #f1f1f1 0, #ee2a00 100%)".to_string(),
-        span: ParserSpan::new(decl_offset, decl_text.len()),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = ValueNoVendorPrefix.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-
-    // Message should contain only the function name, not the full value with arguments
+  fn ignore_values_takes_a_string_or_a_list() {
+    let single = serde_json::json!([true, { "ignoreValues": "/^-moz-hangul$/" }]);
+    assert!(lint_as("a { list-style-type: -moz-hangul; }", Syntax::Css, single).is_empty());
+    let list = serde_json::json!([true, { "ignoreValues": ["-moz-hangul", "/^-webkit-linear-/"] }]);
     assert_eq!(
-      d[0].message,
-      "Unexpected vendor-prefixed value \"-moz-radial-gradient\""
+      fix(
+        ".a { list-style-type: -moz-hangul-consonant; }",
+        list.clone()
+      ),
+      ".a { list-style-type: hangul-consonant; }"
     );
-
-    // Span should point to "-moz-radial-gradient" (offset 18 = 6 + len("background: "))
-    let expected_offset = decl_offset + "background: ".len();
-    assert_eq!(d[0].span.offset, expected_offset);
-    assert_eq!(d[0].span.length, "-moz-radial-gradient".len());
-  }
-
-  #[test]
-  fn ignore_values_checks_as_is_not_unprefixed() {
-    // v17: ignoreValues: ["flex"] should NOT match -webkit-flex
-    let opts = serde_json::json!(["true", {"ignoreValues": ["flex"]}]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-    };
-    let d = ValueNoVendorPrefix.check(&style_decl("-webkit-flex"), &ctx);
-    assert_eq!(
-      d.len(),
-      1,
-      "ignoreValues: [\"flex\"] should NOT ignore -webkit-flex in v17"
-    );
-  }
-
-  #[test]
-  fn ignore_values_matches_full_prefixed_value() {
-    // v17: ignoreValues: ["-webkit-flex"] SHOULD match -webkit-flex
-    let opts = serde_json::json!(["true", {"ignoreValues": ["-webkit-flex"]}]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-    };
-    let d = ValueNoVendorPrefix.check(&style_decl("-webkit-flex"), &ctx);
     assert!(
-      d.is_empty(),
-      "ignoreValues: [\"-webkit-flex\"] SHOULD ignore -webkit-flex"
+      lint_as(
+        "a { b: -webkit-linear-gradient(red, blue) }",
+        Syntax::Css,
+        list
+      )
+      .is_empty()
+    );
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!([true, { "disableFix": true }]);
+    assert_eq!(
+      lint_as("a { display: -webkit-flex }", Syntax::Css, options.clone()).len(),
+      1
+    );
+    assert_eq!(
+      fix("a { display: -webkit-flex }", options),
+      "a { display: -webkit-flex }"
     );
   }
 }

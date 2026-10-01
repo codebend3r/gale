@@ -3,7 +3,8 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern;
 use crate::rule::{Rule, RuleContext};
-use crate::stylelint_version::stylelint_major_version;
+use crate::standard_syntax::is_standard_syntax_value;
+use crate::stylelint_version::{installed_at_least, stylelint_major_version};
 
 /// Enforce consistent case for keyword values.
 ///
@@ -81,8 +82,58 @@ fn is_system_color(s: &str) -> bool {
   if v >= 14 && SYSTEM_COLORS_CSS4.iter().any(|c| c.eq_ignore_ascii_case(s)) {
     return true;
   }
+  if installed_at_least(16, 12)
+    && PREFIXED_SYSTEM_COLORS
+      .iter()
+      .any(|c| c.eq_ignore_ascii_case(s))
+  {
+    return true;
+  }
   false
 }
+
+/// Vendor-prefixed system colors, which Stylelint ignores since 16.12.
+const PREFIXED_SYSTEM_COLORS: &[&str] = &[
+  "-moz-buttondefault",
+  "-moz-buttonhoverface",
+  "-moz-buttonhovertext",
+  "-moz-cellhighlight",
+  "-moz-cellhighlighttext",
+  "-moz-combobox",
+  "-moz-comboboxtext",
+  "-moz-dialog",
+  "-moz-dialogtext",
+  "-moz-dragtargetzone",
+  "-moz-eventreerow",
+  "-moz-field",
+  "-moz-fieldtext",
+  "-moz-html-cellhighlight",
+  "-moz-html-cellhighlighttext",
+  "-moz-mac-accentdarkestshadow",
+  "-moz-mac-accentdarkshadow",
+  "-moz-mac-accentface",
+  "-moz-mac-accentlightesthighlight",
+  "-moz-mac-accentlightshadow",
+  "-moz-mac-accentregularhighlight",
+  "-moz-mac-accentregularshadow",
+  "-moz-mac-chrome-active",
+  "-moz-mac-chrome-inactive",
+  "-moz-mac-focusring",
+  "-moz-mac-menuselect",
+  "-moz-mac-menushadow",
+  "-moz-mac-menutextselect",
+  "-moz-menubarhovertext",
+  "-moz-menubartext",
+  "-moz-menuhover",
+  "-moz-menuhovertext",
+  "-moz-nativehyperlinktext",
+  "-moz-oddtreerow",
+  "-moz-win-accentcolor",
+  "-moz-win-accentcolortext",
+  "-moz-win-communicationstext",
+  "-moz-win-mediatext",
+  "-ms-hotlight",
+];
 
 /// SVG keywords that have camelCase canonical forms.
 const SVG_CAMEL_CASE_KEYWORDS: &[&str] = &[
@@ -111,7 +162,6 @@ const CUSTOM_IDENT_PROPERTIES: &[&str] = &[
   "animation-name",
   "counter-increment",
   "counter-reset",
-  "counter-set",
   "grid-row",
   "grid-column",
   "grid-area",
@@ -120,14 +170,11 @@ const CUSTOM_IDENT_PROPERTIES: &[&str] = &[
   "grid-column-start",
   "grid-column-end",
   "list-style-type",
-  "will-change",
 ];
 
 /// Whether the property takes a `<custom-ident>`, whose case is author-chosen.
 fn is_custom_ident_property(prop: &str) -> bool {
-  let lower = prop.to_ascii_lowercase();
-  let stripped = strip_vendor_prefix(&lower);
-  CUSTOM_IDENT_PROPERTIES.contains(&stripped)
+  CUSTOM_IDENT_PROPERTIES.contains(&prop.to_ascii_lowercase().as_str())
 }
 
 /// Properties where some positions are keywords and some are custom idents.
@@ -135,9 +182,7 @@ const MIXED_IDENT_PROPERTIES: &[&str] = &["animation", "font", "font-family", "l
 
 /// Whether the property mixes keywords with author-chosen identifiers.
 fn is_mixed_ident_property(prop: &str) -> bool {
-  let lower = prop.to_ascii_lowercase();
-  let stripped = strip_vendor_prefix(&lower);
-  MIXED_IDENT_PROPERTIES.contains(&stripped)
+  MIXED_IDENT_PROPERTIES.contains(&prop.to_ascii_lowercase().as_str())
 }
 
 /// Generic font family names (these ARE keywords in font-family/font).
@@ -338,14 +383,28 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
       continue;
     }
 
-    // Square brackets (grid line names) -- skip contents
+    // Square brackets (grid line names): `[name]` is one word to
+    // postcss-value-parser, brackets included.  With whitespace inside,
+    // the names are words of their own.
     if b == b'[' {
-      while i < len && bytes[i] != b']' {
+      let start = i;
+      let end = value[i..]
+        .find(|c: char| c == ']' || c.is_whitespace() || matches!(c, ',' | '(' | ')' | '/'))
+        .map(|at| i + at);
+      if let Some(end) = end.filter(|&end| bytes[end] == b']' && end > start + 1) {
+        i = end + 1;
+        tokens.push(ValueToken {
+          text: value[start..i].to_string(),
+          offset: start,
+          kind: TokenKind::Ident,
+        });
+      } else {
         i += 1;
       }
-      if i < len {
-        i += 1;
-      }
+      continue;
+    }
+    if b == b']' {
+      i += 1;
       continue;
     }
 
@@ -426,17 +485,16 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
       continue;
     }
 
-    // `!` -- `!important` keyword
+    // `!word` (`!default`, a mistyped `!import`): one word to
+    // postcss-value-parser, `!` included.  `!important` itself never gets
+    // here, since PostCSS keeps it out of the value.
     if b == b'!' {
-      i += 1;
-      while i < len && bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
       let start = i;
+      i += 1;
       while i < len && bytes[i].is_ascii_alphanumeric() {
         i += 1;
       }
-      if i > start {
+      if i > start + 1 {
         tokens.push(ValueToken {
           text: value[start..i].to_string(),
           offset: start,
@@ -446,8 +504,16 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
       continue;
     }
 
-    // Number (possibly with unit)
-    if b.is_ascii_digit() || (b == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit()) {
+    // Number (possibly with unit), signed or not: postcss-value-parser's
+    // `unit()` reads `-2px` as a dimension, which the rule skips.
+    let starts_number = |at: usize| {
+      bytes.get(at).is_some_and(u8::is_ascii_digit)
+        || (bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
+    };
+    if b == b'-' && starts_number(i + 1) {
+      i += 1;
+    }
+    if starts_number(i) {
       while i < len
         && (bytes[i].is_ascii_digit()
           || bytes[i] == b'.'
@@ -490,13 +556,52 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
       continue;
     }
 
+    // A unicode range (`U+0400-045F`) is no word to postcss-value-parser.
+    if (b == b'u' || b == b'U')
+      && bytes.get(i + 1) == Some(&b'+')
+      && bytes
+        .get(i + 2)
+        .is_some_and(|c| c.is_ascii_hexdigit() || *c == b'?')
+    {
+      i += 2;
+      while i < len && (bytes[i].is_ascii_hexdigit() || bytes[i] == b'?' || bytes[i] == b'-') {
+        i += 1;
+      }
+      continue;
+    }
+
     // Identifier or function name
     if b.is_ascii_alphabetic() || b == b'-' || b == b'_' {
       let start = i;
       while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
         i += 1;
       }
+      // A Sass module member (`map.get(`, `theme.$color`) is one word.
+      let mut module_member = false;
+      while i + 1 < len
+        && bytes[i] == b'.'
+        && (bytes[i + 1].is_ascii_alphabetic() || matches!(bytes[i + 1], b'$' | b'_' | b'-'))
+      {
+        module_member = true;
+        i += 1;
+        while i < len
+          && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_' | b'$'))
+        {
+          i += 1;
+        }
+      }
       let text = &value[start..i];
+      if module_member && !(i < len && bytes[i] == b'(') {
+        // `ns.$var` is not standard syntax, and Stylelint skips it.
+        if !text.contains(".$") {
+          tokens.push(ValueToken {
+            text: text.to_string(),
+            offset: start,
+            kind: TokenKind::Ident,
+          });
+        }
+        continue;
+      }
 
       // Function call
       if i < len && bytes[i] == b'(' {
@@ -573,8 +678,10 @@ fn should_check_keyword(
   _tokens: &[ValueToken],
   _idx: usize,
 ) -> bool {
+  // Stylelint matches the property exactly (lowercased): `-webkit-animation`
+  // is not `animation`.
   let prop_lower = property.to_ascii_lowercase();
-  let prop_stripped = strip_vendor_prefix(&prop_lower);
+  let prop_stripped = prop_lower.as_str();
 
   // System colors — skip (Stylelint skips them too).
   if is_system_color(token_text) {
@@ -596,7 +703,12 @@ fn should_check_keyword(
     if prop_stripped == "list-style-type" {
       return is_list_style_type_keyword(token_text);
     }
-    return false;
+    // Stylelint's animationNameKeywords and counter keywords add `none`.
+    return lower_text == "none"
+      && matches!(
+        prop_stripped,
+        "animation-name" | "counter-increment" | "counter-reset"
+      );
   }
 
   // Mixed ident properties
@@ -759,14 +871,12 @@ impl Rule for ValueKeywordCase {
 
   /// Flags keyword values not in the configured case, honouring the ignore
   /// secondaries and the SVG camelCase allowance.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    // Collect declarations from either a style rule or a standalone declaration
-    // (e.g., inside a @mixin, @function, @if at-rule).
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
+  ///
+  /// Every declaration counts, as with Stylelint's `walkDecls`: those
+  /// directly inside at-rules, SCSS variables and nested properties, and
+  /// ones whose value the CSS parser would reject.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let tree = ctx.postcss_tree();
 
     let expect_upper = ctx.primary_option_str().is_some_and(|s| s == "upper");
 
@@ -817,35 +927,16 @@ impl Rule for ValueKeywordCase {
         .unwrap_or(false)
     };
 
-    let is_scss = matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-    );
-
     let mut diags = Vec::new();
 
-    for decl in &decls {
-      let prop = &decl.property;
-
-      let decl_start = decl.span.offset;
-      let decl_end = decl_start + decl.span.length;
-      let has_source = decl_end <= ctx.source.len() && decl_start < decl_end;
-
-      let source_slice = if has_source {
-        &ctx.source[decl_start..decl_end]
-      } else {
-        ""
-      };
-
-      // Extract original property name from source for ignoreProperties matching
-      let original_prop = if has_source {
-        source_slice
-          .find(':')
-          .map(|c| source_slice[..c].trim())
-          .unwrap_or(prop)
-      } else {
-        prop
-      };
+    for decl in tree.decls() {
+      // Stylelint skips a declaration whose value is not standard syntax
+      // (a variable, a module member, interpolation).
+      if !is_standard_syntax_value(&decl.value) {
+        continue;
+      }
+      let original_prop = decl.name.as_str();
+      let prop = &original_prop.to_ascii_lowercase();
 
       // Check ignoreProperties
       if !ignore_properties.is_empty() {
@@ -859,31 +950,19 @@ impl Rule for ValueKeywordCase {
         }
       }
 
-      // Skip SCSS interpolation in values
-      if is_scss && decl.value.contains("#{") {
+      // Stylelint skips every keyword of a value holding a `#` (a hex
+      // color, an interpolation) anywhere.
+      if decl.value.contains('#') {
         continue;
       }
 
-      // Find where the value starts in the source slice (after "property:")
-      let value_offset_in_source = if has_source {
-        source_slice.find(':').map(|c| c + 1).unwrap_or(0)
-      } else {
-        0
+      // The raw value as written (Stylelint's `getDeclarationValue`):
+      // comments kept, `!important` left out.
+      let Some(value_to_tokenize) = ctx.source_slice(decl.value_span.start, decl.value_span.end)
+      else {
+        continue;
       };
-
-      // IMPORTANT: Extract value from ORIGINAL source, not decl.value.
-      // lightningcss normalizes keyword values to lowercase in its printer,
-      // which would make case checking impossible.
-      let (value_to_tokenize, value_abs_start) = if has_source {
-        let raw = &source_slice[value_offset_in_source..];
-        let trimmed_end =
-          raw.trim_end_matches(|c: char| c == ';' || c == '}' || c.is_ascii_whitespace());
-        let leading_ws = trimmed_end.len() - trimmed_end.trim_start().len();
-        let trimmed = trimmed_end.trim_start();
-        (trimmed, decl_start + value_offset_in_source + leading_ws)
-      } else {
-        (decl.value.as_str(), decl_start)
-      };
+      let value_abs_start = decl.value_span.start;
 
       let tokens = tokenize_value(value_to_tokenize);
 
@@ -978,177 +1057,119 @@ impl Rule for ValueKeywordCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use crate::empty_lines::fix_with;
+  use gale_css_parser::Syntax;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
+  /// The diagnostics for `source` in `syntax` with `options`.
+  fn lint(source: &str, syntax: Syntax, options: Option<&serde_json::Value>) -> Vec<Diagnostic> {
+    let ctx = RuleContext {
       file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
+      source,
+      syntax,
+      options,
+      cache: None,
+    };
+    ValueKeywordCase.check_root(&[], &ctx)
   }
 
-  fn ctx_with_opts(opts: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(opts),
-    }
-  }
-
-  fn style_with_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  /// The diagnostics for `a { <prop>: <value>; }` with no options.
+  fn decl(prop: &str, value: &str) -> Vec<Diagnostic> {
+    lint(&format!("a {{ {prop}: {value}; }}"), Syntax::Css, None)
   }
 
   #[test]
   fn reports_uppercase_keyword() {
-    let d = ValueKeywordCase.check(&style_with_decl("display", "BLOCK"), &ctx());
+    let d = decl("display", "BLOCK");
     assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"BLOCK\""));
-    assert!(d[0].message.contains("\"block\""));
+    assert_eq!(d[0].message, "Expected \"BLOCK\" to be \"block\"");
+    assert_eq!(d[0].span.offset, 13);
     assert!(d[0].fix.is_some());
   }
 
   #[test]
   fn allows_lowercase_keyword() {
-    let d = ValueKeywordCase.check(&style_with_decl("display", "block"), &ctx());
-    assert!(d.is_empty());
+    assert!(decl("display", "block").is_empty());
   }
 
   #[test]
   fn reports_mixed_case() {
-    let d = ValueKeywordCase.check(&style_with_decl("color", "Inherit"), &ctx());
+    let d = decl("color", "Inherit");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("\"Inherit\""));
   }
 
   #[test]
-  fn skips_url_content() {
-    let d = ValueKeywordCase.check(&style_with_decl("background-url", "url(BLOCK)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn skips_string_content() {
-    let d = ValueKeywordCase.check(&style_with_decl("content", "\"BLOCK\""), &ctx());
-    assert!(d.is_empty());
+  fn skips_urls_strings_and_animation_names() {
+    assert!(decl("background", "url(BLOCK)").is_empty());
+    assert!(decl("content", "\"BLOCK\"").is_empty());
+    assert!(decl("animation-name", "ANIMATION-NAME").is_empty());
+    assert!(decl("font-family", "Gill Sans Extrabold").is_empty());
   }
 
   #[test]
   fn skips_system_colors() {
     // Stylelint does not enforce lowercase for CSS system colors (e.g. GrayText, ButtonText).
-    // These are defined with mixed case in the CSS spec.
-    let d = ValueKeywordCase.check(&style_with_decl("color", "InactiveCaptionText"), &ctx());
-    assert!(
-      d.is_empty(),
-      "system color InactiveCaptionText should not be flagged"
-    );
-  }
-
-  #[test]
-  fn skips_animation_name() {
-    let d = ValueKeywordCase.check(&style_with_decl("animation-name", "ANIMATION-NAME"), &ctx());
-    assert!(d.is_empty());
+    assert!(decl("color", "InactiveCaptionText").is_empty());
+    assert!(decl("color", "-moz-NativeHyperlinkText").is_empty());
   }
 
   #[test]
   fn reports_font_family_generic() {
-    let d = ValueKeywordCase.check(&style_with_decl("font-family", "MONOSPACE"), &ctx());
+    assert_eq!(decl("font-family", "MONOSPACE").len(), 1);
+  }
+
+  #[test]
+  fn current_color_follows_camel_case_svg_keywords() {
+    // `lower` without camelCaseSvgKeywords wants `currentcolor`.
+    let d = decl("color", "currentColor");
     assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn reports_current_color_in_lower_mode() {
-    // With `lower` mode (default) and camelCaseSvgKeywords:false (default),
-    // Stylelint v16 reports currentColor → expected currentcolor.
-    let d = ValueKeywordCase.check(&style_with_decl("color", "currentColor"), &ctx());
-    assert_eq!(d.len(), 1, "currentColor should be flagged in lower mode");
     assert!(d[0].message.contains("currentcolor"));
-  }
-
-  #[test]
-  fn allows_currentcolor_lowercase() {
-    let d = ValueKeywordCase.check(&style_with_decl("color", "currentcolor"), &ctx());
-    assert!(
-      d.is_empty(),
-      "currentcolor (lowercase) should not be flagged"
-    );
-  }
-
-  #[test]
-  fn reports_current_color_in_border_lower_mode() {
-    let d = ValueKeywordCase.check(&style_with_decl("border-color", "currentColor"), &ctx());
+    assert_eq!(decl("border-color", "currentColor").len(), 1);
+    assert!(decl("color", "currentcolor").is_empty());
+    let camel = serde_json::json!(["lower", { "camelCaseSvgKeywords": true }]);
+    assert!(lint("a { color: currentColor; }", Syntax::Css, Some(&camel)).is_empty());
     assert_eq!(
-      d.len(),
-      1,
-      "currentColor in border-color should be flagged in lower mode"
+      lint("a { color: currentcolor; }", Syntax::Css, Some(&camel)).len(),
+      1
     );
-  }
-
-  #[test]
-  fn allows_current_color_when_camel_case_svg_keywords_enabled() {
-    // camelCaseSvgKeywords:true + lower: expected = camelCase canonical (currentColor)
-    let opts = serde_json::json!(["lower", { "camelCaseSvgKeywords": true }]);
-    let ctx = ctx_with_opts(&opts);
-    let d = ValueKeywordCase.check(&style_with_decl("color", "currentColor"), &ctx);
-    assert!(
-      d.is_empty(),
-      "currentColor should be allowed when camelCaseSvgKeywords:true"
-    );
-    // Lowercase should be flagged
-    let d2 = ValueKeywordCase.check(&style_with_decl("color", "currentcolor"), &ctx);
-    assert_eq!(
-      d2.len(),
-      1,
-      "currentcolor should be flagged when camelCaseSvgKeywords:true"
-    );
-  }
-
-  #[test]
-  fn skips_font_family_custom() {
-    let d = ValueKeywordCase.check(
-      &style_with_decl("font-family", "Gill Sans Extrabold"),
-      &ctx(),
-    );
-    assert!(d.is_empty());
   }
 
   #[test]
   fn reports_georgia_in_custom_property() {
     let source = ":root {\n  --font-serif: var(--font-roboto-serif), ui-serif, Georgia;\n}";
-    let var_offset = source.find("--font-serif:").unwrap();
-    let var_end = source.find("Georgia;").unwrap() + "Georgia;".len();
-    let node = CssNode::Style(StyleRule {
-      selector: ":root".to_string(),
-      declarations: vec![Declaration {
-        property: "--font-serif".to_string(),
-        value: "var(--font-roboto-serif), ui-serif, Georgia".to_string(),
-        span: ParserSpan::new(var_offset, var_end - var_offset),
-        important: false,
-      }],
-      span: ParserSpan::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-    };
-    let d = ValueKeywordCase.check(&node, &ctx);
+    let d = lint(source, Syntax::Css, None);
     assert!(d.iter().any(|diag| diag.message.contains("Georgia")));
+  }
+
+  #[test]
+  fn checks_every_declaration_postcss_sees() {
+    // Directly inside an at-rule, and with a value the CSS parser rejects.
+    assert_eq!(
+      lint("@media (min-width: 1px) { color: Red; }", Syntax::Css, None).len(),
+      1
+    );
+    let d = lint("a { display: block !Import; }", Syntax::Css, None);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].message, "Expected \"!Import\" to be \"!import\"");
+    assert_eq!(d[0].span.offset, 19);
+    // SCSS variables and nested properties are declarations too.
+    let scss = "$c: Red;\na { font: { family: Arial; } }";
+    assert_eq!(lint(scss, Syntax::Scss, None).len(), 2);
+    // `!important` is not part of the value, and a variable value is skipped.
+    assert!(lint("a { color: red !IMPORTANT; top: $X; }", Syntax::Scss, None).is_empty());
+  }
+
+  #[test]
+  fn fix_rewrites_the_keyword_in_place() {
+    assert_eq!(
+      fix_with(
+        "value-keyword-case",
+        serde_json::json!("lower"),
+        "@media screen { color: GREEN; @media (min-width: 1px) { color: Red !important; } }",
+        Syntax::Css,
+      ),
+      "@media screen { color: green; @media (min-width: 1px) { color: red !important; } }"
+    );
   }
 
   #[test]

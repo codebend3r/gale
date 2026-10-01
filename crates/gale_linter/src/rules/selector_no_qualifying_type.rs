@@ -611,6 +611,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
 
@@ -672,6 +673,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&serde_json::json!({"ignore": ["id"]})),
+      cache: None,
     };
     let node = style_with_selector("div#bar");
     let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
@@ -688,6 +690,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: Some(&serde_json::json!({"ignore": ["class"]})),
+      cache: None,
     };
     let node = style_with_selector("ul.list");
     let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
@@ -752,6 +755,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let parent = CssNode::Style(StyleRule {
       selector: ".#{$var}".to_string(),

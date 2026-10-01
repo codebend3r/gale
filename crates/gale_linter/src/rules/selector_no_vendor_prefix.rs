@@ -1,36 +1,25 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::autoprefixable;
+use crate::pattern;
 use crate::rule::{Rule, RuleContext};
+use crate::selector::postcss::{self, Kind};
+use crate::standard_syntax::is_standard_syntax_selector;
 
 /// Disallow vendor prefixes in selectors.
 ///
 /// Equivalent to Stylelint's `selector-no-vendor-prefix` rule.
-/// Only flags vendor-prefixed selectors that have standard (unprefixed)
-/// equivalents — i.e., selectors that autoprefixer can handle.
+/// Only flags vendor-prefixed pseudo-classes and pseudo-elements that have
+/// standard (unprefixed) equivalents — i.e., ones Autoprefixer can handle.
 /// Browser-specific pseudo-elements/classes (like `::-webkit-slider-thumb`)
-/// that have no standard equivalent are NOT flagged.
+/// that have no standard equivalent are NOT flagged.  The fix strips the
+/// prefix and keeps the rest of the name as written.
 pub struct SelectorNoVendorPrefix;
 
-/// Vendor-prefixed selectors that have standard equivalents and should be
-/// flagged. This list matches the `SELECTORS` set from Stylelint's
-/// `isAutoprefixable` utility, which is derived from Autoprefixer's data.
-const AUTOPREFIXABLE_SELECTORS: &[&str] = &[
-  ":-moz-any-link",
-  ":-moz-full-screen",
-  ":-moz-placeholder",
-  ":-moz-placeholder-shown",
-  ":-moz-read-only",
-  ":-moz-read-write",
-  ":-ms-fullscreen",
-  ":-ms-input-placeholder",
-  ":-webkit-any-link",
-  ":-webkit-full-screen",
-  "::-moz-placeholder",
-  "::-moz-selection",
-  "::-ms-input-placeholder",
-  "::-webkit-backdrop",
-  "::-webkit-input-placeholder",
+/// Stylelint's `prefixes`, which a selector must mention to be looked at.
+const PREFIXES: &[&str] = &[
+  "-webkit-", "-moz-", "-ms-", "-o-", "-xv-", "-apple-", "-wap-", "-khtml-",
 ];
 
 impl Rule for SelectorNoVendorPrefix {
@@ -46,141 +35,139 @@ impl Rule for SelectorNoVendorPrefix {
     Severity::Warning
   }
 
-  /// Flags vendor-prefixed selectors that have a standard equivalent. Prefixed
-  /// selectors with no standard form are left alone.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let selector_lower = rule.selector.to_ascii_lowercase();
+  /// Flags vendor-prefixed pseudos that have a standard equivalent, in every
+  /// style rule's selector as written, skipping `ignoreSelectors`.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let ignore = ctx
+      .secondary_options()
+      .and_then(|v| v.get("ignoreSelectors"));
     let mut diags = Vec::new();
-
-    for &autoprefixable in AUTOPREFIXABLE_SELECTORS {
-      if selector_lower.contains(autoprefixable) {
+    for rule in &ctx.scanned_rules().style_rules {
+      let lower = rule.prelude.to_ascii_lowercase();
+      if !PREFIXES.iter().any(|prefix| lower.contains(prefix))
+        || !is_standard_syntax_selector(&rule.prelude)
+      {
+        continue;
+      }
+      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+        continue;
+      };
+      postcss::walk(&selectors, &mut |visit| {
+        let pseudo = visit.node;
+        if pseudo.kind != Kind::Pseudo
+          || !autoprefixable::selector(&pseudo.value)
+          || pattern::option_matches(ignore, &pseudo.value)
+        {
+          return;
+        }
+        let span = Span::new(pseudo.start, pseudo.value.len());
+        let unprefixed = autoprefixable::unprefix(&pseudo.value);
         diags.push(
           Diagnostic::new(
             self.name(),
-            format!(
-              "Unexpected vendor-prefixed selector \"{}\"",
-              rule.selector.trim()
-            ),
+            format!("Unexpected vendor-prefixed selector \"{}\"", pseudo.value),
           )
           .severity(self.default_severity())
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          .span(span)
+          .fix(Fix::new(
+            format!("Change \"{}\" to \"{unprefixed}\"", pseudo.value),
+            vec![Edit::new(span, unprefixed)],
+          )),
         );
-        break; // one diagnostic per selector is enough
-      }
+      });
     }
-
     diags
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
+
+  use crate::{LintRunner, RuleRegistry};
+
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "selector-no-vendor-prefix".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
+    );
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
+  }
+
+  #[test]
+  fn strips_the_prefix_keeping_the_name_as_written() {
+    let on = serde_json::json!(true);
+    assert_eq!(
+      fix(":-wEbKiT-fUlL-sCrEeN a {}", on.clone()),
+      ":fUlL-sCrEeN a {}"
+    );
+    assert_eq!(
+      fix("input::-ms-clear + input::-moz-placeholder {}", on.clone()),
+      "input::-ms-clear + input::placeholder {}"
+    );
+    let warnings = lint("body, :-ms-fullscreen a {}", on);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(
+      warnings[0].message,
+      "Unexpected vendor-prefixed selector \":-ms-fullscreen\""
+    );
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (6, 15));
+  }
+
+  #[test]
+  fn leaves_attribute_values_and_unlisted_pseudos_alone() {
+    let on = serde_json::json!(true);
+    for css in [
+      "a[data-foo=\":-webkit-full-screen\"] {}",
+      "input::-webkit-slider-thumb {}",
+      ":fullscreen a {}",
+    ] {
+      assert!(lint(css, on.clone()).is_empty(), "{css}");
     }
   }
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
-
   #[test]
-  fn reports_webkit_input_placeholder() {
-    let d =
-      SelectorNoVendorPrefix.check(&style_with_selector("::-webkit-input-placeholder"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("-webkit-"));
-  }
-
-  #[test]
-  fn reports_moz_placeholder() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("::-moz-placeholder"), &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn reports_ms_input_placeholder() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector(":-ms-input-placeholder"), &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn reports_webkit_full_screen() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector(":-webkit-full-screen"), &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn allows_standard_selector() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("::placeholder"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_class_selector() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector(".my-class"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_webkit_slider_thumb() {
-    // ::-webkit-slider-thumb has no standard equivalent — not autoprefixable.
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("&::-webkit-slider-thumb"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_moz_range_thumb() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("&::-moz-range-thumb"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_webkit_autofill() {
-    // :-webkit-autofill has no standard equivalent — not autoprefixable.
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("&:-webkit-autofill"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_moz_focusring() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("&:-moz-focusring"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_webkit_calendar_picker_indicator() {
-    let d = SelectorNoVendorPrefix.check(
-      &style_with_selector("::-webkit-calendar-picker-indicator"),
-      &ctx(),
+  fn ignore_selectors_matches_strings_and_regexes() {
+    let options = serde_json::json!([true, {
+      "ignoreSelectors": ["::-webkit-input-placeholder", "/-moz-.*/", "/-screen$/"]
+    }]);
+    for css in [
+      "input::-webkit-input-placeholder {}",
+      "input::-moz-placeholder {}",
+      ":-webkit-full-screen a {}",
+    ] {
+      assert!(lint(css, options.clone()).is_empty(), "{css}");
+    }
+    assert_eq!(
+      fix("input::-ms-input-placeholder {}", options),
+      "input::input-placeholder {}"
     );
-    assert!(d.is_empty());
   }
 
   #[test]
-  fn allows_moz_focus_inner() {
-    let d = SelectorNoVendorPrefix.check(&style_with_selector("::-moz-focus-inner"), &ctx());
-    assert!(d.is_empty());
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!([true, { "disableFix": true }]);
+    assert_eq!(lint(":-ms-fullscreen {}", options.clone()).len(), 1);
+    assert_eq!(fix(":-ms-fullscreen {}", options), ":-ms-fullscreen {}");
   }
 }

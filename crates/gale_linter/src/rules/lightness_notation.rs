@@ -1,27 +1,25 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
+use crate::js_number::{parse_float, to_js_string, to_precision};
 use crate::rule::{Rule, RuleContext};
+use crate::standard_syntax::is_standard_syntax_value;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Require number or percentage notation for lightness values in color functions.
+/// Specify number or percentage notation for lightness.
 ///
-/// In "percentage" mode (default), flags plain numbers used as lightness in
-/// `hsl()`, `hsla()`, `lch()`, `oklch()`, `lab()`, `oklab()`.
-///
-/// Equivalent to Stylelint's `lightness-notation` rule with "percentage" option.
+/// Equivalent to Stylelint's `lightness-notation` rule, including its
+/// autofix.  Checks the lightness channel of `lab()`, `lch()`, `oklab()` and
+/// `oklch()`, also in relative color syntax.  Primary option: `"percentage"`
+/// or `"number"`.  `oklab()`/`oklch()` lightness runs from 0 to 1 as a
+/// number, so their fixes scale by 100; `lab()`/`lch()` keep the number.
 pub struct LightnessNotation;
 
-/// Color functions and the (0-based) index of the lightness argument.
-/// For `hsl`/`hsla`: lightness is the 3rd argument (index 2).
-/// For `lch`/`oklch`/`lab`/`oklab`: lightness is the 1st argument (index 0).
-const LIGHTNESS_FUNCTIONS: &[(&str, usize)] = &[
-  ("hsl(", 2),
-  ("hsla(", 2),
-  ("lch(", 0),
-  ("oklch(", 0),
-  ("lab(", 0),
-  ("oklab(", 0),
-];
+/// Functions whose numeric lightness runs from 0 to 1.
+const ZERO_TO_ONE: &[&str] = &["oklab", "oklch"];
+
+/// Functions whose numeric lightness runs from 0 to 100.
+const ZERO_TO_HUNDRED: &[&str] = &["lab", "lch"];
 
 impl Rule for LightnessNotation {
   fn name(&self) -> &'static str {
@@ -36,182 +34,269 @@ impl Rule for LightnessNotation {
     Severity::Warning
   }
 
-  /// Flags lightness arguments written in the notation the option forbids, using
-  /// the per-function index of the lightness component.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
+  /// Reports every lightness in the wrong notation, with a fix that converts
+  /// it the way Stylelint does.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+    let want_percentage = match ctx.primary_option_str() {
+      Some("percentage") => true,
+      Some("number") => false,
+      _ => return Vec::new(),
     };
+    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      let lower = decl.value.to_ascii_lowercase();
-      for &(func, lightness_idx) in LIGHTNESS_FUNCTIONS {
-        let mut search_from = 0;
-        while let Some(pos) = lower[search_from..].find(func) {
-          let abs_pos = search_from + pos;
-          // Avoid matching `lch(` inside `oklch(` or `lab(` inside `oklab(`
-          if abs_pos > 0 && lower.as_bytes()[abs_pos - 1].is_ascii_alphabetic() {
-            search_from = abs_pos + 1;
-            continue;
-          }
-          let args_start = abs_pos + func.len();
-          if let Some(close) = lower[args_start..].find(')') {
-            let args = &decl.value[args_start..args_start + close];
-            // Split arguments: comma-separated (legacy) or space-separated (modern).
-            // For modern syntax with `/`, only consider the part before `/`.
-            let args_before_slash = if let Some(slash_pos) = args.find('/') {
-              &args[..slash_pos]
-            } else {
-              args
-            };
-            let parts: Vec<&str> = if args_before_slash.contains(',') {
-              args_before_slash.split(',').map(|s| s.trim()).collect()
-            } else {
-              args_before_slash.split_whitespace().collect()
-            };
 
-            if lightness_idx < parts.len() {
-              let lightness_val = parts[lightness_idx].trim();
-              // In "percentage" mode: flag if it's a plain number (no %).
-              if !lightness_val.is_empty()
-                && !lightness_val.ends_with('%')
-                && is_numeric(lightness_val)
-              {
-                let fn_name = &func[..func.len() - 1];
-                diags.push(
-                  Diagnostic::new(
-                    self.name(),
-                    format!("Expected percentage notation for lightness in {fn_name}()"),
-                  )
-                  .severity(self.default_severity())
-                  .span(Span::new(decl.span.offset, decl.span.length)),
-                );
-              }
-            }
-          }
-          search_from = abs_pos + 1;
-        }
+    for decl in tree.decls() {
+      let Some(value) = ctx.source_slice(decl.value_span.start, decl.value_span.end) else {
+        continue;
+      };
+      if !mentions_lightness_function(value) {
+        continue;
       }
+      let parsed = value_parser::parse(value);
+      let mut check = |node: &ValueNode<'_>| {
+        if node.kind != NodeKind::Function {
+          return;
+        }
+        let function = node.value.to_ascii_lowercase();
+        if !ZERO_TO_ONE.contains(&function.as_str())
+          && !ZERO_TO_HUNDRED.contains(&function.as_str())
+        {
+          return;
+        }
+        let Some(lightness) = find_lightness(node) else {
+          return;
+        };
+        let unfixed = lightness.value;
+        if !is_standard_syntax_value(unfixed) {
+          return;
+        }
+        let Some((_, unit)) = value_parser::unit(unfixed) else {
+          return;
+        };
+        let is_percentage = unit == "%";
+        let is_number = unit.is_empty();
+        if !(is_percentage || is_number)
+          || (want_percentage && is_percentage)
+          || (!want_percentage && is_number)
+        {
+          return;
+        }
+        let fixed = if want_percentage {
+          as_percentage(unfixed, &function)
+        } else {
+          as_number(unfixed, &function)
+        };
+        let start = decl.value_span.start + lightness.source_index;
+        let span = Span::new(start, lightness.source_end_index - lightness.source_index);
+        diags.push(
+          Diagnostic::new(
+            self.name(),
+            format!("Expected \"{unfixed}\" to be \"{fixed}\""),
+          )
+          .severity(self.default_severity())
+          .span(span)
+          .fix(Fix::new(
+            format!("Replace \"{unfixed}\" with \"{fixed}\""),
+            vec![Edit::new(span, fixed.clone())],
+          )),
+        );
+      };
+      value_parser::walk(&parsed, &mut |node| {
+        check(node);
+        true
+      });
     }
     diags
   }
 }
 
-/// Check if a string is a plain numeric value (integer or decimal, possibly with sign).
-fn is_numeric(s: &str) -> bool {
-  if s.is_empty() {
-    return false;
-  }
-  let mut has_digit = false;
-  let mut has_dot = false;
-  for (i, c) in s.chars().enumerate() {
-    if c == '.' {
-      if has_dot {
-        return false;
+/// Whether `value` calls a lightness color function (Stylelint tests
+/// `/\b(?:oklab|oklch|lab|lch)\(/i`).
+fn mentions_lightness_function(value: &str) -> bool {
+  let lower = value.to_ascii_lowercase();
+  lower.match_indices('(').any(|(paren, _)| {
+    ZERO_TO_ONE.iter().chain(ZERO_TO_HUNDRED).any(|name| {
+      lower[..paren].ends_with(name) && {
+        let start = paren - name.len();
+        start == 0 || {
+          let prev = lower.as_bytes()[start - 1];
+          !(prev.is_ascii_alphanumeric() || prev == b'_')
+        }
       }
-      has_dot = true;
-    } else if c.is_ascii_digit() {
-      has_digit = true;
-    } else if c == '-' || c == '+' {
-      if i != 0 {
-        return false;
-      }
-    } else {
-      return false;
-    }
+    })
+  })
+}
+
+/// The lightness argument: the first channel, after `from <color>` in
+/// relative color syntax.
+fn find_lightness<'n, 'a>(node: &'n ValueNode<'a>) -> Option<&'n ValueNode<'a>> {
+  let args: Vec<&ValueNode<'a>> = node
+    .nodes
+    .iter()
+    .filter(|n| n.kind == NodeKind::Word || n.kind == NodeKind::Function)
+    .collect();
+  let relative = args
+    .first()
+    .is_some_and(|a| a.value.eq_ignore_ascii_case("from"));
+  args.get(if relative { 2 } else { 0 }).copied()
+}
+
+/// Stylelint's `asPercentage`.
+fn as_percentage(value: &str, function: &str) -> String {
+  let mut num = parse_float(value);
+  if ZERO_TO_HUNDRED.contains(&function) {
+    return format!("{}%", to_js_string(num));
   }
-  has_digit
+  if ZERO_TO_ONE.contains(&function) {
+    num *= 100.0;
+  }
+  if num.is_finite() && num.fract() == 0.0 {
+    return format!("{}%", to_js_string(num));
+  }
+  format!("{}%", round_to_number_of_digits(num, value))
+}
+
+/// Stylelint's `asNumber`.
+fn as_number(value: &str, function: &str) -> String {
+  let num = parse_float(value);
+  if ZERO_TO_ONE.contains(&function) {
+    return round_to_number_of_digits(num / 100.0, value);
+  }
+  to_js_string(num)
+}
+
+/// Stylelint's `roundToNumberOfDigits`: `num` to as many significant digits
+/// as `value` has, with trailing zeros (and a bare point) trimmed.
+fn round_to_number_of_digits(num: f64, value: &str) -> String {
+  if num == 0.0 {
+    return "0".to_string();
+  }
+  let precision = value.replace(['%', '.'], "").chars().count();
+  if precision == 0 {
+    return to_js_string(num);
+  }
+  let rounded = to_precision(num, precision);
+  // `.replace(/\.?0+$/, '')`
+  let without_zeros = rounded.trim_end_matches('0');
+  if without_zeros.len() == rounded.len() {
+    return rounded;
+  }
+  without_zeros
+    .strip_suffix('.')
+    .unwrap_or(without_zeros)
+    .to_string()
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
-  }
+  use super::round_to_number_of_digits;
+  use crate::fix_testing::{fix, warnings};
 
-  fn style_with_value(value: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: value.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  const RULE: &str = "lightness-notation";
+
+  #[test]
+  fn fixes_to_percentages() {
+    let percentage = || json!(["percentage"]);
+    assert_eq!(
+      fix(
+        RULE,
+        percentage(),
+        "a { color: oklch(0.5 0.2 120) }",
+        Syntax::Css
+      ),
+      "a { color: oklch(50% 0.2 120) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        percentage(),
+        "a { color: oklab(0.123 0.1 0.1) }",
+        Syntax::Css
+      ),
+      "a { color: oklab(12.3% 0.1 0.1) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        percentage(),
+        "a { color: LCH(56.29 19.86 10) }",
+        Syntax::Css
+      ),
+      "a { color: LCH(56.29% 19.86 10) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        percentage(),
+        "a { color: lab(from red 50 a b) }",
+        Syntax::Css
+      ),
+      "a { color: lab(from red 50% a b) }"
+    );
   }
 
   #[test]
-  fn reports_number_lightness_in_hsl() {
-    let d = LightnessNotation.check(&style_with_value("hsl(0, 100%, 50)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("hsl()"));
+  fn fixes_to_numbers() {
+    let number = || json!(["number"]);
+    assert_eq!(
+      fix(
+        RULE,
+        number(),
+        "a { color: oklch(56.29% 0.2 120) }",
+        Syntax::Css
+      ),
+      "a { color: oklch(0.5629 0.2 120) }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        number(),
+        "a { color: lch(50% 19.86 10) }",
+        Syntax::Css
+      ),
+      "a { color: lch(50 19.86 10) }"
+    );
   }
 
   #[test]
-  fn allows_percentage_lightness_in_hsl() {
-    let d = LightnessNotation.check(&style_with_value("hsl(0, 100%, 50%)"), &ctx());
-    assert!(d.is_empty());
+  fn rounds_like_stylelint() {
+    assert_eq!(round_to_number_of_digits(0.5, "50%"), "0.5");
+    assert_eq!(round_to_number_of_digits(1.0, "100%"), "1");
+    assert_eq!(round_to_number_of_digits(0.0, "0%"), "0");
+    assert_eq!(round_to_number_of_digits(12.3456, "0.123456"), "12.3456");
   }
 
   #[test]
-  fn reports_number_lightness_in_lch() {
-    let d = LightnessNotation.check(&style_with_value("lch(50 30 120)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("lch()"));
+  fn ignores_variables_and_other_functions() {
+    let percentage = || json!(["percentage"]);
+    assert!(
+      warnings(
+        RULE,
+        percentage(),
+        "a { color: oklch($l 0.2 120) }",
+        Syntax::Scss
+      )
+      .is_empty()
+    );
+    assert!(
+      warnings(
+        RULE,
+        percentage(),
+        "a { color: hsl(120 60 70) }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
   }
 
   #[test]
-  fn allows_percentage_lightness_in_lch() {
-    let d = LightnessNotation.check(&style_with_value("lch(50% 30 120)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_number_lightness_in_oklch() {
-    let d = LightnessNotation.check(&style_with_value("oklch(0.5 0.2 120)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("oklch()"));
-  }
-
-  #[test]
-  fn allows_percentage_lightness_in_oklch() {
-    let d = LightnessNotation.check(&style_with_value("oklch(50% 0.2 120)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_number_lightness_in_lab() {
-    let d = LightnessNotation.check(&style_with_value("lab(50 -20 40)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("lab()"));
-  }
-
-  #[test]
-  fn allows_percentage_lightness_in_oklab() {
-    let d = LightnessNotation.check(&style_with_value("oklab(50% -0.1 0.1)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_hsl_modern_syntax_with_percentage() {
-    let d = LightnessNotation.check(&style_with_value("hsl(0 100% 50%)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_hsl_modern_syntax_without_percentage() {
-    let d = LightnessNotation.check(&style_with_value("hsl(0 100% 50)"), &ctx());
-    assert_eq!(d.len(), 1);
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = json!(["percentage", { "disableFix": true }]);
+    let source = "a { color: oklch(0.5 0.2 120) }";
+    assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
+    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

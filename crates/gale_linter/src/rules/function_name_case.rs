@@ -255,6 +255,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       options,
+      cache: None,
     }
   }
 

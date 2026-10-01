@@ -19,20 +19,72 @@ pub struct RawStyleRule {
   pub parent: Option<usize>,
 }
 
+/// An at-rule's name and params as written in the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawAtRule {
+  /// The name without the `@`, as written.
+  pub name: String,
+  /// The params with surrounding whitespace removed.
+  pub params: String,
+  /// Byte offset of the `@`.
+  pub offset: usize,
+  /// Byte offset of `params`.
+  pub params_offset: usize,
+  /// Whether the at-rule has a `{ ... }` block rather than ending with `;`.
+  pub has_block: bool,
+}
+
+/// The style rules and at-rules of a stylesheet, as written, from one scan
+/// of its source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScannedRules {
+  /// Every style rule prelude, as [`scan_style_rules`] finds them.
+  pub style_rules: Vec<RawStyleRule>,
+  /// Every at-rule, as [`scan_at_rules`] finds them.
+  pub at_rules: Vec<RawAtRule>,
+}
+
+/// Find every style rule prelude and every at-rule in `source` in one pass.
+///
+/// Rules get this for the file they lint from
+/// [`RuleContext::scanned_rules`](crate::rule::RuleContext::scanned_rules),
+/// which scans once per file for all of them.
+pub fn scan(source: &str, syntax: Syntax) -> ScannedRules {
+  let mut scanned = ScannedRules::default();
+  scanner(source, syntax).scan_block(
+    0,
+    source.len(),
+    None,
+    false,
+    &mut scanned.style_rules,
+    &mut scanned.at_rules,
+  );
+  scanned
+}
+
 /// Find every style rule prelude in `source`, in document order.
 ///
 /// Keyframe selectors such as `from` and `50%` are not style rules and are
 /// left out, as is anything nested under them.
 pub fn scan_style_rules(source: &str, syntax: Syntax) -> Vec<RawStyleRule> {
-  let scanner = BlockScanner {
+  scan(source, syntax).style_rules
+}
+
+/// Find every at-rule in `source` that has a block or ends with `;`, nested
+/// ones included, in document order.  Unlike the parsed AST, this sees
+/// at-rules nested in plain CSS style rules.
+pub fn scan_at_rules(source: &str, syntax: Syntax) -> Vec<RawAtRule> {
+  scan(source, syntax).at_rules
+}
+
+/// A scanner over `source`.
+fn scanner(source: &str, syntax: Syntax) -> BlockScanner<'_> {
+  BlockScanner {
     bytes: source.as_bytes(),
     source,
     // Plain CSS has no `//` line comments; every preprocessor syntax does.
     line_comments: !matches!(syntax, Syntax::Css),
-  };
-  let mut out = Vec::new();
-  scanner.scan_block(0, source.len(), None, false, &mut out);
-  out
+  }
 }
 
 /// Walks the byte stream of a stylesheet, tracking braces, strings and
@@ -52,6 +104,7 @@ impl BlockScanner<'_> {
     parent: Option<usize>,
     in_keyframes: bool,
     out: &mut Vec<RawStyleRule>,
+    at_rules: &mut Vec<RawAtRule>,
   ) {
     let mut pos = start;
     loop {
@@ -64,7 +117,10 @@ impl BlockScanner<'_> {
         return;
       };
       match terminator {
-        b';' => pos = at + 1,
+        b';' => {
+          self.record_at_rule(stmt_start, at, false, at_rules);
+          pos = at + 1;
+        }
         b'}' => return,
         _ => {
           // An opening brace: a rule, an at-rule, or a nested property block.
@@ -72,8 +128,16 @@ impl BlockScanner<'_> {
           let block_start = at + 1;
           let block_end = self.find_block_end(block_start, end);
           if prelude.starts_with('@') {
+            self.record_at_rule(stmt_start, at, true, at_rules);
             let nested_keyframes = in_keyframes || at_rule_name(prelude).ends_with("keyframes");
-            self.scan_block(block_start, block_end, parent, nested_keyframes, out);
+            self.scan_block(
+              block_start,
+              block_end,
+              parent,
+              nested_keyframes,
+              out,
+              at_rules,
+            );
           } else if prelude.is_empty() || prelude.ends_with(':') {
             // A Sass nested-property block; its body holds declarations.
           } else if in_keyframes {
@@ -85,12 +149,40 @@ impl BlockScanner<'_> {
               offset: stmt_start,
               parent,
             });
-            self.scan_block(block_start, block_end, Some(index), false, out);
+            self.scan_block(block_start, block_end, Some(index), false, out, at_rules);
           }
           pos = (block_end + 1).min(end);
         }
       }
     }
+  }
+
+  /// Record the statement in `[start, end)` if it is an at-rule.
+  fn record_at_rule(
+    &self,
+    start: usize,
+    end: usize,
+    has_block: bool,
+    at_rules: &mut Vec<RawAtRule>,
+  ) {
+    let Some(text) = self.source.get(start..end) else {
+      return;
+    };
+    let Some(rest) = text.strip_prefix('@') else {
+      return;
+    };
+    let name_len = rest
+      .find(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+      .unwrap_or(rest.len());
+    let after = &rest[name_len..];
+    let leading = after.len() - after.trim_start().len();
+    at_rules.push(RawAtRule {
+      name: rest[..name_len].to_string(),
+      params: after.trim().to_string(),
+      offset: start,
+      params_offset: start + 1 + name_len + leading,
+      has_block,
+    });
   }
 
   /// Skip whitespace and comments starting at `pos`.
@@ -184,6 +276,12 @@ impl BlockScanner<'_> {
         0
       };
       match b {
+        // An escaped character, such as the quote in `[a=b\'c]`, is not
+        // syntax.
+        b'\\' => {
+          pos += 2;
+          continue;
+        }
         b'"' | b'\'' => {
           pos = self.skip_string(pos, end);
           continue;
@@ -221,6 +319,12 @@ impl BlockScanner<'_> {
         0
       };
       match b {
+        // An escaped character, such as the quote in `[a=b\'c]`, is not
+        // syntax.
+        b'\\' => {
+          pos += 2;
+          continue;
+        }
         b'"' | b'\'' => {
           pos = self.skip_string(pos, end);
           continue;
@@ -321,6 +425,36 @@ mod tests {
     assert_eq!(
       preludes("a[title=\"{\"] {}"),
       vec![("a[title=\"{\"]".into(), 0, None)]
+    );
+  }
+
+  #[test]
+  fn escaped_quotes_do_not_open_a_string() {
+    assert_eq!(
+      preludes("[href=te\\'s\\\"t] { } b {}"),
+      vec![
+        ("[href=te\\'s\\\"t]".into(), 0, None),
+        ("b".into(), 20, None)
+      ]
+    );
+  }
+
+  #[test]
+  fn finds_at_rules_nested_anywhere() {
+    let found: Vec<(String, String, usize, usize, bool)> = scan_at_rules(
+      "@import 'a';\na { @media  (x) { b {} } }\n@MEDIA print{}",
+      Syntax::Css,
+    )
+    .into_iter()
+    .map(|r| (r.name, r.params, r.offset, r.params_offset, r.has_block))
+    .collect();
+    assert_eq!(
+      found,
+      vec![
+        ("import".into(), "'a'".into(), 0, 8, false),
+        ("media".into(), "(x)".into(), 17, 25, true),
+        ("MEDIA".into(), "print".into(), 40, 47, true),
+      ]
     );
   }
 

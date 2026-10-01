@@ -1666,6 +1666,7 @@ mod tests {
       source: "",
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     }
   }
   fn css_context() -> RuleContext<'static> {
@@ -1674,6 +1675,7 @@ mod tests {
       source: "",
       syntax: Syntax::Css,
       options: None,
+      cache: None,
     }
   }
   fn make_node(property: &str, value: &str) -> CssNode {
@@ -1930,6 +1932,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &ctx);
     assert!(
@@ -1960,6 +1963,7 @@ mod tests {
       source,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags = rule.check_root(&[], &ctx);
     assert!(
@@ -1992,6 +1996,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
     assert!(
@@ -2013,6 +2018,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
     assert!(
@@ -2044,6 +2050,7 @@ mod tests {
       source: scss,
       syntax: Syntax::Scss,
       options: None,
+      cache: None,
     };
     let diags: Vec<_> = result
       .nodes
