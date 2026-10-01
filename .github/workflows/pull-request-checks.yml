@@ -118,28 +118,3 @@ jobs:
       - name: Check the published file list
         run: npm pack --dry-run
         working-directory: npm
-
-  benchmark:
-    name: Benchmark
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install hyperfine
-        # Without it benchmark-quick.sh silently degrades to `time`, whose output
-        # is too noisy on shared runners to be worth reading.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y hyperfine
-
-      - name: Build release
-        run: cargo build --release
-
-      - name: Run benchmark
-        run: bash benchmarks/benchmark-quick.sh
