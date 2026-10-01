@@ -182,6 +182,52 @@ pub fn parse(text: &str, base: usize) -> Option<Vec<Selector>> {
   Some(selectors)
 }
 
+/// PostCSS's `rule.selectors`: the selector split at commas outside
+/// parentheses, brackets and strings, each trimmed.
+pub fn rule_selectors(selector: &str) -> Vec<&str> {
+  let bytes = selector.as_bytes();
+  let mut parts = Vec::new();
+  let mut depth = 0usize;
+  let mut quote: Option<u8> = None;
+  let mut escaped = false;
+  let mut start = 0;
+  for (i, &b) in bytes.iter().enumerate() {
+    if escaped {
+      escaped = false;
+      continue;
+    }
+    match (quote, b) {
+      (_, b'\\') => escaped = true,
+      (Some(q), _) if b == q => quote = None,
+      (Some(_), _) => {}
+      (None, b'"' | b'\'') => quote = Some(b),
+      (None, b'(' | b'[') => depth += 1,
+      (None, b')' | b']') => depth = depth.saturating_sub(1),
+      (None, b',') if depth == 0 => {
+        parts.push(selector[start..i].trim());
+        start = i + 1;
+      }
+      _ => {}
+    }
+  }
+  parts.push(selector[start..].trim());
+  parts
+}
+
+/// `text` without its `/* ... */` comments.
+pub fn strip_comments(text: &str) -> String {
+  let mut out = String::with_capacity(text.len());
+  let mut rest = text;
+  while let Some(open) = rest.find("/*") {
+    out.push_str(&rest[..open]);
+    rest = rest[open + 2..]
+      .find("*/")
+      .map_or("", |close| &rest[open + 2 + close + 2..]);
+  }
+  out.push_str(rest);
+  out
+}
+
 // ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
@@ -1076,6 +1122,15 @@ mod tests {
     for text in ["a]", "a;", ":", "a)", "[\"x\"]", "a\"b", "/* x"] {
       assert!(parse(text, 0).is_none(), "{text}");
     }
+  }
+
+  #[test]
+  fn splits_rule_selectors_like_postcss() {
+    assert_eq!(
+      rule_selectors("a, b:is(c, d) , [e=','] f"),
+      vec!["a", "b:is(c, d)", "[e=','] f"]
+    );
+    assert_eq!(strip_comments("a /* b */ c/**/"), "a  c");
   }
 
   #[test]
