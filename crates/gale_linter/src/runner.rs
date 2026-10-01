@@ -704,10 +704,15 @@ fn debug_panic(rule_name: &str, source: &str) {
 }
 
 /// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
+///
+/// Read once per process rather than once per file.
 fn perf_enabled() -> bool {
-  std::env::var("GALE_DEBUG_PERF")
-    .map(|v| v == "1")
-    .unwrap_or(false)
+  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+  *ENABLED.get_or_init(|| {
+    std::env::var("GALE_DEBUG_PERF")
+      .map(|v| v == "1")
+      .unwrap_or(false)
+  })
 }
 
 /// The main lint runner that applies enabled rules to parsed CSS.
@@ -1228,7 +1233,7 @@ impl LintRunner {
   }
 
   /// The registered rules behind `names`, and the names the registry does
-  /// not know (in one pass, as the registry lookup is a linear scan).
+  /// not know.
   fn resolve_rules<'r>(&'r self, names: &'r [String]) -> (Vec<&'r dyn Rule>, Vec<&'r str>) {
     let mut active = Vec::with_capacity(names.len());
     let mut missing = Vec::new();
