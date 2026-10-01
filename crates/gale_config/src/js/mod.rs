@@ -245,7 +245,8 @@ fn extract_braced_object(s: &str) -> Option<String> {
 mod tests {
   use super::to_json::js_string_body_to_json;
   use super::*;
-  use crate::{RuleConfigValue, UNEVALUATED_EXTENDS};
+  use crate::RuleConfigValue;
+  use crate::raw::UNEVALUATED_EXTENDS;
 
   #[test]
   fn js_config_module_exports_single_quoted_keys() {
