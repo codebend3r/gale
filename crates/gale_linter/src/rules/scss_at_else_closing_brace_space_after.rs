@@ -137,9 +137,8 @@ fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::scss_ctx_with_source;
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_space_between_else_if_and_else() {
@@ -157,13 +156,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "@else if { }@else { }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source("@else if { }@else { }");
     assert!(
       ScssAtElseClosingBraceSpaceAfter
         .check_root(&[], &ctx)

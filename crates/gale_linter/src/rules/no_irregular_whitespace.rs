@@ -143,19 +143,14 @@ impl Rule for NoIrregularWhitespace {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
+
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn reports_non_breaking_space() {
     let rule = NoIrregularWhitespace;
     let source = "a {\u{00A0}color: red; }";
-    let context = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source(source);
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("U+00A0"));
@@ -165,13 +160,7 @@ mod tests {
   fn reports_zero_width_space() {
     let rule = NoIrregularWhitespace;
     let source = "a { color:\u{200B}red; }";
-    let context = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source(source);
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("U+200B"));
@@ -180,13 +169,7 @@ mod tests {
   #[test]
   fn ignores_normal_whitespace() {
     let rule = NoIrregularWhitespace;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "a { color: red; }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
   }

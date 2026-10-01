@@ -78,9 +78,9 @@ impl Rule for CustomMediaPattern {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{ctx, ctx_with_source_and_options};
 
   fn custom_media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -105,13 +105,7 @@ mod tests {
   fn uses_the_configured_pattern() {
     let options = serde_json::json!("^(?!bp-)[a-z-]+$");
     let source = "@custom-media --bp-small (max-width: 30em);";
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &options);
     let mut node = custom_media("--bp-small (max-width: 30em)");
     if let CssNode::AtRule(at) = &mut node {
       at.span = ParserSpan::new(0, source.len());

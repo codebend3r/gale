@@ -103,19 +103,9 @@ fn is_disallowed(name: &str, disallowed: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::scss_ctx_with_options;
-
-  fn css_ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_options, scss_ctx, scss_ctx_with_options};
 
   fn include_node(mixin_params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -182,7 +172,7 @@ mod tests {
     let opts = serde_json::json!(["breakpoint"]);
     let d = ScssAtMixinDisallowedList.check(
       &include_node("breakpoint(medium)"),
-      &css_ctx_with_options(&opts),
+      &ctx_with_options(&opts),
     );
     assert!(d.is_empty());
   }
@@ -212,13 +202,7 @@ mod tests {
 
   #[test]
   fn no_options_no_report() {
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx();
     let d = ScssAtMixinDisallowedList.check(&include_node("breakpoint(medium)"), &ctx);
     assert!(d.is_empty());
   }

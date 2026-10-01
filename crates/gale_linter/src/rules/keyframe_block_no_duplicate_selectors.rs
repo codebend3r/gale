@@ -64,7 +64,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::ctx;
+  use crate::testing::{ctx, scss_ctx_with_source};
 
   #[test]
   fn reports_duplicate_keyframe_selectors() {
@@ -178,13 +178,7 @@ mod tests {
     let scss = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
     let rule = KeyframeBlockNoDuplicateSelectors;
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let mut all_diags = Vec::new();
     for node in &result.nodes {
       all_diags.extend(rule.check(node, &ctx));

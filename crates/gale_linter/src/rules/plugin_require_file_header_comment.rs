@@ -121,10 +121,10 @@ impl Rule for PluginRequireFileHeaderComment {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use crate::testing::{ctx, ctx_with_options};
 
   #[test]
   fn passes_with_matching_comment() {
@@ -211,13 +211,7 @@ mod tests {
   #[test]
   fn no_options_returns_empty() {
     let rule = PluginRequireFileHeaderComment;
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let nodes: Vec<CssNode> = vec![];
     let diags = rule.check_root(&nodes, &ctx);
     assert!(diags.is_empty());

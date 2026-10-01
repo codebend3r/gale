@@ -121,9 +121,9 @@ impl Rule for StylisticDeclarationBlockTrailingSemicolon {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn allows_trailing_semicolon() {
@@ -230,13 +230,7 @@ mod tests {
     // "never" mode: span includes the ';'
     let source = "a { color: red; }";
     let opts = serde_json::json!(["never"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &opts);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {

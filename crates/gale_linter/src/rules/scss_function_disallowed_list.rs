@@ -111,9 +111,9 @@ fn find_disallowed_functions(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::scss_ctx_with_options;
+  use crate::testing::{ctx_with_options, scss_ctx, scss_ctx_with_options};
 
   fn decl_node(value: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -197,13 +197,7 @@ mod tests {
 
   #[test]
   fn no_options_no_report() {
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx();
     let d = ScssFunctionDisallowedList.check(&decl_node("lighten($c, 10%)"), &ctx);
     assert!(d.is_empty());
   }
@@ -211,13 +205,7 @@ mod tests {
   #[test]
   fn skips_non_scss() {
     let opts = serde_json::json!(["lighten"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let d = ScssFunctionDisallowedList.check(&decl_node("lighten($c, 10%)"), &ctx);
     assert!(d.is_empty());
   }

@@ -145,9 +145,8 @@ impl Rule for StylisticAtRuleSemicolonNewlineAfter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_newline_after_at_rule_semicolon() {
@@ -167,13 +166,7 @@ mod tests {
   #[test]
   fn at_signs_in_scss_line_comments_are_no_at_rules() {
     let source = "a {\n\t// @todo refactor this away; it is\n\t// in the quote block.\n\t&:first-child { color: red; }\n}\n@import url(//example.com/a.css); b { }";
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(source);
     let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx);
     // Only the `@import`, whose `//` sits inside `url()`.
     assert_eq!(d.len(), 1);

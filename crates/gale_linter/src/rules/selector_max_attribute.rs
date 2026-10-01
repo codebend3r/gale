@@ -225,16 +225,12 @@ mod tests {
   use crate::style_rules::scan_style_rules;
   use gale_css_parser::Syntax;
 
+  use crate::testing::scss_ctx_with_source_and_options;
+
   /// The messages for `source` with `options`, counted the Stylelint 17
   /// way when `v17` is set and the Stylelint 16 way otherwise.
   fn lint(source: &str, options: serde_json::Value, v17: bool) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source_and_options(source, &options);
     let max = options
       .as_array()
       .map_or(&options, |a| &a[0])

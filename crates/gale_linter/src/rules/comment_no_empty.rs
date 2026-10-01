@@ -79,9 +79,9 @@ impl Rule for CommentNoEmpty {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{ctx, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_empty_comment() {
@@ -123,13 +123,7 @@ mod tests {
   #[test]
   fn skips_scss_double_slash_comments() {
     let rule = CommentNoEmpty;
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: "//\n// \n",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source("//\n// \n");
     // Empty double-slash comment
     let node = CssNode::Comment(gale_css_parser::Comment {
       is_line: true,
@@ -153,13 +147,7 @@ mod tests {
   fn fix_removes_empty_comment() {
     let source = "/* */\na { color: red; }";
     let rule = CommentNoEmpty;
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),

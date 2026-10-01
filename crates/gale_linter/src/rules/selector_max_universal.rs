@@ -198,7 +198,7 @@ fn count_universal_selectors(selector: &str, config: &Config) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
   use crate::testing::{ctx, ctx_with_options};
 
@@ -252,13 +252,7 @@ mod tests {
   #[test]
   fn respects_custom_max() {
     let options = serde_json::json!([2]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&options);
     let d = SelectorMaxUniversal.check(&style_with_selector("* *"), &ctx);
     assert!(d.is_empty());
   }

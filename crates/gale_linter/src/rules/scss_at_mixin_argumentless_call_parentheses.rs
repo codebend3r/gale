@@ -112,9 +112,9 @@ impl Rule for ScssAtMixinArgumentlessCallParentheses {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::scss_ctx;
+  use crate::testing::{ctx, scss_ctx};
 
   fn include(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -146,13 +146,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let css_ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let css_ctx = ctx();
     assert!(
       ScssAtMixinArgumentlessCallParentheses
         .check(&include("mixin-name"), &css_ctx)

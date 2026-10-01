@@ -126,9 +126,8 @@ impl Rule for ScssAtFunctionParenthesesSpaceBefore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::{scss_ctx_with_source, scss_ctx_with_source_and_options};
+  use crate::testing::{ctx_with_source, scss_ctx_with_source, scss_ctx_with_source_and_options};
 
   #[test]
   fn never_allows_no_space() {
@@ -166,13 +165,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "@function foo($x) { }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source("@function foo($x) { }");
     assert!(
       ScssAtFunctionParenthesesSpaceBefore
         .check_root(&[], &ctx)

@@ -195,10 +195,10 @@ impl Rule for PluginEnforceVariableForProperty {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use crate::testing::{ctx, ctx_with_options};
 
   fn style_with_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -295,13 +295,7 @@ mod tests {
   #[test]
   fn no_options_returns_empty() {
     let rule = PluginEnforceVariableForProperty;
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());

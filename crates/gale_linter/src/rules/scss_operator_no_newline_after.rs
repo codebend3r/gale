@@ -175,7 +175,7 @@ fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::scss_ctx_with_source;
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_plus_before_newline() {
@@ -194,13 +194,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "$a: 1 +\n  2;",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source("$a: 1 +\n  2;");
     let d = ScssOperatorNoNewlineAfter.check_root(&[], &ctx);
     assert!(d.is_empty());
   }

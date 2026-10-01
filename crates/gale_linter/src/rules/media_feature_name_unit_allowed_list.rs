@@ -165,7 +165,9 @@ fn extract_units(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
+
+  use crate::testing::{ctx, ctx_with_options};
 
   fn media_at_rule(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -179,13 +181,7 @@ mod tests {
   #[test]
   fn reports_disallowed_unit() {
     let opts = serde_json::json!({ "width": ["em", "rem"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = media_at_rule("(min-width: 100px)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -196,13 +192,7 @@ mod tests {
   #[test]
   fn allows_permitted_unit() {
     let opts = serde_json::json!({ "width": ["em", "rem"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = media_at_rule("(min-width: 100em)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -211,13 +201,7 @@ mod tests {
   #[test]
   fn ignores_unmatched_feature() {
     let opts = serde_json::json!({ "width": ["em"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = media_at_rule("(color: 8)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -225,13 +209,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = media_at_rule("(min-width: 100px)");
     let d = MediaFeatureNameUnitAllowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -240,13 +218,7 @@ mod tests {
   #[test]
   fn ignores_non_media_at_rules() {
     let opts = serde_json::json!({ "width": ["em"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = CssNode::AtRule(AtRule {
       name: "supports".to_string(),
       params: "(min-width: 100px)".to_string(),

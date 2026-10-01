@@ -193,9 +193,8 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::scss_ctx_with_source;
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_single_space() {
@@ -220,13 +219,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "$color:red;",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source("$color:red;");
     assert!(
       ScssDollarVariableColonSpaceAfter
         .check_root(&[], &ctx)

@@ -100,9 +100,9 @@ fn parse_options(options: Option<&serde_json::Value>) -> Option<HashMap<String, 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
 
-  use crate::testing::ctx_with_options;
+  use crate::testing::{ctx, ctx_with_options};
 
   fn at_rule_with_decls(name: &str, decls: Vec<(&str, &str)>) -> CssNode {
     let children = decls
@@ -160,13 +160,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = at_rule_with_decls("font-face", vec![]);
     let d = AtRulePropertyRequiredList.check(&node, &ctx);
     assert!(d.is_empty());

@@ -180,9 +180,8 @@ fn skip_interpolation(bytes: &[u8], len: usize, i: &mut usize) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::scss_ctx_with_source;
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_newline_after_if() {
@@ -220,13 +219,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "@if { } .foo {}",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source("@if { } .foo {}");
     assert!(
       ScssAtIfClosingBraceNewlineAfter
         .check_root(&[], &ctx)

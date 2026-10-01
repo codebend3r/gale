@@ -94,9 +94,9 @@ impl Rule for ScssAtImportPartialExtensionDisallowedList {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::scss_ctx_with_options;
+  use crate::testing::{ctx_with_options, scss_ctx_with_options};
 
   fn at_rule(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -157,13 +157,7 @@ mod tests {
   #[test]
   fn skips_non_scss() {
     let opt = serde_json::json!([[".scss"]]);
-    let css_ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opt),
-      cache: None,
-    };
+    let css_ctx = ctx_with_options(&opt);
     let d = ScssAtImportPartialExtensionDisallowedList
       .check(&at_rule("import", "\"foo.scss\""), &css_ctx);
     assert!(d.is_empty());

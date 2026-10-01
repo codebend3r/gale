@@ -126,23 +126,14 @@ impl Rule for StylisticMaxEmptyLines {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_max<'a>(source: &'a str, max: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(max),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn allows_single_empty_line() {
     let max = serde_json::json!(1);
     let source = "a { }\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(d.is_empty());
   }
 
@@ -150,7 +141,7 @@ mod tests {
   fn reports_too_many_empty_lines() {
     let max = serde_json::json!(1);
     let source = "a { }\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("no more than 1"));
   }
@@ -159,7 +150,7 @@ mod tests {
   fn allows_two_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(d.is_empty());
   }
 
@@ -167,7 +158,7 @@ mod tests {
   fn reports_three_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(!d.is_empty());
   }
 
@@ -178,7 +169,7 @@ mod tests {
     // Bootstrap's cover.css starts with exactly this pattern.
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n/* Custom button */\n.foo { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(
       d.is_empty(),
       "two empty lines after a multi-line comment should be allowed with max=2"
@@ -189,7 +180,7 @@ mod tests {
   fn three_empty_lines_after_multiline_comment_is_flagged() {
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n\n/* Custom button */\n.foo { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_max(source, &max));
+    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(
       !d.is_empty(),
       "three empty lines after a multi-line comment should be flagged with max=2"
