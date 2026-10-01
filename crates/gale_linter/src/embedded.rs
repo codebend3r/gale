@@ -17,8 +17,9 @@
 //!   `no-invalid-position-declaration` skip `style` attributes.
 //! - `@stylistic/indentation` infers the root's base indent level from the
 //!   surrounding markup ([`indentation_context`]).
-//! - A `stylelint-disable` comment left open at the end of one block still
-//!   applies in the blocks after it.
+//! - Configuration comments are read across the whole file, so a
+//!   `stylelint-disable` left open at the end of one block still applies in
+//!   the blocks after it.
 //! - `no-duplicate-selectors` names the host-file line a selector was first
 //!   used on.
 
@@ -26,8 +27,9 @@ use std::cell::RefCell;
 
 use gale_css_parser::Syntax;
 use gale_css_parser::embedded::{HostLanguage, StyleBlock, StyleLang, extract_style_blocks};
-use gale_diagnostics::{Diagnostic, LintResult};
+use gale_diagnostics::{Diagnostic, LintResult, SourceLineIndex};
 
+use crate::disables;
 use crate::registry::resolve_deprecated_alias;
 
 /// Rules Stylelint does not apply to any embedded root.
@@ -104,7 +106,6 @@ pub fn lint_host(
 
   let mut diagnostics = Vec::new();
   let mut invalid_options: Vec<String> = Vec::new();
-  let mut carried: Vec<Option<String>> = Vec::new();
 
   for (index, (block, syntax)) in roots.iter().enumerate() {
     let range = block.range.clone();
@@ -131,16 +132,13 @@ pub fn lint_host(
     };
 
     let lines_before = source[..range.start].matches('\n').count();
-    let mut block_diagnostics: Vec<Diagnostic> = result
-      .diagnostics
-      .into_iter()
-      .filter(|d| applies_to_root(&d.rule_name, block.inline))
-      .map(|d| to_host(d, block, lines_before))
-      .collect();
-    if !options.ignore_disables {
-      carried = apply_carried_disables(&mut block_diagnostics, &text, range.start, carried);
-    }
-    diagnostics.extend(block_diagnostics);
+    diagnostics.extend(
+      result
+        .diagnostics
+        .into_iter()
+        .filter(|d| applies_to_root(&d.rule_name, block.inline))
+        .map(|d| to_host(d, block, lines_before)),
+    );
     for warning in result.invalid_option_warnings {
       if !invalid_options.contains(&warning) {
         invalid_options.push(warning);
@@ -148,6 +146,9 @@ pub fn lint_host(
     }
   }
 
+  if !options.ignore_disables {
+    apply_document_disables(source, &roots, &mut diagnostics);
+  }
   diagnostics.sort_by(|a, b| {
     a.span
       .offset
@@ -250,139 +251,43 @@ fn shift_line_reference(message: &str, lines_before: usize) -> String {
 // `stylelint-disable` across blocks
 // ---------------------------------------------------------------------------
 
-/// A disable or enable directive found in a block.
-struct DisableDirective {
-  /// Host offset just past the comment.
-  end: usize,
-  /// `true` for `enable`, `false` for an open-ended `disable`.
-  enable: bool,
-  /// The rules it names; `None` for all of them.
-  rules: Vec<Option<String>>,
+/// Whether the problem is about the file or the config rather than a rule's
+/// finding, which configuration comments never disable.
+fn ignores_disables(d: &Diagnostic) -> bool {
+  d.is_comment_problem()
+    || d.is_unknown_rule()
+    || d.is_invalid_option()
+    || d.message.starts_with("Internal error")
+    || d.rule_name == "parse-error"
 }
 
-/// The open-ended `disable` and `enable` directives in a block's comments,
-/// in order, read the way the runner reads them.
-fn disable_directives(text: &str, base: usize) -> Vec<DisableDirective> {
-  let bytes = text.as_bytes();
-  let mut directives = Vec::new();
-  let mut i = 0;
-  while i + 1 < bytes.len() {
-    let (body, end) = match (bytes[i], bytes[i + 1]) {
-      (b'/', b'*') => match text[i + 2..].find("*/") {
-        Some(close) => (&text[i + 2..i + 2 + close], i + 2 + close + 2),
-        None => break,
-      },
-      (b'/', b'/') => {
-        let close = text[i..].find('\n').map_or(text.len(), |n| i + n);
-        (&text[i + 2..close], close)
-      }
-      _ => {
-        i += 1;
-        continue;
-      }
-    };
-    i = end;
-    let body = body.trim();
-    let Some(command) = body
-      .strip_prefix("stylelint-")
-      .or_else(|| body.strip_prefix("gale-"))
-    else {
-      continue;
-    };
-    let (enable, rest) = if let Some(rest) = command.strip_prefix("enable") {
-      (true, rest)
-    } else if command.starts_with("disable-line") || command.starts_with("disable-next-line") {
-      continue;
-    } else if let Some(rest) = command.strip_prefix("disable") {
-      (false, rest)
-    } else {
-      continue;
-    };
-    let names = rest.split(" -- ").next().unwrap_or_default().trim();
-    let names = if rest.trim_start().starts_with("--") {
-      ""
-    } else {
-      names
-    };
-    let rules = if names.is_empty() {
-      vec![None]
-    } else {
-      names
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(|name| Some(canonical(name).to_string()))
-        .collect()
-    };
-    directives.push(DisableDirective {
-      end: base + end,
-      enable,
-      rules,
-    });
-  }
-  directives
-}
-
-/// Apply the disables `carried` in from earlier blocks to this block's
-/// diagnostics, and return the disables still open at the block's end.
+/// Drop the problems the document's configuration comments disable.
 ///
-/// The runner already applied the block's own comments; this adds the
-/// earlier blocks' open-ended `stylelint-disable` comments, which Stylelint
-/// reads across the whole document, until an `enable` in this block closes
-/// them.
-fn apply_carried_disables(
+/// Stylelint reads the comments of every root of the document in order, as
+/// one sequence with host-file line numbers, so a `stylelint-disable` left
+/// open in one `<style>` block reaches into the blocks after it until an
+/// `enable` in a later one.  The runner leaves suppression inside an
+/// embedded sheet to this pass.
+fn apply_document_disables(
+  source: &str,
+  roots: &[(StyleBlock, Syntax)],
   diagnostics: &mut Vec<Diagnostic>,
-  text: &str,
-  base: usize,
-  carried: Vec<Option<String>>,
-) -> Vec<Option<String>> {
-  // Each open disable, with the host offset where it closes in this block
-  // (for the carried ones).
-  let mut open: Vec<(Option<String>, bool, usize)> = carried
-    .into_iter()
-    .map(|rule| (rule, true, usize::MAX))
-    .collect();
-  let mut closed: Vec<(Option<String>, usize)> = Vec::new();
-  for directive in disable_directives(text, base) {
-    for rule in directive.rules {
-      if directive.enable {
-        if let Some(at) = open
-          .iter()
-          .rposition(|(open_rule, _, _)| *open_rule == rule)
-        {
-          let (rule, from_earlier, _) = open.remove(at);
-          if from_earlier {
-            closed.push((rule, directive.end));
-          }
-        }
-      } else {
-        open.push((rule, false, usize::MAX));
-      }
-    }
+) {
+  if !disables::may_have_directives(source) {
+    return;
   }
-  let suppressing: Vec<(Option<String>, usize)> = open
-    .iter()
-    .filter(|(_, from_earlier, _)| *from_earlier)
-    .map(|(rule, _, end)| (rule.clone(), *end))
-    .chain(closed)
-    .collect();
-  if !suppressing.is_empty() {
-    diagnostics.retain(|d| {
-      if d.is_comment_problem()
-        || d.is_unknown_rule()
-        || d.is_invalid_option()
-        || d.message.starts_with("Internal error")
-        || d.rule_name == "parse-error"
-      {
-        return true;
-      }
-      let rule = canonical(&d.rule_name);
-      !suppressing.iter().any(|(disabled, end)| {
-        d.span.offset < *end && disabled.as_deref().is_none_or(|name| name == rule)
-      })
-    });
+  let lines = SourceLineIndex::build(source);
+  let line_of = |offset: usize| lines.line(offset);
+  let mut collector = disables::Collector::new(&line_of);
+  for (block, syntax) in roots {
+    collector.scan(&sheet_text(source, block), *syntax, block.range.start);
   }
-  open.into_iter().map(|(rule, _, _)| rule).collect()
+  let (ranges, _rejected) = collector.finish();
+  if ranges.is_empty() {
+    return;
+  }
+  diagnostics
+    .retain(|d| ignores_disables(d) || !ranges.covers(&d.rule_name, line_of(d.span.offset)));
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +357,13 @@ impl EmbeddedRoot {
 thread_local! {
   /// The embedded root being linted on this thread, if any.
   static CURRENT_ROOT: RefCell<Option<EmbeddedRoot>> = const { RefCell::new(None) };
+}
+
+/// Whether a style sheet embedded in an HTML-like file is being linted on
+/// this thread.  The runner then leaves suppressing what configuration
+/// comments disable to [`lint_host`], which reads them for the whole file.
+pub(crate) fn in_embedded_root() -> bool {
+  CURRENT_ROOT.with(|current| current.borrow().is_some())
 }
 
 /// Marks a root as the one being linted for as long as it lives.
@@ -788,11 +700,11 @@ mod tests {
 
   #[test]
   fn open_disables_carry_into_later_blocks() {
-    let source = "<style>\n/* stylelint-disable fake */\n!\n</style>\n\
-                  <style>\n!\n/* stylelint-enable fake */\n!\n</style>\n\
-                  <style>/* stylelint-disable */</style><style>!</style>";
-    // The runner applies a block's own comments; this stand-in does not,
-    // so the first block's problem stays.
+    let source = "<style>\n/* stylelint-disable fake */\na{!}\n</style>\n\
+                  <style>\na{!}\n/* stylelint-enable fake */\na{!}\n</style>\n\
+                  <style>/* stylelint-disable */</style><style>a{!}</style>";
+    // Lines 2 to 7 are off for `fake`, and everything from the last line,
+    // the line of the blanket disable, on.
     let result = lint_host(
       source,
       "x.vue",
@@ -802,7 +714,7 @@ mod tests {
     );
     let offsets: Vec<usize> = result.diagnostics.iter().map(|d| d.span.offset).collect();
     let bangs: Vec<usize> = source.match_indices('!').map(|(at, _)| at).collect();
-    assert_eq!(offsets, vec![bangs[0], bangs[2]]);
+    assert_eq!(offsets, vec![bangs[2]]);
 
     let ignored = lint_host(
       source,
