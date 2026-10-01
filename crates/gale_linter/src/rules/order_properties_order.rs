@@ -1,72 +1,250 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::pattern;
+use crate::empty_lines::newline_of;
+use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Rule, RuleContext, per_file};
+use crate::stylelint_order::{
+  blocks, comments_after_declaration, comments_before_declaration, is_allowed_to_process,
+  is_property, is_shorthand, js_sort, normalized_property, reorder_edit, split_array_settings,
+  vendor_prefix,
+};
 
 /// Enforce a specific ordering of properties within declaration blocks.
 ///
-/// Equivalent to stylelint-order's `order/properties-order` rule.
+/// Equivalent to stylelint-order's `order/properties-order` rule, autofix
+/// included.  The primary option lists property names and groups
+/// (`{ properties, groupName, emptyLineBefore, noEmptyLineBetween, order:
+/// "flexible" }`); secondary options are `unspecified` (`top`, `bottom`,
+/// `ignore`, `bottomAlphabetical`), `emptyLineBeforeUnspecified` and
+/// `emptyLineMinimumPropertyThreshold`.
+///
+/// Every rule, at-rule and SCSS nested property with children is checked
+/// over the [`PostcssTree`] of the source.  The fix sorts the block as
+/// postcss-sorting does, comments travelling with the declaration they
+/// belong to, then the empty lines between groups are fixed on the sorted
+/// block in a later fix pass, as Stylelint fixes them after sorting.
 pub struct OrderPropertiesOrder;
 
-/// Info about a property's position in the expected order.
-#[derive(Debug, Clone, Copy)]
-struct PropertyInfo {
-  /// Global position index (for strict ordering comparison).
-  order_index: usize,
-  /// Group index (for inter-group checks like emptyLineBefore).
-  group_index: usize,
+/// stylelint-order's `createOrderInfo` entry for one property.
+#[derive(Debug, Clone)]
+struct OrderData {
+  /// Counts groups with `emptyLineBefore`, starting at 1.
+  separated_group: usize,
+  /// Which group (or flexible group) the property is in.
+  group_position: i64,
+  /// The position the property must not come before.
+  expected_position: usize,
+  /// The group's `groupName`, for messages.
+  group_name: Option<String>,
+  /// The group's `noEmptyLineBetween`.
+  no_empty_line_before_inside_group: bool,
 }
 
-/// How to handle properties not mentioned in the order spec.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Where properties missing from the order go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Unspecified {
-  Ignore,
   Top,
   Bottom,
+  Ignore,
   BottomAlphabetical,
 }
 
-/// When to require an empty line before a group or unspecified properties.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum EmptyLineBefore {
-  Always,
-  Never,
-  Threshold,
-}
-
-/// Per-group settings.
-#[derive(Debug, Clone)]
-struct GroupInfo {
-  empty_line_before: Option<EmptyLineBefore>,
-  no_empty_line_between: bool,
-  flexible: bool,
-}
-
-/// A compiled regex pattern entry from the property order config.
-#[derive(Debug, Clone)]
-struct RegexEntry {
-  pattern: std::sync::Arc<pattern::Regex>,
-  info: PropertyInfo,
-}
-
-/// Parsed configuration for the rule.
+/// The rule's options, read once per file.
 struct Config {
-  /// Map from lowercase property name to its ordering info.
-  property_map: HashMap<String, PropertyInfo>,
-  /// Regex patterns for property matching (tried when exact match fails).
-  regex_patterns: Vec<RegexEntry>,
-  /// Per-group settings (indexed by group_index).
-  groups: Vec<GroupInfo>,
-  /// How to handle unspecified properties.
+  /// `createOrderInfo`: property name (as configured) to its order data.
+  order: HashMap<String, OrderData>,
+  /// `createFlatOrder` + `createExpectedPropertiesOrder`: the property
+  /// index the fixer sorts by (the last listing of a name wins).
+  flat_order: HashMap<String, usize>,
+  /// The `emptyLineBefore` of each group in the primary option, in order.
+  group_empty_lines: Vec<Option<String>>,
   unspecified: Unspecified,
-  /// Empty line requirement before unspecified properties.
-  empty_line_before_unspecified: Option<EmptyLineBefore>,
-  /// Minimum number of properties in a block before threshold-based empty line
-  /// rules switch from "never" to "always".
-  empty_line_min_threshold: Option<usize>,
+  empty_line_before_unspecified: Option<String>,
+  empty_line_minimum_property_threshold: f64,
+}
+
+impl Config {
+  /// Read the options, or `None` when they are not valid (Stylelint then
+  /// reports the options and skips the rule).
+  fn parse(options: Option<&serde_json::Value>) -> Option<Self> {
+    let (primary, secondary) = split_array_settings(options);
+    let items = primary?.as_array()?;
+    let valid = items.iter().all(|item| match item {
+      serde_json::Value::String(_) => true,
+      serde_json::Value::Object(group) => {
+        group
+          .get("properties")
+          .and_then(|p| p.as_array())
+          .is_some_and(|p| p.iter().all(serde_json::Value::is_string))
+          && group
+            .get("emptyLineBefore")
+            .is_none_or(|e| matches!(e.as_str(), Some("always" | "never" | "threshold")))
+          && group
+            .get("noEmptyLineBetween")
+            .is_none_or(serde_json::Value::is_boolean)
+      }
+      _ => false,
+    });
+    if !valid {
+      return None;
+    }
+
+    let unspecified = match secondary.and_then(|s| s.get("unspecified")) {
+      None => Unspecified::Ignore,
+      Some(value) => match value.as_str()? {
+        "top" => Unspecified::Top,
+        "bottom" => Unspecified::Bottom,
+        "ignore" => Unspecified::Ignore,
+        "bottomAlphabetical" => Unspecified::BottomAlphabetical,
+        _ => return None,
+      },
+    };
+    let empty_line_before_unspecified =
+      match secondary.and_then(|s| s.get("emptyLineBeforeUnspecified")) {
+        None => None,
+        Some(value) => match value.as_str()? {
+          name @ ("always" | "never" | "threshold") => Some(name.to_string()),
+          _ => return None,
+        },
+      };
+    let threshold = match secondary.and_then(|s| s.get("emptyLineMinimumPropertyThreshold")) {
+      None => 0.0,
+      Some(value) => value.as_f64()?,
+    };
+
+    // createOrderInfo.
+    let mut order = HashMap::new();
+    let mut expected_position = 0;
+    let mut separated_group = 1;
+    let mut group_position: i64 = 0;
+    for item in items {
+      match item {
+        serde_json::Value::String(name) => {
+          expected_position += 1;
+          order.insert(
+            name.clone(),
+            OrderData {
+              separated_group,
+              group_position,
+              expected_position,
+              group_name: None,
+              no_empty_line_before_inside_group: false,
+            },
+          );
+        }
+        serde_json::Value::Object(group) => {
+          if group
+            .get("emptyLineBefore")
+            .is_some_and(|e| e.as_str().is_some_and(|s| !s.is_empty()))
+          {
+            separated_group += 1;
+          }
+          let flexible = group.get("order").and_then(|o| o.as_str()) == Some("flexible");
+          group_position += 1;
+          if flexible {
+            expected_position += 1;
+          }
+          let group_name = group
+            .get("groupName")
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+          let no_empty_line =
+            group.get("noEmptyLineBetween").and_then(|n| n.as_bool()) == Some(true);
+          for name in group
+            .get("properties")
+            .and_then(|p| p.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str())
+          {
+            if !flexible {
+              expected_position += 1;
+            }
+            order.insert(
+              name.to_string(),
+              OrderData {
+                separated_group,
+                group_position,
+                expected_position,
+                group_name: group_name.clone(),
+                no_empty_line_before_inside_group: no_empty_line,
+              },
+            );
+          }
+        }
+        _ => {}
+      }
+    }
+
+    // createFlatOrder.
+    let mut flat_order = HashMap::new();
+    let mut index = 0;
+    for item in items {
+      let names: Vec<&str> = match item {
+        serde_json::Value::String(name) => vec![name.as_str()],
+        serde_json::Value::Object(group) => group
+          .get("properties")
+          .and_then(|p| p.as_array())
+          .into_iter()
+          .flatten()
+          .filter_map(|p| p.as_str())
+          .collect(),
+        _ => Vec::new(),
+      };
+      for name in names {
+        flat_order.insert(name.to_string(), index);
+        index += 1;
+      }
+    }
+
+    // A list that names no property is what Gale's static reading of a
+    // JavaScript config leaves of an order it cannot evaluate (shared
+    // configs build theirs with `.concat()` calls), so the rule stays off
+    // rather than sorting every block alphabetically against a list the
+    // author never wrote.
+    if flat_order.is_empty() {
+      return None;
+    }
+
+    let group_empty_lines = items
+      .iter()
+      .filter(|item| !item.is_string())
+      .map(|group| {
+        group
+          .get("emptyLineBefore")
+          .and_then(|e| e.as_str())
+          .map(str::to_string)
+      })
+      .collect();
+
+    Some(Self {
+      order,
+      flat_order,
+      group_empty_lines,
+      unspecified,
+      empty_line_before_unspecified,
+      empty_line_minimum_property_threshold: threshold,
+    })
+  }
+
+  /// `groups[separatedGroup - 2].emptyLineBefore`.
+  fn group_empty_line(&self, separated_group: usize) -> Option<&str> {
+    separated_group
+      .checked_sub(2)
+      .and_then(|i| self.group_empty_lines.get(i))
+      .and_then(|e| e.as_deref())
+  }
+}
+
+/// stylelint-order's `getNodeData` for a property.
+struct PropertyData<'c> {
+  node: usize,
+  name: String,
+  unprefixed_name: String,
+  order: Option<&'c OrderData>,
 }
 
 impl Rule for OrderPropertiesOrder {
@@ -82,1021 +260,661 @@ impl Rule for OrderPropertiesOrder {
     Severity::Warning
   }
 
-  /// Flags a property that appears before one the config orders ahead of it.
-  /// SCSS variables and custom properties are skipped.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  /// Checks the property order and the empty lines between groups in every
+  /// block of the document.
+  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     // The order list can run to hundreds of properties; build the lookup
-    // tables once per file rather than once per style rule.
-    let parsed = per_file(self.name(), ctx.options, || parse_config(ctx));
+    // tables once per file.
+    let parsed = per_file(self.name(), ctx.options, || Config::parse(ctx.options));
     let Some(config) = parsed.as_ref() else {
       return vec![];
     };
-
-    let mut diagnostics = Vec::new();
-
-    // Collect relevant declarations (skip SCSS vars and custom props).
-    let decls: Vec<(usize, &str, usize, usize)> = rule
-      .declarations
-      .iter()
-      .enumerate()
-      .filter(|(_, d)| !d.property.starts_with('$') && !d.property.starts_with("--"))
-      .map(|(i, d)| (i, d.property.as_str(), d.span.offset, d.span.length))
-      .collect();
-
-    let total_props = decls.len();
-
-    // Check if there are skipped declarations (custom props / SCSS vars)
-    // before the first relevant declaration. This affects emptyLineBefore
-    // for the first real property.
-    let has_skipped_before_first = decls.first().map(|&(di, _, _, _)| di > 0).unwrap_or(false);
-
-    // Determine if threshold is met: used for "threshold" emptyLineBefore.
-    let threshold_met = config
-      .empty_line_min_threshold
-      .map(|t| total_props >= t)
-      .unwrap_or(true);
-
-    // Tracking state
-    let mut last_order_index: Option<usize> = None;
-    let mut last_group_index: Option<usize> = None;
-    let mut last_property_name: Option<String> = None;
-    let mut last_was_specified: Option<bool> = None;
-    let mut last_unspecified_name: Option<String> = None;
-    let mut is_first_prop = true;
-    // Track unprefixed properties that have been seen, so vendor-prefixed
-    // versions appearing after them can be flagged.
-    let mut seen_unprefixed: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for &(_di, prop, offset, length) in &decls {
-      let prop_lower = prop.to_ascii_lowercase();
-      let lookup = strip_vendor_prefix(&prop_lower);
-      let is_vendor_prefixed = prop.starts_with('-');
-
-      let info = config.property_map.get(lookup).or_else(|| {
-        // Try regex patterns if exact match fails.
-        config
-          .regex_patterns
-          .iter()
-          .find(|re| pattern::is_match(&re.pattern, lookup))
-          .map(|re| &re.info)
-      });
-
-      if let Some(info) = info {
-        // === SPECIFIED PROPERTY ===
-
-        // Check if vendor-prefixed property appears after its unprefixed
-        // counterpart. In stylelint-order, vendor-prefixed properties
-        // must come BEFORE the unprefixed version.
-        if is_vendor_prefixed && seen_unprefixed.contains(lookup) {
-          let prev_name = last_property_name.as_deref().unwrap_or("unknown");
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected \"{prop}\" to come before \"{prev_name}\""),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(offset, length)),
-          );
-        }
-
-        // 1. Order check
-        self.check_order(
-          &config,
-          info,
-          is_vendor_prefixed,
-          last_order_index,
-          last_group_index,
-          &last_property_name,
-          prop,
-          offset,
-          length,
-          &mut diagnostics,
-        );
-
-        // 2. Empty line before group check
-        self.check_empty_line_before_specified(
-          ctx,
-          &config,
-          info,
-          is_first_prop,
-          has_skipped_before_first,
-          last_was_specified,
-          last_group_index,
-          threshold_met,
-          prop,
-          offset,
-          length,
-          &mut diagnostics,
-        );
-
-        // 3. noEmptyLineBetween check (within same group)
-        if let Some(prev_group) = last_group_index
-          && info.group_index == prev_group
-          && last_was_specified == Some(true)
-          && let Some(group_info) = config.groups.get(info.group_index)
-          && group_info.no_empty_line_between
-        {
-          let has_empty = has_empty_line_before(ctx.source, offset);
-          if has_empty {
-            diagnostics.push(
-              Diagnostic::new(
-                self.name(),
-                format!("Unexpected empty line before \"{prop}\""),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(offset, length)),
-            );
-          }
-        }
-
-        // Update tracking
-        if !is_vendor_prefixed {
-          last_order_index = Some(info.order_index);
-          last_group_index = Some(info.group_index);
-          last_property_name = Some(prop.to_string());
-          last_was_specified = Some(true);
-          last_unspecified_name = None;
-          is_first_prop = false;
-          seen_unprefixed.insert(lookup.to_string());
-        } else {
-          if last_order_index
-            .map(|li| info.order_index >= li)
-            .unwrap_or(true)
-          {
-            last_order_index = Some(info.order_index);
-            last_group_index = Some(info.group_index);
-          }
-          last_property_name = Some(prop.to_string());
-          last_was_specified = Some(true);
-          last_unspecified_name = None;
-          is_first_prop = false;
-        }
-      } else {
-        // === UNSPECIFIED PROPERTY ===
-        let prev_was_specified = last_was_specified;
-
-        // 1. emptyLineBeforeUnspecified check (BEFORE updating tracking)
-        if let Some(elbu) = config.empty_line_before_unspecified {
-          let effective_elb = resolve_threshold(elbu, threshold_met);
-          if is_first_prop {
-            let has_empty = has_empty_line_before(ctx.source, offset);
-            if has_empty {
-              diagnostics.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Unexpected empty line before \"{prop}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(offset, length)),
-              );
-            }
-          } else if prev_was_specified == Some(true) {
-            let has_empty = has_empty_line_before(ctx.source, offset);
-            let has_non_inline_comment =
-              has_standalone_comment_or_atrule_before(ctx.source, offset);
-            match effective_elb {
-              EmptyLineBefore::Always => {
-                if !has_empty && !has_non_inline_comment {
-                  diagnostics.push(
-                    Diagnostic::new(
-                      self.name(),
-                      format!("Expected an empty line before \"{prop}\""),
-                    )
-                    .severity(self.default_severity())
-                    .span(Span::new(offset, length)),
-                  );
-                }
-              }
-              EmptyLineBefore::Never => {
-                if has_empty {
-                  diagnostics.push(
-                    Diagnostic::new(
-                      self.name(),
-                      format!("Unexpected empty line before \"{prop}\""),
-                    )
-                    .severity(self.default_severity())
-                    .span(Span::new(offset, length)),
-                  );
-                }
-              }
-              EmptyLineBefore::Threshold => unreachable!(),
-            }
-          }
-        }
-
-        // 2. Ordering check for unspecified
-        match config.unspecified {
-          Unspecified::Ignore => {}
-          Unspecified::Top => {
-            if prev_was_specified == Some(true) {
-              let prev_name = last_property_name.as_deref().unwrap_or("unknown");
-              diagnostics.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{prop}\" to come before \"{prev_name}\""),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(offset, length)),
-              );
-            }
-            last_was_specified = Some(false);
-            last_property_name = Some(prop.to_string());
-          }
-          Unspecified::Bottom => {
-            last_order_index = Some(usize::MAX);
-            last_property_name = Some(prop.to_string());
-            last_was_specified = Some(false);
-          }
-          Unspecified::BottomAlphabetical => {
-            if let Some(ref last_unspec) = last_unspecified_name
-              && prop_lower < *last_unspec
-            {
-              diagnostics.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected \"{prop}\" to come before \"{}\"", last_unspec),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(offset, length)),
-              );
-            }
-            last_order_index = Some(usize::MAX);
-            last_property_name = Some(prop.to_string());
-            last_was_specified = Some(false);
-            last_unspecified_name = Some(prop_lower.clone());
-          }
-        }
-
-        is_first_prop = false;
-      }
+    let tree = PostcssTree::parse(ctx.source, ctx.syntax);
+    let newline = newline_of(ctx.source);
+    let mut diags = Vec::new();
+    for (block, children) in blocks(&tree) {
+      let sorting = self.check_order(&tree, config, block, children, &mut diags);
+      self.check_empty_lines(&tree, config, children, newline, !sorting, &mut diags);
     }
-
-    diagnostics
+    diags
   }
 }
 
 impl OrderPropertiesOrder {
-  /// Check property ordering.
-  #[allow(clippy::too_many_arguments)]
+  /// stylelint-order's `checkNodeForOrder`: report every property that
+  /// comes too early, each with the fix that sorts the whole block.
+  /// Returns whether that fix changes the block.
   fn check_order(
     &self,
+    tree: &PostcssTree,
     config: &Config,
-    info: &PropertyInfo,
-    is_vendor_prefixed: bool,
-    last_order_index: Option<usize>,
-    last_group_index: Option<usize>,
-    last_property_name: &Option<String>,
-    prop: &str,
-    offset: usize,
-    length: usize,
-    diagnostics: &mut Vec<Diagnostic>,
-  ) {
-    let Some(prev_idx) = last_order_index else {
-      return;
-    };
-    if info.order_index >= prev_idx {
-      return;
-    }
-
-    if is_vendor_prefixed {
-      // Vendor-prefixed property: only report if the previous property
-      // is NOT the same unprefixed base (vendor after unprefixed is OK).
-      let prop_lower = prop.to_ascii_lowercase();
-      let lookup = strip_vendor_prefix(&prop_lower);
-      let prev_is_same_base = last_property_name
-        .as_ref()
-        .map(|p| {
-          let p_lower = p.to_ascii_lowercase();
-          strip_vendor_prefix(&p_lower) == lookup
-        })
-        .unwrap_or(false);
-      if prev_is_same_base {
-        return;
-      }
-    } else {
-      // Non-vendor-prefixed: check flexible group
-      if let Some(prev_group) = last_group_index {
-        let in_same_group = info.group_index == prev_group;
-        let is_flexible = config
-          .groups
-          .get(info.group_index)
-          .map(|g| g.flexible)
-          .unwrap_or(false);
-        if in_same_group && is_flexible {
-          return;
-        }
+    block: usize,
+    children: &[usize],
+    diags: &mut Vec<Diagnostic>,
+  ) -> bool {
+    let properties: Vec<PropertyData> = children
+      .iter()
+      .filter(|&&c| is_property(tree, c))
+      .map(|&c| node_data(tree, config, c))
+      .collect();
+    let mut problems = Vec::new();
+    for index in 1..properties.len() {
+      let (correct, first, second) = check_order(
+        &properties[index - 1],
+        &properties[index],
+        &properties[..index],
+        config.unspecified,
+      );
+      if !correct {
+        problems.push((first, second));
       }
     }
-
-    let prev_name = last_property_name.as_deref().unwrap_or("unknown");
-    diagnostics.push(
-      Diagnostic::new(
-        self.name(),
-        format!("Expected \"{prop}\" to come before \"{prev_name}\""),
-      )
-      .severity(self.default_severity())
-      .span(Span::new(offset, length)),
-    );
-  }
-
-  /// Check emptyLineBefore for a specified property.
-  #[allow(clippy::too_many_arguments)]
-  fn check_empty_line_before_specified(
-    &self,
-    ctx: &RuleContext,
-    config: &Config,
-    info: &PropertyInfo,
-    is_first_prop: bool,
-    has_skipped_before_first: bool,
-    last_was_specified: Option<bool>,
-    last_group_index: Option<usize>,
-    threshold_met: bool,
-    prop: &str,
-    offset: usize,
-    length: usize,
-    diagnostics: &mut Vec<Diagnostic>,
-  ) {
-    let group_info = match config.groups.get(info.group_index) {
-      Some(gi) => gi,
-      None => return,
-    };
-
-    let elb = match group_info.empty_line_before {
-      Some(e) => e,
-      None => return,
-    };
-
-    let effective = resolve_threshold(elb, threshold_met);
-
-    if is_first_prop {
-      // If there are skipped declarations (custom props / SCSS vars)
-      // before this first real property, don't check empty lines at all.
-      // The empty line between the skipped decl and this property is
-      // irrelevant to the ordering rule.
-      if has_skipped_before_first {
-        return;
-      }
-      // First property in the block: empty line after `{` is always wrong
-      let has_empty = has_empty_line_before(ctx.source, offset);
-      if has_empty {
-        diagnostics.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected empty line before \"{prop}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(offset, length)),
-        );
-      }
-      return;
-    }
-
-    // Only check when moving to a different group (or from unspecified)
-    let different_group = last_group_index
-      .map(|lg| lg != info.group_index)
-      .unwrap_or(true);
-    let from_unspecified = last_was_specified == Some(false);
-
-    if !different_group && !from_unspecified {
-      return;
-    }
-
-    let has_empty = has_empty_line_before(ctx.source, offset);
-    let has_separator = has_standalone_comment_or_atrule_before(ctx.source, offset);
-
-    match effective {
-      EmptyLineBefore::Always => {
-        if !has_empty && !has_separator {
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected an empty line before \"{prop}\""),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(offset, length)),
-          );
-        }
-      }
-      EmptyLineBefore::Never => {
-        // If there's a standalone comment or at-rule between the
-        // properties, the empty line is acceptable even in "never" mode
-        // (the at-rule/comment acts as a natural separator).
-        if has_empty && !has_separator {
-          diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Unexpected empty line before \"{prop}\""),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(offset, length)),
-          );
-        }
-      }
-      EmptyLineBefore::Threshold => unreachable!(),
-    }
-  }
-}
-
-/// Resolve "threshold" to either "always" or "never" based on whether the
-/// threshold is met.
-fn resolve_threshold(elb: EmptyLineBefore, threshold_met: bool) -> EmptyLineBefore {
-  match elb {
-    EmptyLineBefore::Threshold => {
-      if threshold_met {
-        EmptyLineBefore::Always
-      } else {
-        EmptyLineBefore::Never
-      }
-    }
-    other => other,
-  }
-}
-
-/// Strip vendor prefix from a property name.
-fn strip_vendor_prefix(prop: &str) -> &str {
-  if !prop.starts_with('-') {
-    return prop;
-  }
-  if let Some(rest) = prop
-    .strip_prefix("-webkit-")
-    .or_else(|| prop.strip_prefix("-moz-"))
-    .or_else(|| prop.strip_prefix("-ms-"))
-    .or_else(|| prop.strip_prefix("-o-"))
-  {
-    rest
-  } else {
-    prop
-  }
-}
-
-/// Check if there is an empty line (two consecutive newlines with only whitespace
-/// between them) before the given byte offset in the source.
-fn has_empty_line_before(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
-    return false;
-  }
-
-  let before = &source[..offset];
-  let mut newline_count = 0;
-
-  for ch in before.chars().rev() {
-    if ch == '\n' {
-      newline_count += 1;
-      if newline_count >= 2 {
-        return true;
-      }
-    } else if ch == '\r' || ch == '\t' || ch == ' ' {
-      // whitespace, continue
-    } else {
-      // Hit non-whitespace
+    if problems.is_empty() {
       return false;
     }
+    let fix = is_allowed_to_process(tree, block)
+      .then(|| sort_edit(tree, config, block, children))
+      .flatten();
+    for (first, second) in problems {
+      let second = &properties[second];
+      let first = &properties[first];
+      let mut message = format!(
+        "Expected \"{}\" to come before \"{}\"",
+        second.name, first.name
+      );
+      if let Some(group) = second.order.and_then(|o| o.group_name.as_deref()) {
+        message.push_str(&format!(" in group \"{group}\""));
+      }
+      let mut diag = Diagnostic::new(self.name(), message)
+        .severity(self.default_severity())
+        .span(node_span(tree, second.node));
+      if let Some(edit) = &fix {
+        diag = diag.fix(Fix::new("Sort the properties", vec![edit.clone()]));
+      }
+      diags.push(diag);
+    }
+    fix.is_some()
   }
 
-  newline_count >= 2
+  /// stylelint-order's `checkNodeForEmptyLines`.  The fixes are left off
+  /// while the block is still to be sorted: Stylelint fixes empty lines on
+  /// the sorted block, which the next fix pass sees.
+  fn check_empty_lines(
+    &self,
+    tree: &PostcssTree,
+    config: &Config,
+    children: &[usize],
+    newline: &str,
+    fixable: bool,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    let props_count = children.iter().filter(|&&c| is_property(tree, c)).count() as f64;
+    let data: Vec<Option<PropertyData>> = children
+      .iter()
+      .map(|&c| is_property(tree, c).then(|| node_data(tree, config, c)))
+      .collect();
+    let mut report = |node: usize, name: &str, add: bool| {
+      let (message, new_before) = if add {
+        (
+          format!("Expected an empty line before property \"{name}\""),
+          add_empty_line_before(tree.before(node), newline),
+        )
+      } else {
+        (
+          format!("Unexpected empty line before property \"{name}\""),
+          remove_empty_lines_before(tree.before(node), newline),
+        )
+      };
+      let mut diag = Diagnostic::new(self.name(), message)
+        .severity(self.default_severity())
+        .span(node_span(tree, node));
+      if fixable {
+        let range = &tree.nodes[node].before;
+        diag = diag.fix(Fix::new(
+          if add {
+            "Add an empty line"
+          } else {
+            "Remove the empty lines"
+          },
+          vec![Edit::new(
+            Span::from_range(range.start, range.end),
+            new_before,
+          )],
+        ));
+      }
+      diags.push(diag);
+    };
+
+    for index in 0..children.len() {
+      let mut previous = index.checked_sub(1);
+      // A comment sharing the previous line steps back one more node.
+      if let Some(p) = previous
+        && tree.nodes[children[p]].kind == NodeKind::Comment
+        && !tree.before(children[p]).contains('\n')
+      {
+        previous = index.checked_sub(2);
+      }
+      let Some(previous) = previous else {
+        continue;
+      };
+      let (Some(first), Some(second)) = (&data[previous], &data[index]) else {
+        continue;
+      };
+      self.check_empty_line_before(tree, config, first, second, props_count, &mut report);
+    }
+
+    // checkEmptyLineBeforeFirstProp.
+    if let Some(Some(first)) = data.first() {
+      let empty_line_before = match first.order {
+        Some(order) => config.group_empty_line(order.separated_group).is_some(),
+        None => config.empty_line_before_unspecified.is_some(),
+      };
+      if empty_line_before && has_empty_line_before(tree, first.node) {
+        report(first.node, &first.name, false);
+      }
+    }
+  }
+
+  /// stylelint-order's `checkEmptyLineBefore` for two neighbouring
+  /// properties.
+  fn check_empty_line_before(
+    &self,
+    tree: &PostcssTree,
+    config: &Config,
+    first: &PropertyData,
+    second: &PropertyData,
+    props_count: f64,
+    report: &mut impl FnMut(usize, &str, bool),
+  ) {
+    // `lastKnownSeparatedGroup` never moves from 1 in stylelint-order.
+    let last_known_separated_group = 1;
+    let first_group = first
+      .order
+      .map_or(last_known_separated_group, |o| o.separated_group);
+    let second_group = second
+      .order
+      .map_or(last_known_separated_group, |o| o.separated_group);
+    let start_of_specified_group = second.order.is_some() && first_group != second_group;
+    let start_of_unspecified_group = first.order.is_some() && second.order.is_none();
+
+    if start_of_specified_group || start_of_unspecified_group {
+      let mut empty_line_before = config.group_empty_line(second_group);
+      if start_of_unspecified_group {
+        empty_line_before = config.empty_line_before_unspecified.as_deref();
+      }
+      let below_threshold = props_count < config.empty_line_minimum_property_threshold;
+      let threshold = empty_line_before == Some("threshold");
+      let has_empty_line = has_empty_line_before(tree, second.node);
+      if (empty_line_before == Some("always") || (threshold && !below_threshold)) && !has_empty_line
+      {
+        report(second.node, &second.name, true);
+      } else if (empty_line_before == Some("never") || (threshold && below_threshold))
+        && has_empty_line
+      {
+        report(second.node, &second.name, false);
+      }
+    }
+
+    if let (Some(a), Some(b)) = (first.order, second.order)
+      && a.group_position == b.group_position
+      && b.no_empty_line_before_inside_group
+      && has_empty_line_before(tree, second.node)
+    {
+      report(second.node, &second.name, false);
+    }
+  }
 }
 
-/// Check if there is a standalone comment (on its own line, not inline after a
-/// declaration) or an at-rule between the previous declaration and this offset.
-/// This is used to determine if a comment/at-rule acts as a group separator.
-fn has_standalone_comment_or_atrule_before(source: &str, offset: usize) -> bool {
-  if offset == 0 || offset > source.len() {
-    return false;
+/// The span a report points at: the node's first character to its end.
+fn node_span(tree: &PostcssTree, node: usize) -> Span {
+  let n = &tree.nodes[node];
+  Span::from_range(n.start, n.end.max(n.start))
+}
+
+/// stylelint-order's `getNodeData` for the property `node`.
+fn node_data<'c>(tree: &PostcssTree, config: &'c Config, node: usize) -> PropertyData<'c> {
+  let name = tree.nodes[node].name.clone();
+  let unprefixed_name = normalized_property(&name);
+  let order = config.order.get(&unprefixed_name);
+  PropertyData {
+    node,
+    name,
+    unprefixed_name,
+    order,
+  }
+}
+
+/// stylelint-order's `checkOrder` for two neighbouring properties, given
+/// the properties before the second.  Returns whether the order is correct
+/// and the indexes (into `all` plus the second) of the pair to report.
+fn check_order(
+  first: &PropertyData,
+  second: &PropertyData,
+  all: &[PropertyData],
+  unspecified: Unspecified,
+) -> (bool, usize, usize) {
+  let second_index = all.len();
+  let first_index = second_index - 1;
+  let report = |correct: bool| (correct, first_index, second_index);
+  let first_name = first.name.to_lowercase();
+  let second_name = second.name.to_lowercase();
+
+  if first.unprefixed_name == second.unprefixed_name {
+    let wrong = vendor_prefix(&first_name).is_empty() && !vendor_prefix(&second_name).is_empty();
+    return report(!wrong);
   }
 
-  let before = &source[..offset];
-
-  // Get the lines before this offset
-  let lines: Vec<&str> = before.lines().collect();
-  if lines.len() < 2 {
-    return false;
+  let first_specified = first.order.is_some();
+  let second_specified = second.order.is_some();
+  if let (Some(a), Some(b)) = (first.order, second.order) {
+    return report(a.expected_position <= b.expected_position);
   }
 
-  // Check lines between the previous declaration and this one (skip the current
-  // line which contains this property).
-  // Walk backwards from the line before the current one.
-  for line in lines.iter().rev().skip(1) {
-    let trimmed = line.trim();
+  if !first_specified
+    && let Some(b) = second.order
+    && let Some(prior) = all[..first_index].iter().rposition(|p| p.order.is_some())
+    && all[prior]
+      .order
+      .is_some_and(|a| a.expected_position > b.expected_position)
+  {
+    return (false, prior, second_index);
+  }
 
-    if trimmed.is_empty() {
+  use Unspecified::*;
+  let correct = match unspecified {
+    BottomAlphabetical if first_specified && !second_specified => true,
+    BottomAlphabetical if !first_specified && !second_specified => {
+      is_alphabetical_order(first, second)
+    }
+    BottomAlphabetical if !first_specified => false,
+    _ if !first_specified && !second_specified => true,
+    Ignore => true,
+    Top => !first_specified,
+    Bottom => !second_specified,
+    BottomAlphabetical => true,
+  };
+  report(correct)
+}
+
+/// stylelint-order's `checkAlphabeticalOrder`.
+fn is_alphabetical_order(first: &PropertyData, second: &PropertyData) -> bool {
+  let (a, b) = (&first.unprefixed_name, &second.unprefixed_name);
+  if is_shorthand(a, b) {
+    return true;
+  }
+  if is_shorthand(b, a) {
+    return false;
+  }
+  if a == b {
+    let first_name = first.name.to_lowercase();
+    let second_name = second.name.to_lowercase();
+    return !(vendor_prefix(&first_name).is_empty() && !vendor_prefix(&second_name).is_empty());
+  }
+  a < b
+}
+
+/// stylelint-order's `hasEmptyLineBefore`: an empty line in the node's
+/// `raws.before`, or in that of a comment right before it.
+fn has_empty_line_before(tree: &PostcssTree, node: usize) -> bool {
+  if has_order_empty_line(tree.before(node)) {
+    return true;
+  }
+  tree.prev(node).is_some_and(|prev| {
+    tree.nodes[prev].kind == NodeKind::Comment && has_order_empty_line(tree.before(prev))
+  })
+}
+
+/// `/\r?\n\s*\r?\n/`: two line breaks with only whitespace between them.
+fn has_order_empty_line(text: &str) -> bool {
+  let bytes = text.as_bytes();
+  bytes.iter().enumerate().any(|(i, &b)| {
+    b == b'\n' && {
+      let rest = &text[i + 1..];
+      let blank = rest.len() - rest.trim_start().len();
+      rest[..blank].contains('\n')
+    }
+  })
+}
+
+/// stylelint-order's `addEmptyLineBefore` on a `raws.before`.
+fn add_empty_line_before(before: &str, newline: &str) -> String {
+  if !before.contains('\n') {
+    format!("{newline}{newline}{before}")
+  } else if before.starts_with('\n') || before.starts_with("\r\n") {
+    format!("{newline}{before}")
+  } else if before.ends_with('\n') {
+    format!("{before}{newline}")
+  } else {
+    // Insert before the first `\r?\n`.
+    let at = before.find('\n').unwrap_or(0);
+    let at = if at > 0 && before.as_bytes()[at - 1] == b'\r' {
+      at - 1
+    } else {
+      at
+    };
+    format!("{}{newline}{}", &before[..at], &before[at..])
+  }
+}
+
+/// stylelint-order's `removeEmptyLinesBefore`: every run matching
+/// `/(\r?\n\s*\r?\n)+/` becomes one line break.
+fn remove_empty_lines_before(before: &str, newline: &str) -> String {
+  use std::sync::OnceLock;
+  static EMPTY_LINES: OnceLock<regex::Regex> = OnceLock::new();
+  let re = EMPTY_LINES.get_or_init(|| regex::Regex::new(r"(\r?\n\s*\r?\n)+").expect("valid regex"));
+  re.replace_all(before, regex::NoExpand(newline))
+    .into_owned()
+}
+
+/// One entry of postcss-sorting's list of declarations to sort.
+struct SortItem<'n> {
+  node: usize,
+  /// The declaration's property; `None` for a comment.
+  name: Option<&'n str>,
+  unprefixed_name: String,
+  order: Option<usize>,
+  initial_index: f64,
+}
+
+/// postcss-sorting's `sortNodeProperties` for `block`, whose children are
+/// `children`: the edit that sorts it, if it changes anything.
+fn sort_edit(
+  tree: &PostcssTree,
+  config: &Config,
+  block: usize,
+  children: &[usize],
+) -> Option<Edit> {
+  let position = match config.unspecified {
+    Unspecified::Ignore => Unspecified::Bottom,
+    other => other,
+  };
+  let mut items: Vec<SortItem> = Vec::new();
+  let mut processed = vec![false; children.len()];
+  for (index, &child) in children.iter().enumerate() {
+    if !is_property(tree, child) {
       continue;
     }
-
-    // A line that is entirely a comment (standalone comment)
-    if trimmed.starts_with("/*") && trimmed.ends_with("*/") {
-      return true;
+    let name = tree.nodes[child].name.as_str();
+    let unprefixed_name = normalized_property(name);
+    let order = config.flat_order.get(&unprefixed_name).copied();
+    processed[index] = true;
+    let comment = |node: usize, initial_index: f64| SortItem {
+      node,
+      name: None,
+      unprefixed_name: unprefixed_name.clone(),
+      order,
+      initial_index,
+    };
+    let before = comments_before_declaration(tree, child);
+    let after = comments_after_declaration(tree, child);
+    for k in 1..=before.len() {
+      processed[index - k] = true;
     }
-    // A line starting with `//` (SCSS comment)
-    if trimmed.starts_with("//") {
-      return true;
+    for k in 1..=after.len() {
+      processed[index + k] = true;
     }
-    // Start of a multi-line comment
-    if trimmed.starts_with("/*") {
-      return true;
-    }
-    // End of a multi-line comment (on its own line)
-    if trimmed == "*/" {
-      return true;
-    }
-    // An at-rule line (e.g., @media)
-    if trimmed.starts_with('@') {
-      return true;
-    }
-
-    // If we hit a non-empty, non-comment, non-at-rule line, it's the
-    // previous declaration. Check if it has an inline comment.
-    // An inline comment (e.g., `display: none; /* comment */`) does NOT
-    // count as a standalone separator.
-    break;
-  }
-
-  false
-}
-
-/// Insert a property name or regex pattern (strings delimited by `/`) into the
-/// appropriate collection.
-fn insert_property_or_regex(
-  s: &str,
-  order_index: usize,
-  group_index: usize,
-  property_map: &mut HashMap<String, PropertyInfo>,
-  regex_patterns: &mut Vec<RegexEntry>,
-) {
-  let info = PropertyInfo {
-    order_index,
-    group_index,
-  };
-
-  // Detect regex patterns: strings written as `/regex/`.  One that does not
-  // compile (reported as an invalid option) is treated as a literal name.
-  if let Some(re) = pattern::regex_entry(s) {
-    regex_patterns.push(RegexEntry { pattern: re, info });
-    return;
-  }
-
-  property_map.insert(s.to_ascii_lowercase(), info);
-}
-
-/// Parse the rule configuration from the context.
-fn parse_config(ctx: &RuleContext) -> Option<Config> {
-  let options = ctx.options?;
-  let secondary = ctx.secondary_options();
-
-  // The options can be:
-  // 1. A bare array of property groups: [{properties: [...]}, ...]
-  // 2. An array [primary_array, secondary_object]: [[...groups...], {unspecified: "bottom"}]
-  // We need the array of property groups.
-  let arr = match options {
-    serde_json::Value::Array(arr) => {
-      // Check if first element is an array (nested format)
-      if arr.first().is_some_and(|v| v.is_array()) {
-        arr.first().and_then(|v| v.as_array())?
-      } else {
-        arr
-      }
-    }
-    _ => return None,
-  };
-
-  let mut property_map = HashMap::new();
-  let mut regex_patterns: Vec<RegexEntry> = Vec::new();
-  let mut groups: Vec<GroupInfo> = Vec::new();
-  let mut order_idx = 0usize;
-  let mut group_idx = 0usize;
-
-  for item in arr {
-    match item {
-      serde_json::Value::String(s) => {
-        insert_property_or_regex(
-          s,
-          order_idx,
-          group_idx,
-          &mut property_map,
-          &mut regex_patterns,
-        );
-        order_idx += 1;
-        groups.push(GroupInfo {
-          empty_line_before: None,
-          no_empty_line_between: false,
-          flexible: false,
-        });
-        group_idx += 1;
-      }
-      serde_json::Value::Object(obj) => {
-        let elb = obj
-          .get("emptyLineBefore")
-          .and_then(|v| v.as_str())
-          .and_then(|s| match s {
-            "always" => Some(EmptyLineBefore::Always),
-            "never" => Some(EmptyLineBefore::Never),
-            "threshold" => Some(EmptyLineBefore::Threshold),
-            _ => None,
-          });
-
-        let no_empty_between = obj
-          .get("noEmptyLineBetween")
-          .and_then(|v| v.as_bool())
-          .unwrap_or(false);
-
-        let flexible = obj
-          .get("order")
-          .and_then(|v| v.as_str())
-          .map(|s| s == "flexible")
-          .unwrap_or(false);
-
-        if let Some(props) = obj.get("properties").and_then(|v| v.as_array()) {
-          for prop in props {
-            if let Some(s) = prop.as_str() {
-              insert_property_or_regex(
-                s,
-                order_idx,
-                group_idx,
-                &mut property_map,
-                &mut regex_patterns,
-              );
-              order_idx += 1;
-            }
-          }
-        }
-        groups.push(GroupInfo {
-          empty_line_before: elb,
-          no_empty_line_between: no_empty_between,
-          flexible,
-        });
-        group_idx += 1;
-      }
-      _ => {}
-    }
-  }
-
-  if property_map.is_empty() {
-    return None;
-  }
-
-  let unspecified = secondary
-    .and_then(|s| s.get("unspecified"))
-    .and_then(|v| v.as_str())
-    .map(|s| match s {
-      "top" => Unspecified::Top,
-      "bottom" => Unspecified::Bottom,
-      "bottomAlphabetical" => Unspecified::BottomAlphabetical,
-      _ => Unspecified::Ignore,
-    })
-    .unwrap_or(Unspecified::Ignore);
-
-  let empty_line_before_unspecified = secondary
-    .and_then(|s| s.get("emptyLineBeforeUnspecified"))
-    .and_then(|v| v.as_str())
-    .and_then(|s| match s {
-      "always" => Some(EmptyLineBefore::Always),
-      "never" => Some(EmptyLineBefore::Never),
-      "threshold" => Some(EmptyLineBefore::Threshold),
-      _ => None,
+    let mut initial = index as f64;
+    let mut before_items: Vec<SortItem> = before
+      .iter()
+      .rev()
+      .map(|&c| {
+        initial -= 0.0001;
+        comment(c, initial)
+      })
+      .collect();
+    before_items.reverse();
+    let mut initial = index as f64;
+    let after_items: Vec<SortItem> = after
+      .iter()
+      .map(|&c| {
+        initial += 0.0001;
+        comment(c, initial)
+      })
+      .collect();
+    items.extend(before_items);
+    items.push(SortItem {
+      node: child,
+      name: Some(name),
+      unprefixed_name,
+      order,
+      initial_index: index as f64,
     });
+    items.extend(after_items);
+  }
 
-  let empty_line_min_threshold = secondary
-    .and_then(|s| s.get("emptyLineMinimumPropertyThreshold"))
-    .and_then(|v| v.as_u64())
-    .map(|n| n as usize);
+  js_sort(&mut items, |a, b| sort_declarations(a, b, position));
 
-  Some(Config {
-    property_map,
-    regex_patterns,
-    groups,
-    unspecified,
-    empty_line_before_unspecified,
-    empty_line_min_threshold,
-  })
+  let mut order = Vec::with_capacity(children.len());
+  let mut inserted = false;
+  for (index, &child) in children.iter().enumerate() {
+    if processed[index] {
+      if !inserted {
+        inserted = true;
+        order.extend(items.iter().map(|item| item.node));
+      }
+    } else {
+      order.push(child);
+    }
+  }
+  reorder_edit(tree, children, &order, tree.nodes[block].semicolon)
+}
+
+/// postcss-sorting's `sortDeclarations` comparator.
+fn sort_declarations(a: &SortItem, b: &SortItem, position: Unspecified) -> f64 {
+  if let (Some(a_name), Some(b_name)) = (a.name, b.name)
+    && a.unprefixed_name == b.unprefixed_name
+  {
+    let a_prefixed = !vendor_prefix(a_name).is_empty();
+    let b_prefixed = !vendor_prefix(b_name).is_empty();
+    if !a_prefixed && b_prefixed {
+      return 1.0;
+    }
+    if a_prefixed && !b_prefixed {
+      return -1.0;
+    }
+  }
+  if let (Some(a_order), Some(b_order)) = (a.order, b.order)
+    && a_order != b_order
+  {
+    return a_order as f64 - b_order as f64;
+  }
+  if matches!(
+    position,
+    Unspecified::Bottom | Unspecified::BottomAlphabetical
+  ) {
+    if a.order.is_some() && b.order.is_none() {
+      return -1.0;
+    }
+    if a.order.is_none() && b.order.is_some() {
+      return 1.0;
+    }
+  }
+  if position == Unspecified::Top {
+    if a.order.is_some() && b.order.is_none() {
+      return 1.0;
+    }
+    if a.order.is_none() && b.order.is_some() {
+      return -1.0;
+    }
+  }
+  if position == Unspecified::BottomAlphabetical && a.order.is_none() && b.order.is_none() {
+    return sort_declarations_alphabetically(a, b);
+  }
+  a.initial_index - b.initial_index
+}
+
+/// postcss-sorting's `sortDeclarationsAlphabetically` comparator.
+fn sort_declarations_alphabetically(a: &SortItem, b: &SortItem) -> f64 {
+  if is_shorthand(&a.unprefixed_name, &b.unprefixed_name) {
+    return -1.0;
+  }
+  if is_shorthand(&b.unprefixed_name, &a.unprefixed_name) {
+    return 1.0;
+  }
+  if a.unprefixed_name == b.unprefixed_name {
+    if let (Some(a_name), Some(b_name)) = (a.name, b.name) {
+      let a_prefixed = !vendor_prefix(a_name).is_empty();
+      let b_prefixed = !vendor_prefix(b_name).is_empty();
+      if !a_prefixed && b_prefixed {
+        return 1.0;
+      }
+      if a_prefixed && !b_prefixed {
+        return -1.0;
+      }
+    }
+    return a.initial_index - b.initial_index;
+  }
+  if a.unprefixed_name <= b.unprefixed_name {
+    -1.0
+  } else {
+    1.0
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use crate::empty_lines::fix_with;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  fn ctx_with_options(options: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
+  /// The messages for `source` with `options`.
+  fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
+    let ctx = RuleContext {
+      file_path: "t.css",
+      source,
       syntax: Syntax::Css,
-      options: Some(options),
-    }
+      options: Some(&options),
+    };
+    OrderPropertiesOrder
+      .check_root(&[], &ctx)
+      .into_iter()
+      .map(|d| d.message)
+      .collect()
   }
 
-  fn ctx_no_options() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
-  }
-
-  fn make_decl(property: &str, value: &str, offset: usize, length: usize) -> Declaration {
-    Declaration {
-      property: property.to_string(),
-      value: value.to_string(),
-      span: ParserSpan::new(offset, length),
-      important: false,
-    }
+  /// `source` fixed with the rule set to `options`.
+  fn fix(source: &str, options: serde_json::Value) -> String {
+    fix_with("order/properties-order", options, source, Syntax::Css)
   }
 
   #[test]
-  fn no_options_no_diagnostics() {
-    let rule = OrderPropertiesOrder;
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("position", "relative", 19, 19),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_no_options());
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn simple_array_correct_order() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["position", "top", "right", "display", "width"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("position", "relative", 4, 19),
-        make_decl("top", "0", 24, 6),
-        make_decl("display", "block", 31, 14),
-        make_decl("width", "100%", 46, 12),
-      ],
-      span: ParserSpan::new(0, 60),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn simple_array_wrong_order() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["position", "top", "right", "display", "width"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("position", "relative", 19, 19),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("position"));
-    assert!(diags[0].message.contains("display"));
-  }
-
-  #[test]
-  fn grouped_objects_correct_order() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([[
-        { "properties": ["position", "top", "right", "bottom", "left"] },
-        { "properties": ["display", "flex-direction"] },
-        { "properties": ["width", "height"] }
+  fn reports_properties_out_of_order() {
+    let order = json!([[
+      "my",
+      "transform",
+      "font-smoothing",
+      "top",
+      "transition",
+      "border",
+      "color"
     ]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("position", "absolute", 4, 19),
-        make_decl("top", "0", 24, 6),
-        make_decl("display", "flex", 31, 13),
-        make_decl("width", "100px", 45, 13),
-      ],
-      span: ParserSpan::new(0, 60),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
+    assert_eq!(
+      messages("a { color: pink; top: 0; }", order.clone()),
+      vec!["Expected \"top\" to come before \"color\""]
+    );
+    assert!(messages("a { top: 0; color: pink; }", order.clone()).is_empty());
+    assert!(
+      messages(
+        "a { -webkit-transform: none; transform: none; }",
+        order.clone()
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      messages("a { transform: none; -webkit-transform: none; }", order).len(),
+      1
+    );
+    let grouped =
+      json!([[{ "groupName": "font", "properties": ["font-size", "font-weight"] }, "height"]]);
+    assert_eq!(
+      messages("a { height: 1px; font-size: 2px; }", grouped),
+      vec!["Expected \"font-size\" to come before \"height\" in group \"font\""]
+    );
   }
 
   #[test]
-  fn grouped_objects_wrong_order() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([[
-        { "properties": ["position", "top", "right", "bottom", "left"] },
-        { "properties": ["display", "flex-direction"] },
-        { "properties": ["width", "height"] }
+  fn fix_sorts_and_keeps_comments_with_their_declarations() {
+    let order = json!([["height", "width", "color"]]);
+    assert_eq!(
+      fix("a { color: pink; width: 1px; height: 2px }", order.clone()),
+      "a { height: 2px; width: 1px; color: pink }"
+    );
+    assert_eq!(
+      fix(
+        "a {\n  /* c */\n  color: pink;\n  width: 1px; /* w */\n  top: 0;\n}",
+        order.clone()
+      ),
+      "a {\n  width: 1px; /* w */\n  /* c */\n  color: pink;\n  top: 0;\n}"
+    );
+    assert_eq!(
+      fix(
+        "a { -moz-transform: none; transform: none; -webkit-transform: none; }",
+        json!([["transform"]])
+      ),
+      "a { -moz-transform: none; -webkit-transform: none; transform: none; }"
+    );
+    // Sass control blocks are reported but never sorted.
+    let ctx_source = "@if $a { color: pink; height: 1px; }";
+    assert_eq!(
+      fix_with("order/properties-order", order, ctx_source, Syntax::Scss),
+      ctx_source
+    );
+  }
+
+  #[test]
+  fn fix_sorts_then_fixes_empty_lines_between_groups() {
+    let groups = json!([[
+      { "emptyLineBefore": "always", "properties": ["width", "height"] },
+      { "emptyLineBefore": "always", "properties": ["font-size", "font-family"] }
     ]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("width", "100px", 4, 13),
-        make_decl("position", "absolute", 18, 19),
-      ],
-      span: ParserSpan::new(0, 40),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("position"));
+    assert_eq!(
+      fix(
+        "a {\n  width: 1px;\n  font-size: 2px;\n  height: 3px;\n}",
+        groups
+      ),
+      "a {\n  width: 1px;\n  height: 3px;\n\n  font-size: 2px;\n}"
+    );
+    let unspecified = json!([["height", "width"], { "unspecified": "bottom", "emptyLineBeforeUnspecified": "always" }]);
+    assert_eq!(
+      fix("a {\r\n  height: 1px;\r\n  color: red;\r\n}", unspecified),
+      "a {\r\n  height: 1px;\r\n\r\n  color: red;\r\n}"
+    );
   }
 
   #[test]
-  fn mixed_strings_and_objects() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([[
-        "position",
-        { "properties": ["display", "flex"] },
-        "color"
-    ]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("position", "relative", 4, 19),
-        make_decl("display", "flex", 24, 13),
-        make_decl("color", "red", 38, 10),
-      ],
-      span: ParserSpan::new(0, 50),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
+  fn unspecified_positions() {
+    assert_eq!(
+      fix(
+        "a { height: 1px; top: 0; }",
+        json!([["height"], { "unspecified": "top" }])
+      ),
+      "a { top: 0; height: 1px; }"
+    );
+    assert_eq!(
+      fix(
+        "a { bottom: 0; height: 1px; }",
+        json!([["height"], { "unspecified": "bottom" }])
+      ),
+      "a { height: 1px; bottom: 0; }"
+    );
+    assert_eq!(
+      fix(
+        "a { compose: b; top: 0; bottom: 0; }",
+        json!([["all", "compose"], { "unspecified": "bottomAlphabetical" }])
+      ),
+      "a { compose: b; bottom: 0; top: 0; }"
+    );
   }
 
   #[test]
-  fn unknown_properties_are_ignored() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["position", "display", "width"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("position", "relative", 4, 19),
-        make_decl("unknown-prop", "foo", 24, 18),
-        make_decl("display", "block", 43, 14),
-      ],
-      span: ParserSpan::new(0, 60),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn skips_scss_variables() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["position", "display", "width"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("$my-var", "10px", 19, 14),
-        make_decl("position", "relative", 34, 19),
-      ],
-      span: ParserSpan::new(0, 55),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-  }
-
-  #[test]
-  fn skips_custom_properties() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["position", "display", "width"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("position", "relative", 4, 19),
-        make_decl("--my-var", "10px", 24, 16),
-        make_decl("display", "block", 41, 14),
-      ],
-      span: ParserSpan::new(0, 60),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn vendor_prefix_maps_to_unprefixed() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["transform", "font-smoothing", "top", "color"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("color", "pink", 4, 11),
-        make_decl("-webkit-font-smoothing", "antialiased", 16, 38),
-      ],
-      span: ParserSpan::new(0, 60),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-  }
-
-  #[test]
-  fn unspecified_bottom() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["height", "color"], {"unspecified": "bottom"}]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("bottom", "0", 4, 9),
-        make_decl("height", "1px", 14, 12),
-      ],
-      span: ParserSpan::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-  }
-
-  #[test]
-  fn unspecified_top() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["height", "color"], {"unspecified": "top"}]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("height", "1px", 4, 12),
-        make_decl("top", "0", 17, 6),
-      ],
-      span: ParserSpan::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-  }
-
-  #[test]
-  fn has_empty_line_detection() {
-    assert!(has_empty_line_before("a {\n\n\tdisplay: none;", 6));
-    assert!(!has_empty_line_before("a {\n\tdisplay: none;", 5));
-  }
-
-  #[test]
-  fn strip_vendor_prefix_works() {
-    assert_eq!(strip_vendor_prefix("transform"), "transform");
-    assert_eq!(strip_vendor_prefix("-webkit-transform"), "transform");
-    assert_eq!(strip_vendor_prefix("-moz-box-sizing"), "box-sizing");
-    assert_eq!(strip_vendor_prefix("-ms-flex"), "flex");
-    assert_eq!(strip_vendor_prefix("-o-transition"), "transition");
-    assert_eq!(strip_vendor_prefix("--custom"), "--custom");
-  }
-
-  #[test]
-  fn regex_pattern_matches_properties() {
-    // Config with a regex pattern `/^animation/` that should match
-    // any property starting with "animation".
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["display", "/^animation/"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("animation-name", "fade", 19, 21),
-      ],
-      span: ParserSpan::new(0, 45),
-      ..Default::default()
-    });
-    // Correct order: display then animation-name (matches /^animation/).
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn regex_pattern_wrong_order() {
-    let rule = OrderPropertiesOrder;
-    let options = serde_json::json!([["/^animation/", "display"]]);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("animation-name", "fade", 19, 21),
-      ],
-      span: ParserSpan::new(0, 45),
-      ..Default::default()
-    });
-    // Wrong order: display before animation-name, but /^animation/ should come first.
-    let diags = rule.check(&node, &ctx_with_options(&options));
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("animation-name"));
-  }
-
-  #[test]
-  fn standalone_comment_detection() {
-    // Standalone comment on its own line
-    assert!(has_standalone_comment_or_atrule_before(
-      "a {\n\tdisplay: none;\n\t/* comment */\n\tposition: abs;",
-      36
-    ));
-    // Inline comment - not standalone
-    assert!(!has_standalone_comment_or_atrule_before(
-      "a {\n\tdisplay: none; /* comment */\n\tposition: abs;",
-      34
-    ));
+  fn empty_line_helpers_match_stylelint_order() {
+    assert_eq!(add_empty_line_before(" ", "\n"), "\n\n ");
+    assert_eq!(add_empty_line_before("\n  ", "\n"), "\n\n  ");
+    assert_eq!(add_empty_line_before(";\n", "\n"), ";\n\n");
+    assert_eq!(add_empty_line_before(";\n  ", "\n"), ";\n\n  ");
+    assert_eq!(remove_empty_lines_before("\n\n\n  ", "\n"), "\n  ");
+    assert!(has_order_empty_line("\n \n"));
+    assert!(!has_order_empty_line("\n  "));
   }
 }
