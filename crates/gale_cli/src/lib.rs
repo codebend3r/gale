@@ -1,4 +1,5 @@
 mod cache;
+mod embedded;
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -193,10 +194,11 @@ const CSS_EXTENSIONS: &[&str] = &["css", "scss", "less", "sass"];
 
 /// Map a Stylelint `customSyntax` package name onto the parser Gale uses.
 ///
-/// Returns `None` for syntaxes Gale cannot parse (`postcss-html`,
-/// `postcss-markdown`, ...).  This is the only place that decides which
-/// `customSyntax` values Gale understands, whether they arrive from the config
-/// file or from `--custom-syntax`.
+/// Returns `None` for syntaxes Gale cannot parse (`postcss-markdown`, ...),
+/// and for `postcss-html`, which [`resolve_syntax`] accepts on its own: an
+/// HTML-like file's style blocks each pick their parser from their `lang`.
+/// Together they decide which `customSyntax` values Gale understands,
+/// whether they arrive from the config file or from `--custom-syntax`.
 fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
   match name.to_ascii_lowercase().as_str() {
     "postcss" => Some(Syntax::Css),
@@ -212,7 +214,9 @@ fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
 ///
 /// `--custom-syntax` applies to every file and picks the parser directly.  The
 /// config's own `customSyntax` only decides whether a file is skipped —
-/// supported values still parse by file extension.
+/// supported values still parse by file extension.  `postcss-html` parses by
+/// extension too: an HTML-like file is read for its style blocks whatever
+/// the syntax says, and other files are style sheets.
 ///
 /// The error is the unsupported syntax's name, for the skipped-files warning.
 fn resolve_syntax(
@@ -221,10 +225,14 @@ fn resolve_syntax(
   file_path: &str,
 ) -> Result<Syntax, String> {
   if let Some(name) = cli_custom_syntax {
+    if embedded::is_postcss_html(name) {
+      return Ok(detect_syntax(file_path));
+    }
     return syntax_for_custom_syntax(name).ok_or_else(|| name.to_string());
   }
 
   if let Some(name) = config.custom_syntax_for_file(file_path)
+    && !embedded::is_postcss_html(name)
     && syntax_for_custom_syntax(name).is_none()
   {
     return Err(name.to_string());
@@ -296,26 +304,24 @@ fn write_output_file(path: &Path, report: &str) -> std::io::Result<()> {
   std::fs::write(path, strip_ansi(report))
 }
 
-/// Whether the path's extension is one Gale knows how to lint.
-fn is_css_file(path: &Path) -> bool {
+/// Whether the path's extension is one Gale knows how to lint: a style
+/// sheet, or an HTML-like file with style blocks in it.
+fn is_lintable_file(path: &Path) -> bool {
   path
     .extension()
     .and_then(|ext| ext.to_str())
     .is_some_and(|ext| CSS_EXTENSIONS.contains(&ext))
+    || embedded::is_host_file(path)
 }
 
 /// The kind of source a path holds when it is a file that Stylelint lints
 /// (through a `customSyntax`) but gale cannot parse yet: styles embedded in
-/// Vue, Svelte, HTML, Astro, Markdown or JavaScript.
+/// Markdown or JavaScript.
 ///
 /// This is the one list to shrink as gale learns to lint these files.
 fn unsupported_kind(path: &Path) -> Option<&'static str> {
   let ext = path.extension()?.to_str()?.to_ascii_lowercase();
   Some(match ext.as_str() {
-    "vue" => "Vue",
-    "svelte" => "Svelte",
-    "html" | "htm" => "HTML",
-    "astro" => "Astro",
     "md" | "markdown" | "mdx" => "Markdown",
     "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" => "CSS-in-JS",
     _ => return None,
@@ -372,7 +378,9 @@ fn skipped_files_warning(skipped: &[Skipped]) -> Option<String> {
     paths.sort();
     let label = match reason {
       SkipReason::FileType(Some(kind)) => format!("{kind} files are not supported"),
-      SkipReason::FileType(None) => "not a CSS, SCSS, Less or Sass file".to_string(),
+      SkipReason::FileType(None) => {
+        "not a CSS, SCSS, Less, Sass, Vue, Svelte, Astro or HTML file".to_string()
+      }
       SkipReason::CustomSyntax(name) => format!("customSyntax \"{name}\" is not supported"),
     };
     let more = paths.len().saturating_sub(NAMED_PER_REASON);
@@ -647,8 +655,8 @@ fn expand_braces(pattern: &str) -> Vec<String> {
 /// and dropping anything matched by ignore files or config ignore patterns.
 ///
 /// Files the input names or a glob matches that gale cannot lint yet (a
-/// `.vue` file, say) are returned as skipped rather than dropped silently.
-/// Directory walks only ever pick up CSS-family files.
+/// `.md` file, say) are returned as skipped rather than dropped silently.
+/// Directory walks only ever pick up files gale lints.
 fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
   let mut files: Vec<PathBuf> = Vec::new();
   let mut skipped: Vec<Skipped> = Vec::new();
@@ -796,7 +804,7 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
             return ignore::WalkState::Continue;
           }
           let entry_path = entry.path();
-          let unsupported = if is_css_file(entry_path) {
+          let unsupported = if is_lintable_file(entry_path) {
             None
           } else {
             match unsupported_kind(entry_path) {
@@ -887,7 +895,7 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
         }
       }
 
-      if is_css_file(path) {
+      if is_lintable_file(path) {
         files.push(path.to_path_buf());
       } else {
         // A file named outright is one the user expects linted: say why
@@ -966,7 +974,7 @@ fn discover_files(paths: &[String], opts: &DiscoverOptions<'_>) -> Discovery {
           Err(_) => return ignore::WalkState::Continue,
         };
         let is_file = entry.file_type().map(|ft| ft.is_file()).unwrap_or(false);
-        if is_file && is_css_file(entry.path()) {
+        if is_file && is_lintable_file(entry.path()) {
           dir_matched
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1359,6 +1367,7 @@ pub fn run() -> Result<()> {
   runner
     .set_report_unscoped_disables(config.report_unscoped_disables || cli.report_unscoped_disables);
   runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
+  embedded::set_ignore_disables(cli.ignore_disables || config.ignore_disables);
   // Plugin rules the config names but Gale does not implement still count
   // as configured for reportInvalidScopeDisables.
   runner.set_configured_rules(config.rules.keys().cloned().collect());
@@ -1516,14 +1525,16 @@ pub fn run() -> Result<()> {
           })
         })
         .collect();
-    runner.lint_source_with_rules(
-      source,
-      file_path,
-      syntax,
-      &file_enabled,
-      &override_options,
-      &override_severities,
-    )
+    embedded::lint(source, file_path, syntax, |source, syntax| {
+      runner.lint_source_with_rules(
+        source,
+        file_path,
+        syntax,
+        &file_enabled,
+        &override_options,
+        &override_severities,
+      )
+    })
   }
 
   /// Lint a single file using pre-computed params, falling back to override
@@ -1538,14 +1549,16 @@ pub fn run() -> Result<()> {
     if params.has_overrides {
       lint_file_with_resolved_config(runner, source, file_path, syntax, &params.config)
     } else {
-      runner.lint_source_with_rules(
-        source,
-        file_path,
-        syntax,
-        &params.enabled_rules,
-        &params.rule_options,
-        &params.rule_severities,
-      )
+      embedded::lint(source, file_path, syntax, |source, syntax| {
+        runner.lint_source_with_rules(
+          source,
+          file_path,
+          syntax,
+          &params.enabled_rules,
+          &params.rule_options,
+          &params.rule_severities,
+        )
+      })
     }
   }
 
@@ -1561,7 +1574,9 @@ pub fn run() -> Result<()> {
     if has_overrides {
       lint_file_with_resolved_config(runner, source, file_path, syntax, config)
     } else {
-      runner.lint_source(source, file_path, syntax)
+      embedded::lint(source, file_path, syntax, |source, syntax| {
+        runner.lint_source(source, file_path, syntax)
+      })
     }
   }
 
@@ -1574,6 +1589,10 @@ pub fn run() -> Result<()> {
     let file_path = &cli.stdin_filename;
     match resolve_syntax(cli_custom_syntax, &config, file_path) {
       Ok(syntax) => {
+        let blocks = embedded::skipped_blocks(Path::new(file_path), &source);
+        if let Some(warning) = embedded::skipped_blocks_warning(&blocks) {
+          eprintln!("{warning}");
+        }
         vec![lint_file(
           &runner,
           &source,
@@ -1711,6 +1730,10 @@ pub fn run() -> Result<()> {
       }
     }
     if let Some(warning) = skipped_files_warning(&skipped) {
+      eprintln!("{warning}");
+    }
+    let files: Vec<PathBuf> = lintable.iter().map(|(file, _)| file.clone()).collect();
+    if let Some(warning) = embedded::skipped_blocks_warning(&embedded::skipped_blocks_in(&files)) {
       eprintln!("{warning}");
     }
 
@@ -2128,13 +2151,14 @@ mod tests {
   fn unsupported_files_named_or_globbed_are_skipped_not_dropped() {
     let tmp = tempfile::tempdir().unwrap();
     fs::write(tmp.path().join("a.css"), "a {}").unwrap();
-    fs::write(tmp.path().join("b.vue"), "<style>a {}</style>").unwrap();
+    fs::write(tmp.path().join("b.md"), "```css\na {}\n```").unwrap();
     fs::write(tmp.path().join("c.txt"), "notes").unwrap();
+    fs::write(tmp.path().join("d.vue"), "<style>a {}</style>").unwrap();
 
     // Named outright: skipped with a reason, whatever the type.
     let named = discover_files(
       &[
-        tmp.path().join("b.vue").display().to_string(),
+        tmp.path().join("b.md").display().to_string(),
         tmp.path().join("c.txt").display().to_string(),
       ],
       &default_opts(),
@@ -2144,21 +2168,51 @@ mod tests {
     assert_eq!(
       reasons,
       vec![
-        &SkipReason::FileType(Some("Vue")),
+        &SkipReason::FileType(Some("Markdown")),
         &SkipReason::FileType(None)
       ]
     );
 
     // Matched by a glob: only the kinds Stylelint lints are reported.
     let globbed = discover_files(&[format!("{}/*", tmp.path().display())], &default_opts());
-    assert_eq!(globbed.files.len(), 1);
+    assert_eq!(globbed.files.len(), 2);
     assert_eq!(globbed.skipped.len(), 1);
-    assert!(globbed.skipped[0].path.ends_with("b.vue"));
+    assert!(globbed.skipped[0].path.ends_with("b.md"));
 
-    // A directory walk only ever looks at CSS-family files.
+    // A directory walk only ever looks at files gale lints.
     let walked = discover_files(&[tmp.path().display().to_string()], &default_opts());
-    assert_eq!(walked.files.len(), 1);
+    assert_eq!(walked.files.len(), 2);
     assert!(walked.skipped.is_empty());
+  }
+
+  #[test]
+  fn html_like_files_are_linted_when_named_globbed_or_walked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let names = [
+      "a.vue", "b.svelte", "c.astro", "d.html", "e.htm", "f.php", "g.xhtml",
+    ];
+    for name in names {
+      fs::write(tmp.path().join(name), "<style>a {}</style>").unwrap();
+    }
+    let named: Vec<String> = names
+      .iter()
+      .map(|n| tmp.path().join(n).display().to_string())
+      .collect();
+    let found = discover_files(&named, &default_opts());
+    assert_eq!(found.files.len(), names.len());
+    assert!(found.skipped.is_empty());
+
+    let globbed = discover_files(
+      &[format!(
+        "{}/**/*.{{vue,svelte,astro}}",
+        tmp.path().display()
+      )],
+      &default_opts(),
+    );
+    assert_eq!(globbed.files.len(), 3);
+
+    let walked = discover_files(&[tmp.path().display().to_string()], &default_opts());
+    assert_eq!(walked.files.len(), names.len());
   }
 
   #[test]
@@ -2168,7 +2222,7 @@ mod tests {
       reason,
     };
     let mut skipped: Vec<Skipped> = (1..=7)
-      .map(|i| skip(&format!("c{i}.vue"), SkipReason::FileType(Some("Vue"))))
+      .map(|i| skip(&format!("c{i}.md"), SkipReason::FileType(Some("Markdown"))))
       .collect();
     skipped.push(skip(
       "x.css",
@@ -2177,13 +2231,13 @@ mod tests {
     assert_eq!(
       skipped_files_warning(&skipped).unwrap(),
       "warning: Skipped 8 files that gale cannot lint yet:\n  \
-       c1.vue, c2.vue, c3.vue, c4.vue, c5.vue and 2 more (Vue files are not supported)\n  \
+       c1.md, c2.md, c3.md, c4.md, c5.md and 2 more (Markdown files are not supported)\n  \
        x.css (customSyntax \"postcss-lit\" is not supported)"
     );
     assert_eq!(skipped_files_warning(&[]), None);
     assert_eq!(
-      skipped_files_warning(&[skip("b.vue", SkipReason::FileType(Some("Vue")))]).unwrap(),
-      "warning: Skipped 1 file that gale cannot lint yet:\n  b.vue (Vue files are not supported)"
+      skipped_files_warning(&[skip("b.jsx", SkipReason::FileType(Some("CSS-in-JS")))]).unwrap(),
+      "warning: Skipped 1 file that gale cannot lint yet:\n  b.jsx (CSS-in-JS files are not supported)"
     );
   }
 
@@ -2538,9 +2592,28 @@ mod tests {
     );
     // An unsupported flag skips the file rather than parsing it.
     assert_eq!(
-      resolve_syntax(Some("postcss-html"), &config, "a.css"),
-      Err("postcss-html".to_string())
+      resolve_syntax(Some("postcss-markdown"), &config, "a.css"),
+      Err("postcss-markdown".to_string())
     );
+    // postcss-html parses by extension: style blocks pick their own parser.
+    assert_eq!(
+      resolve_syntax(Some("postcss-html"), &config, "a.vue"),
+      Ok(Syntax::Css)
+    );
+    assert_eq!(
+      resolve_syntax(Some("postcss-html"), &config, "a.scss"),
+      Ok(Syntax::Scss)
+    );
+  }
+
+  #[test]
+  fn resolve_syntax_accepts_postcss_html_from_the_config() {
+    let config = GaleConfig {
+      custom_syntax: Some("postcss-html".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(resolve_syntax(None, &config, "a.vue"), Ok(Syntax::Css));
+    assert_eq!(resolve_syntax(None, &config, "a.svelte"), Ok(Syntax::Css));
   }
 
   #[test]
