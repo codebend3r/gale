@@ -1,5 +1,6 @@
 name: 🧩 Compatibility Matrix
 
+# Weekly parity check against real repositories, plus the quick benchmark.
 on:
   schedule:
     - cron: '0 6 * * 1' # Every Monday at 6am UTC
@@ -89,6 +90,42 @@ jobs:
         with:
           name: result-${{ matrix.repo.name }}
           path: result.txt
+
+  benchmark:
+    # Weekly rather than per pull request: it is the slowest job CI had, gated
+    # nothing, and shared runners are too noisy to compare one PR against another.
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install hyperfine
+        # Without it benchmark-quick.sh silently degrades to `time`, whose output
+        # is too noisy on shared runners to be worth reading.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run benchmark
+        shell: bash # -o pipefail, so tee cannot hide a failing script
+        run: |
+          bash benchmarks/benchmark-quick.sh | tee benchmark.txt
+          {
+            echo '## Quick benchmark'
+            echo
+            echo '```'
+            cat benchmark.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   update-matrix:
     needs: test-repos
