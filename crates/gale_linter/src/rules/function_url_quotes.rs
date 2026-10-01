@@ -55,7 +55,7 @@ impl Rule for FunctionUrlQuotes {
     {
       self.check_text(params, start, always, except_empty, &mut diags);
     }
-    for decl in source_text::written_declarations(ctx.source, node) {
+    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
       if !contains_url_call(decl.value) || !is_standard_syntax_property(decl.prop) {
         continue;
       }

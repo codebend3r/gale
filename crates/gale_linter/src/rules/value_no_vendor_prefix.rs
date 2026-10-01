@@ -38,7 +38,7 @@ impl Rule for ValueNoVendorPrefix {
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_values = ctx.secondary_options().and_then(|v| v.get("ignoreValues"));
     let mut diags = Vec::new();
-    for decl in source_text::written_declarations(ctx.source, node) {
+    for decl in source_text::written_declarations(ctx.source, node, ctx.syntax) {
       let lower = decl.value.to_ascii_lowercase();
       if !PREFIXES.iter().any(|prefix| lower.contains(prefix)) {
         continue;
