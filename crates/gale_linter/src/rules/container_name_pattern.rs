@@ -88,6 +88,7 @@ impl ContainerNamePattern {
     )
     .severity(self.default_severity())
     .span(Span::new(offset, name.len()))
+    .message_args([name, pattern])
   }
 
   /// Reports for the names in a `container` or `container-name` declaration.
