@@ -1,17 +1,29 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
+use crate::source_text;
+use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Require or disallow quotes around `url()` values.
 ///
-/// Equivalent to Stylelint's `function-url-quotes` rule.
+/// Equivalent to Stylelint's `function-url-quotes` rule: every `url()` in
+/// declaration values and at-rule params, as written, is checked; the fix
+/// wraps an unquoted argument in `"` or unwraps a quoted one, leaving the
+/// whitespace inside the parentheses alone.
 ///
 /// Primary option: `"always"` (default) or `"never"`.
 ///
 /// Secondary options:
 ///   - `except`: `["empty"]` — invert the primary for empty `url()` calls.
 pub struct FunctionUrlQuotes;
+
+/// Whether a reported `url()` needs quotes added or removed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Problem {
+  Expected,
+  Rejected,
+}
 
 impl Rule for FunctionUrlQuotes {
   fn name(&self) -> &'static str {
@@ -26,13 +38,11 @@ impl Rule for FunctionUrlQuotes {
     Severity::Warning
   }
 
-  /// Flags `url()` arguments whose quoting does not match the option. With
-  /// `except: ["empty"]` the primary is inverted for empty URLs.
+  /// Flags `url()` arguments whose quoting does not match the option, in
+  /// declaration values and at-rule params. With `except: ["empty"]` the
+  /// primary is inverted for empty URLs.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    // Read the primary option: "always" (default) or "never"
-    let option = ctx.primary_option_str().unwrap_or("always");
-
-    // Read secondary options
+    let always = ctx.primary_option_str() != Some("never");
     let except_empty = ctx
       .secondary_options()
       .and_then(|v| v.get("except"))
@@ -40,475 +50,413 @@ impl Rule for FunctionUrlQuotes {
       .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("empty")));
 
     let mut diags = Vec::new();
-
-    // Collect text areas to check based on node type
-    match node {
-      CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          let search_area =
-            get_search_area(decl.span.offset, decl.span.length, ctx.source, &decl.value);
-          let base_offset =
-            if decl.span.length > 0 && decl.span.offset + decl.span.length <= ctx.source.len() {
-              decl.span.offset
-            } else {
-              0
-            };
-          check_urls(
-            search_area,
-            base_offset,
-            option,
-            except_empty,
-            ctx,
-            self,
-            &mut diags,
-          );
-        }
-      }
-      CssNode::Declaration(decl) => {
-        let search_area =
-          get_search_area(decl.span.offset, decl.span.length, ctx.source, &decl.value);
-        let base_offset =
-          if decl.span.length > 0 && decl.span.offset + decl.span.length <= ctx.source.len() {
-            decl.span.offset
-          } else {
-            0
-          };
-        check_urls(
-          search_area,
-          base_offset,
-          option,
-          except_empty,
-          ctx,
-          self,
-          &mut diags,
-        );
-      }
-      CssNode::AtRule(at_rule) => {
-        // Check @import url(...) and other at-rule params
-        let name_lower = at_rule.name.to_ascii_lowercase();
-        if name_lower == "import" || name_lower == "document" {
-          let params = &at_rule.params;
-          // Compute the offset of params within the source
-          let params_offset = if at_rule.span.length > 0
-            && at_rule.span.offset + at_rule.span.length <= ctx.source.len()
-          {
-            // Try to find params in source after @name
-            let at_rule_src =
-              &ctx.source[at_rule.span.offset..at_rule.span.offset + at_rule.span.length];
-            if let Some(pos) = at_rule_src.find(params.as_str()) {
-              at_rule.span.offset + pos
-            } else {
-              at_rule.span.offset
-            }
-          } else {
-            at_rule.span.offset
-          };
-          check_urls(
-            params,
-            params_offset,
-            option,
-            except_empty,
-            ctx,
-            self,
-            &mut diags,
-          );
-        }
-      }
-      _ => {}
+    if let CssNode::AtRule(at) = node
+      && let Some((params, start)) = source_text::at_rule_params(ctx.source, at)
+    {
+      self.check_text(params, start, always, except_empty, &mut diags);
     }
-
+    for decl in source_text::written_declarations(ctx.source, node) {
+      if !contains_url_call(decl.value) || !is_standard_syntax_property(decl.prop) {
+        continue;
+      }
+      self.check_text(
+        decl.value,
+        decl.value_start,
+        always,
+        except_empty,
+        &mut diags,
+      );
+    }
     diags
   }
 }
 
-/// The declaration's source slice when the span is usable, else `fallback`.
-fn get_search_area<'a>(
-  offset: usize,
-  length: usize,
-  source: &'a str,
-  fallback: &'a str,
-) -> &'a str {
-  let end = offset + length;
-  if length > 0 && end <= source.len() && offset < end {
-    &source[offset..end]
-  } else {
-    fallback
+impl FunctionUrlQuotes {
+  /// Check every `url()` in `text`, which starts at byte `start` of the
+  /// source, as Stylelint's `functionArgumentsSearch` finds them.
+  fn check_text(
+    &self,
+    text: &str,
+    start: usize,
+    always: bool,
+    except_empty: bool,
+    diags: &mut Vec<Diagnostic>,
+  ) {
+    let nodes = value_parser::parse(text);
+    value_parser::walk(&nodes, &mut |node: &ValueNode| {
+      if !node.is_function_named("url") || has_url_modifier(node) {
+        return true;
+      }
+      let Some(args) = url_arguments(text, node) else {
+        return true;
+      };
+      let Some(problem) = check_args(args, always, except_empty) else {
+        return true;
+      };
+      let leading = args.len() - args.trim_start().len();
+      let args_start = start + node.source_index + node.value.len() + 1;
+      let span = Span::new(args_start + leading, args.len() - leading);
+      let (message, description, edits) = match problem {
+        Problem::Expected => (
+          "Expected quotes around \"url\" function argument",
+          "Add quotes",
+          node
+            .nodes
+            .iter()
+            .filter(|arg| arg.kind == NodeKind::Word)
+            .map(|arg| {
+              Edit::new(
+                Span::from_range(start + arg.source_index, start + arg.source_end_index),
+                format!("\"{}\"", arg.value),
+              )
+            })
+            .collect::<Vec<_>>(),
+        ),
+        Problem::Rejected => (
+          "Unexpected quotes around \"url\" function argument",
+          "Remove quotes",
+          node
+            .nodes
+            .iter()
+            .filter(|arg| arg.kind == NodeKind::String)
+            .map(|arg| {
+              Edit::new(
+                Span::from_range(start + arg.source_index, start + arg.source_end_index),
+                arg.value,
+              )
+            })
+            .collect(),
+        ),
+      };
+      diags.push(
+        Diagnostic::new(self.name(), message)
+          .severity(self.default_severity())
+          .span(span)
+          .fix(Fix::new(description, edits)),
+      );
+      true
+    });
   }
 }
 
-/// Reports every `url()` in `search_area` whose quoting is wrong for `option`.
-fn check_urls(
-  search_area: &str,
-  base_offset: usize,
-  option: &str,
-  except_empty: bool,
-  ctx: &RuleContext,
-  rule: &FunctionUrlQuotes,
-  diags: &mut Vec<Diagnostic>,
-) {
-  if option == "never" {
-    for (rel_offset, url_content, quote_len) in find_quoted_urls(search_area) {
-      // In "never" mode with except "empty", skip empty URLs
-      // (empty quoted URL = url("") should NOT be flagged when except empty)
-      // Actually, except: ["empty"] inverts for empty url() only.
-      // "never" + except "empty" means: never quote, EXCEPT empty ones should be quoted.
-      // So skip flagging empty quoted urls.
-      if except_empty && url_content.is_empty() {
-        continue;
-      }
-      // Skip data URIs — Stylelint does not flag data URIs in either mode
-      if is_data_uri(&url_content) {
-        continue;
-      }
-      // Skip URLs with SCSS/Less interpolation — Stylelint skips these
-      if (ctx.syntax == Syntax::Scss || ctx.syntax == Syntax::Sass)
-        && has_scss_interpolation(&url_content)
-      {
-        continue;
-      }
-      if ctx.syntax == Syntax::Less && has_less_interpolation(&url_content) {
-        continue;
-      }
-      let abs_offset = base_offset + rel_offset;
-      let total_len = url_content.len() + 2 * quote_len;
-      diags.push(
-        Diagnostic::new(
-          rule.name(),
-          "Unexpected quotes around \"url\" function argument".to_string(),
-        )
-        .severity(rule.default_severity())
-        .span(Span::new(abs_offset, total_len))
-        .fix(Fix::new(
-          "Remove quotes from URL",
-          vec![Edit::new(Span::new(abs_offset, total_len), &url_content)],
-        )),
-      );
-    }
-
-    // In "never" + except "empty": flag unquoted empty url()
-    if except_empty {
-      for (rel_offset, _) in find_empty_urls(search_area) {
-        let abs_offset = base_offset + rel_offset;
-        diags.push(
-          Diagnostic::new(
-            rule.name(),
-            "Expected quotes around \"url\" function argument".to_string(),
-          )
-          .severity(rule.default_severity())
-          .span(Span::new(abs_offset, 0)),
-        );
-      }
-    }
-  } else {
-    // "always" mode: flag unquoted URLs
-    for (rel_offset, url_content) in find_unquoted_urls(search_area, ctx.syntax) {
-      // In "always" + except "empty": skip empty url()
-      if except_empty && url_content.is_empty() {
-        continue;
-      }
-      let abs_offset = base_offset + rel_offset;
-      let quoted = format!("\"{}\"", url_content);
-      diags.push(
-        Diagnostic::new(
-          rule.name(),
-          "Expected quotes around \"url\" function argument".to_string(),
-        )
-        .severity(rule.default_severity())
-        .span(Span::new(abs_offset, url_content.len()))
-        .fix(Fix::new(
-          "Wrap URL in double quotes",
-          vec![Edit::new(Span::new(abs_offset, url_content.len()), &quoted)],
-        )),
-      );
-    }
-
-    // In "always" + except "empty": empty url() should NOT have quotes
-    if except_empty {
-      for (rel_offset, url_content, quote_len) in find_quoted_urls(search_area) {
-        if url_content.is_empty() {
-          let abs_offset = base_offset + rel_offset;
-          let total_len = url_content.len() + 2 * quote_len;
-          diags.push(
-            Diagnostic::new(
-              rule.name(),
-              "Unexpected quotes around \"url\" function argument".to_string(),
-            )
-            .severity(rule.default_severity())
-            .span(Span::new(abs_offset, total_len)),
-          );
-        }
-      }
-    }
-  }
-}
-
-/// Check if a URL content is a data URI.
-fn is_data_uri(content: &str) -> bool {
-  let trimmed = content.trim();
-  trimmed.to_ascii_lowercase().starts_with("data:")
-}
-
-/// Check if a URL content contains SCSS interpolation.
-fn has_scss_interpolation(content: &str) -> bool {
-  content.contains("#{")
-}
-
-/// Check if a URL content contains Less variable interpolation.
-fn has_less_interpolation(content: &str) -> bool {
-  content.contains("@{")
-}
-
-/// Check if a URL content is a SCSS variable.
-fn is_scss_variable(content: &str) -> bool {
-  content.trim().starts_with('$')
-}
-
-/// Find empty url() calls (no content at all).
-/// Returns (byte_offset_of_paren_content, _).
-fn find_empty_urls(value: &str) -> Vec<(usize, ())> {
-  let mut results = Vec::new();
+/// Stylelint's `mayIncludeRegexes.urlFunction` (`/\burl\(/i`).
+fn contains_url_call(value: &str) -> bool {
   let lower = value.to_ascii_lowercase();
-  let mut search_from = 0;
-  while let Some(pos) = lower[search_from..].find("url(") {
-    let abs_pos = search_from + pos;
-    if !is_standalone_url(&lower, abs_pos) {
-      search_from = abs_pos + 4;
-      continue;
+  lower.match_indices("url(").any(|(i, _)| {
+    i == 0 || {
+      let before = lower.as_bytes()[i - 1];
+      !(before.is_ascii_alphanumeric() || before == b'_')
     }
-    let content_start = abs_pos + 4;
-    if content_start < value.len() {
-      let rest = &value[content_start..];
-      if let Some(close) = rest.find(')') {
-        let content = rest[..close].trim();
-        if content.is_empty() {
-          results.push((content_start, ()));
-        }
-      }
-    }
-    search_from = abs_pos + 4;
-  }
-  results
+  })
 }
 
-/// Check whether the `url(` match at `abs_pos` is a standalone `url()` call
-/// and not part of a longer function name like `static-url(`.
-fn is_standalone_url(value: &str, abs_pos: usize) -> bool {
-  if abs_pos == 0 {
+/// Stylelint's `isStandardSyntaxDeclaration`, as far as the property tells:
+/// Sass variables (`$a`) and Less variables (`@a`, but not `@{a}`
+/// interpolation) are not checked.
+fn is_standard_syntax_property(prop: &str) -> bool {
+  !(prop.starts_with('$') || (prop.starts_with('@') && !prop.starts_with("@{")))
+}
+
+/// Stylelint's `hasUrlModifier`: an argument that is not a string, space or
+/// word (such as `crossorigin(anonymous)`), or a word holding unescaped
+/// whitespace.
+fn has_url_modifier(function: &ValueNode) -> bool {
+  function.nodes.iter().any(|n| match n.kind {
+    NodeKind::String | NodeKind::Space => false,
+    NodeKind::Word => {
+      let bytes = n.value.as_bytes();
+      (0..bytes.len()).any(|i| bytes[i].is_ascii_whitespace() && (i == 0 || bytes[i - 1] != b'\\'))
+    }
+    _ => true,
+  })
+}
+
+/// The text between a `url(`'s parentheses, whitespace included, read the
+/// way `functionArgumentsSearch` reads it: the parenthesised group from `(`
+/// re-parsed as an ordinary value, so quotes and nested parentheses balance.
+fn url_arguments<'a>(text: &'a str, function: &ValueNode) -> Option<&'a str> {
+  let open = function.source_index + function.value.len();
+  let expression = open + 1;
+  let group = value_parser::parse(text.get(open..)?).into_iter().next()?;
+  let group_end = open + group.source_end_index;
+  let end = if group_end > expression && text.as_bytes().get(group_end - 1) == Some(&b')') {
+    group_end - 1
+  } else {
+    group_end
+  };
+  text.get(expression..end.max(expression))
+}
+
+/// Whether the argument breaks the option, and how.  `None` for one that
+/// complies, uses preprocessor syntax, or needs its quotes to be valid CSS.
+fn check_args(args: &str, always: bool, except_empty: bool) -> Option<Problem> {
+  let trimmed = args.trim_start();
+  if !is_standard_syntax_url(trimmed) {
+    return None;
+  }
+  let mut expect_quotes = always;
+  if except_empty && matches!(args.trim(), "" | "''" | "\"\"") {
+    expect_quotes = !expect_quotes;
+  }
+  let has_quotes = trimmed.starts_with('\'') || trimmed.starts_with('"');
+  if has_quotes && requires_quotes(trimmed) {
+    return None;
+  }
+  match (expect_quotes, has_quotes) {
+    (true, false) => Some(Problem::Expected),
+    (false, true) => Some(Problem::Rejected),
+    _ => None,
+  }
+}
+
+/// Stylelint's `isStandardSyntaxUrl`.
+fn is_standard_syntax_url(url: &str) -> bool {
+  if url.is_empty() {
     return true;
   }
-  let prev = value.as_bytes()[abs_pos - 1];
-  // If the char before "url(" is alphanumeric, underscore or hyphen,
-  // then "url(" is part of a longer identifier (e.g. "static-url(").
-  !(prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'-')
+  // Sass, template and PostCSS-simple-vars interpolation work anywhere.
+  if has_braced(url, b'{', b'}', true) || has_after(url, "$(", b')') {
+    return false;
+  }
+  let quoted =
+    (url.starts_with('\'') && url.ends_with('\'')) || (url.starts_with('"') && url.ends_with('"'));
+  if quoted {
+    // Only Less interpolation works inside quotes.
+    return !has_after(url, "@{", b'}');
+  }
+  // A Less variable works only at the beginning.
+  let is_less_variable = url
+    .strip_prefix("@@")
+    .or_else(|| url.strip_prefix('@'))
+    .is_some_and(|name| {
+      !name.is_empty()
+        && name
+          .bytes()
+          .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    });
+  if is_less_variable {
+    return false;
+  }
+  // A Sass variable can sit anywhere in an unquoted url, among a limited
+  // set of characters, unless the url ends with `/`.
+  let scss_chars = url.bytes().all(|b| {
+    b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || b"$_+-,./*'\"@#?".contains(&b)
+  });
+  !(url.contains('$') && scss_chars && !url.ends_with('/'))
 }
 
-/// Find quoted URL contents inside `url(...)` calls.
-/// Returns (byte_offset_of_quote, inner_content_string, quote_char_len).
-fn find_quoted_urls(value: &str) -> Vec<(usize, String, usize)> {
-  let mut results = Vec::new();
-  let lower = value.to_ascii_lowercase();
-  let mut search_from = 0;
-  while let Some(pos) = lower[search_from..].find("url(") {
-    let abs_pos = search_from + pos;
-    // Skip if "url(" is part of a longer function name like "static-url("
-    if !is_standalone_url(&lower, abs_pos) {
-      search_from = abs_pos + 4;
-      continue;
-    }
-    let content_start = abs_pos + 4; // skip "url("
-    if content_start < value.len() {
-      let rest = &value[content_start..];
-      let first_non_ws = rest.bytes().position(|b| b != b' ' && b != b'\t');
-      if let Some(fns) = first_non_ws {
-        let first_char = rest.as_bytes()[fns];
-        if first_char == b'"' || first_char == b'\'' {
-          // Find the closing quote
-          let inner_start = fns + 1;
-          if let Some(close_quote) = rest[inner_start..].find(first_char as char) {
-            let inner = &rest[inner_start..inner_start + close_quote];
-            // Offset points to the opening quote
-            let quote_abs = content_start + fns;
-            results.push((quote_abs, inner.to_string(), 1));
+/// Whether `text` holds `open`, at least one character, then `close`
+/// (`/\{.+?\}/s` when `multiline`).
+fn has_braced(text: &str, open: u8, close: u8, multiline: bool) -> bool {
+  let bytes = text.as_bytes();
+  bytes.iter().enumerate().any(|(i, &b)| {
+    b == open
+      && bytes[i + 1..]
+        .iter()
+        .take_while(|&&c| multiline || c != b'\n')
+        .skip(1)
+        .any(|&c| c == close)
+  })
+}
+
+/// Whether `text` holds `opener`, at least one character on the same line,
+/// then `close` (`/@\{.+?\}/`, `/\$\(.+?\)/`).
+fn has_after(text: &str, opener: &str, close: u8) -> bool {
+  text.match_indices(opener).any(|(i, _)| {
+    text.as_bytes()[i + opener.len()..]
+      .iter()
+      .take_while(|&&c| c != b'\n')
+      .skip(1)
+      .any(|&c| c == close)
+  })
+}
+
+/// Stylelint's `requiresQuotes`: whether the quoted argument's content
+/// would not survive as an unquoted `url(...)` token, because it holds
+/// whitespace, quotes, parentheses, control characters or a bad escape.
+fn requires_quotes(url: &str) -> bool {
+  let content = match url.chars().next() {
+    Some(quote) => match url.rfind(quote) {
+      Some(end) if end > 0 => &url[quote.len_utf8()..end],
+      _ => url,
+    },
+    None => url,
+  };
+  !is_plain_url_token(content)
+}
+
+/// Whether `url(<content>)` tokenizes as exactly one `<url-token>`, per CSS
+/// Syntax Level 3 "consume a url token".
+fn is_plain_url_token(content: &str) -> bool {
+  let bytes = content.as_bytes();
+  let mut i = 0;
+  while i < bytes.len() && is_css_whitespace(bytes[i]) {
+    i += 1;
+  }
+  if matches!(bytes.get(i), Some(b'"' | b'\'')) {
+    // `url("...` is a function token, not a url token.
+    return false;
+  }
+  while i < bytes.len() {
+    match bytes[i] {
+      b')' => return false,
+      b if is_css_whitespace(b) => {
+        while i < bytes.len() && is_css_whitespace(bytes[i]) {
+          i += 1;
+        }
+        return i == bytes.len();
+      }
+      b'"' | b'\'' | b'(' => return false,
+      0x00..=0x08 | 0x0B | 0x0E..=0x1F | 0x7F => return false,
+      b'\\' => {
+        match bytes.get(i + 1) {
+          // A backslash before a newline is not an escape; before the end,
+          // it escapes the closing parenthesis.
+          Some(b'\n' | b'\r' | b'\x0c') => return false,
+          None => return true,
+          Some(b) if b.is_ascii_hexdigit() => {
+            i += 1;
+            let mut digits = 0;
+            while digits < 6 && i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+              i += 1;
+              digits += 1;
+            }
+            if i < bytes.len() && is_css_whitespace(bytes[i]) {
+              i += 1;
+            }
+            continue;
+          }
+          Some(_) => {
+            i += 1 + content[i + 1..].chars().next().map_or(1, char::len_utf8);
+            continue;
           }
         }
       }
+      _ => {}
     }
-    search_from = abs_pos + 4;
+    i += 1;
   }
-  results
+  true
 }
 
-/// Find unquoted URL contents inside `url(...)` calls.
-/// Returns (byte_offset_of_content, content_string).
-/// Skips data URIs, SCSS interpolation, Less interpolation, and SCSS variables.
-fn find_unquoted_urls(value: &str, syntax: Syntax) -> Vec<(usize, String)> {
-  let mut results = Vec::new();
-  let lower = value.to_ascii_lowercase();
-  let mut search_from = 0;
-  while let Some(pos) = lower[search_from..].find("url(") {
-    let abs_pos = search_from + pos;
-    if !is_standalone_url(&lower, abs_pos) {
-      search_from = abs_pos + 4;
-      continue;
-    }
-    let content_start = abs_pos + 4; // skip "url("
-    if content_start < value.len() {
-      let rest = &value[content_start..];
-      let first_non_ws = rest.bytes().position(|b| b != b' ' && b != b'\t');
-      if let Some(fns) = first_non_ws {
-        let first_char = rest.as_bytes()[fns];
-        if first_char != b'"' && first_char != b'\'' && first_char != b')' {
-          // Find the closing paren (handle nested parens)
-          let mut depth = 1i32;
-          let mut close = None;
-          for (j, &byte) in rest.as_bytes().iter().enumerate() {
-            if j == 0 {
-              continue;
-            } // skip the implicit open paren context
-            if byte == b'(' {
-              depth += 1;
-            } else if byte == b')' {
-              depth -= 1;
-              if depth == 0 {
-                close = Some(j);
-                break;
-              }
-            }
-          }
-          if let Some(close_pos) = close.or_else(|| rest.find(')')) {
-            let content = rest[..close_pos].trim();
-            if !content.is_empty() {
-              // Skip data URIs — Stylelint does not flag data URIs
-              if is_data_uri(content) {
-                search_from = abs_pos + 4;
-                continue;
-              }
-              // Skip SCSS interpolation
-              if (syntax == Syntax::Scss || syntax == Syntax::Sass)
-                && has_scss_interpolation(content)
-              {
-                search_from = abs_pos + 4;
-                continue;
-              }
-              // Skip Less interpolation
-              if syntax == Syntax::Less && has_less_interpolation(content) {
-                search_from = abs_pos + 4;
-                continue;
-              }
-              // Skip SCSS variables ($var)
-              if (syntax == Syntax::Scss || syntax == Syntax::Sass) && is_scss_variable(content) {
-                search_from = abs_pos + 4;
-                continue;
-              }
-              let content_abs = content_start + fns;
-              results.push((content_abs, content.to_string()));
-            }
-          }
-        }
-      }
-    }
-    search_from = abs_pos + 4;
-  }
-  results
+/// Whitespace as CSS tokenization defines it.
+fn is_css_whitespace(b: u8) -> bool {
+  matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use std::collections::HashMap;
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-    }
-  }
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::apply_fixes;
 
-  fn ctx_scss() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-    }
-  }
+  use crate::{LintRunner, RuleRegistry};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
-
-  #[test]
-  fn reports_unquoted_url() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url(foo.png)"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].fix.is_some());
-  }
-
-  #[test]
-  fn allows_quoted_url() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url(\"foo.png\")"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_single_quoted_url() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url('foo.png')"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn skips_data_uri() {
-    let d = FunctionUrlQuotes.check(
-      &style_with_value("url(data:image/png;base64,abc123)"),
-      &ctx(),
+  /// Lint `css` with only this rule enabled, configured with `options`.
+  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
+    let rule = "function-url-quotes".to_string();
+    let runner = LintRunner::with_options(
+      RuleRegistry::default(),
+      vec![rule.clone()],
+      HashMap::from([(rule, options)]),
     );
-    assert!(d.is_empty());
+    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
+  }
+
+  /// `css` after applying the rule's fixes until nothing changes, the way
+  /// `gale --fix` does.
+  fn fix(css: &str, options: serde_json::Value) -> String {
+    let mut current = css.to_string();
+    for _ in 0..10 {
+      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
+      if applied == 0 || next == current {
+        break;
+      }
+      current = next;
+    }
+    current
   }
 
   #[test]
-  fn skips_scss_interpolation() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url(#{$var}/foo.png)"), &ctx_scss());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn skips_scss_variable() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url($var)"), &ctx_scss());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn checks_at_import_url() {
-    use gale_css_parser::AtRule;
-    let node = CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: "url(foo.css)".to_string(),
-      span: ParserSpan::new(0, 0),
-      children: vec![],
-    });
-    let d = FunctionUrlQuotes.check(&node, &ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn message_format_matches_stylelint() {
-    let d = FunctionUrlQuotes.check(&style_with_value("url(foo.png)"), &ctx());
-    assert_eq!(d.len(), 1);
+  fn always_adds_double_quotes_inside_the_parentheses() {
+    let always = serde_json::json!("always");
     assert_eq!(
-      d[0].message,
-      "Expected quotes around \"url\" function argument"
+      fix("@import url( foo.css );", always.clone()),
+      "@import url( \"foo.css\" );"
     );
+    assert_eq!(
+      fix("@import url(foo\\ .css);", always.clone()),
+      "@import url(\"foo\\ .css\");"
+    );
+    assert_eq!(
+      fix(
+        "@font-face { font-family: 'foo'; src: url(foo.ttf); }",
+        always.clone()
+      ),
+      "@font-face { font-family: 'foo'; src: url(\"foo.ttf\"); }"
+    );
+    assert_eq!(
+      fix(
+        "a { b: url(data:image/png;base64,abc), image-set(url(a.png) 1x) }",
+        always.clone()
+      ),
+      "a { b: url(\"data:image/png;base64,abc\"), image-set(url(\"a.png\") 1x) }"
+    );
+    let warnings = lint("a { cursor: url( foo.png ); }", always);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!((warnings[0].span.offset, warnings[0].span.length), (17, 8));
+  }
+
+  #[test]
+  fn never_removes_quotes_unless_the_url_needs_them() {
+    let never = serde_json::json!("never");
+    assert_eq!(
+      fix("@import URL( 'foo.css' );", never.clone()),
+      "@import URL( foo.css );"
+    );
+    assert_eq!(
+      fix("@document url(\"http://www.w3.org/\");", never.clone()),
+      "@document url(http://www.w3.org/);"
+    );
+    assert_eq!(
+      fix("a { b: url( \"a\\ b\" ) }", never.clone()),
+      "a { b: url( a\\ b ) }"
+    );
+    for css in [
+      "a { b: url(\"image file.png\") }",
+      "a { b: url(\"foo(bar).png\") }",
+      "a { b: url(\"foo)bogus\") }",
+      "a { b: url(\"'foo'\") }",
+      "a { b: url('foo.svg' crossorigin(anonymous)) }",
+    ] {
+      assert!(lint(css, never.clone()).is_empty(), "{css}");
+    }
+  }
+
+  #[test]
+  fn except_empty_inverts_the_option_for_empty_urls() {
+    let options = serde_json::json!(["never", { "except": ["empty"] }]);
+    assert!(lint("a { b: url(\"\") }", options.clone()).is_empty());
+    assert_eq!(lint("a { b: url() }", options).len(), 1);
+  }
+
+  #[test]
+  fn skips_preprocessor_urls() {
+    let always = serde_json::json!("always");
+    for css in [
+      "@import url(@variable);",
+      "@import url($variable + 'foo.css');",
+      "a { b: url(#{$a}/b.png) }",
+    ] {
+      assert!(lint(css, always.clone()).is_empty(), "{css}");
+    }
+  }
+
+  #[test]
+  fn disable_fix_keeps_the_warning_but_not_the_fix() {
+    let options = serde_json::json!(["always", { "disableFix": true }]);
+    assert_eq!(lint("a { b: url(x) }", options.clone()).len(), 1);
+    assert_eq!(fix("a { b: url(x) }", options), "a { b: url(x) }");
   }
 }
