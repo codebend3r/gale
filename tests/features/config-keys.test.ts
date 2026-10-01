@@ -11,6 +11,7 @@ import {
   cleanupProjects,
   config,
   makeProject,
+  reportedPath,
   runGale,
   runGaleJson,
 } from "./helpers";
@@ -197,8 +198,9 @@ describe("formatter config key", () => {
     });
 
     const result = runGale(["a.css"], { cwd: project.dir });
+    // The compact formatter prints the absolute path, as Stylelint's does.
     expect(result.stdout).toBe(
-      "a.css: line 1, col 3, error - Unexpected empty block (block-no-empty)\n",
+      `${reportedPath(project.dir, "a.css")}: line 1, col 3, error - Unexpected empty block (block-no-empty)\n`,
     );
   });
 

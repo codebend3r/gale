@@ -10,7 +10,14 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 
-import { cleanupProjects, config, makeProject, runGale, runGaleJson } from "./helpers";
+import {
+  cleanupProjects,
+  config,
+  makeProject,
+  relativeSource,
+  runGale,
+  runGaleJson,
+} from "./helpers";
 import { LspClient } from "./lsp-client";
 
 afterAll(cleanupProjects);
@@ -81,7 +88,12 @@ describe("embedded style blocks", () => {
     const result = runGaleJson(["App.svelte", "Page.astro", "index.html"], { cwd: project.dir });
 
     const bySource = Object.fromEntries(
-      result.json().map((r) => [r.source, r.warnings.map((w) => `${w.line}:${w.column} ${w.rule}`)]),
+      result
+        .json()
+        .map((r) => [
+          relativeSource(project.dir, r.source),
+          r.warnings.map((w) => `${w.line}:${w.column} ${w.rule}`),
+        ]),
     );
     expect(bySource).toEqual({
       "App.svelte": ["5:20 length-zero-no-unit", "9:12 color-hex-length"],
@@ -156,7 +168,12 @@ describe("embedded style blocks", () => {
 
     const result = runGaleJson(["src"], { cwd: project.dir });
 
-    expect(result.json().map((r) => r.source).sort()).toEqual(["src/App.vue", "src/a.css"]);
+    expect(
+      result
+        .json()
+        .map((r) => relativeSource(project.dir, r.source))
+        .sort(),
+    ).toEqual(["src/App.vue", "src/a.css"]);
   });
 });
 
