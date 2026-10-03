@@ -83,18 +83,9 @@ impl Rule for StylisticPropertyCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_option(opt: &str) -> RuleContext<'_> {
-    // We'll leak a small string for test convenience
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn style_with_prop(prop: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -113,7 +104,7 @@ mod tests {
   #[test]
   fn reports_uppercase_property() {
     let rule = StylisticPropertyCase;
-    let ctx = ctx_with_option("lower");
+    let ctx = ctx();
     let d = rule.check(&style_with_prop("Color"), &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("color"));
@@ -122,7 +113,7 @@ mod tests {
   #[test]
   fn allows_lowercase_property() {
     let rule = StylisticPropertyCase;
-    let ctx = ctx_with_option("lower");
+    let ctx = ctx();
     let d = rule.check(&style_with_prop("color"), &ctx);
     assert!(d.is_empty());
   }
@@ -130,7 +121,7 @@ mod tests {
   #[test]
   fn skips_custom_properties() {
     let rule = StylisticPropertyCase;
-    let ctx = ctx_with_option("lower");
+    let ctx = ctx();
     let d = rule.check(&style_with_prop("--myColor"), &ctx);
     assert!(d.is_empty());
   }

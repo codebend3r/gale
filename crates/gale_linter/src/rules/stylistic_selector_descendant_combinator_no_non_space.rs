@@ -176,17 +176,13 @@ impl Rule for StylisticSelectorDescendantCombinatorNoNonSpace {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+
+  use crate::testing::ctx;
 
   fn check_selector(selector: &str) -> Vec<Diagnostic> {
     let rule = StylisticSelectorDescendantCombinatorNoNonSpace;
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: selector.to_string(),
       declarations: vec![Declaration {

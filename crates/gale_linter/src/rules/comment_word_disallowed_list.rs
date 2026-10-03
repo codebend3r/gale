@@ -62,18 +62,9 @@ impl Rule for CommentWordDisallowedList {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  fn ctx_with_options(options: Option<serde_json::Value>) -> RuleContext<'static> {
-    let opts: Option<&'static serde_json::Value> = options.map(|v| &*Box::leak(Box::new(v)));
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: opts,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_options;
 
   fn comment_node(text: &str) -> CssNode {
     CssNode::Comment(Comment {

@@ -217,55 +217,37 @@ fn complex_fix(source: &str, first: &Node, chain: &[Node]) -> Option<Fix> {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "selector-not-notation".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "selector-not-notation";
 
   #[test]
   fn simple_splits_lists_of_simple_selectors() {
     let simple = serde_json::json!("simple");
     assert_eq!(
-      fix("p, img:not(a\n, div) {}", simple.clone()),
+      fix(RULE, simple.clone(), "p, img:not(a\n, div) {}", Syntax::Css),
       "p, img:not(a):not(div) {}"
     );
     assert_eq!(
-      fix(":not(.bar, .baz) .qux :not(.foo) {}", simple.clone()),
+      fix(
+        RULE,
+        simple.clone(),
+        ":not(.bar, .baz) .qux :not(.foo) {}",
+        Syntax::Css
+      ),
       ":not(.bar):not(.baz) .qux :not(.foo) {}"
     );
-    assert_eq!(fix(":not(a ,) {}", simple.clone()), ":not(a) {}");
     assert_eq!(
-      fix(":not(a, b) , p {}", simple.clone()),
+      fix(RULE, simple.clone(), ":not(a ,) {}", Syntax::Css),
+      ":not(a) {}"
+    );
+    assert_eq!(
+      fix(RULE, simple.clone(), ":not(a, b) , p {}", Syntax::Css),
       ":not(a) :not(b) , p {}"
     );
-    let warnings = lint("p, :not(a, div) {}", simple.clone());
+    let warnings = lint(RULE, simple.clone(), "p, :not(a, div) {}", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(
       warnings[0].message,
@@ -283,7 +265,7 @@ mod tests {
       ":not(:first-line) {}",
       ":not(a.foo) {}",
     ] {
-      let warnings = lint(css, simple.clone());
+      let warnings = lint(RULE, simple.clone(), css, Syntax::Css);
       assert_eq!(warnings.len(), 1, "{css}");
       assert!(warnings[0].fix.is_none(), "{css}");
     }
@@ -293,7 +275,10 @@ mod tests {
       ":nOt(a) {}",
       ":not([title]) {}",
     ] {
-      assert!(lint(css, simple.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, simple.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
@@ -301,11 +286,21 @@ mod tests {
   fn complex_merges_chains() {
     let complex = serde_json::json!("complex");
     assert_eq!(
-      fix(":not( .foo ,:hover ):not(a,div) {}", complex.clone()),
+      fix(
+        RULE,
+        complex.clone(),
+        ":not( .foo ,:hover ):not(a,div) {}",
+        Syntax::Css
+      ),
       ":not(.foo, :hover, a, div) {}"
     );
     assert_eq!(
-      fix("a:not(b):not(c):not(d) {}", complex.clone()),
+      fix(
+        RULE,
+        complex.clone(),
+        "a:not(b):not(c):not(d) {}",
+        Syntax::Css
+      ),
       "a:not(b, c, d) {}"
     );
     for css in [
@@ -313,14 +308,23 @@ mod tests {
       ":not(a, div) {}",
       ":not(a).foo:not(:empty) {}",
     ] {
-      assert!(lint(css, complex.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, complex.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["simple", { "disableFix": true }]);
-    assert_eq!(lint(":not(a, b) {}", options.clone()).len(), 1);
-    assert_eq!(fix(":not(a, b) {}", options), ":not(a, b) {}");
+    assert_eq!(
+      lint(RULE, options.clone(), ":not(a, b) {}", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, ":not(a, b) {}", Syntax::Css),
+      ":not(a, b) {}"
+    );
   }
 }

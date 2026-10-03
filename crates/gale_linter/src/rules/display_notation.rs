@@ -351,7 +351,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "display-notation";
 
@@ -399,7 +399,7 @@ mod tests {
   fn skips_values_that_are_not_just_keywords() {
     let short = || json!(["short"]);
     assert!(
-      warnings(
+      lint(
         RULE,
         short(),
         "a { display: block var(--foo, flow); }",
@@ -407,8 +407,8 @@ mod tests {
       )
       .is_empty()
     );
-    assert!(warnings(RULE, short(), "a { display: $block flow; }", Syntax::Scss).is_empty());
-    assert!(warnings(RULE, short(), "a { display: none; }", Syntax::Css).is_empty());
+    assert!(lint(RULE, short(), "a { display: $block flow; }", Syntax::Scss).is_empty());
+    assert!(lint(RULE, short(), "a { display: none; }", Syntax::Css).is_empty());
   }
 
   #[test]
@@ -416,6 +416,6 @@ mod tests {
     let options = json!(["short", { "disableFix": true }]);
     let source = "a { display: block flow; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

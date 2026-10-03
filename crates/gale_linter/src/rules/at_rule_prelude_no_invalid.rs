@@ -155,17 +155,9 @@ impl Rule for AtRulePreludeNoInvalid {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn at(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {

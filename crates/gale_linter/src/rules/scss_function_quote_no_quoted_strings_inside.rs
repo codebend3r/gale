@@ -70,17 +70,9 @@ impl Rule for ScssFunctionQuoteNoQuotedStringsInside {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::scss_ctx;
 
   fn decl(value: &str) -> CssNode {
     CssNode::Declaration(Declaration {

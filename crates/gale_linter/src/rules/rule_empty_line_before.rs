@@ -93,18 +93,13 @@ fn is_after_rule(tree: &PostcssTree, i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     RuleEmptyLineBefore
       .check_root(&[], &ctx)
       .into_iter()
@@ -187,7 +182,7 @@ mod tests {
   #[test]
   fn fix_adds_and_removes_empty_lines() {
     assert_eq!(
-      fix_with(
+      fix(
         "rule-empty-line-before",
         serde_json::json!(["always", { "except": ["first-nested"] }]),
         "a {\n\n  b {}\n  c {}\n}\nd {}",
@@ -196,7 +191,7 @@ mod tests {
       "a {\n  b {}\n\n  c {}\n}\n\nd {}"
     );
     assert_eq!(
-      fix_with(
+      fix(
         "rule-empty-line-before",
         serde_json::json!("never"),
         "a {}\r\n\r\n\r\nb {}",
@@ -209,7 +204,7 @@ mod tests {
   #[test]
   fn fix_puts_a_same_line_rule_on_its_own_line() {
     assert_eq!(
-      fix_with(
+      fix(
         "rule-empty-line-before",
         serde_json::json!("always"),
         "a {} b {}",

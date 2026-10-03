@@ -76,47 +76,29 @@ fn is_standard_syntax_at_rule(at: &RawAtRule) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "at-rule-no-deprecated".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "at-rule-no-deprecated";
 
   #[test]
   fn unwraps_nest_into_a_nested_rule() {
     let on = serde_json::json!(true);
-    assert_eq!(fix("a { @NEST .foo & {} }", on.clone()), "a { .foo & {} }");
     assert_eq!(
-      fix("a { @nest .foo {} @nest .bar { color: red } }", on.clone()),
+      fix(RULE, on.clone(), "a { @NEST .foo & {} }", Syntax::Css),
+      "a { .foo & {} }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        on.clone(),
+        "a { @nest .foo {} @nest .bar { color: red } }",
+        Syntax::Css
+      ),
       "a { .foo {} .bar { color: red } }"
     );
-    let warnings = lint("a { @nest .foo & {} }", on);
+    let warnings = lint(RULE, on, "a { @nest .foo & {} }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (4, 5));
   }
@@ -128,7 +110,7 @@ mod tests {
       "@document url(http://www.w3.org/);",
       "@VIEWPORT { orientation: landscape; }",
     ] {
-      let warnings = lint(css, on.clone());
+      let warnings = lint(RULE, on.clone(), css, Syntax::Css);
       assert_eq!(warnings.len(), 1, "{css}");
       assert!(warnings[0].fix.is_none(), "{css}");
     }
@@ -137,23 +119,26 @@ mod tests {
       "@container (min-width: 1px) {}",
       "a { @apply --foo; }",
     ] {
-      assert!(lint(css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
   }
 
   #[test]
   fn ignore_at_rules_matches_names_and_regexes() {
     let options = serde_json::json!([true, { "ignoreAtRules": ["document", "/^view/"] }]);
-    assert!(lint("@document url(x);", options.clone()).is_empty());
-    assert!(lint("@viewport { a: b }", options.clone()).is_empty());
-    assert_eq!(lint("a { @nest .foo & {} }", options).len(), 1);
+    assert!(lint(RULE, options.clone(), "@document url(x);", Syntax::Css).is_empty());
+    assert!(lint(RULE, options.clone(), "@viewport { a: b }", Syntax::Css).is_empty());
+    assert_eq!(
+      lint(RULE, options, "a { @nest .foo & {} }", Syntax::Css).len(),
+      1
+    );
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     let css = "a { @nest .foo & {} }";
-    assert_eq!(lint(css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

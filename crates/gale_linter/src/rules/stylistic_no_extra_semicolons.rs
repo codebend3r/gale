@@ -156,29 +156,20 @@ impl Rule for StylisticNoExtraSemicolons {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn allows_normal_semicolons() {
     let source = "a { color: red; display: block; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx(source));
+    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_double_semicolons() {
     let source = "a { color: red;; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx(source));
+    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("extra semicolon"));
   }
@@ -186,7 +177,7 @@ mod tests {
   #[test]
   fn reports_semicolons_separated_by_whitespace() {
     let source = "a { color: red; ; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx(source));
+    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
   }
 }

@@ -193,24 +193,15 @@ fn find_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn always_multi_line_allows_newlines_inside_parens() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"\n); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -222,8 +213,8 @@ mod tests {
   fn always_multi_line_reports_missing_newline_after_open() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"\n); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline after \"(\""));
   }
@@ -232,8 +223,8 @@ mod tests {
   fn always_multi_line_reports_missing_newline_before_close() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(
       d.iter()
@@ -247,8 +238,8 @@ mod tests {
   fn always_multi_line_ignores_single_line() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -256,8 +247,8 @@ mod tests {
   fn never_multi_line_reports_newline_after_open() {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(\n  1px,\n  2px); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline after \"(\""));
   }
@@ -266,8 +257,8 @@ mod tests {
   fn never_multi_line_allows_no_newline_after_open() {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(1px,\n  2px); }";
-    let d =
-      StylisticFunctionParenthesesNewlineInside.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticFunctionParenthesesNewlineInside
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",

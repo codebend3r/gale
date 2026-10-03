@@ -82,67 +82,47 @@ impl Rule for ValueNoVendorPrefix {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "value-no-vendor-prefix".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, options.clone());
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "value-no-vendor-prefix";
 
   #[test]
   fn strips_the_prefix_keeping_the_rest_as_written() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix(".a { display: -wEbKiT-fLeX; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        ".a { display: -wEbKiT-fLeX; }",
+        Syntax::Css
+      ),
       ".a { display: fLeX; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         ".a { background: -webkit-linear-gradient(bottom, #000, #fff); }",
-        on.clone()
+        Syntax::Css
       ),
       ".a { background: linear-gradient(bottom, #000, #fff); }"
     );
     assert_eq!(
-      fix(".a { speak: -xv-digits; }", on.clone()),
+      fix(RULE, on.clone(), ".a { speak: -xv-digits; }", Syntax::Css),
       ".a { speak: digits; }"
     );
     assert_eq!(
-      fix(".a { -webkit-user-select: -moz-all; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        ".a { -webkit-user-select: -moz-all; }",
+        Syntax::Css
+      ),
       ".a { -webkit-user-select: all; }"
     );
-    let warnings = lint_as(".a { display: -webkit-flex; }", Syntax::Css, on);
+    let warnings = lint(RULE, on, ".a { display: -webkit-flex; }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (14, 12));
   }
@@ -155,33 +135,47 @@ mod tests {
       "a { white-space: -pre-wrap; }",
       "a { list-style-type: -moz-ethiopic-halehame; }",
     ] {
-      assert!(lint_as(css, Syntax::Css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
     for css in [
       "a { $foo: -webkit-plaintext; }",
       "a { #{$foo}: -webkit-plaintext; }",
     ] {
-      assert!(lint_as(css, Syntax::Scss, on.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, on.clone(), css, Syntax::Scss).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn ignore_values_takes_a_string_or_a_list() {
     let single = serde_json::json!([true, { "ignoreValues": "/^-moz-hangul$/" }]);
-    assert!(lint_as("a { list-style-type: -moz-hangul; }", Syntax::Css, single).is_empty());
+    assert!(
+      lint(
+        RULE,
+        single,
+        "a { list-style-type: -moz-hangul; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
     let list = serde_json::json!([true, { "ignoreValues": ["-moz-hangul", "/^-webkit-linear-/"] }]);
     assert_eq!(
       fix(
+        RULE,
+        list.clone(),
         ".a { list-style-type: -moz-hangul-consonant; }",
-        list.clone()
+        Syntax::Css
       ),
       ".a { list-style-type: hangul-consonant; }"
     );
     assert!(
-      lint_as(
+      lint(
+        RULE,
+        list,
         "a { b: -webkit-linear-gradient(red, blue) }",
-        Syntax::Css,
-        list
+        Syntax::Css
       )
       .is_empty()
     );
@@ -191,11 +185,17 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     assert_eq!(
-      lint_as("a { display: -webkit-flex }", Syntax::Css, options.clone()).len(),
+      lint(
+        RULE,
+        options.clone(),
+        "a { display: -webkit-flex }",
+        Syntax::Css
+      )
+      .len(),
       1
     );
     assert_eq!(
-      fix("a { display: -webkit-flex }", options),
+      fix(RULE, options, "a { display: -webkit-flex }", Syntax::Css),
       "a { display: -webkit-flex }"
     );
   }

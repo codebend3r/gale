@@ -88,51 +88,38 @@ impl Rule for SelectorPseudoElementColonNotation {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "selector-pseudo-element-colon-notation".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "selector-pseudo-element-colon-notation";
 
   #[test]
   fn single_keeps_the_name_as_written() {
     let single = serde_json::json!("single");
-    assert_eq!(fix("a::bEfOrE { }", single.clone()), "a:bEfOrE { }");
     assert_eq!(
-      fix("a::before, a::after, a::first-letter { }", single.clone()),
+      fix(RULE, single.clone(), "a::bEfOrE { }", Syntax::Css),
+      "a:bEfOrE { }"
+    );
+    assert_eq!(
+      fix(
+        RULE,
+        single.clone(),
+        "a::before, a::after, a::first-letter { }",
+        Syntax::Css
+      ),
       "a:before, a:after, a:first-letter { }"
     );
     assert_eq!(
-      fix("a\\:before-none::before { }", single.clone()),
+      fix(
+        RULE,
+        single.clone(),
+        "a\\:before-none::before { }",
+        Syntax::Css
+      ),
       "a\\:before-none:before { }"
     );
-    let warnings = lint("a::before { }", single);
+    let warnings = lint(RULE, single, "a::before { }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (1, 2));
   }
@@ -141,7 +128,12 @@ mod tests {
   fn double_adds_a_colon() {
     let double = serde_json::json!("double");
     assert_eq!(
-      fix("a:before, a:after, a:FIRST-LINE { }", double.clone()),
+      fix(
+        RULE,
+        double.clone(),
+        "a:before, a:after, a:FIRST-LINE { }",
+        Syntax::Css
+      ),
       "a::before, a::after, a::FIRST-LINE { }"
     );
     for css in [
@@ -150,7 +142,10 @@ mod tests {
       "a[data-before=':before'] { }",
       "li::marker { }",
     ] {
-      assert!(lint(css, double.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, double.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
@@ -158,7 +153,7 @@ mod tests {
   fn reads_selectors_between_comments() {
     let css = "/* a */\na::after, /* b */\na::after\n{}";
     assert_eq!(
-      fix(css, serde_json::json!("single")),
+      fix(RULE, serde_json::json!("single"), css, Syntax::Css),
       "/* a */\na:after, /* b */\na:after\n{}"
     );
   }
@@ -166,7 +161,13 @@ mod tests {
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["single", { "disableFix": true }]);
-    assert_eq!(lint("a::after { }", options.clone()).len(), 1);
-    assert_eq!(fix("a::after { }", options), "a::after { }");
+    assert_eq!(
+      lint(RULE, options.clone(), "a::after { }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, "a::after { }", Syntax::Css),
+      "a::after { }"
+    );
   }
 }

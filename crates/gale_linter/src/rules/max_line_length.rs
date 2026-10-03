@@ -128,27 +128,8 @@ fn build_ignore_patterns(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_options<'a>(source: &'a str, opts: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn reports_long_line() {
@@ -179,7 +160,7 @@ mod tests {
     // Config: max-line-length: 80
     let opts = serde_json::json!(80);
     let source = "a".repeat(81);
-    let d = MaxLineLength.check_root(&[], &ctx_with_options(&source, &opts));
+    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("80 characters"));
   }
@@ -190,7 +171,7 @@ mod tests {
     let opts = serde_json::json!([100, { "ignorePattern": "/https?://.*/" }]);
     // Line with URL that exceeds 100 chars
     let source = format!("// See https://example.com/{}", "x".repeat(100));
-    let d = MaxLineLength.check_root(&[], &ctx_with_options(&source, &opts));
+    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert!(d.is_empty(), "Should ignore lines matching ignorePattern");
   }
 
@@ -198,7 +179,7 @@ mod tests {
   fn reports_non_matching_long_line_with_ignore_pattern() {
     let opts = serde_json::json!([100, { "ignorePattern": "/https?://.*/" }]);
     let source = "a".repeat(101);
-    let d = MaxLineLength.check_root(&[], &ctx_with_options(&source, &opts));
+    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert_eq!(d.len(), 1);
   }
 }

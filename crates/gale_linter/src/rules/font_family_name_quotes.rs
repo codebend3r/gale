@@ -441,62 +441,47 @@ impl FontFamilyNameQuotes {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "font-family-name-quotes".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "font-family-name-quotes";
 
   #[test]
   fn recommended_quotes_names_with_spaces_digits_and_punctuation() {
     let recommended = serde_json::json!("always-where-recommended");
     assert_eq!(
       fix(
+        RULE,
+        recommended.clone(),
         "a { font: 1em Lucida Grande, Arial, sans-serif; }",
-        recommended.clone()
+        Syntax::Css
       ),
       "a { font: 1em \"Lucida Grande\", Arial, sans-serif; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        recommended.clone(),
         "a { font-family: Arial, Ahem!, \"sans-serif\"; }",
-        recommended.clone()
+        Syntax::Css
       ),
       "a { font-family: Arial, \"Ahem!\", sans-serif; }"
     );
     assert_eq!(
-      fix("a { font-family: \"Arial\"; }", recommended.clone()),
+      fix(
+        RULE,
+        recommended.clone(),
+        "a { font-family: \"Arial\"; }",
+        Syntax::Css
+      ),
       "a { font-family: Arial; }"
     );
     let warnings = lint(
-      "a { font-family: Times, Times New Roman, serif; }",
+      RULE,
       recommended,
+      "a { font-family: Times, Times New Roman, serif; }",
+      Syntax::Css,
     );
     assert_eq!(warnings.len(), 1);
     assert_eq!(
@@ -511,20 +496,24 @@ mod tests {
     let unless = serde_json::json!("always-unless-keyword");
     assert_eq!(
       fix(
+        RULE,
+        unless.clone(),
         "a { font-family: system-ui, '-apple-system', BlinkMacSystemFont, Segoe UI; }",
-        unless.clone()
+        Syntax::Css
       ),
       "a { font-family: system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\"; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        unless.clone(),
         "a { font: italic 300 16px/30px Arial, serif; }",
-        unless.clone()
+        Syntax::Css
       ),
       "a { font: italic 300 16px/30px \"Arial\", serif; }"
     );
     assert_eq!(
-      fix("a { font-family: \"inherit\"; }", unless),
+      fix(RULE, unless, "a { font-family: \"inherit\"; }", Syntax::Css),
       "a { font-family: inherit; }"
     );
   }
@@ -534,8 +523,10 @@ mod tests {
     let required = serde_json::json!("always-where-required");
     assert_eq!(
       fix(
+        RULE,
+        required.clone(),
         "a { font-family: \"Lucida Grande\", Hawaii 5-0, serif; }",
-        required.clone()
+        Syntax::Css
       ),
       "a { font-family: Lucida Grande, \"Hawaii 5-0\", serif; }"
     );
@@ -545,7 +536,10 @@ mod tests {
       "a { font-family: var(--x); }",
       "a { font-family: $sassy; }",
     ] {
-      assert!(lint(css, required.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, required.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
@@ -553,7 +547,7 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["always-unless-keyword", { "disableFix": true }]);
     let css = "a { font-family: Arial; }";
-    assert_eq!(lint(css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

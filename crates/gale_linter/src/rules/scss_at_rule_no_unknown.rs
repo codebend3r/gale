@@ -58,27 +58,9 @@ impl Rule for ScssAtRuleNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Span, Syntax};
+  use gale_css_parser::{AtRule, CssNode, Span};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn at(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -93,10 +75,7 @@ mod tests {
   fn reports_unknown_in_css() {
     // Stylelint runs scss/at-rule-no-unknown on CSS files too when enabled
     // (typically via stylelint-config-standard-scss).
-    assert_eq!(
-      ScssAtRuleNoUnknown.check(&at("tailwind"), &css_ctx()).len(),
-      1
-    );
+    assert_eq!(ScssAtRuleNoUnknown.check(&at("tailwind"), &ctx()).len(), 1);
   }
 
   #[test]

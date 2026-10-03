@@ -6,6 +6,7 @@ license.workspace = true
 description = "Configuration loading for the Gale CSS linter"
 
 [dependencies]
+gale_linter = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

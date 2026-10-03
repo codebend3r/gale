@@ -166,27 +166,9 @@ fn round_to_precision(num: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with(source: &'static str, options: &'static serde_json::Value) -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(options),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_source_and_options};
 
   fn style_decl(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -254,7 +236,10 @@ mod tests {
     static OPTS: std::sync::LazyLock<serde_json::Value> =
       std::sync::LazyLock::new(|| serde_json::json!([2, {}]));
     let source = "a { width: 1.234px; }";
-    let d = NumberMaxPrecision.check(&sourced_decl(source, "1.234px"), &ctx_with(source, &OPTS));
+    let d = NumberMaxPrecision.check(
+      &sourced_decl(source, "1.234px"),
+      &ctx_with_source_and_options(source, &*OPTS),
+    );
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("to be \"1.23\""), "{}", d[0].message);
   }
@@ -266,7 +251,10 @@ mod tests {
     let source = "a { width: 1.234px; }";
     assert!(
       NumberMaxPrecision
-        .check(&sourced_decl(source, "1.234px"), &ctx_with(source, &OPTS))
+        .check(
+          &sourced_decl(source, "1.234px"),
+          &ctx_with_source_and_options(source, &*OPTS)
+        )
         .is_empty()
     );
   }
@@ -281,7 +269,7 @@ mod tests {
     let d = NumberMaxPrecision.check(
       // What lightningcss hands us is already rounded to 1.12346.
       &sourced_decl(source, "1.12346px"),
-      &ctx_with(source, &OPTS),
+      &ctx_with_source_and_options(source, &*OPTS),
     );
     assert_eq!(d.len(), 1);
     assert!(

@@ -62,14 +62,26 @@ Personal overrides go in `lefthook-local.yml`, which is not tracked.
 
 ## Adding a new rule
 
-Gale has a well-defined process for adding lint rules:
+Write the rule in `crates/gale_linter/src/rules/your_rule_name.rs`, implementing
+the `Rule` trait, with its tests in a `#[cfg(test)] mod tests` block. Then list
+it in `crates/gale_linter/src/rules/mod.rs`: declare `pub mod your_rule_name;`
+and add one line to the `rules!` table at the end of the file, naming the
+presets that enable it, if any:
 
-1. Create `crates/gale_linter/src/rules/your_rule_name.rs` implementing the `Rule` trait
-2. Add `pub mod your_rule_name;` to `crates/gale_linter/src/rules/mod.rs`
-3. Register the rule in `register_all()` in the same file
-4. Add the rule name to `ALL_RULE_NAMES` in `crates/gale_config/src/lib.rs` (a test in `gale_cli` fails if the two lists drift apart)
-5. If appropriate, add it to `RECOMMENDED_ERROR_RULES` or `RECOMMENDED_WARNING_RULES`
-6. Include tests in a `#[cfg(test)] mod tests` block inside the rule file
+```rust
+  your_rule_name::YourRuleName [Recommended, GaleWarning],
+```
+
+That line is the only registration there is. It registers the rule, adds it to
+`gale:all`, and puts it in each preset in brackets (see `Preset` in the same
+file for the list). Tests fail if a rule file is missing from the table, or if
+the rule counts in the README and docs go stale.
+
+For the tests, use the shared helpers in `crates/gale_linter/src/testing.rs`
+rather than writing your own: `ctx()`, `scss_ctx_with_source(...)`,
+`ctx_with_options(...)` and the rest build the `RuleContext` for a test that
+calls the rule directly, and `lint` and `fix` run a snippet through the real
+parser and runner with only your rule enabled.
 
 A few habits keep a rule from failing on real input:
 

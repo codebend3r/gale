@@ -249,17 +249,9 @@ fn is_css_wide_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn decl(property: &str, value: &str) -> CssNode {
     CssNode::Declaration(Declaration {

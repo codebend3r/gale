@@ -181,33 +181,15 @@ impl Rule for StylisticSelectorCombinatorSpaceBefore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn allows_space_before_combinator() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a > b { }";
-    let d = StylisticSelectorCombinatorSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorCombinatorSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -215,7 +197,8 @@ mod tests {
   fn reports_missing_space_before_combinator() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a> b { }";
-    let d = StylisticSelectorCombinatorSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorCombinatorSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -224,7 +207,8 @@ mod tests {
   fn never_reports_space_before_combinator() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "a > b { }";
-    let d = StylisticSelectorCombinatorSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorCombinatorSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected space"));
   }

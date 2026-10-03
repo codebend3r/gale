@@ -245,33 +245,20 @@ fn is_zero(number: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
+
+  const RULE: &str = "length-zero-no-unit";
 
   /// The offsets of the units reported in `source`.
   fn reports(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: options.as_ref(),
-      cache: None,
-    };
+    let ctx = context(source, syntax, options);
     LengthZeroNoUnit
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.span.offset)
       .collect()
-  }
-
-  /// `source` fixed with the rule on.
-  fn fix(source: &str, syntax: Syntax) -> String {
-    fix_with(
-      "length-zero-no-unit",
-      serde_json::json!(true),
-      source,
-      syntax,
-    )
   }
 
   #[test]
@@ -303,7 +290,12 @@ mod tests {
       .is_empty()
     );
     assert_eq!(
-      fix("a { font: normal 400 0px / 0px cursive; }", Syntax::Css),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { font: normal 400 0px / 0px cursive; }",
+        Syntax::Css
+      ),
       "a { font: normal 400 0 / 0px cursive; }"
     );
     let ignore = serde_json::json!([true, { "ignoreFunctions": ["/^--/", "var"] }]);
@@ -321,21 +313,38 @@ mod tests {
   fn checks_preludes_and_declarations_the_css_parser_drops() {
     assert_eq!(
       fix(
+        RULE,
+        serde_json::json!(true),
         "@media (min-width: 0px /* c */) { a { top: 0em } }",
         Syntax::Css
       ),
       "@media (min-width: 0 /* c */) { a { top: 0 } }"
     );
     assert_eq!(
-      fix("@include border-radius($r: 0px);", Syntax::Scss),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "@include border-radius($r: 0px);",
+        Syntax::Scss
+      ),
       "@include border-radius($r: 0);"
     );
     assert_eq!(
-      fix("padding: calc(1in + 0in) 0px;", Syntax::Css),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "padding: calc(1in + 0in) 0px;",
+        Syntax::Css
+      ),
       "padding: calc(1in + 0in) 0;"
     );
     assert_eq!(
-      fix("a { grid-template-columns: 0px 0fr 1fr };", Syntax::Css),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { grid-template-columns: 0px 0fr 1fr };",
+        Syntax::Css
+      ),
       "a { grid-template-columns: 0 0fr 1fr };"
     );
     let ignore = serde_json::json!([true, { "ignorePreludeOfAtRules": ["media"] }]);
@@ -345,11 +354,21 @@ mod tests {
   #[test]
   fn fix_keeps_the_number_as_written() {
     assert_eq!(
-      fix("a { top: 0.000px; left: .0em; right: -0PX; }", Syntax::Css),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { top: 0.000px; left: .0em; right: -0PX; }",
+        Syntax::Css
+      ),
       "a { top: 0.000; left: 0; right: -0; }"
     );
     assert_eq!(
-      fix("a { margin: 0px #{$var} 0px; }", Syntax::Scss),
+      fix(
+        RULE,
+        serde_json::json!(true),
+        "a { margin: 0px #{$var} 0px; }",
+        Syntax::Scss
+      ),
       "a { margin: 0 #{$var} 0; }"
     );
   }

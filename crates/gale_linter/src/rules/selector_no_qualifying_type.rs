@@ -603,17 +603,9 @@ fn is_ident_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_options, scss_ctx};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -668,13 +660,7 @@ mod tests {
 
   #[test]
   fn ignore_option_id() {
-    let ctx_with_ignore = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&serde_json::json!({"ignore": ["id"]})),
-      cache: None,
-    };
+    let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["id"]}));
     let node = style_with_selector("div#bar");
     let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
     assert!(
@@ -685,13 +671,7 @@ mod tests {
 
   #[test]
   fn ignore_option_class() {
-    let ctx_with_ignore = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&serde_json::json!({"ignore": ["class"]})),
-      cache: None,
-    };
+    let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["class"]}));
     let node = style_with_selector("ul.list");
     let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
     assert!(
@@ -750,13 +730,7 @@ mod tests {
   #[test]
   fn skips_nested_in_scss_interpolation_parent() {
     // a.foo nested inside .#{$var} should be skipped in SCSS mode
-    let scss_ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let scss_ctx = scss_ctx();
     let parent = CssNode::Style(StyleRule {
       selector: ".#{$var}".to_string(),
       declarations: vec![],

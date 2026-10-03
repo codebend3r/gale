@@ -1660,24 +1660,8 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn scss_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-  fn css_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx, scss_ctx_with_source};
+
   fn make_node(property: &str, value: &str) -> CssNode {
     CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -1696,38 +1680,38 @@ mod tests {
   fn skips_css_files() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "10px+5px");
-    assert!(rule.check(&node, &css_context()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
   #[test]
   fn reports_unspaced_plus() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a+$b");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn reports_unspaced_multiply() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a*2");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn allows_spaced_operators() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a + $b");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_unary_minus() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("margin", "-10px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_calc_operators() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "calc(100%+20px)");
     assert!(
-      rule.check(&node, &scss_context()).is_empty(),
+      rule.check(&node, &scss_ctx()).is_empty(),
       "calc operators should be skipped"
     );
   }
@@ -1735,67 +1719,67 @@ mod tests {
   fn skips_font_shorthand_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("font", "14px/1.5 sans-serif");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_unary_after_operator() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a * -1");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_border_radius_shorthand_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("border-radius", "10px 5px / 20px 15px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_border_radius_unspaced_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("border-radius", "10px/5px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_shorthand_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("grid", "auto-flow / 1fr 1fr 1fr");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_column_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("grid-column", "1 / 3");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_row_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("grid-row", "1/3");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_area_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("grid-area", "1 / 1 / 3 / 3");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_template_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("grid-template", "'a a' 100px / 1fr 1fr");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_background_shorthand_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("background", "url(img.png) center/cover no-repeat");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_list_style_shorthand_slash() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("list-style", "disc outside/inside");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_in_url() {
@@ -1804,7 +1788,7 @@ mod tests {
       "background-image",
       "url(https://example.com/path/to/image.png)",
     );
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_in_url_with_quotes() {
@@ -1813,127 +1797,121 @@ mod tests {
       "background-image",
       "url('https://example.com/path/to/image.png')",
     );
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_vendor_prefixed_border_radius() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("-webkit-border-radius", "10px/5px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_slash_in_math() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a/2");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_inline_comment() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("box-shadow", "0 0 0 3px blue, // comment");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_negative_value_after_space() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("margin", "-10px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
     let node = make_node("top", "-2px");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
     let node = make_node("box-shadow", "0 -2px red");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn flags_negative_variable_as_subtraction() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("box-shadow", "0 -$offset red");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_subtraction() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a-$b");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
     let node = make_node("width", "$a -$b");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_operators_in_shorthand() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("border-radius", "$a+$b");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "rgb(255 0 0 / 0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_unspaced() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "rgb(255 0 0/0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgba() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "rgba(255 0 0 / 50%)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsl() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "hsl(120 100% 50% / .5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsla() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "hsla(120 100% 50% / 0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hwb() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "hwb(120 0% 0% / 0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_oklch() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "oklch(0.5 0.2 240 / 0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_with_var() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "rgb(from var(--color) r g b / 50%)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_color_function() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("color", "color(srgb 1 0 0 / 0.5)");
-    assert!(rule.check(&node, &scss_context()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_division_outside_color_fn() {
     let rule = ScssOperatorNoUnspaced;
     let node = make_node("width", "$a/2");
-    assert!(!rule.check(&node, &scss_context()).is_empty());
+    assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_in_rgb_variable_assignment() {
     let rule = ScssOperatorNoUnspaced;
     let source = "$color: rgb(255 0 0 / 0.5);\n";
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(source);
     let diags = rule.check_root(&[], &ctx);
     assert!(
       diags.is_empty(),
@@ -1948,7 +1926,7 @@ mod tests {
     // Block comment inside a value should not trigger on * or /
     let node = make_node("color", "red /* fallback */ blue");
     assert!(
-      rule.check(&node, &scss_context()).is_empty(),
+      rule.check(&node, &scss_ctx()).is_empty(),
       "Block comment content should not trigger operator spacing"
     );
   }
@@ -1958,13 +1936,7 @@ mod tests {
     let rule = ScssOperatorNoUnspaced;
     let source =
       "/**\n * @summary Focus state\n * @selector .slds-has-focus\n */\n.foo { color: red; }\n";
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(source);
     let diags = rule.check_root(&[], &ctx);
     assert!(
       diags.is_empty(),
@@ -1979,7 +1951,7 @@ mod tests {
     // Simulates a value containing a block comment with star-prefixed lines
     let node = make_node("color", "/* * * * */ red");
     assert!(
-      rule.check(&node, &scss_context()).is_empty(),
+      rule.check(&node, &scss_ctx()).is_empty(),
       "Stars inside block comments should not be flagged"
     );
   }
@@ -1991,13 +1963,7 @@ mod tests {
     let scss = "$x: 4 *\n  $y;";
     let rule = ScssOperatorNoUnspaced;
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
     assert!(
       diags.is_empty(),
@@ -2013,13 +1979,7 @@ mod tests {
     let scss = "$x: $a ==\n  'string';";
     let rule = ScssOperatorNoUnspaced;
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
     assert!(
       diags.is_empty(),
@@ -2045,13 +2005,7 @@ mod tests {
     let scss = "// \u{2500}\u{2500} geometry \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n.a {\n  width: 10px;\n}";
     let rule = ScssOperatorNoUnspaced;
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = result
       .nodes
       .iter()

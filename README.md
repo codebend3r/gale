@@ -617,6 +617,7 @@ gale (binary)
 gale_cli         CLI definition (clap), file discovery, orchestration
   |
   +-- gale_config       Config loading, resolution, presets
+  |     +-- gale_linter        Its rule table, which gale:all and the presets come from
   +-- gale_linter       Rule trait, registry, runner, 271 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types

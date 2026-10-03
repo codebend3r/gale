@@ -210,17 +210,13 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
+  use crate::testing::ctx_with_source;
+
   /// Lint `source` with the real parser, returning `(offset, name)` for
   /// each report (the name is the quoted part of the message).
   fn lint(source: &str) -> Vec<(usize, String)> {
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     CustomPropertyNoMissingVarFunction
       .check_root(&parsed.nodes, &ctx)
       .into_iter()
@@ -241,13 +237,7 @@ mod tests {
   fn names_the_property_in_the_message() {
     let source = ":root { --a: 1px; }\na { margin: 0 --a; }";
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     let d = CustomPropertyNoMissingVarFunction.check_root(&parsed.nodes, &ctx);
     assert_eq!(d.len(), 1);
     assert!(

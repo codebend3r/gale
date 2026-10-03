@@ -218,18 +218,13 @@ impl Rule for StylisticMediaFeatureNameCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
+
+  use crate::testing::ctx_with_source_and_options;
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
     let rule = StylisticMediaFeatureNameCase;
     let opts = serde_json::json!(option);
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
 

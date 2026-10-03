@@ -53,17 +53,9 @@ impl Rule for NoDuplicateAtImportRules {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_duplicate_imports() {
@@ -88,7 +80,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
@@ -113,7 +105,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(diags.is_empty());
   }
 }

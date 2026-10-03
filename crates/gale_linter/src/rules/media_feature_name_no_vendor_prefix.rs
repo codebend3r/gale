@@ -125,60 +125,48 @@ fn strip_first_prefix(feature: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "media-feature-name-no-vendor-prefix".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "media-feature-name-no-vendor-prefix";
 
   #[test]
   fn strips_the_prefix_keeping_the_rest_as_written() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("@media (-wEbKiT-mIn-DeViCe-PiXeL-rAtIo: 1) {}", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "@media (-wEbKiT-mIn-DeViCe-PiXeL-rAtIo: 1) {}",
+        Syntax::Css
+      ),
       "@media (mIn-DeViCe-PiXeL-rAtIo: 1) {}"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "@media (/* a */MIN--moz-device-pixel-ratio: 1) {}",
-        on.clone()
+        Syntax::Css
       ),
       "@media (/* a */MIN-device-pixel-ratio: 1) {}"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "@media (-webkit-min-device-pixel-ratio: 0) and (-webkit-max-device-pixel-ratio: 2) {}",
-        on.clone()
+        Syntax::Css
       ),
       "@media (min-device-pixel-ratio: 0) and (max-device-pixel-ratio: 2) {}"
     );
-    let warnings = lint("@media (min--moz-device-pixel-ratio: 1) {}", on);
+    let warnings = lint(
+      RULE,
+      on,
+      "@media (min--moz-device-pixel-ratio: 1) {}",
+      Syntax::Css,
+    );
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (8, 27));
   }
@@ -191,21 +179,36 @@ mod tests {
       "@media (-ms-device-pixel-ratio: 2) {}",
       "@media (min-device-pixel-ratio: 2) {}",
     ] {
-      assert!(lint(css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
     let options = serde_json::json!([true, {
       "ignoreMediaFeatureNames": ["-webkit-min-device-pixel-ratio", "/^-o/"]
     }]);
     assert!(
       lint(
+        RULE,
+        options.clone(),
         "@media (-webkit-min-device-pixel-ratio: 1) {}",
-        options.clone()
+        Syntax::Css
       )
       .is_empty()
     );
-    assert!(lint("@media (-o-device-pixel-ratio > 1) {}", options.clone()).is_empty());
+    assert!(
+      lint(
+        RULE,
+        options.clone(),
+        "@media (-o-device-pixel-ratio > 1) {}",
+        Syntax::Css
+      )
+      .is_empty()
+    );
     assert_eq!(
-      fix("@media (-WEBKIT-MIN-DEVICE-PIXEL-RATIO: 1) {}", options),
+      fix(
+        RULE,
+        options,
+        "@media (-WEBKIT-MIN-DEVICE-PIXEL-RATIO: 1) {}",
+        Syntax::Css
+      ),
       "@media (MIN-DEVICE-PIXEL-RATIO: 1) {}"
     );
   }
@@ -214,7 +217,7 @@ mod tests {
   fn reads_media_rules_nested_in_style_rules() {
     let css = "a { @media (-webkit-min-device-pixel-ratio: 1) { b: c } }";
     assert_eq!(
-      fix(css, serde_json::json!(true)),
+      fix(RULE, serde_json::json!(true), css, Syntax::Css),
       "a { @media (min-device-pixel-ratio: 1) { b: c } }"
     );
   }
@@ -223,7 +226,7 @@ mod tests {
   fn reads_past_multibyte_text() {
     let css = "@media /* é */ (-webkit-device-pixel-ratio: 2) {}";
     assert_eq!(
-      fix(css, serde_json::json!(true)),
+      fix(RULE, serde_json::json!(true), css, Syntax::Css),
       "@media /* é */ (device-pixel-ratio: 2) {}"
     );
   }
@@ -232,7 +235,7 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     let css = "@media (-webkit-device-pixel-ratio: 2) {}";
-    assert_eq!(lint(css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

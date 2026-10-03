@@ -219,7 +219,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "font-weight-notation";
 
@@ -285,20 +285,20 @@ mod tests {
   #[test]
   fn relative_keywords_are_reported_without_a_fix() {
     let source = "a { font: italic small-caps bolder 16px/3 cursive; }";
-    let diags = warnings(RULE, json!(["numeric"]), source, Syntax::Css);
+    let diags = lint(RULE, json!(["numeric"]), source, Syntax::Css);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Expected numeric font-weight notation");
     assert_eq!(fix(RULE, json!(["numeric"]), source, Syntax::Css), source);
     let ignored = json!(["numeric", { "ignore": ["relative"] }]);
-    assert!(warnings(RULE, ignored, source, Syntax::Css).is_empty());
+    assert!(lint(RULE, ignored, source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn leaves_line_heights_and_variables_alone() {
     let numeric = || json!(["numeric"]);
-    assert!(warnings(RULE, numeric(), "a { font-weight: $bold; }", Syntax::Scss).is_empty());
+    assert!(lint(RULE, numeric(), "a { font-weight: $bold; }", Syntax::Scss).is_empty());
     assert!(
-      warnings(
+      lint(
         RULE,
         json!(["named-where-possible"]),
         "a { font: 16px/400 serif; }",
@@ -322,6 +322,6 @@ mod tests {
     let options = json!(["numeric", { "disableFix": true }]);
     let source = "a { font-weight: bold; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

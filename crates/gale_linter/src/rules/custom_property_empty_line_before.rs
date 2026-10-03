@@ -97,18 +97,13 @@ fn is_after_custom_property(tree: &PostcssTree, i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     CustomPropertyEmptyLineBefore
       .check_root(&[], &ctx)
       .into_iter()
@@ -160,7 +155,7 @@ mod tests {
   #[test]
   fn fix_adds_and_removes_empty_lines() {
     assert_eq!(
-      fix_with(
+      fix(
         "custom-property-empty-line-before",
         serde_json::json!(["always", { "except": ["after-custom-property", "first-nested"] }]),
         "a {\n\n  --a: 1;\n\n  --b: 2;\n  top: 0;\n  --c: 3;\n}",
@@ -169,7 +164,7 @@ mod tests {
       "a {\n  --a: 1;\n  --b: 2;\n  top: 0;\n\n  --c: 3;\n}"
     );
     assert_eq!(
-      fix_with(
+      fix(
         "custom-property-empty-line-before",
         serde_json::json!("never"),
         "a {\r\n  top: 0;\r\n\r\n  --c: 3;\r\n}",

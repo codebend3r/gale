@@ -172,7 +172,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "color-function-notation";
 
@@ -220,21 +220,18 @@ mod tests {
   #[test]
   fn legacy_is_reported_without_a_fix() {
     let source = "a { color: rgb(0 0 0 / 50%) }";
-    assert_eq!(
-      warnings(RULE, json!(["legacy"]), source, Syntax::Css).len(),
-      1
-    );
+    assert_eq!(lint(RULE, json!(["legacy"]), source, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, json!(["legacy"]), source, Syntax::Css), source);
   }
 
   #[test]
   fn skips_preprocessor_arguments_and_var_when_asked() {
     let modern = || json!(["modern"]);
-    assert!(warnings(RULE, modern(), "a { color: rgba($a, 0.5) }", Syntax::Scss).is_empty());
-    assert!(warnings(RULE, modern(), "a { color: rgb(white, .5); }", Syntax::Css).is_empty());
+    assert!(lint(RULE, modern(), "a { color: rgba($a, 0.5) }", Syntax::Scss).is_empty());
+    assert!(lint(RULE, modern(), "a { color: rgb(white, .5); }", Syntax::Css).is_empty());
     let ignore_var = json!(["modern", { "ignore": ["with-var-inside"] }]);
     assert!(
-      warnings(
+      lint(
         RULE,
         ignore_var,
         "a { color: rgba(var(--a), 0.5, 0, 1) }",
@@ -249,6 +246,6 @@ mod tests {
     let options = json!(["modern", { "disableFix": true }]);
     let source = "a { color: rgb(0, 0, 0) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

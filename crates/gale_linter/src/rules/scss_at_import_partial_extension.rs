@@ -101,17 +101,9 @@ impl Rule for ScssAtImportPartialExtension {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn import(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -158,13 +150,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let css_ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let css_ctx = ctx();
     assert!(
       ScssAtImportPartialExtension
         .check(&import("\"foo.scss\""), &css_ctx)

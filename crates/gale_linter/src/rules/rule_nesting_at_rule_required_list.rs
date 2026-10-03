@@ -77,7 +77,9 @@ fn parse_options(options: Option<&serde_json::Value>) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
+
+  use crate::testing::{ctx, ctx_with_options};
 
   fn top_level_at_rule(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -105,13 +107,7 @@ mod tests {
   #[test]
   fn reports_top_level_at_rule_that_should_be_nested() {
     let opts = serde_json::json!(["media", "supports"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("media"), style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);
@@ -121,13 +117,7 @@ mod tests {
   #[test]
   fn allows_at_rules_not_in_list() {
     let opts = serde_json::json!(["media"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("keyframes"), style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
     assert!(d.is_empty());
@@ -136,13 +126,7 @@ mod tests {
   #[test]
   fn allows_style_rules_at_top_level() {
     let opts = serde_json::json!(["media"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let nodes = vec![style_rule_node()];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
     assert!(d.is_empty());
@@ -150,13 +134,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let nodes = vec![top_level_at_rule("media")];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
     assert!(d.is_empty());
@@ -165,13 +143,7 @@ mod tests {
   #[test]
   fn case_insensitive_matching() {
     let opts = serde_json::json!(["media"]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("Media")];
     let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);

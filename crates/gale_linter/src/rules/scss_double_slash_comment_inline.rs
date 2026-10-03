@@ -136,39 +136,20 @@ fn has_non_whitespace_before_on_line(source: &str, pos: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn scss_ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn scss_ctx_with_option<'a>(source: &'a str, opts: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, scss_ctx_with_source, scss_ctx_with_source_and_options};
 
   #[test]
   fn never_allows_standalone_comment() {
     let src = "// standalone comment\n.foo { color: red; }";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx(src));
+    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_inline_comment() {
     let src = ".foo { color: red; // inline comment\n}";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx(src));
+    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected inline"));
   }
@@ -177,7 +158,8 @@ mod tests {
   fn always_allows_inline_comment() {
     let opts = serde_json::json!("always");
     let src = ".foo { color: red; // inline comment\n}";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_option(src, &opts));
+    let d =
+      ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert!(d.is_empty());
   }
 
@@ -185,7 +167,8 @@ mod tests {
   fn always_reports_standalone_comment() {
     let opts = serde_json::json!("always");
     let src = "// standalone comment\n.foo { color: red; }";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_option(src, &opts));
+    let d =
+      ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert_eq!(d.len(), 1);
     assert!(
       d[0]
@@ -197,19 +180,13 @@ mod tests {
   #[test]
   fn never_allows_indented_standalone() {
     let src = ".foo {\n  // indented standalone\n  color: red;\n}";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx(src));
+    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: ".foo { color: red; } // inline",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(".foo { color: red; } // inline");
     assert!(
       ScssDoubleSlashCommentInline
         .check_root(&[], &ctx)
@@ -220,7 +197,7 @@ mod tests {
   #[test]
   fn skips_double_slash_in_string() {
     let src = ".foo { content: \"// not a comment\"; }";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx(src));
+    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 }

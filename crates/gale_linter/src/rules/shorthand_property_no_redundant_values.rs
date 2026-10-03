@@ -316,62 +316,61 @@ fn condense(values: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "shorthand-property-no-redundant-values".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "shorthand-property-no-redundant-values";
 
   #[test]
   fn shortens_and_keeps_important() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("a { margin: 1px 1px 1px 1px; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { margin: 1px 1px 1px 1px; }",
+        Syntax::Css
+      ),
       "a { margin: 1px; }"
     );
     assert_eq!(
-      fix("a { margin: 1px 1px !important; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { margin: 1px 1px !important; }",
+        Syntax::Css
+      ),
       "a { margin: 1px !important; }"
     );
     assert_eq!(
-      fix("a { padding: 1Px 2px 1pX 2px; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { padding: 1Px 2px 1pX 2px; }",
+        Syntax::Css
+      ),
       "a { padding: 1Px 2px; }"
     );
     assert_eq!(
-      fix("a { margin: calc(1px + 1px) calc(1px + 1px); }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { margin: calc(1px + 1px) calc(1px + 1px); }",
+        Syntax::Css
+      ),
       "a { margin: calc(1px + 1px); }"
     );
     assert_eq!(
-      fix("a { -webkit-border-radius: 1px 1px 1px 1px; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { -webkit-border-radius: 1px 1px 1px 1px; }",
+        Syntax::Css
+      ),
       "a { -webkit-border-radius: 1px; }"
     );
-    let warnings = lint("a { margin-inline: 1px 1px; }", on);
+    let warnings = lint(RULE, on, "a { margin-inline: 1px 1px; }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].message, "Expected \"1px 1px\" to be \"1px\"");
   }
@@ -381,19 +380,23 @@ mod tests {
     let on = serde_json::json!(true);
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a { border-radius: 1px 1px / var(--foo) var(--foo); }",
-        on.clone()
+        Syntax::Css
       ),
       "a { border-radius: 1px / var(--foo) var(--foo); }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a { border-radius: 1px 1px 1px 1px / 2px 2px 2px 2px; }",
-        on.clone()
+        Syntax::Css
       ),
       "a { border-radius: 1px / 2px; }"
     );
-    assert!(lint("a { border-radius: 1px / 2px; }", on).is_empty());
+    assert!(lint(RULE, on, "a { border-radius: 1px / 2px; }", Syntax::Css).is_empty());
   }
 
   #[test]
@@ -406,16 +409,29 @@ mod tests {
       "a { margin: 1px, 1px; }",
       "a { margin: 1px; }",
     ] {
-      assert!(lint(css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
   }
 
   #[test]
   fn four_into_three_exception_covers_edge_properties_only() {
     let options = serde_json::json!([true, { "ignore": ["four-into-three-edge-values"] }]);
-    assert!(lint("a { margin: 1px 2px 3px 2px; }", options.clone()).is_empty());
+    assert!(
+      lint(
+        RULE,
+        options.clone(),
+        "a { margin: 1px 2px 3px 2px; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
     assert_eq!(
-      fix("a { border-radius: 1px 2px 3px 2px; }", options),
+      fix(
+        RULE,
+        options,
+        "a { border-radius: 1px 2px 3px 2px; }",
+        Syntax::Css
+      ),
       "a { border-radius: 1px 2px 3px; }"
     );
   }
@@ -423,9 +439,12 @@ mod tests {
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
-    assert_eq!(lint("a { gap: 1rem 1rem; }", options.clone()).len(), 1);
     assert_eq!(
-      fix("a { gap: 1rem 1rem; }", options),
+      lint(RULE, options.clone(), "a { gap: 1rem 1rem; }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, "a { gap: 1rem 1rem; }", Syntax::Css),
       "a { gap: 1rem 1rem; }"
     );
   }

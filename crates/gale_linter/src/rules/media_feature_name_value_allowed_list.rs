@@ -129,7 +129,9 @@ fn extract_media_features(params: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
+
+  use crate::testing::{ctx, ctx_with_options};
 
   fn media_at_rule(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -143,13 +145,7 @@ mod tests {
   #[test]
   fn reports_disallowed_value() {
     let opts = serde_json::json!({ "width": ["100px", "200px"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = media_at_rule("(width: 50px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -159,13 +155,7 @@ mod tests {
   #[test]
   fn allows_permitted_value() {
     let opts = serde_json::json!({ "width": ["100px", "200px"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = media_at_rule("(width: 100px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -174,13 +164,7 @@ mod tests {
   #[test]
   fn min_max_prefix_not_stripped() {
     let opts = serde_json::json!({ "width": ["100px"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     // "min-width" does not match "width" -- strict matching, no constraint = no diagnostic
     let node = media_at_rule("(min-width: 100px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
@@ -190,13 +174,7 @@ mod tests {
   #[test]
   fn supports_regex_patterns() {
     let opts = serde_json::json!({ "resolution": ["/^[0-9]+dpi$/"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
 
     let node_ok = media_at_rule("(resolution: 300dpi)");
     let d = MediaFeatureNameValueAllowedList.check(&node_ok, &ctx);
@@ -210,13 +188,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = media_at_rule("(min-width: 50px)");
     let d = MediaFeatureNameValueAllowedList.check(&node, &ctx);
     assert!(d.is_empty());

@@ -1057,18 +1057,13 @@ impl Rule for ValueKeywordCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{context, fix};
 
   /// The diagnostics for `source` in `syntax` with `options`.
   fn lint(source: &str, syntax: Syntax, options: Option<&serde_json::Value>) -> Vec<Diagnostic> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options,
-      cache: None,
-    };
+    let ctx = context(source, syntax, options.cloned());
     ValueKeywordCase.check_root(&[], &ctx)
   }
 
@@ -1162,7 +1157,7 @@ mod tests {
   #[test]
   fn fix_rewrites_the_keyword_in_place() {
     assert_eq!(
-      fix_with(
+      fix(
         "value-keyword-case",
         serde_json::json!("lower"),
         "@media screen { color: GREEN; @media (min-width: 1px) { color: Red !important; } }",

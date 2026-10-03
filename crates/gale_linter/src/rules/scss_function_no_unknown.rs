@@ -338,27 +338,9 @@ impl Rule for ScssFunctionNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn style_node(props: &[(&str, &str)]) -> CssNode {
     CssNode::Style(StyleRule {
@@ -380,7 +362,7 @@ mod tests {
   #[test]
   fn skips_non_scss() {
     let node = style_node(&[("color", "unknownfn(red)")]);
-    assert!(ScssFunctionNoUnknown.check(&node, &css_ctx()).is_empty());
+    assert!(ScssFunctionNoUnknown.check(&node, &ctx()).is_empty());
   }
 
   #[test]

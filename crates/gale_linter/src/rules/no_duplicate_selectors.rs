@@ -282,15 +282,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_source, ctx_with_source_and_options, scss_ctx_with_source};
 
   #[test]
   fn reports_duplicate_selectors_with_line_reference() {
@@ -331,13 +323,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
     assert_eq!(
@@ -363,7 +349,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -389,7 +375,7 @@ mod tests {
         })],
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(
       diags.is_empty(),
       "same selector in different scopes should not be flagged"
@@ -401,13 +387,7 @@ mod tests {
     let scss = ".foo { color: red; }\n.bar { color: blue; }\n.foo { display: block; }";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
     let rule = NoDuplicateSelectors;
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let diags = rule.check_root(&result.nodes, &ctx);
     assert_eq!(diags.len(), 1, "should detect duplicate .foo in SCSS");
   }
@@ -417,13 +397,7 @@ mod tests {
     let scss = ".parent {\n  & { color: red; }\n  & { color: blue; }\n}";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
     let rule = NoDuplicateSelectors;
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source: scss,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(scss);
     let diags = rule.check_root(&result.nodes, &ctx);
     // Each `& {}` expands to `.parent`, which duplicates the parent rule.
     // Stylelint reports both as duplicates, so we expect 2 diagnostics.
@@ -459,13 +433,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &opts);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(
       diags.is_empty(),
@@ -492,13 +460,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &opts);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(
       diags.is_empty(),
