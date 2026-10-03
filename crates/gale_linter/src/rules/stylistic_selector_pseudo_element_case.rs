@@ -107,23 +107,15 @@ impl Rule for StylisticSelectorPseudoElementCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn allows_lowercase_pseudo_element() {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::before { }";
-    let d = StylisticSelectorPseudoElementCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorPseudoElementCase
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -131,7 +123,8 @@ mod tests {
   fn reports_uppercase_pseudo_element() {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::Before { }";
-    let d = StylisticSelectorPseudoElementCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorPseudoElementCase
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("before"));
   }
@@ -140,7 +133,8 @@ mod tests {
   fn allows_uppercase_pseudo_element_with_upper() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::AFTER { }";
-    let d = StylisticSelectorPseudoElementCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorPseudoElementCase
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -148,7 +142,8 @@ mod tests {
   fn reports_lowercase_when_upper_expected() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::after { }";
-    let d = StylisticSelectorPseudoElementCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticSelectorPseudoElementCase
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("AFTER"));
   }

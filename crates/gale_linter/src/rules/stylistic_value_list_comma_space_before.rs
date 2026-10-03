@@ -133,39 +133,20 @@ impl Rule for StylisticValueListCommaSpaceBefore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn never_allows_no_space_before_comma() {
     let source = "a { background: url(foo.png), url(bar.png); }";
-    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx(source));
+    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_space_before_comma() {
     let source = "a { background: url(foo.png) , url(bar.png); }";
-    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx(source));
+    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -174,7 +155,8 @@ mod tests {
   fn always_allows_space_before_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png) , url(bar.png); }";
-    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticValueListCommaSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -182,7 +164,8 @@ mod tests {
   fn always_reports_missing_space_before_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
-    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticValueListCommaSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -190,7 +173,7 @@ mod tests {
   #[test]
   fn skips_strings() {
     let source = "a { content: \"foo , bar\"; }";
-    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx(source));
+    let d = StylisticValueListCommaSpaceBefore.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 }

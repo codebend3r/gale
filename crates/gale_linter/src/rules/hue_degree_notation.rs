@@ -148,7 +148,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "hue-degree-notation";
 
@@ -195,9 +195,9 @@ mod tests {
   #[test]
   fn ignores_variables_and_other_units() {
     let angle = || json!(["angle"]);
-    assert!(warnings(RULE, angle(), "a { color: hsl($h 60% 70%) }", Syntax::Scss).is_empty());
+    assert!(lint(RULE, angle(), "a { color: hsl($h 60% 70%) }", Syntax::Scss).is_empty());
     assert!(
-      warnings(
+      lint(
         RULE,
         angle(),
         "a { color: hsl(1turn 60% 70%) }",
@@ -212,6 +212,6 @@ mod tests {
     let options = json!(["angle", { "disableFix": true }]);
     let source = "a { color: hsl(120 60% 70%) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

@@ -228,58 +228,37 @@ fn is_standard_syntax_type_selector(visit: &Visit) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "selector-type-case".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, options.clone());
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "selector-type-case";
 
   #[test]
   fn lowercases_type_selectors_in_place() {
     let lower = serde_json::json!("lower");
-    assert_eq!(fix("DIV::before {}", lower.clone()), "div::before {}");
-    assert_eq!(fix("a { & B {}}", lower.clone()), "a { & b {}}");
     assert_eq!(
-      fix("A:nth-child(even) {}", lower.clone()),
+      fix(RULE, lower.clone(), "DIV::before {}", Syntax::Css),
+      "div::before {}"
+    );
+    assert_eq!(
+      fix(RULE, lower.clone(), "a { & B {}}", Syntax::Css),
+      "a { & b {}}"
+    );
+    assert_eq!(
+      fix(RULE, lower.clone(), "A:nth-child(even) {}", Syntax::Css),
       "a:nth-child(even) {}"
     );
     assert_eq!(
-      fix("/* x */\nA, /* y */\nA:not(B) {}", lower.clone()),
+      fix(
+        RULE,
+        lower.clone(),
+        "/* x */\nA, /* y */\nA:not(B) {}",
+        Syntax::Css
+      ),
       "/* x */\na, /* y */\na:not(b) {}"
     );
-    let warnings = lint_as("a B {}", Syntax::Css, lower);
+    let warnings = lint(RULE, lower, "a B {}", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].message, "Expected \"B\" to be \"b\"");
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (2, 1));
@@ -289,16 +268,27 @@ mod tests {
   fn uppercases_with_the_upper_option() {
     let upper = serde_json::json!("upper");
     assert_eq!(
-      fix("a { &:nth-child(3n + 1) {} }", upper.clone()),
+      fix(
+        RULE,
+        upper.clone(),
+        "a { &:nth-child(3n + 1) {} }",
+        Syntax::Css
+      ),
       "A { &:nth-child(3n + 1) {} }"
     );
-    assert_eq!(fix("A /*c*/\n b {}", upper.clone()), "A /*c*/\n B {}");
+    assert_eq!(
+      fix(RULE, upper.clone(), "A /*c*/\n b {}", Syntax::Css),
+      "A /*c*/\n B {}"
+    );
     for css in ["&LI {}", "A:nth-child(odd) {}", ".foo {}", "A, B, * {}"] {
-      assert!(lint_as(css, Syntax::Css, upper.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, upper.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
     for css in [".foo { &-bar {} }", "%foo {}", "#{$variable} {}"] {
       assert!(
-        lint_as(css, Syntax::Scss, upper.clone()).is_empty(),
+        lint(RULE, upper.clone(), css, Syntax::Scss).is_empty(),
         "{css}"
       );
     }
@@ -314,14 +304,17 @@ mod tests {
       "myParentClass {}",
       "myFoo {}",
     ] {
-      assert!(lint_as(css, Syntax::Css, lower.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, lower.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["lower", { "disableFix": true }]);
-    assert_eq!(lint_as("A {}", Syntax::Css, options.clone()).len(), 1);
-    assert_eq!(fix("A {}", options), "A {}");
+    assert_eq!(lint(RULE, options.clone(), "A {}", Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, "A {}", Syntax::Css), "A {}");
   }
 }

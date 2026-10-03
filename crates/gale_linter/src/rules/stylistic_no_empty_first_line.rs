@@ -67,17 +67,8 @@ impl Rule for StylisticNoEmptyFirstLine {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn reports_empty_first_line_lf() {

@@ -106,17 +106,9 @@ fn find_important(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   fn style_node(prop: &str, val: &str, important: bool, offset: usize, len: usize) -> CssNode {
     CssNode::Style(StyleRule {

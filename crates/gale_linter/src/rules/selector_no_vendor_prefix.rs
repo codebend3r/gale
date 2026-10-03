@@ -82,50 +82,29 @@ impl Rule for SelectorNoVendorPrefix {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "selector-no-vendor-prefix".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "selector-no-vendor-prefix";
 
   #[test]
   fn strips_the_prefix_keeping_the_name_as_written() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix(":-wEbKiT-fUlL-sCrEeN a {}", on.clone()),
+      fix(RULE, on.clone(), ":-wEbKiT-fUlL-sCrEeN a {}", Syntax::Css),
       ":fUlL-sCrEeN a {}"
     );
     assert_eq!(
-      fix("input::-ms-clear + input::-moz-placeholder {}", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "input::-ms-clear + input::-moz-placeholder {}",
+        Syntax::Css
+      ),
       "input::-ms-clear + input::placeholder {}"
     );
-    let warnings = lint("body, :-ms-fullscreen a {}", on);
+    let warnings = lint(RULE, on, "body, :-ms-fullscreen a {}", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(
       warnings[0].message,
@@ -142,7 +121,7 @@ mod tests {
       "input::-webkit-slider-thumb {}",
       ":fullscreen a {}",
     ] {
-      assert!(lint(css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
   }
 
@@ -156,10 +135,18 @@ mod tests {
       "input::-moz-placeholder {}",
       ":-webkit-full-screen a {}",
     ] {
-      assert!(lint(css, options.clone()).is_empty(), "{css}");
+      assert!(
+        lint(RULE, options.clone(), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
     assert_eq!(
-      fix("input::-ms-input-placeholder {}", options),
+      fix(
+        RULE,
+        options,
+        "input::-ms-input-placeholder {}",
+        Syntax::Css
+      ),
       "input::input-placeholder {}"
     );
   }
@@ -167,7 +154,13 @@ mod tests {
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
-    assert_eq!(lint(":-ms-fullscreen {}", options.clone()).len(), 1);
-    assert_eq!(fix(":-ms-fullscreen {}", options), ":-ms-fullscreen {}");
+    assert_eq!(
+      lint(RULE, options.clone(), ":-ms-fullscreen {}", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, ":-ms-fullscreen {}", Syntax::Css),
+      ":-ms-fullscreen {}"
+    );
   }
 }

@@ -78,17 +78,9 @@ impl Rule for FontFamilyNoDuplicateNames {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_duplicate_font_family_names() {
@@ -104,7 +96,7 @@ mod tests {
       span: ParserSpan::new(0, 42),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
@@ -126,7 +118,7 @@ mod tests {
       span: ParserSpan::new(0, 47),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -144,7 +136,7 @@ mod tests {
       span: ParserSpan::new(0, 45),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
   }
 }

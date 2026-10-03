@@ -255,17 +255,9 @@ fn extract_for_var(params: &str, vars: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx, scss_ctx_with_options};
 
   fn dollar_var(name: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -312,13 +304,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let css_ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let css_ctx = ctx();
     let nodes = vec![dollar_var("$myVar")];
     assert!(
       ScssDollarVariablePattern
@@ -426,13 +412,7 @@ mod tests {
   fn ignore_inside_at_rule_skips_all_vars_in_at_rules() {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = scss_ctx_with_options(&opts);
 
     // Variable inside a @mixin — should be ignored
     let nodes = vec![CssNode::AtRule(ParserAtRule {
@@ -457,13 +437,7 @@ mod tests {
   fn ignore_inside_at_rule_still_reports_top_level() {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = scss_ctx_with_options(&opts);
 
     // Top-level variable that doesn't match — should still be reported
     let nodes = vec![dollar_var("$bad-name")];
@@ -476,13 +450,7 @@ mod tests {
   fn ignore_inside_inside_at_rule_synonym() {
     use serde_json::json;
     let opts = json!(["^pf-", {"ignoreInside": "inside-at-rule"}]);
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = scss_ctx_with_options(&opts);
 
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "function".to_string(),

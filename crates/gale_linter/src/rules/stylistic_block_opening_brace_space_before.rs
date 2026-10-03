@@ -169,23 +169,15 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn always_allows_space_before_brace() {
     let opt = serde_json::json!("always");
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -193,7 +185,8 @@ mod tests {
   fn always_reports_missing_space() {
     let opt = serde_json::json!("always");
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -202,7 +195,8 @@ mod tests {
   fn never_allows_no_space() {
     let opt = serde_json::json!("never");
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -210,7 +204,8 @@ mod tests {
   fn never_reports_space() {
     let opt = serde_json::json!("never");
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -219,7 +214,8 @@ mod tests {
   fn always_single_line_allows_space_for_single_line() {
     let opt = serde_json::json!("always-single-line");
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -227,7 +223,8 @@ mod tests {
   fn always_multi_line_allows_no_space_for_single_line() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -235,7 +232,8 @@ mod tests {
   fn always_multi_line_reports_missing_space_for_multiline() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a{\n  color: red;\n}";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
   }
 
@@ -245,7 +243,8 @@ mod tests {
     // even if they have a space before the brace.
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag single-line block with space in always-multi-line mode"
@@ -256,7 +255,8 @@ mod tests {
   fn always_multi_line_ignores_empty_single_line_block() {
     let opt = serde_json::json!("always-multi-line");
     let source = "@mixin foo() {}";
-    let d = StylisticBlockOpeningBraceSpaceBefore.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockOpeningBraceSpaceBefore
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag empty single-line block in always-multi-line mode"

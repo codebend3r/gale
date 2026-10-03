@@ -87,27 +87,9 @@ fn collect_mixins(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn mixin(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -121,11 +103,7 @@ mod tests {
   #[test]
   fn skips_non_scss() {
     let nodes = vec![mixin("foo"), mixin("foo")];
-    assert!(
-      ScssNoDuplicateMixins
-        .check_root(&nodes, &css_ctx())
-        .is_empty()
-    );
+    assert!(ScssNoDuplicateMixins.check_root(&nodes, &ctx()).is_empty());
   }
 
   #[test]

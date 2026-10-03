@@ -299,24 +299,15 @@ fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn always_allows_newline_after_semicolon() {
     let opt = serde_json::json!("always");
     let source = "a {\n  color: red;\n  display: block;\n}";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -329,7 +320,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { color: red; display: block; }";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -339,7 +330,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; display: block; }";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -348,7 +339,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a {\n  color: red; display: block;\n}";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
   }
 
@@ -358,7 +349,7 @@ mod tests {
     // @include with a content block ending in ;
     let source = "a {\n  @include mixin { color: red; };\n  display: block;\n}";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag semicolon after @include content block, got: {:?}",
@@ -373,7 +364,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a {\n  @include mixin;\n  color: red;\n}";
     let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_option(source, &opt));
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 }

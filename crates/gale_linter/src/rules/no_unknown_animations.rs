@@ -184,17 +184,9 @@ fn extract_animation_name(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_unknown_animation_name() {

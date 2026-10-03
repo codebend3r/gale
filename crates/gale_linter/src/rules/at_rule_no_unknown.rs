@@ -62,17 +62,9 @@ impl Rule for AtRuleNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Span, Syntax};
+  use gale_css_parser::{AtRule, CssNode, Span};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_options, less_ctx, scss_ctx};
 
   fn at(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -94,13 +86,7 @@ mod tests {
   fn ignore_at_rules_skips_listed_names() {
     // material-ui's config, for Tailwind's at-rules.
     let options = serde_json::json!([true, { "ignoreAtRules": ["theme", "/^conf/"] }]);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&options);
     assert!(AtRuleNoUnknown.check(&at("theme"), &ctx).is_empty());
     assert!(AtRuleNoUnknown.check(&at("config"), &ctx).is_empty());
     assert_eq!(AtRuleNoUnknown.check(&at("tailwind"), &ctx).len(), 1);
@@ -119,26 +105,6 @@ mod tests {
         .check(&at("-webkit-keyframes"), &ctx())
         .is_empty()
     );
-  }
-
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn less_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.less",
-      source: "",
-      syntax: Syntax::Less,
-      options: None,
-      cache: None,
-    }
   }
 
   #[test]

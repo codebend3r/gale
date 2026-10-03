@@ -125,27 +125,9 @@ impl Rule for ScssSelectorNoRedundantNestingSelector {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn nested_rule(parent_sel: &str, child_sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -173,7 +155,7 @@ mod tests {
     let node = nested_rule(".foo", "&");
     assert!(
       ScssSelectorNoRedundantNestingSelector
-        .check(&node, &css_ctx())
+        .check(&node, &ctx())
         .is_empty()
     );
   }

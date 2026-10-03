@@ -110,17 +110,8 @@ impl Rule for ScssDeclarationNestedProperties {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn scss_ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_nested_properties() {
@@ -138,13 +129,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: ".foo { font: { weight: bold; } }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(".foo { font: { weight: bold; } }");
     assert!(
       ScssDeclarationNestedProperties
         .check_root(&[], &ctx)

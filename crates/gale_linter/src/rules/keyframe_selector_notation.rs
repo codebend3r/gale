@@ -280,7 +280,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "keyframe-selector-notation";
 
@@ -314,7 +314,7 @@ mod tests {
   fn keyword_only_blocks_may_keep_keywords() {
     let unless = || json!(["percentage-unless-within-keyword-only-block"]);
     assert!(
-      warnings(
+      lint(
         RULE,
         unless(),
         "@keyframes foo { from {} to {} }",
@@ -331,7 +331,7 @@ mod tests {
   #[test]
   fn ignores_rules_outside_keyframes() {
     assert!(
-      warnings(
+      lint(
         RULE,
         json!(["percentage"]),
         "from { color: red }",
@@ -346,6 +346,6 @@ mod tests {
     let options = json!(["keyword", { "disableFix": true }]);
     let source = "@keyframes foo { 0% {} }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

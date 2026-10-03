@@ -146,17 +146,9 @@ impl Rule for ScssDoubleSlashCommentWhitespaceInside {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn line_comment(text: &str) -> CssNode {
     CssNode::Comment(Comment {
@@ -253,13 +245,7 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
-    let css_ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let css_ctx = ctx();
     assert!(
       ScssDoubleSlashCommentWhitespaceInside
         .check(&line_comment("//comment"), &css_ctx)

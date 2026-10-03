@@ -151,17 +151,9 @@ fn count_values(value: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_options(options: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(options),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_options;
 
   fn style_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {

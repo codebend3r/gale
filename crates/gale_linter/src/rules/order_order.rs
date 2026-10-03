@@ -595,29 +595,21 @@ fn sort_edit(tree: &PostcssTree, config: &Config, children: &[usize]) -> Option<
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
   use serde_json::json;
 
+  use crate::testing::{context, fix};
+
+  const RULE: &str = "order/order";
+
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     OrderOrder
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()
-  }
-
-  /// `source` fixed with the rule set to `options`.
-  fn fix(source: &str, syntax: Syntax, options: serde_json::Value) -> String {
-    fix_with("order/order", options, source, syntax)
   }
 
   #[test]
@@ -686,15 +678,21 @@ mod tests {
     ]]);
     assert_eq!(
       fix(
+        RULE,
+        at_rules,
         "a {\n  @include media('palm') {\n    display: block;\n  }\n  @include media('desk');\n}",
-        Syntax::Scss,
-        at_rules
+        Syntax::Scss
       ),
       "a {\n  @include media('desk');\n  @include media('palm') {\n    display: block;\n  }\n}"
     );
     let rules = json!([[{ "type": "rule", "selector": "^a" }, { "type": "rule", "selector": "/^&/" }, { "type": "rule" }]]);
     assert_eq!(
-      fix("a { a {} &:hover {} abbr {} span {} }", Syntax::Scss, rules),
+      fix(
+        RULE,
+        rules,
+        "a { a {} &:hover {} abbr {} span {} }",
+        Syntax::Scss
+      ),
       "a { a {} abbr {} &:hover {} span {} }"
     );
   }
@@ -704,9 +702,10 @@ mod tests {
     let order = json!([["custom-properties", "declarations"], { "unspecified": "bottom" }]);
     assert_eq!(
       fix(
+        RULE,
+        order,
         "a {\n  $w: 5px;\n  /* c */\n  display: none\n}",
-        Syntax::Scss,
-        order
+        Syntax::Scss
       ),
       "a {\n  /* c */\n  display: none;\n  $w: 5px;\n}"
     );
@@ -715,6 +714,6 @@ mod tests {
     let top = json!([["custom-properties", "declarations"], { "unspecified": "top" }]);
     let source = "a {\n  display: none;\n  $width: 5px;\n}";
     assert_eq!(messages(source, Syntax::Scss, top.clone()).len(), 1);
-    assert_eq!(fix(source, Syntax::Scss, top), source);
+    assert_eq!(fix(RULE, top, source, Syntax::Scss), source);
   }
 }

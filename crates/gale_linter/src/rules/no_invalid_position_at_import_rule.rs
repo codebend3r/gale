@@ -98,7 +98,9 @@ impl Rule for NoInvalidPositionAtImportRule {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan, StyleRule};
+
+  use crate::testing::{ctx, scss_ctx};
 
   #[test]
   fn reports_import_after_style_rule() {
@@ -117,13 +119,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx();
     let diags = rule.check_root(&nodes, &context);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("@import"));
@@ -146,13 +142,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx();
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
   }
@@ -181,13 +171,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let context = scss_ctx();
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
   }
@@ -210,13 +194,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let context = scss_ctx();
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
   }
@@ -238,13 +216,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let context = scss_ctx();
     let diags = rule.check_root(&nodes, &context);
     assert!(
       diags.is_empty(),
@@ -275,13 +247,7 @@ mod tests {
         children: vec![],
       }),
     ];
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx();
     let diags = rule.check_root(&nodes, &context);
     assert!(diags.is_empty());
   }

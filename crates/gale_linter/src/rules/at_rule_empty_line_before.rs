@@ -113,18 +113,13 @@ fn is_after_same_name(tree: &PostcssTree, i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
+
+  use crate::testing::{ctx_with_source_and_options, fix};
 
   /// The messages for `source` with `options`.
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &options);
     AtRuleEmptyLineBefore
       .check_root(&[], &ctx)
       .into_iter()
@@ -177,7 +172,7 @@ mod tests {
   #[test]
   fn fix_adds_and_removes_empty_lines_keeping_indentation() {
     assert_eq!(
-      fix_with(
+      fix(
         "at-rule-empty-line-before",
         serde_json::json!("always"),
         "a {\n  color: red;\n  @media x {}\n}\n@import 'b';",
@@ -186,7 +181,7 @@ mod tests {
       "a {\n  color: red;\n\n  @media x {}\n}\n\n@import 'b';"
     );
     assert_eq!(
-      fix_with(
+      fix(
         "at-rule-empty-line-before",
         serde_json::json!("never"),
         "a {}\n\n  \n@media x {}",
@@ -199,7 +194,7 @@ mod tests {
   #[test]
   fn fix_keeps_the_files_line_breaks() {
     assert_eq!(
-      fix_with(
+      fix(
         "at-rule-empty-line-before",
         serde_json::json!("always"),
         "a {}\r\n@media x {} @import 'y';",
@@ -212,7 +207,7 @@ mod tests {
   #[test]
   fn fix_works_in_scss() {
     assert_eq!(
-      fix_with(
+      fix(
         "at-rule-empty-line-before",
         serde_json::json!(["always", { "except": ["first-nested"] }]),
         "a {\n\n  @include x;\n  // note\n  @include y;\n}",

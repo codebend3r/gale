@@ -774,29 +774,21 @@ fn sort_declarations_alphabetically(a: &SortItem, b: &SortItem) -> f64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
   use gale_css_parser::Syntax;
   use serde_json::json;
 
+  use crate::testing::{ctx_with_source_and_options, fix};
+
+  const RULE: &str = "order/properties-order";
+
   /// The messages for `source` with `options`.
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = ctx_with_source_and_options(source, &options);
     OrderPropertiesOrder
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()
-  }
-
-  /// `source` fixed with the rule set to `options`.
-  fn fix(source: &str, options: serde_json::Value) -> String {
-    fix_with("order/properties-order", options, source, Syntax::Css)
   }
 
   #[test]
@@ -838,27 +830,36 @@ mod tests {
   fn fix_sorts_and_keeps_comments_with_their_declarations() {
     let order = json!([["height", "width", "color"]]);
     assert_eq!(
-      fix("a { color: pink; width: 1px; height: 2px }", order.clone()),
+      fix(
+        RULE,
+        order.clone(),
+        "a { color: pink; width: 1px; height: 2px }",
+        Syntax::Css
+      ),
       "a { height: 2px; width: 1px; color: pink }"
     );
     assert_eq!(
       fix(
+        RULE,
+        order.clone(),
         "a {\n  /* c */\n  color: pink;\n  width: 1px; /* w */\n  top: 0;\n}",
-        order.clone()
+        Syntax::Css
       ),
       "a {\n  width: 1px; /* w */\n  /* c */\n  color: pink;\n  top: 0;\n}"
     );
     assert_eq!(
       fix(
+        RULE,
+        json!([["transform"]]),
         "a { -moz-transform: none; transform: none; -webkit-transform: none; }",
-        json!([["transform"]])
+        Syntax::Css
       ),
       "a { -moz-transform: none; -webkit-transform: none; transform: none; }"
     );
     // Sass control blocks are reported but never sorted.
     let ctx_source = "@if $a { color: pink; height: 1px; }";
     assert_eq!(
-      fix_with("order/properties-order", order, ctx_source, Syntax::Scss),
+      fix("order/properties-order", order, ctx_source, Syntax::Scss),
       ctx_source
     );
   }
@@ -871,14 +872,21 @@ mod tests {
     ]]);
     assert_eq!(
       fix(
+        RULE,
+        groups,
         "a {\n  width: 1px;\n  font-size: 2px;\n  height: 3px;\n}",
-        groups
+        Syntax::Css
       ),
       "a {\n  width: 1px;\n  height: 3px;\n\n  font-size: 2px;\n}"
     );
     let unspecified = json!([["height", "width"], { "unspecified": "bottom", "emptyLineBeforeUnspecified": "always" }]);
     assert_eq!(
-      fix("a {\r\n  height: 1px;\r\n  color: red;\r\n}", unspecified),
+      fix(
+        RULE,
+        unspecified,
+        "a {\r\n  height: 1px;\r\n  color: red;\r\n}",
+        Syntax::Css
+      ),
       "a {\r\n  height: 1px;\r\n\r\n  color: red;\r\n}"
     );
   }
@@ -887,22 +895,28 @@ mod tests {
   fn unspecified_positions() {
     assert_eq!(
       fix(
+        RULE,
+        json!([["height"], { "unspecified": "top" }]),
         "a { height: 1px; top: 0; }",
-        json!([["height"], { "unspecified": "top" }])
+        Syntax::Css
       ),
       "a { top: 0; height: 1px; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        json!([["height"], { "unspecified": "bottom" }]),
         "a { bottom: 0; height: 1px; }",
-        json!([["height"], { "unspecified": "bottom" }])
+        Syntax::Css
       ),
       "a { height: 1px; bottom: 0; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        json!([["all", "compose"], { "unspecified": "bottomAlphabetical" }]),
         "a { compose: b; top: 0; bottom: 0; }",
-        json!([["all", "compose"], { "unspecified": "bottomAlphabetical" }])
+        Syntax::Css
       ),
       "a { compose: b; bottom: 0; top: 0; }"
     );

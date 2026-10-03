@@ -1096,7 +1096,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "declaration-block-no-redundant-longhand-properties";
 
@@ -1182,7 +1182,7 @@ mod tests {
   #[test]
   fn removes_longhands_equal_to_their_shorthand() {
     let source = "a { margin: 1px; margin-left: 2px; margin-right: 1px; }";
-    let diags = warnings(RULE, json!([true]), source, Syntax::Css);
+    let diags = lint(RULE, json!([true]), source, Syntax::Css);
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
@@ -1197,7 +1197,7 @@ mod tests {
   #[test]
   fn unfixable_problems_are_left_alone() {
     let source = "a { transition-delay: ; transition-duration: 1s; transition-timing-function: ease; transition-property: top; }";
-    assert_eq!(warnings(RULE, json!([true]), source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, json!([true]), source, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, json!([true]), source, Syntax::Css), source);
   }
 
@@ -1205,7 +1205,7 @@ mod tests {
   fn ignore_options() {
     let options = json!([true, { "ignoreShorthands": ["/border/", "padding"] }]);
     assert_eq!(
-      warnings(
+      lint(
         RULE,
         options,
         "a { padding-left: 1px; padding-right: 1px; padding-top: 1px; padding-bottom: 1px; }",
@@ -1231,6 +1231,6 @@ mod tests {
     let options = json!([true, { "disableFix": true }]);
     let source = "a { overflow-x: hidden; overflow-y: auto; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

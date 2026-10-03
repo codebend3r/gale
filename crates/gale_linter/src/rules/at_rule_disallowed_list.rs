@@ -56,19 +56,9 @@ impl Rule for AtRuleDisallowedList {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn ctx_with_options(options: Option<serde_json::Value>) -> RuleContext<'static> {
-    // Leak the value so we get a `'static` reference for tests.
-    let opts: Option<&'static serde_json::Value> = options.map(|v| &*Box::leak(Box::new(v)));
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: opts,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_options;
 
   fn at_rule_node(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {

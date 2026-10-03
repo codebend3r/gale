@@ -144,17 +144,9 @@ impl Rule for MediaFeatureNameValueNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {

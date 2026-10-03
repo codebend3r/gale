@@ -118,17 +118,9 @@ impl Rule for FontFamilyNoMissingGenericFamilyKeyword {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   #[test]
   fn reports_missing_generic_family() {
@@ -144,7 +136,7 @@ mod tests {
       span: ParserSpan::new(0, 36),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("missing generic font family"));
   }
@@ -163,7 +155,7 @@ mod tests {
       span: ParserSpan::new(0, 48),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -181,7 +173,7 @@ mod tests {
       span: ParserSpan::new(0, 28),
       ..Default::default()
     });
-    let diags = rule.check(&node, &make_context());
+    let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
   }
 }

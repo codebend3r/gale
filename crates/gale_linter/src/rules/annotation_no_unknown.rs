@@ -64,17 +64,9 @@ impl Rule for AnnotationNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Comment, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn comment(text: &str) -> CssNode {
     CssNode::Comment(Comment {

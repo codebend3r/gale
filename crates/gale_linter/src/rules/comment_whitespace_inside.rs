@@ -229,7 +229,6 @@ fn js_space_suffix_start(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::empty_lines::fix_with;
 
   #[test]
   fn rejected_wording_follows_the_stylelint_version() {
@@ -252,17 +251,13 @@ mod tests {
   }
   use gale_css_parser::Syntax;
 
+  use crate::testing::{context, fix, lint};
+
   /// The messages for `source` in `syntax` with `option`, with their
   /// offsets.
   fn messages(source: &str, syntax: Syntax, option: &str) -> Vec<(String, usize)> {
     let options = serde_json::json!(option);
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx = context(source, syntax, &options);
     CommentWhitespaceInside
       .check_root(&[], &ctx)
       .into_iter()
@@ -322,18 +317,12 @@ mod tests {
     // Stylelint disables from the command's own line, so the runner drops
     // the problems in the comment itself.
     let linted = |source: &str, option: &str| {
-      let mut options = std::collections::HashMap::new();
-      options.insert(
-        "comment-whitespace-inside".to_string(),
+      lint(
+        "comment-whitespace-inside",
         serde_json::json!(option),
-      );
-      crate::LintRunner::with_options(
-        crate::RuleRegistry::default(),
-        vec!["comment-whitespace-inside".to_string()],
-        options,
+        source,
+        Syntax::Css,
       )
-      .lint_source(source, "t.css", Syntax::Css)
-      .diagnostics
       .len()
     };
     assert_eq!(linted("/* stylelint-disable */\na {}", "never"), 0);
@@ -355,7 +344,7 @@ mod tests {
   #[test]
   fn fix_follows_stylelint() {
     let fix = |source: &str, option: &str| {
-      fix_with(
+      fix(
         "comment-whitespace-inside",
         serde_json::json!(option),
         source,

@@ -63,18 +63,14 @@ impl Rule for StylisticSelectorMaxEmptyLines {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+
+  use crate::testing::ctx_with_options;
 
   fn check_selector(selector: &str, max: u64) -> Vec<Diagnostic> {
     let rule = StylisticSelectorMaxEmptyLines;
     let opts = serde_json::json!(max);
-    let ctx = RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: selector.to_string(),
       declarations: vec![Declaration {

@@ -792,15 +792,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  fn make_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_source, scss_ctx};
 
   #[test]
   fn reports_descending_specificity() {
@@ -830,7 +822,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("to come before selector"));
   }
@@ -853,7 +845,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(
       diags.is_empty(),
       "different last compound selectors should not be compared"
@@ -866,13 +858,7 @@ mod tests {
     // as `.x:after`; it targets the pseudo-element, not `.x`.
     let source = ".x::after { content: 'a'; }\n.x { color: red; }\n";
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     assert!(
       NoDescendingSpecificity
         .check_root(&parsed.nodes, &ctx)
@@ -912,7 +898,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert!(diags.is_empty());
   }
 
@@ -955,16 +941,6 @@ mod tests {
     assert_eq!(calculate_specificity(":has(> .a)"), Specificity(0, 1, 0));
   }
 
-  fn make_scss_context() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "test.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
   #[test]
   fn scss_reports_top_level_descending_specificity() {
     let rule = NoDescendingSpecificity;
@@ -993,7 +969,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_scss_context());
+    let diags = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(
       diags.len(),
       1,
@@ -1024,7 +1000,7 @@ mod tests {
 
       nested_at_rules: Vec::new(),
     })];
-    let diags = rule.check_root(&nodes, &make_scss_context());
+    let diags = rule.check_root(&nodes, &scss_ctx());
     assert!(
       diags.is_empty(),
       "should not compare nested SCSS children against parent"
@@ -1032,7 +1008,7 @@ mod tests {
 
     // Same structure in plain CSS SHOULD compare nested children
     // (both share last compound `.bar`)
-    let diags = rule.check_root(&nodes, &make_context());
+    let diags = rule.check_root(&nodes, &ctx());
     assert_eq!(diags.len(), 1, "plain CSS should compare nested children");
   }
 
@@ -1053,7 +1029,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_scss_context());
+    let diags = rule.check_root(&nodes, &scss_ctx());
     assert!(
       diags.is_empty(),
       "should skip selectors with SCSS interpolation"
@@ -1077,7 +1053,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_scss_context());
+    let diags = rule.check_root(&nodes, &scss_ctx());
     assert!(diags.is_empty(), "should skip &-prefixed selectors in SCSS");
   }
 
@@ -1098,7 +1074,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let diags = rule.check_root(&nodes, &make_scss_context());
+    let diags = rule.check_root(&nodes, &scss_ctx());
     assert!(
       diags.is_empty(),
       "should skip placeholder selectors in SCSS"

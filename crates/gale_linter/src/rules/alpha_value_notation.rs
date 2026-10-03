@@ -189,7 +189,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "alpha-value-notation";
 
@@ -282,7 +282,7 @@ mod tests {
   fn leaves_variables_and_correct_values_alone() {
     let number = || json!(["number"]);
     assert!(
-      warnings(
+      lint(
         RULE,
         number(),
         "a { opacity: $a; color: rgb(0 0 0 / var(--a)) }",
@@ -290,13 +290,13 @@ mod tests {
       )
       .is_empty()
     );
-    assert!(warnings(RULE, number(), "a { opacity: 0.5 }", Syntax::Css).is_empty());
+    assert!(lint(RULE, number(), "a { opacity: 0.5 }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_the_alpha_value_itself() {
     let source = "a { color: rgb(0 0 0 / 50%) }";
-    let diags = warnings(RULE, json!(["number"]), source, Syntax::Css);
+    let diags = lint(RULE, json!(["number"]), source, Syntax::Css);
     assert_eq!(diags.len(), 1);
     assert_eq!(&source[diags[0].span.offset..diags[0].span.end()], "50%");
     assert_eq!(diags[0].message, "Expected \"50%\" to be \"0.5\"");
@@ -310,7 +310,7 @@ mod tests {
       "a { opacity: 10% }"
     );
     assert_eq!(
-      warnings(RULE, options, "a { opacity: 10% }", Syntax::Css).len(),
+      lint(RULE, options, "a { opacity: 10% }", Syntax::Css).len(),
       1
     );
   }

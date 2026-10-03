@@ -112,27 +112,9 @@ impl Rule for KeyframesNamePattern {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_options(opts: &serde_json::Value) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(opts),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_options};
 
   fn keyframes(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {

@@ -38,18 +38,13 @@ impl Rule for NoEmptySource {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
+
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn reports_empty_source() {
     let rule = NoEmptySource;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "   \n  ",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("   \n  ");
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected empty source");
@@ -58,13 +53,7 @@ mod tests {
   #[test]
   fn ignores_non_empty_source() {
     let rule = NoEmptySource;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "a { color: red; }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("a { color: red; }");
     let nodes = vec![CssNode::Style(gale_css_parser::StyleRule {
       selector: "a".to_string(),
       declarations: vec![gale_css_parser::Declaration {

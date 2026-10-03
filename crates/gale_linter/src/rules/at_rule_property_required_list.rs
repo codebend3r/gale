@@ -100,19 +100,9 @@ fn parse_options(options: Option<&serde_json::Value>) -> Option<HashMap<String, 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
 
-  fn ctx_with_options<'a>(options: serde_json::Value) -> (serde_json::Value, RuleContext<'a>) {
-    // We need to return owned value so the reference lives long enough.
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
-    (options, ctx)
-  }
+  use crate::testing::{ctx, ctx_with_options};
 
   fn at_rule_with_decls(name: &str, decls: Vec<(&str, &str)>) -> CssNode {
     let children = decls
@@ -137,8 +127,7 @@ mod tests {
   #[test]
   fn reports_missing_required_property() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
-    let (val, mut c) = ctx_with_options(opts);
-    c.options = Some(&val);
+    let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
     let d = AtRulePropertyRequiredList.check(&node, &c);
@@ -149,8 +138,7 @@ mod tests {
   #[test]
   fn allows_when_all_properties_present() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
-    let (val, mut c) = ctx_with_options(opts);
-    c.options = Some(&val);
+    let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls(
       "font-face",
@@ -163,8 +151,7 @@ mod tests {
   #[test]
   fn ignores_unmatched_at_rules() {
     let opts = serde_json::json!({ "font-face": ["font-family"] });
-    let (val, mut c) = ctx_with_options(opts);
-    c.options = Some(&val);
+    let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls("media", vec![]);
     let d = AtRulePropertyRequiredList.check(&node, &c);
@@ -173,13 +160,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = at_rule_with_decls("font-face", vec![]);
     let d = AtRulePropertyRequiredList.check(&node, &ctx);
     assert!(d.is_empty());

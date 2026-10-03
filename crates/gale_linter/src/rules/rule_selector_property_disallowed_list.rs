@@ -96,7 +96,9 @@ fn parse_options(options: Option<&serde_json::Value>) -> Option<Vec<PatternEntry
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+
+  use crate::testing::{ctx, ctx_with_options};
 
   fn style_with_selector_and_decl(sel: &str, prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -115,13 +117,7 @@ mod tests {
   #[test]
   fn reports_disallowed_property_with_regex_selector() {
     let opts = serde_json::json!({ "/^my-/": ["color", "background"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = style_with_selector_and_decl("my-component", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -131,13 +127,7 @@ mod tests {
   #[test]
   fn allows_non_matching_selector() {
     let opts = serde_json::json!({ "/^my-/": ["color"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = style_with_selector_and_decl(".other", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -146,13 +136,7 @@ mod tests {
   #[test]
   fn allows_non_disallowed_property() {
     let opts = serde_json::json!({ "/^my-/": ["color"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = style_with_selector_and_decl("my-component", "display", "block");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
     assert!(d.is_empty());
@@ -161,13 +145,7 @@ mod tests {
   #[test]
   fn supports_exact_selector_match() {
     let opts = serde_json::json!({ ".foo": ["margin"] });
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = style_with_selector_and_decl(".foo", "margin", "10px");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -176,13 +154,7 @@ mod tests {
 
   #[test]
   fn returns_empty_when_no_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = style_with_selector_and_decl(".foo", "color", "red");
     let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
     assert!(d.is_empty());

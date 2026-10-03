@@ -250,70 +250,52 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` as `syntax` with only this rule enabled, configured with
-  /// `options`.
-  fn lint_as(
-    css: &str,
-    syntax: Syntax,
-    options: serde_json::Value,
-  ) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "declaration-property-value-keyword-no-deprecated".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", syntax).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let diags = lint_as(&current, Syntax::Css, options.clone());
-      let (next, applied) = apply_fixes(&current, &diags);
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "declaration-property-value-keyword-no-deprecated";
 
   #[test]
   fn replaces_keywords_that_have_a_replacement() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("a { appearance: searchfield; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { appearance: searchfield; }",
+        Syntax::Css
+      ),
       "a { appearance: auto; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a { color: CoLoR(from InactiveCaptionText srgb r g b / 0.5); }",
-        on.clone()
+        Syntax::Css
       ),
       "a { color: CoLoR(from GrayText srgb r g b / 0.5); }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a { scrollbar-color: --foo(background, bar) menu; }",
-        on.clone()
+        Syntax::Css
       ),
       "a { scrollbar-color: --foo(background, bar) canvas; }"
     );
     assert_eq!(
-      fix("a { zOom: /*qux*/reset/*baz*/; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { zOom: /*qux*/reset/*baz*/; }",
+        Syntax::Css
+      ),
       "a { zOom: /*qux*/1/*baz*/; }"
     );
-    let warnings = lint_as("a { overflow: hidden overlay; }", Syntax::Css, on);
+    let warnings = lint(RULE, on, "a { overflow: hidden overlay; }", Syntax::Css);
     assert_eq!(warnings[0].message, "Expected \"overlay\" to be \"auto\"");
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (21, 7));
   }
@@ -321,10 +303,11 @@ mod tests {
   #[test]
   fn reports_keywords_without_a_replacement_unfixed() {
     let on = serde_json::json!(true);
-    let warnings = lint_as(
+    let warnings = lint(
+      RULE,
+      on.clone(),
       "a { text-decoration: foo blink bar; }",
       Syntax::Css,
-      on.clone(),
     );
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].fix.is_none());
@@ -333,13 +316,14 @@ mod tests {
       "a { color: --foo(background); }",
       "a { image-rendering: optimizeSpeed; }",
     ] {
-      assert!(lint_as(css, Syntax::Css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
     assert!(
-      lint_as(
+      lint(
+        RULE,
+        on,
         "$p: x; a { background-color: menu + $p; }",
-        Syntax::Scss,
-        on
+        Syntax::Scss
       )
       .is_empty()
     );
@@ -349,16 +333,25 @@ mod tests {
   fn ignore_keywords_matches_the_whole_value() {
     let options = serde_json::json!([true, { "ignoreKeywords": ["/intrinsic$/", "padding-box"] }]);
     assert!(
-      lint_as(
+      lint(
+        RULE,
+        options.clone(),
         "a { box-sizing: padding-box; }",
-        Syntax::Css,
-        options.clone()
+        Syntax::Css
       )
       .is_empty()
     );
-    assert!(lint_as("a { width: min-intrinsic; }", Syntax::Css, options.clone()).is_empty());
+    assert!(
+      lint(
+        RULE,
+        options.clone(),
+        "a { width: min-intrinsic; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
     assert_eq!(
-      lint_as("a { box-sizing: PADDING-BOX; }", Syntax::Css, options).len(),
+      lint(RULE, options, "a { box-sizing: PADDING-BOX; }", Syntax::Css).len(),
       1
     );
   }
@@ -367,7 +360,7 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     let css = "a { overflow: overlay; }";
-    assert_eq!(lint_as(css, Syntax::Css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

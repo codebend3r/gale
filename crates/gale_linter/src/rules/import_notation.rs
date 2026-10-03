@@ -117,7 +117,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::fix_testing::{fix, warnings};
+  use crate::testing::{fix, lint};
 
   const RULE: &str = "import-notation";
 
@@ -163,7 +163,7 @@ mod tests {
   #[test]
   fn reports_the_params_up_to_the_url() {
     let source = "@import url(foo.css) print;";
-    let diags = warnings(RULE, json!(["string"]), source, Syntax::Css);
+    let diags = lint(RULE, json!(["string"]), source, Syntax::Css);
     assert_eq!(diags.len(), 1);
     assert_eq!(
       &source[diags[0].span.offset..diags[0].span.end()],
@@ -180,6 +180,6 @@ mod tests {
     let options = json!(["string", { "disableFix": true }]);
     let source = "@import url(foo.css);";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
-    assert_eq!(warnings(RULE, options, source, Syntax::Css).len(), 1);
+    assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
   }
 }

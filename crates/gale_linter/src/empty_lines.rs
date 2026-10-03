@@ -132,37 +132,6 @@ pub fn empty_line_report(
     .fix(fix_empty_lines_before(tree, node, action))
 }
 
-/// Lint `source` with only `rule` enabled and apply its fixes the way
-/// `gale --fix` does, until the output stops changing.  For rule tests.
-#[cfg(test)]
-pub(crate) fn fix_with(
-  rule: &str,
-  options: serde_json::Value,
-  source: &str,
-  syntax: gale_css_parser::Syntax,
-) -> String {
-  use crate::{LintRunner, RuleRegistry};
-  let mut opts = std::collections::HashMap::new();
-  opts.insert(rule.to_string(), options);
-  let runner = LintRunner::with_options(RuleRegistry::default(), vec![rule.to_string()], opts);
-  let path = match syntax {
-    gale_css_parser::Syntax::Scss => "test.scss",
-    gale_css_parser::Syntax::Less => "test.less",
-    gale_css_parser::Syntax::Sass => "test.sass",
-    gale_css_parser::Syntax::Css => "test.css",
-  };
-  let mut current = source.to_string();
-  for _ in 0..10 {
-    let result = runner.lint_source(&current, path, syntax);
-    let (fixed, count) = gale_diagnostics::apply_fixes(&current, &result.diagnostics);
-    if count == 0 || fixed == current {
-      break;
-    }
-    current = fixed;
-  }
-  current
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;

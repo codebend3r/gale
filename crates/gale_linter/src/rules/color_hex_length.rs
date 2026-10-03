@@ -137,54 +137,33 @@ fn expand(hex: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "color-hex-length".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "color-hex-length";
 
   #[test]
   fn shortens_keeping_the_case_of_the_kept_digits() {
     let short = serde_json::json!("short");
     assert_eq!(
-      fix("a { color: #FFFFFF; }", short.clone()),
+      fix(RULE, short.clone(), "a { color: #FFFFFF; }", Syntax::Css),
       "a { color: #FFF; }"
     );
     assert_eq!(
-      fix("a { color: #FfaAFF; }", short.clone()),
+      fix(RULE, short.clone(), "a { color: #FfaAFF; }", Syntax::Css),
       "a { color: #FaF; }"
     );
     assert_eq!(
-      fix("a { something: #fff, #aba, #00ffAAaa; }", short.clone()),
+      fix(
+        RULE,
+        short.clone(),
+        "a { something: #fff, #aba, #00ffAAaa; }",
+        Syntax::Css
+      ),
       "a { something: #fff, #aba, #0fAa; }"
     );
-    let warnings = lint("a { color: #FFFFFF; }", short);
+    let warnings = lint(RULE, short, "a { color: #FFFFFF; }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].message, "Expected \"#FFFFFF\" to be \"#FFF\"");
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (11, 7));
@@ -194,10 +173,13 @@ mod tests {
   fn expands_keeping_the_case_of_each_digit() {
     let long = serde_json::json!("long");
     assert_eq!(
-      fix("a { color: #Ffa; }", long.clone()),
+      fix(RULE, long.clone(), "a { color: #Ffa; }", Syntax::Css),
       "a { color: #FFffaa; }"
     );
-    assert_eq!(fix("a { color: #0a0a; }", long), "a { color: #00aa00aa; }");
+    assert_eq!(
+      fix(RULE, long, "a { color: #0a0a; }", Syntax::Css),
+      "a { color: #00aa00aa; }"
+    );
   }
 
   #[test]
@@ -209,17 +191,31 @@ mod tests {
       "a { color: #ffffffa; }",
       "a { color: #f0f0f0 #fffa; }",
     ] {
-      assert!(lint(css, serde_json::json!("short")).is_empty(), "{css}");
+      assert!(
+        lint(RULE, serde_json::json!("short"), css, Syntax::Css).is_empty(),
+        "{css}"
+      );
     }
-    assert!(lint("a { b: url(x.svg#abc) }", serde_json::json!("long")).is_empty());
+    assert!(
+      lint(
+        RULE,
+        serde_json::json!("long"),
+        "a { b: url(x.svg#abc) }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
   }
 
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!(["short", { "disableFix": true }]);
-    assert_eq!(lint("a { color: #FFFFFF; }", options.clone()).len(), 1);
     assert_eq!(
-      fix("a { color: #FFFFFF; }", options),
+      lint(RULE, options.clone(), "a { color: #FFFFFF; }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, "a { color: #FFFFFF; }", Syntax::Css),
       "a { color: #FFFFFF; }"
     );
   }

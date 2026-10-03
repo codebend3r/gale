@@ -86,22 +86,9 @@ fn check_nested_selectors(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_pattern(pattern: &str) -> (serde_json::Value, RuleContext<'static>) {
-    // Leak the string so we get 'static lifetime for tests
-    let opts = serde_json::json!(pattern);
-    (
-      opts,
-      RuleContext {
-        file_path: "t.css",
-        source: "",
-        syntax: Syntax::Css,
-        options: None,
-        cache: None,
-      },
-    )
-  }
+  use crate::testing::{ctx, ctx_with_options, scss_ctx_with_options};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -115,13 +102,7 @@ mod tests {
   #[test]
   fn reports_nested_without_ampersand() {
     let opts = serde_json::json!("^&");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -142,13 +123,7 @@ mod tests {
   #[test]
   fn allows_nested_with_ampersand() {
     let opts = serde_json::json!("^&");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -168,13 +143,7 @@ mod tests {
   #[test]
   fn no_diagnostics_for_no_children() {
     let opts = serde_json::json!("^&");
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -187,13 +156,7 @@ mod tests {
 
   #[test]
   fn no_diagnostics_without_options() {
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -215,13 +178,7 @@ mod tests {
     // Pattern like patternfly uses: "^(?!.*&[-_])"
     // This pattern rejects selectors containing &- or &_
     let opts = serde_json::json!("^(?!.*&[-_])");
-    let ctx = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&opts),
-      cache: None,
-    };
+    let ctx = scss_ctx_with_options(&opts);
     // &__child should be rejected (contains &_)
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),

@@ -138,17 +138,9 @@ impl Rule for SyntaxStringNoInvalid {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn property_rule(syntax_value: &str) -> CssNode {
     CssNode::AtRule(AtRule {

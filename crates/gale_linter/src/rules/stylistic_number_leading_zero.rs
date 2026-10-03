@@ -119,23 +119,14 @@ impl Rule for StylisticNumberLeadingZero {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source_and_options;
 
   #[test]
   fn always_allows_leading_zero() {
     let opt = serde_json::json!("always");
     let source = "a { opacity: 0.5; }";
-    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -143,7 +134,7 @@ mod tests {
   fn always_reports_missing_leading_zero() {
     let opt = serde_json::json!("always");
     let source = "a { opacity: .5; }";
-    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a leading zero"));
   }
@@ -152,7 +143,7 @@ mod tests {
   fn never_reports_leading_zero() {
     let opt = serde_json::json!("never");
     let source = "a { opacity: 0.5; }";
-    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected leading zero"));
   }
@@ -161,7 +152,7 @@ mod tests {
   fn never_allows_bare_dot() {
     let opt = serde_json::json!("never");
     let source = "a { opacity: .5; }";
-    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -169,7 +160,7 @@ mod tests {
   fn does_not_flag_normal_decimals() {
     let opt = serde_json::json!("always");
     let source = "a { width: 1.5px; }";
-    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticNumberLeadingZero.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 }

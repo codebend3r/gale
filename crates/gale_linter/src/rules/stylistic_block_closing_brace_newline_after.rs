@@ -254,32 +254,13 @@ fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn allows_newline_after_brace() {
     let source = "a { color: red; }\nb { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx(source));
+    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -287,7 +268,8 @@ mod tests {
   fn reports_missing_newline_after_brace() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { color: red; } b { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockClosingBraceNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -296,7 +278,8 @@ mod tests {
   fn never_reports_newline_after_brace() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "a { color: red; }\nb { }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockClosingBraceNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline"));
   }
@@ -305,7 +288,8 @@ mod tests {
   fn allows_else_after_closing_brace() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@if $cond { color: red; } @else { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockClosingBraceNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     // The first } before @else should NOT be flagged
     assert!(
       d.is_empty(),
@@ -318,7 +302,8 @@ mod tests {
   fn allows_else_if_after_closing_brace() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@if $a { color: red; } @else if $b { color: blue; } @else { color: green; }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockClosingBraceNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag }} before @else if, got: {:?}",
@@ -331,7 +316,8 @@ mod tests {
     // SCSS pattern: `@function foo() { ... };` or map closings
     let opt = serde_json::Value::String("always".to_string());
     let source = "@function foo() {\n  @return 1;\n};\n";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_option(source, &opt));
+    let d = StylisticBlockClosingBraceNewlineAfter
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag }}; pattern, got: {:?}",

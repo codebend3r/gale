@@ -82,17 +82,9 @@ fn is_single_line_block(offset: usize, length: usize, source: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   fn style_with_decls(decls: Vec<(&str, &str)>, span_offset: usize, span_len: usize) -> CssNode {
     CssNode::Style(StyleRule {

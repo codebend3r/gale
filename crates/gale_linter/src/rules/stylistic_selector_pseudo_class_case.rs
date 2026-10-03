@@ -133,39 +133,20 @@ impl Rule for StylisticSelectorPseudoClassCase {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  fn ctx(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn ctx_with_option<'a>(source: &'a str, opt: &'a serde_json::Value) -> RuleContext<'a> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: Some(opt),
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn allows_lowercase_pseudo_class() {
     let source = "a:hover { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx(source));
+    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_uppercase_pseudo_class() {
     let source = "a:Hover { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx(source));
+    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("lowercase"));
   }
@@ -174,7 +155,8 @@ mod tests {
   fn allows_uppercase_with_upper_option() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a:HOVER { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d =
+      StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -182,7 +164,8 @@ mod tests {
   fn reports_lowercase_with_upper_option() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a:hover { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_option(source, &opt));
+    let d =
+      StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("uppercase"));
   }
@@ -190,14 +173,14 @@ mod tests {
   #[test]
   fn does_not_flag_pseudo_elements() {
     let source = "a::Before { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx(source));
+    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_comments() {
     let source = "/* a:Hover {} */ a:hover { }";
-    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx(source));
+    let d = StylisticSelectorPseudoClassCase.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 }

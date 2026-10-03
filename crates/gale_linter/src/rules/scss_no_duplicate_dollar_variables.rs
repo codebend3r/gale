@@ -76,27 +76,9 @@ fn collect_dollar_vars(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  fn scss_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    }
-  }
-
-  fn css_ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, scss_ctx};
 
   fn dollar_var(name: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -112,7 +94,7 @@ mod tests {
     let nodes = vec![dollar_var("$color"), dollar_var("$color")];
     assert!(
       ScssNoDuplicateDollarVariables
-        .check_root(&nodes, &css_ctx())
+        .check_root(&nodes, &ctx())
         .is_empty()
     );
   }

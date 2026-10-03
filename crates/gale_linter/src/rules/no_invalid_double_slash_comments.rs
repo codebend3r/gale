@@ -97,16 +97,12 @@ impl Rule for NoInvalidDoubleSlashComments {
 mod tests {
   use super::*;
 
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+
   #[test]
   fn reports_double_slash_comment_in_css() {
     let rule = NoInvalidDoubleSlashComments;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "a { color: red; } // bad comment",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("a { color: red; } // bad comment");
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected double-slash CSS comment");
@@ -115,13 +111,7 @@ mod tests {
   #[test]
   fn ignores_double_slash_in_scss() {
     let rule = NoInvalidDoubleSlashComments;
-    let context = RuleContext {
-      file_path: "test.scss",
-      source: "// this is fine in SCSS",
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let context = scss_ctx_with_source("// this is fine in SCSS");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
   }
@@ -129,13 +119,7 @@ mod tests {
   #[test]
   fn ignores_block_comments() {
     let rule = NoInvalidDoubleSlashComments;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "/* this is fine */ a { color: red; }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("/* this is fine */ a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
   }
@@ -143,13 +127,7 @@ mod tests {
   #[test]
   fn ignores_double_slash_inside_string() {
     let rule = NoInvalidDoubleSlashComments;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "a { content: \"//not-a-comment\"; }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("a { content: \"//not-a-comment\"; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
   }
@@ -157,13 +135,7 @@ mod tests {
   #[test]
   fn ignores_double_slash_inside_block_comment() {
     let rule = NoInvalidDoubleSlashComments;
-    let context = RuleContext {
-      file_path: "test.css",
-      source: "/* // inside block */ a { color: red; }",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let context = ctx_with_source("/* // inside block */ a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
   }

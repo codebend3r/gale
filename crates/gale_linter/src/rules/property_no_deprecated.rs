@@ -156,37 +156,11 @@ impl Rule for PropertyNoDeprecated {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "property-no-deprecated".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "property-no-deprecated";
 
   #[test]
   fn table_is_sorted_for_binary_search() {
@@ -201,21 +175,33 @@ mod tests {
   fn fixes_properties_with_a_replacement() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("a { page-break-before: always /* foo */; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { page-break-before: always /* foo */; }",
+        Syntax::Css
+      ),
       "a { break-before: page /* foo */; }"
     );
     assert_eq!(
       fix(
+        RULE,
+        on.clone(),
         "a {\n\t-moz-box-flex: revert;\n\t-moz-box-pack: start;\n}",
-        on.clone()
+        Syntax::Css
       ),
       "a {\n\tflex-grow: revert;\n\t-moz-box-pack: start;\n}"
     );
     assert_eq!(
-      fix("a { WORD-WRAP: break-word; }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { WORD-WRAP: break-word; }",
+        Syntax::Css
+      ),
       "a { overflow-wrap: break-word; }"
     );
-    let warnings = lint("a { grid-gap: 1px; }", on);
+    let warnings = lint(RULE, on, "a { grid-gap: 1px; }", Syntax::Css);
     assert_eq!(warnings[0].message, "Expected \"grid-gap\" to be \"gap\"");
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (4, 8));
   }
@@ -228,12 +214,20 @@ mod tests {
       "a { ime-mode: active; }",
       "a { -webkit-user-modify: read-only; }",
     ] {
-      let warnings = lint(css, on.clone());
+      let warnings = lint(RULE, on.clone(), css, Syntax::Css);
       assert_eq!(warnings.len(), 1, "{css}");
       assert!(warnings[0].fix.is_none(), "{css}");
     }
-    assert!(lint("a { -webkit-box-orient: vertical; }", on.clone()).is_empty());
-    assert!(lint("a { clip-path: rect(0 0 0 0); }", on).is_empty());
+    assert!(
+      lint(
+        RULE,
+        on.clone(),
+        "a { -webkit-box-orient: vertical; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
+    assert!(lint(RULE, on, "a { clip-path: rect(0 0 0 0); }", Syntax::Css).is_empty());
   }
 
   #[test]
@@ -241,13 +235,21 @@ mod tests {
     let options = serde_json::json!([true, { "ignoreProperties": ["/^grid-/", "word-wrap"] }]);
     assert!(
       lint(
+        RULE,
+        options.clone(),
         "a { grid-row-gap: 1px; word-wrap: break-word; }",
-        options.clone()
+        Syntax::Css
       )
       .is_empty()
     );
     assert_eq!(
-      lint("a { -webkit-user-modify: read-only; }", options).len(),
+      lint(
+        RULE,
+        options,
+        "a { -webkit-user-modify: read-only; }",
+        Syntax::Css
+      )
+      .len(),
       1
     );
   }
@@ -256,7 +258,7 @@ mod tests {
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
     let css = "a { grid-gap: 1px; }";
-    assert_eq!(lint(css, options.clone()).len(), 1);
-    assert_eq!(fix(css, options), css);
+    assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
+    assert_eq!(fix(RULE, options, css, Syntax::Css), css);
   }
 }

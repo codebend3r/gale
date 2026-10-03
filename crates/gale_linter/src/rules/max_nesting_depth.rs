@@ -258,17 +258,9 @@ fn check_style_depth(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_options, scss_ctx_with_options};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -318,13 +310,7 @@ mod tests {
     // When ignoreAtRules includes "mixin", ALL content inside @mixin
     // should be exempt from depth checking, even deeply nested rules.
     let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx_with_opts = scss_ctx_with_options(&options);
 
     // @mixin { .a { .b { .c { .d { .e {} } } } } }
     let e = StyleRule {
@@ -383,13 +369,7 @@ mod tests {
   fn ignore_at_rules_still_flags_outside() {
     // Content OUTSIDE ignored at-rules should still be checked.
     let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = RuleContext {
-      file_path: "t.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx_with_opts = scss_ctx_with_options(&options);
 
     // .top { .nested { color: red; } }  -- depth 1 exceeds max 0
     let nested = StyleRule {
@@ -418,13 +398,7 @@ mod tests {
   fn ignore_blockless_at_rules() {
     // With ignore: ["blockless-at-rules"], @media shouldn't count.
     let options: serde_json::Value = serde_json::json!([2, { "ignore": ["blockless-at-rules"] }]);
-    let ctx_with_opts = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx_with_opts = ctx_with_options(&options);
 
     // .a { .b { @media { .c {} } } }
     // Without ignore: depth of .c = 3 (exceeds 2)
@@ -474,13 +448,7 @@ mod tests {
   fn ignore_pseudo_classes() {
     // With ignore: ["pseudo-classes"], &:hover shouldn't count.
     let options: serde_json::Value = serde_json::json!([1, { "ignore": ["pseudo-classes"] }]);
-    let ctx_with_opts = RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: Some(&options),
-      cache: None,
-    };
+    let ctx_with_opts = ctx_with_options(&options);
 
     // .a { &:hover { .b {} } }
     // Without pseudo-classes ignore: .b depth = 2 (exceeds 1)

@@ -106,54 +106,43 @@ fn is_safe_background_size(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use std::collections::HashMap;
-
   use gale_css_parser::Syntax;
-  use gale_diagnostics::apply_fixes;
 
-  use crate::{LintRunner, RuleRegistry};
+  use crate::testing::{fix, lint};
 
-  /// Lint `css` with only this rule enabled, configured with `options`.
-  fn lint(css: &str, options: serde_json::Value) -> Vec<gale_diagnostics::Diagnostic> {
-    let rule = "property-no-vendor-prefix".to_string();
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec![rule.clone()],
-      HashMap::from([(rule, options)]),
-    );
-    runner.lint_source(css, "test.css", Syntax::Css).diagnostics
-  }
-
-  /// `css` after applying the rule's fixes until nothing changes, the way
-  /// `gale --fix` does.
-  fn fix(css: &str, options: serde_json::Value) -> String {
-    let mut current = css.to_string();
-    for _ in 0..10 {
-      let (next, applied) = apply_fixes(&current, &lint(&current, options.clone()));
-      if applied == 0 || next == current {
-        break;
-      }
-      current = next;
-    }
-    current
-  }
+  const RULE: &str = "property-no-vendor-prefix";
 
   #[test]
   fn strips_the_prefix_keeping_the_property_case() {
     let on = serde_json::json!(true);
     assert_eq!(
-      fix("a { -webkit-transform: scale(1); }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { -webkit-transform: scale(1); }",
+        Syntax::Css
+      ),
       "a { transform: scale(1); }"
     );
     assert_eq!(
-      fix("a { -wEbKiT-tRaNsFoRm: scale(1); }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { -wEbKiT-tRaNsFoRm: scale(1); }",
+        Syntax::Css
+      ),
       "a { tRaNsFoRm: scale(1); }"
     );
     assert_eq!(
-      fix("a { -WEBKIT-TRANSFORM: scale(1); }", on.clone()),
+      fix(
+        RULE,
+        on.clone(),
+        "a { -WEBKIT-TRANSFORM: scale(1); }",
+        Syntax::Css
+      ),
       "a { TRANSFORM: scale(1); }"
     );
-    let warnings = lint("a { -moz-columns: 2; }", on);
+    let warnings = lint(RULE, on, "a { -moz-columns: 2; }", Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert_eq!((warnings[0].span.offset, warnings[0].span.length), (4, 12));
   }
@@ -168,10 +157,15 @@ mod tests {
       "a { -webkit-background-size: 1px; }",
       "a { -webkit-background-size: 1px   2px ,   1px; }",
     ] {
-      assert!(lint(css, on.clone()).is_empty(), "{css}");
+      assert!(lint(RULE, on.clone(), css, Syntax::Css).is_empty(), "{css}");
     }
     assert_eq!(
-      fix("a { -webkit-background-size: 1px 2px, 2px 1px; }", on),
+      fix(
+        RULE,
+        on,
+        "a { -webkit-background-size: 1px 2px, 2px 1px; }",
+        Syntax::Css
+      ),
       "a { background-size: 1px 2px, 2px 1px; }"
     );
   }
@@ -181,10 +175,31 @@ mod tests {
     let options = serde_json::json!([true, {
       "ignoreProperties": ["-webkit-transform", "/^-webkit-animation-/i"]
     }]);
-    assert!(lint("a { -webkit-transform: none; }", options.clone()).is_empty());
-    assert!(lint("a { -webkit-ANIMATION-DeLaY: 0.5s; }", options.clone()).is_empty());
+    assert!(
+      lint(
+        RULE,
+        options.clone(),
+        "a { -webkit-transform: none; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
+    assert!(
+      lint(
+        RULE,
+        options.clone(),
+        "a { -webkit-ANIMATION-DeLaY: 0.5s; }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
     assert_eq!(
-      fix("a { -WEBKIT-tranSFoRM: translateY(-50%); }", options),
+      fix(
+        RULE,
+        options,
+        "a { -WEBKIT-tranSFoRM: translateY(-50%); }",
+        Syntax::Css
+      ),
       "a { tranSFoRM: translateY(-50%); }"
     );
   }
@@ -192,7 +207,13 @@ mod tests {
   #[test]
   fn disable_fix_keeps_the_warning_but_not_the_fix() {
     let options = serde_json::json!([true, { "disableFix": true }]);
-    assert_eq!(lint("a { -o-columns: 2; }", options.clone()).len(), 1);
-    assert_eq!(fix("a { -o-columns: 2; }", options), "a { -o-columns: 2; }");
+    assert_eq!(
+      lint(RULE, options.clone(), "a { -o-columns: 2; }", Syntax::Css).len(),
+      1
+    );
+    assert_eq!(
+      fix(RULE, options, "a { -o-columns: 2; }", Syntax::Css),
+      "a { -o-columns: 2; }"
+    );
   }
 }

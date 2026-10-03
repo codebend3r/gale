@@ -175,17 +175,9 @@ impl Rule for SelectorAnbNoUnmatchable {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {

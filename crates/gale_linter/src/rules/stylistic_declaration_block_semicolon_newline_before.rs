@@ -80,17 +80,9 @@ impl Rule for StylisticDeclarationBlockSemicolonNewlineBefore {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn ctx_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx_with_source;
 
   #[test]
   fn allows_no_newline_before_semicolon() {

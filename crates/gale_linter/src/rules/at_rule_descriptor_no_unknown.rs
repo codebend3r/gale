@@ -108,17 +108,9 @@ impl Rule for AtRuleDescriptorNoUnknown {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::ctx;
 
   fn font_face_node(descriptors: &[(&str, &str)]) -> CssNode {
     CssNode::AtRule(AtRule {

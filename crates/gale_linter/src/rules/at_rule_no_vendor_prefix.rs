@@ -87,17 +87,9 @@ impl Rule for AtRuleNoVendorPrefix {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule as CssAtRule, Span as ParserSpan};
 
-  fn ctx() -> RuleContext<'static> {
-    RuleContext {
-      file_path: "t.css",
-      source: "",
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx, ctx_with_source};
 
   fn at_rule(name: &str) -> CssNode {
     CssNode::AtRule(CssAtRule {
@@ -132,13 +124,7 @@ mod tests {
   #[test]
   fn emits_fix_for_vendor_prefixed_at_rule() {
     let source = "@-webkit-keyframes fade { }";
-    let ctx = RuleContext {
-      file_path: "t.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    };
+    let ctx = ctx_with_source(source);
     let node = CssNode::AtRule(CssAtRule {
       name: "-webkit-keyframes".to_string(),
       params: "fade".to_string(),

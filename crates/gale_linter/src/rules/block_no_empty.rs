@@ -274,17 +274,9 @@ fn is_covering_disable(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  fn make_context_with_source(source: &str) -> RuleContext<'_> {
-    RuleContext {
-      file_path: "test.css",
-      source,
-      syntax: Syntax::Css,
-      options: None,
-      cache: None,
-    }
-  }
+  use crate::testing::{ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_empty_style_rule() {
@@ -296,7 +288,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = make_context_with_source(source);
+    let ctx = ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected empty block");
@@ -319,7 +311,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = make_context_with_source(source);
+    let ctx = ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
   }
@@ -334,7 +326,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = make_context_with_source(source);
+    let ctx = ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
   }
@@ -349,7 +341,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = make_context_with_source(source);
+    let ctx = ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
   }
@@ -364,13 +356,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
   }
@@ -385,13 +371,7 @@ mod tests {
       span: ParserSpan::new(0, source.len()),
       ..Default::default()
     });
-    let ctx = RuleContext {
-      file_path: "test.scss",
-      source,
-      syntax: Syntax::Scss,
-      options: None,
-      cache: None,
-    };
+    let ctx = scss_ctx_with_source(source);
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);
   }
@@ -404,7 +384,7 @@ mod tests {
       span: ParserSpan::new(0, 8),
       is_line: false,
     });
-    let ctx = make_context_with_source("/* hi */");
+    let ctx = ctx_with_source("/* hi */");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
   }
