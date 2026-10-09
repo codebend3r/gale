@@ -276,6 +276,8 @@ pub mod scss_dollar_variable_pattern;
 pub mod scss_double_slash_comment_empty_line_before;
 pub mod scss_double_slash_comment_inline;
 pub mod scss_double_slash_comment_whitespace_inside;
+pub mod scss_function_color_channel;
+pub mod scss_function_color_relative;
 pub mod scss_function_disallowed_list;
 pub mod scss_function_no_unknown;
 pub mod scss_function_quote_no_quoted_strings_inside;
@@ -610,6 +612,8 @@ rules! {
   scss_dollar_variable_no_namespaced_assignment::ScssDollarVariableNoNamespacedAssignment,
   scss_dollar_variable_pattern::ScssDollarVariablePattern,
   scss_double_slash_comment_whitespace_inside::ScssDoubleSlashCommentWhitespaceInside,
+  scss_function_color_channel::ScssFunctionColorChannel,
+  scss_function_color_relative::ScssFunctionColorRelative,
   scss_function_no_unknown::ScssFunctionNoUnknown,
   scss_function_quote_no_quoted_strings_inside::ScssFunctionQuoteNoQuotedStringsInside [RecommendedScss],
   scss_function_unquote_no_unquoted_strings_inside::ScssFunctionUnquoteNoUnquotedStringsInside [RecommendedScss],
