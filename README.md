@@ -273,7 +273,14 @@ Gale includes built-in `plugin/*` meta-rules that cover the most common custom p
 
 ### Gale's own rules
 
-Rules in the `gale/` namespace check things Stylelint and its plugins have no rule for. Enable them like any other rule; a Stylelint run on the same config skips them as unknown.
+Rules in the `gale/` namespace check things Stylelint and its plugins have no rule for. Stylelint reports them as unknown rules and cannot resolve the `gale:*` presets, so if anything else still runs Stylelint on your project, keep your Stylelint config as it is and put Gale's own settings in a `gale.json` that extends it. Gale reads `gale.json` before any Stylelint config file, and Stylelint never reads it:
+
+```json
+{
+  "extends": ["./.stylelintrc.json", "gale:sass3"],
+  "rules": { "gale/scss-no-import": true }
+}
+```
 
 | Rule | Description |
 |------|-------------|
@@ -384,7 +391,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 |--------|-------------|
 | `gale:recommended` | Sensible defaults (29 rules: 15 error + 14 warning) |
 | `gale:strict` | `gale:recommended` plus guardrails for agent-written CSS, all errors: colours and spacing from variables, no `!important`, no ID selectors, nesting at most 3 deep. See [Using Gale with coding agents](docs/agents.md) |
-| `gale:sass3` | Dart Sass 3 readiness, all errors: `gale/scss-no-import`, `scss/no-global-function-names` (fixable in Gale), `scss/function-color-channel`, `scss/function-color-relative`, `scss/no-duplicate-load-rules`, `scss/dollar-variable-no-namespaced-assignment`. Add it next to your SCSS config: `"extends": ["stylelint-config-standard-scss", "gale:sass3"]` |
+| `gale:sass3` | Dart Sass 3 readiness, all errors: `gale/scss-no-import`, `scss/no-global-function-names` (fixable in Gale), `scss/function-color-channel`, `scss/function-color-relative`, `scss/no-duplicate-load-rules`, `scss/dollar-variable-no-namespaced-assignment`. Add it to `extends` next to your SCSS config, in a `gale.json` if Stylelint also reads that config (see [Gale's own rules](#gales-own-rules)) |
 | `gale:all` | Every one of the 278 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
 
 Gale also has built-in equivalents for `stylelint-config-recommended`,
