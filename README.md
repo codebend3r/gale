@@ -479,8 +479,8 @@ steps for adding a rule.
 
 - Rust 1.85+ (2024 edition)
 - Python 3 (for differential tests)
-- Node.js 20+ (for the npm package and the API tests; `.nvmrc` pins 26, and CI tests 20, 22, 24 and 26)
-- [Bun](https://bun.sh) (runs the repo scripts and the feature test suite)
+- Node.js 20, 22, 24 or 26, all four tested in CI; the default is 24.21.0, set in `.nvmrc` and `package.json` `devEngines`
+- [Bun](https://bun.sh) 1.4.2, pinned in `package.json` `packageManager` (runs the repo scripts and the feature test suite)
 
 Install the JavaScript dev dependencies once:
 

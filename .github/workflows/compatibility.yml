@@ -36,6 +36,8 @@ jobs:
           save-if: false
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Build gale
         run: bun run build:release
@@ -93,6 +95,8 @@ jobs:
           node-version-file: .nvmrc
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Install corepack
         # The harness runs `corepack enable` so repos pinned to a yarn or pnpm
@@ -138,6 +142,8 @@ jobs:
         run: chmod +x target/release/gale
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Install hyperfine
         # Without it benchmark-quick.sh silently degrades to `time`, whose output

@@ -10,5 +10,5 @@ gale_css_parser = { workspace = true }
 gale_diagnostics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-regex = "1"
-fancy-regex = "0.14"
+regex = "1.13.1"
+fancy-regex = "0.19.2"
