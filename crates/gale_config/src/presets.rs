@@ -104,8 +104,8 @@ const VARIABLE_PATTERNS: &[&str] = &["/var\\(/", "/\\$/", "/@/"];
 /// The rules `gale:strict` adds to `gale:recommended`, with their options.
 ///
 /// They are the rules teams set up to keep AI-written CSS in line: colours
-/// and spacing from variables, no `!important`, no ID selectors and shallow
-/// nesting.  `gale:strict` runs every one of them at error severity, so a
+/// and spacing from variables, no `!important`, no ID selectors, shallow
+/// nesting, and no declarations that do nothing.  `gale:strict` runs every one of them at error severity, so a
 /// violation fails the run and reaches the agent that wrote it.
 fn strict_rules() -> Vec<(&'static str, Option<serde_json::Value>)> {
   let with_variables = |extra: &[&str]| -> Vec<String> {
@@ -132,6 +132,7 @@ fn strict_rules() -> Vec<(&'static str, Option<serde_json::Value>)> {
     ("selector-max-id", Some(serde_json::json!(0))),
     ("max-nesting-depth", Some(serde_json::json!(3))),
     ("color-named", Some(serde_json::json!("never"))),
+    ("gale/no-ineffective-declarations", None),
     (
       "plugin/enforce-variable-for-property",
       Some(serde_json::json!({ "properties": properties })),
