@@ -35,46 +35,46 @@ function text(property: string, cause: string): string {
 }
 
 describe("reports", () => {
-  test.failing("flex and grid container properties on a block that is neither", () => {
+  test("flex and grid container properties on a block that is neither", () => {
     expect(lint("a {\n  display: block;\n  justify-content: center;\n  grid-template-columns: 1fr 1fr;\n}\n")).toEqual([
       { line: 3, column: 3, text: text("justify-content", "display: block") },
       { line: 4, column: 3, text: text("grid-template-columns", "display: block") },
     ]);
   });
 
-  test.failing("gap on an inline box that is not a multi-column container", () => {
+  test("gap on an inline box that is not a multi-column container", () => {
     expect(lint("a { display: inline; gap: 1rem; }\n")).toEqual([
       { line: 1, column: 22, text: text("gap", "display: inline") },
     ]);
   });
 
-  test.failing("offsets on a statically positioned box", () => {
+  test("offsets on a statically positioned box", () => {
     expect(lint("a {\n  position: static;\n  top: 0;\n  inset-inline-start: 1rem;\n}\n")).toEqual([
       { line: 3, column: 3, text: text("top", "position: static") },
       { line: 4, column: 3, text: text("inset-inline-start", "position: static") },
     ]);
   });
 
-  test.failing("float on an absolutely or fixed positioned box", () => {
+  test("float on an absolutely or fixed positioned box", () => {
     expect(lint("a { position: absolute; float: left; }\nb { position: fixed; float: right; }\n")).toEqual([
       { line: 1, column: 25, text: text("float", "position: absolute") },
       { line: 2, column: 22, text: text("float", "position: fixed") },
     ]);
   });
 
-  test.failing("vertical-align on a block-level box", () => {
+  test("vertical-align on a block-level box", () => {
     expect(lint("a { display: flex; vertical-align: middle; }\n")).toEqual([
       { line: 1, column: 20, text: text("vertical-align", "display: flex") },
     ]);
   });
 
-  test.failing("table-layout on a box that is not a table", () => {
+  test("table-layout on a box that is not a table", () => {
     expect(lint("a { display: grid; table-layout: fixed; }\n")).toEqual([
       { line: 1, column: 20, text: text("table-layout", "display: grid") },
     ]);
   });
 
-  test.failing("the same problems in SCSS", () => {
+  test("the same problems in SCSS", () => {
     expect(lint("a {\n  display: block;\n  justify-content: center;\n}\n", "a.scss")).toEqual([
       { line: 3, column: 3, text: text("justify-content", "display: block") },
     ]);
@@ -113,7 +113,7 @@ describe("leaves alone", () => {
 });
 
 describe("gale:strict", () => {
-  test.failing("turns the rule on", () => {
+  test("turns the rule on", () => {
     const project = makeProject({
       ".stylelintrc.json": JSON.stringify({ extends: "gale:strict" }),
       "a.css": "a { display: block; justify-content: center; }\n",
