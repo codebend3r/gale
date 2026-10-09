@@ -72,6 +72,7 @@ pub mod function_url_no_scheme_relative;
 pub mod function_url_quotes;
 pub mod function_url_scheme_allowed_list;
 pub mod function_url_scheme_disallowed_list;
+pub mod gale_scss_no_import;
 pub mod hue_degree_notation;
 pub mod import_notation;
 pub mod keyframe_block_no_duplicate_selectors;
@@ -408,6 +409,7 @@ rules! {
   function_url_quotes::FunctionUrlQuotes [GaleWarning, Standard],
   function_url_scheme_allowed_list::FunctionUrlSchemeAllowedList,
   function_url_scheme_disallowed_list::FunctionUrlSchemeDisallowedList,
+  gale_scss_no_import::GaleScssNoImport,
   hue_degree_notation::HueDegreeNotation [Standard],
   import_notation::ImportNotation [Standard],
   keyframe_block_no_duplicate_selectors::KeyframeBlockNoDuplicateSelectors [GaleError, Recommended],
