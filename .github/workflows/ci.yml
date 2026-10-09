@@ -53,6 +53,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -95,6 +97,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Build gale
         run: bun run build:release
@@ -118,6 +122,8 @@ jobs:
           node-version-file: .nvmrc
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -146,8 +152,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every supported Node major: the oldest we accept via engines.node
-        # through the version pinned in .nvmrc.
+        # Every supported Node major. The other jobs run on the repo default
+        # in .nvmrc; .claude/skills/onboard/check.sh reads this list.
         node: [20, 22, 24, 26]
     steps:
       - uses: actions/checkout@v7

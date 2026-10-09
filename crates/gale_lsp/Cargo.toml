@@ -10,7 +10,7 @@ gale_linter = { workspace = true }
 gale_config = { workspace = true }
 gale_css_parser = { workspace = true }
 gale_diagnostics = { workspace = true }
-tower-lsp = "0.20"
-tokio = { version = "1", features = ["full"] }
+tower-lsp = "0.20.0"
+tokio = { version = "1.53.2", features = ["full"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }

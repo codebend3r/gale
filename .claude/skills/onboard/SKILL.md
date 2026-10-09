@@ -40,8 +40,8 @@ Work through every id the doctor printed. Do not stop at the first one.
 | `component-rustfmt` | `rustup component add rustfmt` |
 | `component-clippy` | `rustup component add clippy` |
 | `target-<triple>` | `rustup target add <triple>` |
-| `node`, `node-version` | Install Node >= 20 (`package.json` `engines`). This repo's user runs fnm: `fnm install --lts && fnm use --lts` |
-| `bun` | `curl -fsSL https://bun.sh/install \| bash` |
+| `node`, `node-version` | Install a supported Node major (20, 22, 24 or 26, the CI matrix); the repo default is the version in `.nvmrc`. This repo's user runs fnm: `fnm install && fnm use` (both read `.nvmrc`) |
+| `bun`, `bun-version` | Install the version pinned in `package.json` `packageManager`: `curl -fsSL https://bun.sh/install \| bash -s bun-v<version>` |
 | `node_modules` | `bun install` |
 | `cross` | `cargo install cross` |
 | `docker`, `docker-daemon` | Install and start Docker Desktop. Only `build:all`'s two Linux targets need it. |

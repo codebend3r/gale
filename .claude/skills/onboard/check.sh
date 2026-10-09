@@ -34,16 +34,32 @@ head2 "JavaScript toolchain"
 
 if command -v node &>/dev/null; then
   node_ver="$(node --version)"
-  if node -e 'process.exit(parseInt(process.versions.node.split(".")[0],10) >= 20 ? 0 : 1)'; then
+  node_default="$(tr -d '[:space:]' < "$ROOT/.nvmrc")"
+  # The supported majors are the ones CI's npm-package matrix tests.
+  node_supported="$(sed -n 's/^ *node: \[\(.*\)\]$/\1/p' "$ROOT/.github/workflows/ci.yml" | tr -d ' ')"
+  node_major="$(node -p 'process.versions.node.split(".")[0]')"
+  if [[ "$node_ver" == "v$node_default" ]]; then
     ok "node" "$node_ver"
+  elif [[ ",$node_supported," == *",$node_major,"* ]]; then
+    ok "node" "$node_ver (supported; the repo default in .nvmrc is $node_default)"
   else
-    fail "node-version" "$node_ver, package.json engines wants >=20"
+    fail "node-version" "$node_ver, supported majors are ${node_supported//,/, }"
   fi
 else
   fail "node" "not installed"
 fi
 
-command -v bun  &>/dev/null && ok "bun"  "$(bun --version)"        || fail "bun" "not installed"
+if command -v bun &>/dev/null; then
+  bun_ver="$(bun --version)"
+  bun_want="$(sed -n 's/.*"packageManager": *"bun@\([^"]*\)".*/\1/p' "$ROOT/package.json")"
+  if [[ "$bun_ver" == "$bun_want" ]]; then
+    ok "bun" "$bun_ver"
+  else
+    fail "bun-version" "$bun_ver, package.json packageManager pins $bun_want"
+  fi
+else
+  fail "bun" "not installed"
+fi
 command -v npm  &>/dev/null && ok "npm"  "v$(npm --version)"       || fail "npm" "not installed"
 command -v git  &>/dev/null && ok "git"  "$(git --version | awk '{print $3}')" || fail "git" "not installed"
 

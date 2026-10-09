@@ -215,7 +215,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # Node 26 ships npm 11, which trusted publishing needs (11.5.1+).
+          # Node 24.21.0 ships npm 11.19.0; trusted publishing needs 11.5.1+.
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
 

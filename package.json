@@ -41,6 +41,14 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "warn"
+    }
+  },
+  "packageManager": "bun@1.4.2",
   "scripts": {
     "build": "bash scripts/build-npm.sh",
     "build:all": "bash scripts/build-npm.sh --all",
@@ -57,7 +65,7 @@
     "test:rust": "cargo test -q --workspace --lib --bins --tests"
   },
   "devDependencies": {
-    "lefthook": "2.1.14"
+    "lefthook": "2.2.1"
   },
   "trustedDependencies": [
     "lefthook"

@@ -22,7 +22,7 @@ tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 gale_lsp = { workspace = true }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.53.2", features = ["full"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
