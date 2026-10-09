@@ -139,9 +139,9 @@ For a row-by-row comparison of every feature in Gale and Stylelint, see the
 next, and the research behind them, see
 [feature research](docs/feature-research.md).
 
-### 278 built-in rules
+### 279 built-in rules
 
-Gale registers 278 rules across these namespaces:
+Gale registers 279 rules across these namespaces:
 
 | Namespace | Count | Examples |
 |-----------|------:|---------|
@@ -150,7 +150,7 @@ Gale registers 278 rules across these namespaces:
 | `scss/*` | 51 | `scss/at-rule-no-unknown`, `scss/no-duplicate-mixins`, `scss/dollar-variable-pattern` |
 | `plugin/*` | 5 | `plugin/enforce-variable-for-property`, `plugin/browser-compat` |
 | `order/*` | 3 | `order/order`, `order/properties-order`, `order/properties-alphabetical-order` |
-| `gale/*` | 1 | `gale/scss-no-import` |
+| `gale/*` | 2 | `gale/no-ineffective-declarations`, `gale/scss-no-import` |
 | Vendor plugins | 3 | `csstools/value-no-unknown-custom-properties`, `material/no-prefixes`, `spectrum-tools/no-unknown-custom-properties` |
 
 SCSS, stylistic, order, and plugin rules are built in -- no extra plugins required. `gale/*` rules are Gale's own and have no Stylelint equivalent; see [Gale's own rules](#gales-own-rules).
@@ -284,6 +284,7 @@ Rules in the `gale/` namespace check things Stylelint and its plugins have no ru
 
 | Rule | Description |
 |------|-------------|
+| `gale/no-ineffective-declarations` | Report a declaration that another declaration in the same block switches off, such as `justify-content` next to `display: block` or `top` with `position: static`. Only what the block itself proves is reported |
 | `gale/scss-no-import` | Report a Sass `@import`, which Dart Sass 3 removes; imports Sass keeps as plain CSS (`.css` and `http(s)` URLs, `url()`, media queries) are allowed |
 
 ### Programmatic API
@@ -318,7 +319,7 @@ const { lint } = require('@codebend3r/gale');
 
 ### Not yet supported
 
-- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 278 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
+- **Arbitrary JavaScript plugins.** Gale cannot execute JS plugins, but its 279 built-in rules and the `plugin/*` meta-rules cover the vast majority of real-world configs. See [Declarative plugin rules](#declarative-plugin-rules) above.
 - **Dynamic JavaScript configs.** See the config compatibility note above.
 - **Autofix in `.sass` files.** `.sass` sources are converted to SCSS before parsing. Problems are mapped back to their line and column in the `.sass` file, but fixes are computed against the converted SCSS, so `--fix` leaves `.sass` files unchanged.
 - **Markdown and CSS-in-JS sources.** Such files that your patterns match, and files under a `customSyntax` Gale cannot parse, are skipped with a warning naming them. They still count as input, so matching only such files is not an error. Vue, Svelte, Astro and HTML files are supported: see [Supported file types](#supported-file-types).
@@ -390,9 +391,9 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | Preset | Description |
 |--------|-------------|
 | `gale:recommended` | Sensible defaults (29 rules: 15 error + 14 warning) |
-| `gale:strict` | `gale:recommended` plus guardrails for agent-written CSS, all errors: colours and spacing from variables, no `!important`, no ID selectors, nesting at most 3 deep. See [Using Gale with coding agents](docs/agents.md) |
+| `gale:strict` | `gale:recommended` plus guardrails for agent-written CSS, all errors: colours and spacing from variables, no `!important`, no ID selectors, nesting at most 3 deep, no declarations that do nothing. See [Using Gale with coding agents](docs/agents.md) |
 | `gale:sass3` | Dart Sass 3 readiness, all errors: `gale/scss-no-import`, `scss/no-global-function-names` (fixable in Gale), `scss/function-color-channel`, `scss/function-color-relative`, `scss/no-duplicate-load-rules`, `scss/dollar-variable-no-namespaced-assignment`. Add it to `extends` next to your SCSS config, in a `gale.json` if Stylelint also reads that config (see [Gale's own rules](#gales-own-rules)) |
-| `gale:all` | Every one of the 278 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
+| `gale:all` | Every one of the 279 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
 
 Gale also has built-in equivalents for `stylelint-config-recommended`,
 `stylelint-config-standard`, `stylelint-config-recommended-scss`, and
@@ -639,7 +640,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
   |
   +-- gale_config       Config loading, resolution, presets
   |     +-- gale_linter        Its rule table, which gale:all and the presets come from
-  +-- gale_linter       Rule trait, registry, runner, 278 built-in rules
+  +-- gale_linter       Rule trait, registry, runner, 279 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types
   +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix, agent)
