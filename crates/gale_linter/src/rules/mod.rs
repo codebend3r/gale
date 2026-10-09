@@ -718,7 +718,7 @@ mod tests {
         match name.split_once('/') {
           None => namespace.is_empty(),
           Some((prefix, _)) => match prefix {
-            "@stylistic" | "scss" | "plugin" | "order" => prefix == namespace,
+            "@stylistic" | "scss" | "plugin" | "order" | "gale" => prefix == namespace,
             _ => namespace == "vendor",
           },
         }
@@ -755,6 +755,7 @@ mod tests {
       ("| `scss/*` |", count("scss")),
       ("| `plugin/*` |", count("plugin")),
       ("| `order/*` |", count("order")),
+      ("| `gale/*` |", count("gale")),
       ("| Vendor plugins |", count("vendor")),
     ];
     assert_eq!(namespaces.iter().map(|(_, n)| n).sum::<usize>(), total);
