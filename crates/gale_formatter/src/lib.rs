@@ -418,6 +418,95 @@ impl Formatter for UnixFormatter {
 }
 
 // ---------------------------------------------------------------------------
+// AgentFormatter
+// ---------------------------------------------------------------------------
+
+/// Gale's own formatter for coding agents that run the linter after an edit
+/// and act on what it prints.  Not a Stylelint formatter.
+///
+/// One compiler-style line per problem, with the path relative to the
+/// working directory, the rule, and whether `gale --fix` can fix it; then a
+/// one-line summary.  A clean run prints nothing, so silence means success.
+///
+/// ```text
+/// src/app.css:1:12: error: Expected "#ffffff" to be "#fff" [color-hex-length, fixable]
+/// src/app.css:2:3: warning: Unexpected empty block [block-no-empty]
+/// 2 problems (1 error, 1 warning), 1 fixable with `gale --fix`
+/// ```
+pub struct AgentFormatter;
+
+impl Formatter for AgentFormatter {
+  /// Lists invalid options, then one line per problem, then the summary.
+  fn format(&self, results: &[LintResult]) -> String {
+    let mut output = String::new();
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    let mut seen: Vec<&str> = Vec::new();
+    for text in results.iter().flat_map(|r| &r.invalid_option_warnings) {
+      if !seen.contains(&text.as_str()) {
+        seen.push(text);
+        output.push_str(&format!("error: Invalid Option: {text}\n"));
+      }
+    }
+
+    let (mut errors, mut warnings, mut fixable) = (0usize, 0usize, 0usize);
+    for result in results {
+      if result.diagnostics.is_empty() {
+        continue;
+      }
+      let path = display_path(&result.file_path, &cwd);
+      let line_index = SourceLineIndex::build(&result.source);
+      for diag in &result.diagnostics {
+        let (line, col) = line_index.offset_to_location(diag.span.offset);
+        let severity = match diag.severity {
+          Severity::Error => {
+            errors += 1;
+            "error"
+          }
+          Severity::Warning | Severity::Info | Severity::Hint => {
+            warnings += 1;
+            "warning"
+          }
+        };
+        let tag = if diag.fix.is_some() {
+          fixable += 1;
+          format!("{}, fixable", diag.rule_name)
+        } else {
+          diag.rule_name.clone()
+        };
+        output.push_str(&format!(
+          "{path}:{line}:{col}: {severity}: {} [{tag}]\n",
+          diag.message
+        ));
+      }
+    }
+
+    let total = errors + warnings;
+    if total > 0 {
+      let plural = |n: usize, word: &str| {
+        if n == 1 {
+          format!("{n} {word}")
+        } else {
+          format!("{n} {word}s")
+        }
+      };
+      output.push_str(&format!(
+        "{} ({}, {})",
+        plural(total, "problem"),
+        plural(errors, "error"),
+        plural(warnings, "warning")
+      ));
+      if fixable > 0 {
+        output.push_str(&format!(", {fixable} fixable with `gale --fix`"));
+      }
+      output.push('\n');
+    }
+
+    output
+  }
+}
+
+// ---------------------------------------------------------------------------
 // TapFormatter
 // ---------------------------------------------------------------------------
 
@@ -568,7 +657,7 @@ pub fn strip_ansi(input: &str) -> String {
 
 /// Every formatter name `--formatter` accepts.
 pub const FORMATTER_NAMES: &[&str] = &[
-  "text", "string", "json", "compact", "verbose", "tap", "unix",
+  "text", "string", "json", "compact", "verbose", "tap", "unix", "agent",
 ];
 
 /// Create a formatter by name, with colour on for the human-readable ones.
@@ -588,6 +677,7 @@ pub fn create_formatter_with_color(format_type: &str, color: bool) -> Box<dyn Fo
     "json" => Box::new(JsonFormatter),
     "compact" => Box::new(CompactFormatter),
     "unix" => Box::new(UnixFormatter),
+    "agent" => Box::new(AgentFormatter),
     "tap" => Box::new(TapFormatter),
     "verbose" => Box::new(VerboseFormatter { color }),
     _ => Box::new(TextFormatter { color }),
@@ -892,6 +982,46 @@ mod tests {
       "unexpected unix output: {output}"
     );
     assert!(output.contains("1 problem"), "missing summary: {output}");
+  }
+
+  #[test]
+  fn agent_formatter_marks_fixable_problems_and_sums_up() {
+    use gale_diagnostics::{Edit, Fix};
+
+    let source = "a { color: #ffffff; }\nb {}\n";
+    let hex = Diagnostic::new("color-hex-length", "Expected \"#ffffff\" to be \"#fff\"")
+      .severity(Severity::Error)
+      .span(Span::new(11, 7))
+      .fix(Fix::new(
+        "Shorten the hex colour",
+        vec![Edit::new(Span::new(11, 7), "#fff")],
+      ));
+    let empty = Diagnostic::new("block-no-empty", "Unexpected empty block")
+      .severity(Severity::Warning)
+      .span(Span::new(24, 2));
+    let results = vec![LintResult::new("a.css", source, vec![hex, empty])];
+
+    assert_eq!(
+      AgentFormatter.format(&results),
+      "a.css:1:12: error: Expected \"#ffffff\" to be \"#fff\" [color-hex-length, fixable]\n\
+       a.css:2:3: warning: Unexpected empty block [block-no-empty]\n\
+       2 problems (1 error, 1 warning), 1 fixable with `gale --fix`\n"
+    );
+  }
+
+  #[test]
+  fn agent_formatter_prints_nothing_for_a_clean_run() {
+    let results = vec![LintResult::new("a.css", "a { color: red; }\n", vec![])];
+    assert_eq!(AgentFormatter.format(&results), "");
+  }
+
+  #[test]
+  fn agent_formatter_leaves_out_the_fixable_clause_when_nothing_is_fixable() {
+    let output = AgentFormatter.format(&sample_results());
+    assert!(
+      output.ends_with("1 problem (0 errors, 1 warning)\n"),
+      "{output}"
+    );
   }
 
   #[test]
