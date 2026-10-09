@@ -43,17 +43,23 @@ every `margin-*` and `padding-*` property, `gap`, `row-gap` and `column-gap`.
 Custom property definitions (`--brand: #0af`) are never checked, so tokens
 can be defined anywhere.
 
-Add it to an existing config the way you would any shared config. Later
-entries in `extends` win, and your own `rules` win over both:
+Stylelint cannot resolve `gale:strict`, so if anything else still runs
+Stylelint on your project (an editor extension, another CI job), keep your
+Stylelint config as it is and add a `gale.json` next to it that extends it.
+Gale reads `gale.json` before any Stylelint config file, and Stylelint never
+reads it. Later entries in `extends` win, and your own `rules` win over both:
 
 ```json
 {
-  "extends": ["stylelint-config-standard", "gale:strict"],
+  "extends": ["./.stylelintrc.json", "gale:strict"],
   "rules": {
     "max-nesting-depth": [4, { "severity": "error" }]
   }
 }
 ```
+
+If Gale is the only CSS linter in the project, add `gale:strict` to `extends`
+in your existing config instead.
 
 To allow more values for colours or spacing, set
 `plugin/enforce-variable-for-property` yourself. Your setting replaces the
