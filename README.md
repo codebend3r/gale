@@ -187,6 +187,7 @@ Gale walks up from the working directory and uses the first config it finds, in 
 - **Parallel linting** using all CPU cores
 - **Inline disable comments** (`stylelint-disable` and `gale-disable`)
 - **Text, string, JSON, compact, verbose, TAP, and unix** output formatters; JSON matches Stylelint's result shape field-for-field
+- **Built for coding agents**: the `gale:strict` preset and the `agent` formatter keep AI-written CSS in line when an agent lints after every edit (see [Using Gale with coding agents](docs/agents.md))
 - **Programmatic Node.js API** (`lint()`, `resolveConfig()`, `formatters`) modeled on `stylelint.lint()`, usable from both ESM and CommonJS
 - **JavaScript regular expressions** in rule options, including lookahead, lookbehind and backreferences, as a bare pattern or a `/pattern/flags` literal
 - **Crash isolation**: a bug in one rule is reported as an `Internal error` problem on the file that triggered it, and every other rule and file is still linted
@@ -373,6 +374,7 @@ line, exactly as in Stylelint. A flag on the command line always wins.
 | Preset | Description |
 |--------|-------------|
 | `gale:recommended` | Sensible defaults (29 rules: 15 error + 14 warning) |
+| `gale:strict` | `gale:recommended` plus guardrails for agent-written CSS, all errors: colours and spacing from variables, no `!important`, no ID selectors, nesting at most 3 deep. See [Using Gale with coding agents](docs/agents.md) |
 | `gale:all` | Every one of the 271 registered rules at warning severity. This includes the `@stylistic/*` namespace, so expect a lot of formatting noise — it is a discovery tool, not a starting config. |
 
 Gale also has built-in equivalents for `stylelint-config-recommended`,
@@ -407,7 +409,7 @@ gale [OPTIONS] [FILES]...
 | `--fix` | Automatically fix problems (default: strict — skips files with parse errors) |
 | `--fix=lax` | Also fix files that have parse errors |
 | `-q, --quiet` | Only report errors |
-| `-f, --formatter <type>` | Output: `text`, `string`, `json`, `compact`, `verbose`, `tap`, `unix`. Defaults to the config's `formatter`, else `text`. An unknown value is rejected, on the command line or in the config |
+| `-f, --formatter <type>` | Output: `text`, `string`, `json`, `compact`, `verbose`, `tap`, `unix`, `agent`. Defaults to the config's `formatter`, else `text`. An unknown value is rejected, on the command line or in the config |
 | `-c, --config <path>` | Config file path |
 | `--max-warnings <n>` | Error if warnings exceed threshold |
 | `--cache` | Skip unchanged files |
@@ -623,7 +625,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
   +-- gale_linter       Rule trait, registry, runner, 271 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types
-  +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix)
+  +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix, agent)
   +-- gale_lsp          Language Server Protocol server
 ```
 

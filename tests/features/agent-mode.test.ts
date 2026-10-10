@@ -23,7 +23,7 @@ function strict(rules: Record<string, unknown> = {}): string {
 }
 
 describe("gale:strict", () => {
-  test.failing("turns the guardrail rules on as errors, on top of gale:recommended", () => {
+  test("turns the guardrail rules on as errors, on top of gale:recommended", () => {
     const project = makeProject({
       ".stylelintrc.json": strict(),
       "a.css": "a {}\n",
@@ -46,14 +46,14 @@ describe("gale:strict", () => {
     expect(rules).toHaveProperty("block-no-empty");
   });
 
-  test.failing("rejects raw colours and spacing, and accepts variables", () => {
+  test("rejects raw colours and spacing, and accepts variables", () => {
     const project = makeProject({
       ".stylelintrc.json": strict(),
       "a.css": [
         ".card {",
         "  color: #333;",
         "  background-color: var(--surface);",
-        "  border-color: currentColor;",
+        "  border-color: currentcolor;",
         "  margin: 16px;",
         "  padding: 0 var(--space-2);",
         "}",
@@ -70,7 +70,7 @@ describe("gale:strict", () => {
     ]);
   });
 
-  test.failing("accepts Sass variables, module members and Less variables", () => {
+  test("accepts Sass variables, module members and Less variables", () => {
     const project = makeProject({
       ".stylelintrc.json": strict(),
       "a.scss": [
@@ -95,7 +95,7 @@ describe("gale:strict", () => {
     ]);
   });
 
-  test.failing("rejects !important, ID selectors and nesting deeper than three levels", () => {
+  test("rejects !important, ID selectors and nesting deeper than three levels", () => {
     const project = makeProject({
       ".stylelintrc.json": strict(),
       "a.css": [
@@ -112,7 +112,7 @@ describe("gale:strict", () => {
     expect(rules).toContain("max-nesting-depth");
   });
 
-  test.failing("lets a project turn one of its rules back off", () => {
+  test("lets a project turn one of its rules back off", () => {
     const project = makeProject({
       ".stylelintrc.json": strict({ "declaration-no-important": null }),
       "a.css": "#app { color: var(--text) !important; }\n",
@@ -133,7 +133,7 @@ describe("agent formatter", () => {
     "a.css": "a { color: #ffffff; }\nb {}\n",
   };
 
-  test.failing("prints one line per problem, marks the fixable ones, and sums up", () => {
+  test("prints one line per problem, marks the fixable ones, and sums up", () => {
     const project = makeProject(files);
 
     const json = runGaleJson(["a.css"], { cwd: project.dir }).warnings();
@@ -156,7 +156,7 @@ describe("agent formatter", () => {
     );
   });
 
-  test.failing("is chosen by the config's formatter key too", () => {
+  test("is chosen by the config's formatter key too", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }, { formatter: "agent" }),
       "a.css": "a {}\n",
@@ -167,7 +167,7 @@ describe("agent formatter", () => {
     expect(result.stdout).toMatch(/^a\.css:1:3: error: .+ \[block-no-empty\]\n1 problem \(1 error, 0 warnings\)\n$/);
   });
 
-  test.failing("prints nothing when there are no problems", () => {
+  test("prints nothing when there are no problems", () => {
     const project = makeProject({
       ".stylelintrc.json": config({ "block-no-empty": true }),
       "a.css": "a { color: red; }\n",
@@ -179,7 +179,7 @@ describe("agent formatter", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test.failing("after --fix, lists only what is left and leaves out the fixable clause", () => {
+  test("after --fix, lists only what is left and leaves out the fixable clause", () => {
     const project = makeProject(files);
 
     const result = runGale(["--fix", "--formatter", "agent", "a.css"], { cwd: project.dir });

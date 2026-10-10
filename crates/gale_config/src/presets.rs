@@ -36,11 +36,127 @@ pub fn recommended_rule_names() -> Vec<&'static str> {
     .collect()
 }
 
+/// The properties `gale:strict` requires a colour variable for.
+const STRICT_COLOR_PROPERTIES: &[&str] = &[
+  "color",
+  "background-color",
+  "border-color",
+  "border-top-color",
+  "border-right-color",
+  "border-bottom-color",
+  "border-left-color",
+  "border-block-color",
+  "border-block-start-color",
+  "border-block-end-color",
+  "border-inline-color",
+  "border-inline-start-color",
+  "border-inline-end-color",
+  "outline-color",
+  "text-decoration-color",
+  "text-emphasis-color",
+  "caret-color",
+  "accent-color",
+  "column-rule-color",
+  "fill",
+  "stroke",
+  "stop-color",
+  "flood-color",
+  "lighting-color",
+];
+
+/// The properties `gale:strict` requires a spacing variable for.
+const STRICT_SPACING_PROPERTIES: &[&str] = &[
+  "margin",
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "margin-block",
+  "margin-block-start",
+  "margin-block-end",
+  "margin-inline",
+  "margin-inline-start",
+  "margin-inline-end",
+  "padding",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "padding-block",
+  "padding-block-start",
+  "padding-block-end",
+  "padding-inline",
+  "padding-inline-start",
+  "padding-inline-end",
+  "gap",
+  "row-gap",
+  "column-gap",
+];
+
+/// Values any property takes that never need a variable.
+const CSS_WIDE_KEYWORDS: &[&str] = &["inherit", "initial", "unset", "revert", "revert-layer"];
+
+/// Patterns for a value that comes from a variable: `var()`, a Sass
+/// variable or module member (`$x`, `tokens.$x`, `math.div($x, 2)`), or a
+/// Less variable (`@x`).
+const VARIABLE_PATTERNS: &[&str] = &["/var\\(/", "/\\$/", "/@/"];
+
+/// The rules `gale:strict` adds to `gale:recommended`, with their options.
+///
+/// They are the rules teams set up to keep AI-written CSS in line: colours
+/// and spacing from variables, no `!important`, no ID selectors and shallow
+/// nesting.  `gale:strict` runs every one of them at error severity, so a
+/// violation fails the run and reaches the agent that wrote it.
+fn strict_rules() -> Vec<(&'static str, Option<serde_json::Value>)> {
+  let with_variables = |extra: &[&str]| -> Vec<String> {
+    VARIABLE_PATTERNS
+      .iter()
+      .chain(CSS_WIDE_KEYWORDS)
+      .chain(extra)
+      .map(|value| value.to_string())
+      .collect()
+  };
+  let color_values = with_variables(&["currentColor", "currentcolor", "transparent", "none"]);
+  let spacing_values = with_variables(&["0", "auto"]);
+
+  let mut properties = serde_json::Map::new();
+  for property in STRICT_COLOR_PROPERTIES {
+    properties.insert(property.to_string(), serde_json::json!(color_values));
+  }
+  for property in STRICT_SPACING_PROPERTIES {
+    properties.insert(property.to_string(), serde_json::json!(spacing_values));
+  }
+
+  vec![
+    ("declaration-no-important", None),
+    ("selector-max-id", Some(serde_json::json!(0))),
+    ("max-nesting-depth", Some(serde_json::json!(3))),
+    ("color-named", Some(serde_json::json!("never"))),
+    (
+      "plugin/enforce-variable-for-property",
+      Some(serde_json::json!({ "properties": properties })),
+    ),
+  ]
+}
+
 /// Resolve a built-in preset name into a map of rule configurations.
 ///
 /// Returns `None` if the preset name is not recognised.
 pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
   match name {
+    "gale:strict" => {
+      let mut rules = resolve_preset("gale:recommended")?;
+      for (rule, options) in strict_rules() {
+        rules.insert(
+          rule.to_string(),
+          RuleConfig {
+            severity: Some(Severity::Error),
+            options,
+          },
+        );
+      }
+      Some(rules)
+    }
     "gale:recommended" => {
       let mut rules = HashMap::new();
       for rule in rules_in(Preset::GaleError) {
@@ -339,6 +455,29 @@ mod tests {
     for rule_cfg in preset.values() {
       assert_eq!(rule_cfg.severity, Some(Severity::Warning));
     }
+  }
+
+  #[test]
+  fn strict_preset_adds_its_rules_as_errors_to_recommended() {
+    let strict = resolve_preset("gale:strict").unwrap();
+    let recommended = resolve_preset("gale:recommended").unwrap();
+
+    for (rule, _) in strict_rules() {
+      assert_eq!(strict[rule].severity, Some(Severity::Error), "{rule}");
+    }
+    for rule in recommended.keys() {
+      assert!(strict.contains_key(rule), "gale:strict is missing {rule}");
+    }
+    assert_eq!(
+      strict["selector-max-id"].options,
+      Some(serde_json::json!(0))
+    );
+    let properties = &strict["plugin/enforce-variable-for-property"]
+      .options
+      .as_ref()
+      .unwrap()["properties"];
+    assert!(properties["color"].is_array());
+    assert!(properties["margin-inline"].is_array());
   }
 
   #[test]

@@ -78,6 +78,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Recursive `extends` with cycle detection | Chains of shared configs | ✅ | ✅ |
 | Built-in `stylelint-config-*` equivalents | `recommended`, `standard`, `recommended-scss`, `standard-scss` without installing them | ✅ | ❌ Must be installed from npm |
 | `gale:recommended` / `gale:all` presets | Gale's own built-in presets | ✅ | ❌ |
+| `gale:strict` preset | Guardrails for agent-written CSS: colours and spacing from variables, no `!important`, no IDs, shallow nesting | ✅ All errors, on top of `gale:recommended` | ❌ |
 | `rules` value formats | `true`, `false`, `null`, `"off"`, primary option, `[primary, { secondary }]` | ✅ Plus a severity-first array form | ✅ |
 | `overrides` | Per-file-pattern rules, `extends`, and `customSyntax` | ✅ Including `ignoreFiles` inside an override | ✅ |
 | `ignoreFiles` / `ignorePatterns` | Exclude files from the config | ✅ Both names accepted | ✅ `ignoreFiles` |
@@ -159,6 +160,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `verbose` | Summary with per-rule counts | ✅ | ✅ |
 | `tap` | Test Anything Protocol | ✅ | ✅ |
 | `unix` | `file:line:col: message [rule]` | ✅ | ✅ |
+| `agent` | One compiler-style line per problem with a `fixable` marker, then a summary; silent when clean | ✅ Command line only | ❌ |
 | `github` | GitHub Actions annotations | ❌ Removed in v17 | ❌ Removed in v17 |
 | Custom formatter module | Any exported function | ❌ | ✅ `--custom-formatter` |
 | Unknown formatter rejected | Typo in `--formatter` or the `formatter` config key is an error, not a silent fallback | ✅ | ✅ |
