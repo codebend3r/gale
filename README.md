@@ -135,7 +135,9 @@ Download pre-built binaries for all six platforms, with a `SHA256SUMS` file, fro
 ## What's supported
 
 For a row-by-row comparison of every feature in Gale and Stylelint, see the
-[feature table](docs/features-table.md).
+[feature table](docs/features-table.md). For the features under consideration
+next, and the research behind them, see
+[feature research](docs/feature-research.md).
 
 ### 271 built-in rules
 
