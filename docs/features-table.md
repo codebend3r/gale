@@ -40,8 +40,10 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `selector-no-invalid` | Core rule flagging selectors the CSS grammar rejects, e.g. `a ) b`, `:not(::before)`, `:dir(foo)` | ✅ Reads selectors from the source text, since the parser drops rules it cannot parse | ✅ |
 | `selector-no-unmatchable` (v17.15) | Newest core rule flagging valid selectors that can never match, e.g. `label:enabled`, `::before:first-child`, `:is(::before)` | ✅ Resolves CSS nesting before checking | ✅ |
 | `@stylistic/*` rules | Formatting rules from `@stylistic/stylelint-plugin` | ✅ 69 rules built in | ✅ Via plugin |
-| `scss/*` rules | Rules from `stylelint-scss` | ✅ 45 rules built in | ✅ Via plugin |
+| `scss/*` rules | Rules from `stylelint-scss` | ✅ 51 rules built in | ✅ Via plugin |
+| `scss/no-global-function-names` autofix | Rename `map-get()` to `map.get()` and add the `@use` it needs | ✅ Calls whose arguments change, such as `darken()`, are reported without a fix | ❌ Report only |
 | `order/*` rules | Rules from `stylelint-order` | ✅ 3 rules built in | ✅ Via plugin |
+| `gale/*` rules | Gale's own rules: `gale/scss-no-import` reports Sass `@import`, which Dart Sass 3 removes | ✅ | ❌ |
 | `plugin/*` declarative meta-rules | Design-token enforcement, custom-property analysis, file headers, browser compat | ✅ 5 rules | ❌ Requires a custom JS plugin |
 | Vendor plugin rules | `csstools/value-no-unknown-custom-properties`, `material/no-prefixes`, `spectrum-tools/no-unknown-custom-properties` | ✅ 3 rules built in | ✅ Via the respective plugins |
 | Arbitrary JavaScript plugins | Load any `stylelint-*` plugin from npm | ❌ Intentional: JS is not executed | ✅ |
@@ -78,6 +80,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Recursive `extends` with cycle detection | Chains of shared configs | ✅ | ✅ |
 | Built-in `stylelint-config-*` equivalents | `recommended`, `standard`, `recommended-scss`, `standard-scss` without installing them | ✅ | ❌ Must be installed from npm |
 | `gale:recommended` / `gale:all` presets | Gale's own built-in presets | ✅ | ❌ |
+| `gale:sass3` preset | Dart Sass 3 readiness: no Sass `@import`, no global built-in functions, module-system checks | ✅ All errors | ❌ |
 | `gale:strict` preset | Guardrails for agent-written CSS: colours and spacing from variables, no `!important`, no IDs, shallow nesting | ✅ All errors, on top of `gale:recommended` | ❌ |
 | `rules` value formats | `true`, `false`, `null`, `"off"`, primary option, `[primary, { secondary }]` | ✅ Plus a severity-first array form | ✅ |
 | `overrides` | Per-file-pattern rules, `extends`, and `customSyntax` | ✅ Including `ignoreFiles` inside an override | ✅ |

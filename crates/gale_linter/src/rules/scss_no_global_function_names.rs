@@ -1,11 +1,17 @@
+use std::collections::{HashMap, HashSet};
+
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::rule::{Rule, RuleContext};
 
 /// Disallow deprecated global SCSS function calls that should use modules.
 ///
 /// e.g. `adjust-color()` should be `color.adjust()`.
+///
+/// Unlike stylelint-scss's rule, this one is fixable in SCSS: `--fix`
+/// renames the call to its module function and adds the `@use` it needs
+/// (see [`Rule::check_root`] below).
 pub struct ScssNoGlobalFunctionNames;
 
 /// Returns the Stylelint-compatible message for a deprecated global function.
@@ -181,15 +187,31 @@ fn is_deprecated_global(name: &str) -> bool {
   )
 }
 
-/// Reports deprecated global function calls in `value`, naming the module-based
-/// replacement. Offsets are re-derived from the source for an exact span.
+/// The module function a deprecated global is renamed to, as
+/// `(module, member)`: `map-get` becomes `("map", "get")`.
+///
+/// Read from the rule's message, so the two cannot disagree.  `None` for
+/// the colour functions whose replacement takes different arguments, such
+/// as `darken($color, $amount)`, which a rename cannot fix.
+fn module_replacement(name: &str) -> Option<(&'static str, &'static str)> {
+  let target = function_message(name)
+    .strip_prefix("Expected ")?
+    .split(" instead of ")
+    .next()?;
+  if target.contains('(') {
+    return None;
+  }
+  target.split_once('.')
+}
+
+/// Finds the deprecated global function calls in `value`, recording each
+/// name and the offset in `source` where it starts.  Offsets are
+/// re-derived from the source for an exact span.
 fn scan_value_for_global_functions(
-  rule_name: &'static str,
-  severity: Severity,
   value: &str,
   decl_span: gale_css_parser::Span,
   source: &str,
-  diagnostics: &mut Vec<Diagnostic>,
+  calls: &mut Vec<(String, usize)>,
 ) {
   // Compute the byte offset in `source` where the value string starts.
   // The declaration span covers "property: value", so we search for the
@@ -197,7 +219,7 @@ fn scan_value_for_global_functions(
   let decl_start = decl_span.offset as usize;
   let decl_end = (decl_span.offset + decl_span.length) as usize;
   let decl_end = decl_end.min(source.len());
-  let decl_text = &source[decl_start..decl_end];
+  let decl_text = source.get(decl_start..decl_end).unwrap_or("");
   let value_pos_in_decl = decl_text.find(value).unwrap_or(0);
 
   let bytes = value.as_bytes();
@@ -243,19 +265,161 @@ fn scan_value_for_global_functions(
       let is_namespaced = start > 0 && bytes[start - 1] == b'.';
 
       if !is_namespaced && is_deprecated_global(func_name) {
-        // Compute absolute byte offset of the function name in the source
-        let func_abs_offset = decl_start + value_pos_in_decl + start;
-        let func_span = Span::new(func_abs_offset, func_name.len());
-
-        diagnostics.push(
-          Diagnostic::new(rule_name, function_message(func_name).to_string())
-            .severity(severity)
-            .span(func_span),
-        );
+        calls.push((
+          func_name.to_string(),
+          decl_start + value_pos_in_decl + start,
+        ));
       }
     }
 
     i += 1;
+  }
+}
+
+/// Collects the calls in `node` and everything under it, visiting what the
+/// runner's walk would hand to a per-node check: the declarations of every
+/// style rule, and declarations nested in at-rules.
+fn collect_calls(node: &CssNode, source: &str, calls: &mut Vec<(String, usize)>) {
+  match node {
+    CssNode::Declaration(decl) => {
+      scan_value_for_global_functions(&decl.value, decl.span, source, calls)
+    }
+    CssNode::Style(rule) => collect_style_calls(rule, source, calls),
+    CssNode::AtRule(at) => {
+      for child in &at.children {
+        collect_calls(child, source, calls);
+      }
+    }
+    CssNode::Comment(_) => {}
+  }
+}
+
+/// [`collect_calls`] for a style rule and the rules and at-rules nested in it.
+fn collect_style_calls(
+  rule: &gale_css_parser::StyleRule,
+  source: &str,
+  calls: &mut Vec<(String, usize)>,
+) {
+  for decl in &rule.declarations {
+    scan_value_for_global_functions(&decl.value, decl.span, source, calls);
+  }
+  for child in &rule.children {
+    collect_style_calls(child, source, calls);
+  }
+  for at in &rule.nested_at_rules {
+    collect_calls(at, source, calls);
+  }
+}
+
+/// How a file loads a built-in module with `@use "sass:<module>"`.
+enum Namespace {
+  /// `@use "sass:map"` or `@use "sass:map" as m`: members are `m.get`.
+  Named(String),
+  /// `@use "sass:map" as *`: members are global again, so there is no
+  /// namespace to rename to.
+  Star,
+}
+
+/// What the file's top-level `@use` rules load, and where a new one goes.
+struct Loads {
+  /// The built-in modules loaded, by module name (`map` for `sass:map`).
+  modules: HashMap<String, Namespace>,
+  /// Every namespace a `@use` takes, built-in or not.
+  namespaces: HashSet<String>,
+  /// Where to insert a new `@use`: just past the `;` of the last `@use`
+  /// or `@forward`, else past the `@charset`, else the start of the file.
+  insert_at: usize,
+  /// Whether `insert_at` follows an existing statement.
+  after_statement: bool,
+}
+
+impl Loads {
+  /// Reads the `@use`, `@forward` and `@charset` rules among `nodes`.
+  fn read(nodes: &[CssNode], source: &str) -> Self {
+    let mut loads = Loads {
+      modules: HashMap::new(),
+      namespaces: HashSet::new(),
+      insert_at: 0,
+      after_statement: false,
+    };
+    let mut after_load = false;
+    for node in nodes {
+      let CssNode::AtRule(at) = node else {
+        continue;
+      };
+      let name = at.name.to_ascii_lowercase();
+      if !matches!(name.as_str(), "use" | "forward" | "charset") {
+        continue;
+      }
+      let statement_end = source
+        .get(at.span.offset as usize..)
+        .and_then(|rest| rest.find(';'))
+        .map(|semi| at.span.offset as usize + semi + 1);
+      if let Some(end) = statement_end {
+        if name != "charset" || !after_load {
+          loads.insert_at = end;
+          loads.after_statement = true;
+        }
+      }
+      if name == "charset" {
+        continue;
+      }
+      after_load = true;
+      if name != "use" {
+        continue;
+      }
+
+      let params = at.params.trim();
+      let Some(quote @ ('"' | '\'')) = params.chars().next() else {
+        continue;
+      };
+      let Some(url_end) = params[1..].find(quote) else {
+        continue;
+      };
+      let url = &params[1..1 + url_end];
+      let rest = &params[2 + url_end..];
+      let mut words = rest.split_whitespace();
+      let alias = loop {
+        match words.next() {
+          Some("as") => break words.next(),
+          Some(_) => continue,
+          None => break None,
+        }
+      };
+      let namespace = match alias {
+        Some("*") => Namespace::Star,
+        Some(alias) => Namespace::Named(alias.trim_end_matches(';').to_string()),
+        None => {
+          // The default namespace is the URL's last component, without a
+          // partial's leading underscore or a file extension.
+          let last = url.rsplit(['/', ':']).next().unwrap_or(url);
+          let last = last.trim_start_matches('_');
+          let last = last.split('.').next().unwrap_or(last);
+          Namespace::Named(last.to_string())
+        }
+      };
+      if let Namespace::Named(namespace) = &namespace {
+        loads.namespaces.insert(namespace.clone());
+      }
+      if let Some(module) = url.strip_prefix("sass:") {
+        loads.modules.insert(module.to_string(), namespace);
+      }
+    }
+    loads
+  }
+
+  /// The text that loads `modules` at [`Self::insert_at`].
+  fn insertion(&self, modules: &[&str]) -> String {
+    let lines: String = modules
+      .iter()
+      .map(|module| format!("@use \"sass:{module}\";"))
+      .collect::<Vec<_>>()
+      .join("\n");
+    if self.after_statement {
+      format!("\n{lines}")
+    } else {
+      format!("{lines}\n\n")
+    }
   }
 }
 
@@ -272,41 +436,69 @@ impl Rule for ScssNoGlobalFunctionNames {
     Severity::Warning
   }
 
-  /// Checks declarations and at-rule params for deprecated global function names.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Reports deprecated global function calls in declaration values.
+  ///
+  /// In SCSS each report carries a fix, which Stylelint does not have: the
+  /// call is renamed to its module function, under the namespace the file
+  /// already loads the module with, and the first call of the file whose
+  /// module is not loaded yet also adds one `@use` for every such module, in
+  /// the order they first appear.  The fix is planned for the whole file, so
+  /// no two reports add the same `@use`.  Calls whose arguments change, such
+  /// as `darken()`, a module loaded `as *`, and a module whose namespace
+  /// another `@use` already takes are reported without a fix.
+  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let mut diagnostics = Vec::new();
+    let mut calls = Vec::new();
+    for node in nodes {
+      collect_calls(node, ctx.source, &mut calls);
+    }
+    calls.sort_by_key(|(_, offset)| *offset);
 
-    match node {
-      CssNode::Declaration(decl) => {
-        scan_value_for_global_functions(
-          self.name(),
-          self.default_severity(),
-          &decl.value,
-          decl.span,
-          ctx.source,
-          &mut diagnostics,
-        );
-      }
-      CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          scan_value_for_global_functions(
-            self.name(),
-            self.default_severity(),
-            &decl.value,
-            decl.span,
-            ctx.source,
-            &mut diagnostics,
-          );
+    // Fixes are computed against SCSS; `--fix` leaves `.sass` files alone.
+    let fixable = matches!(ctx.syntax, Syntax::Scss);
+    let loads = Loads::read(nodes, ctx.source);
+    let needs_load =
+      |module: &str| !loads.modules.contains_key(module) && !loads.namespaces.contains(module);
+    let mut missing: Vec<&'static str> = Vec::new();
+    for (name, _) in &calls {
+      if let Some((module, _)) = module_replacement(name) {
+        if needs_load(module) && !missing.contains(&module) {
+          missing.push(module);
         }
       }
-      _ => {}
     }
+    let mut insertion_pending = !missing.is_empty();
 
-    diagnostics
+    calls
+      .iter()
+      .map(|(name, offset)| {
+        let span = Span::new(*offset, name.len());
+        let diag = Diagnostic::new(self.name(), function_message(name).to_string())
+          .severity(self.default_severity())
+          .span(span);
+        let Some((module, member)) = module_replacement(name).filter(|_| fixable) else {
+          return diag;
+        };
+        let namespace = match loads.modules.get(module) {
+          Some(Namespace::Named(namespace)) => namespace.as_str(),
+          Some(Namespace::Star) => return diag,
+          None if loads.namespaces.contains(module) => return diag,
+          None => module,
+        };
+        let mut edits = vec![Edit::new(span, format!("{namespace}.{member}"))];
+        if insertion_pending && missing.contains(&module) {
+          insertion_pending = false;
+          edits.push(Edit::new(
+            Span::new(loads.insert_at, 0),
+            loads.insertion(&missing),
+          ));
+        }
+        diag.fix(Fix::new(format!("Use {namespace}.{member}"), edits))
+      })
+      .collect()
   }
 }
 
@@ -330,21 +522,22 @@ mod tests {
   fn skips_non_scss() {
     assert!(
       ScssNoGlobalFunctionNames
-        .check(&decl("adjust-color(red, $red: 10)"), &ctx())
+        .check_root(&[decl("adjust-color(red, $red: 10)")], &ctx())
         .is_empty()
     );
   }
 
   #[test]
   fn reports_deprecated_global() {
-    let d = ScssNoGlobalFunctionNames.check(&decl("adjust-color(red, $red: 10)"), &scss_ctx());
+    let d =
+      ScssNoGlobalFunctionNames.check_root(&[decl("adjust-color(red, $red: 10)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("adjust-color"));
   }
 
   #[test]
   fn reports_map_get() {
-    let d = ScssNoGlobalFunctionNames.check(&decl("map-get($map, key)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("map-get($map, key)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("map-get"));
   }
@@ -352,48 +545,140 @@ mod tests {
   #[test]
   fn allows_module_function() {
     // `color.adjust()` is not a deprecated global.
-    let d = ScssNoGlobalFunctionNames.check(&decl("color.adjust(red, $red: 10)"), &scss_ctx());
+    let d =
+      ScssNoGlobalFunctionNames.check_root(&[decl("color.adjust(red, $red: 10)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_namespaced_map_get() {
     // `map.get()` should not be flagged — it uses a namespace
-    let d = ScssNoGlobalFunctionNames.check(&decl("map.get($map, key)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("map.get($map, key)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_css_native_min_max() {
     // min() and max() are NOT in stylelint-scss deprecated list, not flagged
-    let d = ScssNoGlobalFunctionNames.check(&decl("min(100px, 50vw)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("min(100px, 50vw)")], &scss_ctx());
     assert!(d.is_empty());
-    let d = ScssNoGlobalFunctionNames.check(&decl("max(100px, 50vw)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("max(100px, 50vw)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_css_native_round() {
     // round() is NOT in stylelint-scss deprecated list, not flagged
-    let d = ScssNoGlobalFunctionNames.check(&decl("round(1.5)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("round(1.5)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_function_in_string() {
-    let d = ScssNoGlobalFunctionNames.check(&decl("\"use map-get() instead\""), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("\"use map-get() instead\"")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_non_deprecated() {
-    let d = ScssNoGlobalFunctionNames.check(&decl("rgba(0, 0, 0, 0.5)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("rgba(0, 0, 0, 0.5)")], &scss_ctx());
     assert!(d.is_empty());
+  }
+
+  /// `source` after `gale --fix` with only this rule on.
+  fn fixed(source: &str) -> String {
+    crate::testing::fix(
+      "scss/no-global-function-names",
+      serde_json::json!(true),
+      source,
+      Syntax::Scss,
+    )
+  }
+
+  #[test]
+  fn fix_renames_the_call_and_loads_the_module() {
+    assert_eq!(
+      fixed("a {\n  b: map-get($m, a);\n}\n"),
+      "@use \"sass:map\";\n\na {\n  b: map.get($m, a);\n}\n"
+    );
+  }
+
+  #[test]
+  fn fix_loads_each_module_once_in_the_order_they_appear() {
+    assert_eq!(
+      fixed("a {\n  b: str-length(\"x\");\n  c: map-get($m, a);\n  d: map-keys($m);\n}\n"),
+      "@use \"sass:string\";\n@use \"sass:map\";\n\n\
+       a {\n  b: string.length(\"x\");\n  c: map.get($m, a);\n  d: map.keys($m);\n}\n"
+    );
+  }
+
+  #[test]
+  fn fix_adds_the_use_after_the_last_load_rule() {
+    assert_eq!(
+      fixed("@use \"config\";\n@forward \"tokens\";\n\na {\n  b: nth($l, 1);\n}\n"),
+      "@use \"config\";\n@forward \"tokens\";\n@use \"sass:list\";\n\na {\n  b: list.nth($l, 1);\n}\n"
+    );
+  }
+
+  #[test]
+  fn fix_adds_the_use_after_the_charset() {
+    assert_eq!(
+      fixed("@charset \"UTF-8\";\n\na {\n  b: unquote(\"x\");\n}\n"),
+      "@charset \"UTF-8\";\n@use \"sass:string\";\n\na {\n  b: string.unquote(\"x\");\n}\n"
+    );
+  }
+
+  #[test]
+  fn fix_uses_the_namespace_the_file_gave_the_module() {
+    assert_eq!(
+      fixed("@use \"sass:map\" as m;\n\na {\n  b: map-get($m, a);\n}\n"),
+      "@use \"sass:map\" as m;\n\na {\n  b: m.get($m, a);\n}\n"
+    );
+    assert_eq!(
+      fixed("@use \"sass:math\";\n\na {\n  b: percentage(0.5);\n}\n"),
+      "@use \"sass:math\";\n\na {\n  b: math.percentage(0.5);\n}\n"
+    );
+  }
+
+  #[test]
+  fn fix_leaves_what_a_rename_cannot_fix() {
+    for source in [
+      // The replacement takes different arguments.
+      "a {\n  color: darken($c, 10%);\n}\n",
+      // The module's members are global again.
+      "@use \"sass:map\" as *;\n\na {\n  b: map-get($m, a);\n}\n",
+      // Another module already takes the `map` namespace.
+      "@use \"src/map\";\n\na {\n  b: map-get($m, a);\n}\n",
+    ] {
+      assert_eq!(fixed(source), source);
+    }
+  }
+
+  #[test]
+  fn fix_reaches_declarations_in_nested_rules_and_at_rules() {
+    assert_eq!(
+      fixed(
+        "a {\n  b {\n    c: map-get($m, a);\n  }\n  @media print {\n    d: map-keys($m);\n  }\n}\n"
+      ),
+      "@use \"sass:map\";\n\na {\n  b {\n    c: map.get($m, a);\n  }\n  @media print {\n    d: map.keys($m);\n  }\n}\n"
+    );
+  }
+
+  #[test]
+  fn reports_without_a_fix_in_the_indented_syntax() {
+    let diags = crate::testing::lint(
+      "scss/no-global-function-names",
+      serde_json::json!(true),
+      "a\n  b: map-get($m, a)\n",
+      Syntax::Sass,
+    );
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0].fix.is_none());
   }
 
   #[test]
   fn darken_message_matches_stylelint() {
-    let d = ScssNoGlobalFunctionNames.check(&decl("darken($color, 10%)"), &scss_ctx());
+    let d = ScssNoGlobalFunctionNames.check_root(&[decl("darken($color, 10%)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert_eq!(
       d[0].message,

@@ -139,11 +139,37 @@ fn strict_rules() -> Vec<(&'static str, Option<serde_json::Value>)> {
   ]
 }
 
+/// The rules `gale:sass3` turns on: what Dart Sass deprecated in 1.80.0 and
+/// removes in 3.0.0, which are `@import` and the global built-in functions,
+/// plus the module-system mistakes a migration to `@use` tends to leave.
+const SASS3_RULES: &[&str] = &[
+  "gale/scss-no-import",
+  "scss/no-global-function-names",
+  "scss/function-color-channel",
+  "scss/function-color-relative",
+  "scss/no-duplicate-load-rules",
+  "scss/dollar-variable-no-namespaced-assignment",
+];
+
 /// Resolve a built-in preset name into a map of rule configurations.
 ///
 /// Returns `None` if the preset name is not recognised.
 pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
   match name {
+    "gale:sass3" => Some(
+      SASS3_RULES
+        .iter()
+        .map(|rule| {
+          (
+            rule.to_string(),
+            RuleConfig {
+              severity: Some(Severity::Error),
+              options: None,
+            },
+          )
+        })
+        .collect(),
+    ),
     "gale:strict" => {
       let mut rules = resolve_preset("gale:recommended")?;
       for (rule, options) in strict_rules() {
@@ -478,6 +504,21 @@ mod tests {
       .unwrap()["properties"];
     assert!(properties["color"].is_array());
     assert!(properties["margin-inline"].is_array());
+  }
+
+  #[test]
+  fn sass3_preset_turns_on_only_registered_rules_as_errors() {
+    let preset = resolve_preset("gale:sass3").unwrap();
+    let registered: Vec<&str> = all_rule_names().collect();
+
+    assert_eq!(preset.len(), SASS3_RULES.len());
+    for (rule, config) in &preset {
+      assert!(
+        registered.contains(&rule.as_str()),
+        "{rule} is not a built-in rule"
+      );
+      assert_eq!(config.severity, Some(Severity::Error), "{rule}");
+    }
   }
 
   #[test]

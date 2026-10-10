@@ -72,6 +72,7 @@ pub mod function_url_no_scheme_relative;
 pub mod function_url_quotes;
 pub mod function_url_scheme_allowed_list;
 pub mod function_url_scheme_disallowed_list;
+pub mod gale_scss_no_import;
 pub mod hue_degree_notation;
 pub mod import_notation;
 pub mod keyframe_block_no_duplicate_selectors;
@@ -260,6 +261,8 @@ pub mod scss_at_mixin_parentheses_space_before;
 pub mod scss_at_mixin_pattern;
 pub mod scss_at_rule_conditional_no_parentheses;
 pub mod scss_at_rule_no_unknown;
+pub mod scss_at_use_no_redundant_alias;
+pub mod scss_at_use_no_unnamespaced;
 pub mod scss_comment_no_empty;
 pub mod scss_comment_no_loud;
 pub mod scss_declaration_nested_properties;
@@ -268,10 +271,13 @@ pub mod scss_dollar_variable_colon_space_after;
 pub mod scss_dollar_variable_colon_space_before;
 pub mod scss_dollar_variable_empty_line_before;
 pub mod scss_dollar_variable_no_missing_interpolation;
+pub mod scss_dollar_variable_no_namespaced_assignment;
 pub mod scss_dollar_variable_pattern;
 pub mod scss_double_slash_comment_empty_line_before;
 pub mod scss_double_slash_comment_inline;
 pub mod scss_double_slash_comment_whitespace_inside;
+pub mod scss_function_color_channel;
+pub mod scss_function_color_relative;
 pub mod scss_function_disallowed_list;
 pub mod scss_function_no_unknown;
 pub mod scss_function_quote_no_quoted_strings_inside;
@@ -279,6 +285,7 @@ pub mod scss_function_unquote_no_unquoted_strings_inside;
 pub mod scss_load_no_partial_leading_underscore;
 pub mod scss_load_partial_extension;
 pub mod scss_no_duplicate_dollar_variables;
+pub mod scss_no_duplicate_load_rules;
 pub mod scss_no_duplicate_mixins;
 pub mod scss_no_global_function_names;
 pub mod scss_operator_no_newline_after;
@@ -408,6 +415,7 @@ rules! {
   function_url_quotes::FunctionUrlQuotes [GaleWarning, Standard],
   function_url_scheme_allowed_list::FunctionUrlSchemeAllowedList,
   function_url_scheme_disallowed_list::FunctionUrlSchemeDisallowedList,
+  gale_scss_no_import::GaleScssNoImport,
   hue_degree_notation::HueDegreeNotation [Standard],
   import_notation::ImportNotation [Standard],
   keyframe_block_no_duplicate_selectors::KeyframeBlockNoDuplicateSelectors [GaleError, Recommended],
@@ -593,20 +601,26 @@ rules! {
   scss_at_mixin_disallowed_list::ScssAtMixinDisallowedList,
   scss_at_mixin_pattern::ScssAtMixinPattern,
   scss_at_rule_no_unknown::ScssAtRuleNoUnknown [RecommendedScss],
+  scss_at_use_no_redundant_alias::ScssAtUseNoRedundantAlias,
+  scss_at_use_no_unnamespaced::ScssAtUseNoUnnamespaced,
   scss_comment_no_empty::ScssCommentNoEmpty [RecommendedScss],
   scss_declaration_nested_properties::ScssDeclarationNestedProperties,
   scss_declaration_nested_properties_no_divided_groups::ScssDeclarationNestedPropertiesNoDividedGroups [RecommendedScss],
   scss_dollar_variable_colon_space_after::ScssDollarVariableColonSpaceAfter,
   scss_dollar_variable_colon_space_before::ScssDollarVariableColonSpaceBefore,
   scss_dollar_variable_no_missing_interpolation::ScssDollarVariableNoMissingInterpolation [RecommendedScss],
+  scss_dollar_variable_no_namespaced_assignment::ScssDollarVariableNoNamespacedAssignment,
   scss_dollar_variable_pattern::ScssDollarVariablePattern,
   scss_double_slash_comment_whitespace_inside::ScssDoubleSlashCommentWhitespaceInside,
+  scss_function_color_channel::ScssFunctionColorChannel,
+  scss_function_color_relative::ScssFunctionColorRelative,
   scss_function_no_unknown::ScssFunctionNoUnknown,
   scss_function_quote_no_quoted_strings_inside::ScssFunctionQuoteNoQuotedStringsInside [RecommendedScss],
   scss_function_unquote_no_unquoted_strings_inside::ScssFunctionUnquoteNoUnquotedStringsInside [RecommendedScss],
   scss_load_no_partial_leading_underscore::ScssLoadNoPartialLeadingUnderscore [RecommendedScss],
   scss_load_partial_extension::ScssLoadPartialExtension [RecommendedScss],
   scss_no_duplicate_dollar_variables::ScssNoDuplicateDollarVariables,
+  scss_no_duplicate_load_rules::ScssNoDuplicateLoadRules,
   scss_no_duplicate_mixins::ScssNoDuplicateMixins [RecommendedScss],
   scss_no_global_function_names::ScssNoGlobalFunctionNames [RecommendedScss],
   scss_operator_no_newline_after::ScssOperatorNoNewlineAfter [RecommendedScss],
@@ -704,7 +718,7 @@ mod tests {
         match name.split_once('/') {
           None => namespace.is_empty(),
           Some((prefix, _)) => match prefix {
-            "@stylistic" | "scss" | "plugin" | "order" => prefix == namespace,
+            "@stylistic" | "scss" | "plugin" | "order" | "gale" => prefix == namespace,
             _ => namespace == "vendor",
           },
         }
@@ -741,6 +755,7 @@ mod tests {
       ("| `scss/*` |", count("scss")),
       ("| `plugin/*` |", count("plugin")),
       ("| `order/*` |", count("order")),
+      ("| `gale/*` |", count("gale")),
       ("| Vendor plugins |", count("vendor")),
     ];
     assert_eq!(namespaces.iter().map(|(_, n)| n).sum::<usize>(), total);
