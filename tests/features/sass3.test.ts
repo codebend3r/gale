@@ -31,7 +31,7 @@ function lint(rule: string, code: string) {
 }
 
 describe("stylelint-scss module rules", () => {
-  test.failing("scss/at-use-no-unnamespaced", () => {
+  test("scss/at-use-no-unnamespaced", () => {
     expect(lint("scss/at-use-no-unnamespaced", '@use "foo" as *;\n@use "bar" as b;\n')).toEqual([
       {
         line: 1,
@@ -41,7 +41,7 @@ describe("stylelint-scss module rules", () => {
     ]);
   });
 
-  test.failing("scss/at-use-no-redundant-alias", () => {
+  test("scss/at-use-no-redundant-alias", () => {
     expect(
       lint("scss/at-use-no-redundant-alias", '@use "sass:math" as math;\n@use "src/corners" as c;\n'),
     ).toEqual([
@@ -53,7 +53,7 @@ describe("stylelint-scss module rules", () => {
     ]);
   });
 
-  test.failing("scss/no-duplicate-load-rules", () => {
+  test("scss/no-duplicate-load-rules", () => {
     expect(lint("scss/no-duplicate-load-rules", '@use "foo";\n@use "foo" as f;\n@use "bar";\n')).toEqual([
       {
         line: 2,
@@ -63,7 +63,7 @@ describe("stylelint-scss module rules", () => {
     ]);
   });
 
-  test.failing("scss/dollar-variable-no-namespaced-assignment", () => {
+  test("scss/dollar-variable-no-namespaced-assignment", () => {
     expect(
       lint("scss/dollar-variable-no-namespaced-assignment", "imported.$foo: 1;\na { b: imported.$foo; }\n"),
     ).toEqual([
@@ -77,7 +77,7 @@ describe("stylelint-scss module rules", () => {
 });
 
 describe("stylelint-scss colour function rules", () => {
-  test.failing("scss/function-color-channel", () => {
+  test("scss/function-color-channel", () => {
     expect(
       lint(
         "scss/function-color-channel",
@@ -92,7 +92,7 @@ describe("stylelint-scss colour function rules", () => {
     ]);
   });
 
-  test.failing("scss/function-color-relative", () => {
+  test("scss/function-color-relative", () => {
     expect(
       lint("scss/function-color-relative", "p {\n  color: darken(blue, .2);\n  background: scale-color(blue, $lightness: 10%);\n}\n"),
     ).toEqual([
@@ -106,7 +106,7 @@ describe("stylelint-scss colour function rules", () => {
 });
 
 describe("gale/scss-no-import", () => {
-  test.failing("reports a Sass @import", () => {
+  test("reports a Sass @import", () => {
     expect(lint("gale/scss-no-import", '@import "variables";\n@import "mixins", "functions";\n')).toEqual([
       {
         line: 1,
@@ -121,7 +121,7 @@ describe("gale/scss-no-import", () => {
     ]);
   });
 
-  test.failing("leaves the imports Sass keeps as plain CSS alone", () => {
+  test("leaves the imports Sass keeps as plain CSS alone", () => {
     const code = [
       '@import "variables";',
       '@import "theme.css";',
@@ -158,17 +158,17 @@ describe("scss/no-global-function-names --fix", () => {
     return project.read("a.scss");
   }
 
-  test.failing("renames the call and adds the @use it needs", () => {
+  test("renames the call and adds the @use it needs", () => {
     expect(fix("a {\n  b: map-get($m, a);\n}\n")).toBe('@use "sass:map";\n\na {\n  b: map.get($m, a);\n}\n');
   });
 
-  test.failing("adds the @use after the file's other @use rules", () => {
+  test("adds the @use after the file's other @use rules", () => {
     expect(fix('@use "config";\n\na {\n  b: str-length("x");\n}\n')).toBe(
       '@use "config";\n@use "sass:string";\n\na {\n  b: string.length("x");\n}\n',
     );
   });
 
-  test.failing("uses the namespace the file already gave the module", () => {
+  test("uses the namespace the file already gave the module", () => {
     expect(fix('@use "sass:map" as m;\n\na {\n  b: map-get($m, a);\n}\n')).toBe(
       '@use "sass:map" as m;\n\na {\n  b: m.get($m, a);\n}\n',
     );
@@ -186,7 +186,7 @@ describe("scss/no-global-function-names --fix", () => {
 });
 
 describe("gale:sass3", () => {
-  test.failing("turns on the Dart Sass 3 rules", () => {
+  test("turns on the Dart Sass 3 rules", () => {
     const project = makeProject({
       ".stylelintrc.json": JSON.stringify({ extends: "gale:sass3" }),
       "a.scss": "a {}\n",
@@ -207,7 +207,7 @@ describe("gale:sass3", () => {
     );
   });
 
-  test.failing("reports what Dart Sass 3 removes", () => {
+  test("reports what Dart Sass 3 removes", () => {
     const project = makeProject({
       ".stylelintrc.json": JSON.stringify({ extends: "gale:sass3" }),
       "a.scss": '@import "variables";\n\na {\n  b: map-get($m, a);\n}\n',
