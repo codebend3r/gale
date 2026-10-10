@@ -1,7 +1,8 @@
 # Using Gale with coding agents
 
 Coding agents write CSS that works but drifts: raw hex colours, magic-number
-margins, `!important`, ID selectors, selectors nested six levels deep.
+margins, `!important`, ID selectors, selectors nested six levels deep, and
+declarations that do nothing.
 Instructions in a `CLAUDE.md` or rules file help until the session gets long
 and they fall out of context. A linter does not. When the agent runs it after
 every edit, each violation lands back in the agent's loop and the agent fixes
@@ -28,6 +29,7 @@ a violation fails the run:
 | `selector-max-id` | `0` | `#app .title` |
 | `max-nesting-depth` | `3` | Nesting deeper than three levels |
 | `color-named` | `"never"` | `color: red` |
+| `gale/no-ineffective-declarations` | On | `justify-content` next to `display: block`, `top` with `position: static` |
 
 A value counts as coming from a variable when it uses `var()`, a Sass
 variable or module member (`$text`, `tokens.$text`, `math.div($space, 2)`) or
