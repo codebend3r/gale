@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "gale-lint"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gale_cli",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "gale_cli"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "gale_config"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "gale_linter",
  "globset",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "gale_css_parser"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "lightningcss",
  "raffia",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "gale_diagnostics"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "miette",
  "owo-colors",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "gale_formatter"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "gale_diagnostics",
  "owo-colors",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "gale_linter"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "fancy-regex",
  "gale_css_parser",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "gale_lsp"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "gale_config",
  "gale_css_parser",
