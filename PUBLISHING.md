@@ -189,8 +189,8 @@ cargo publish --workspace --locked
 |---|---|---|---|
 | macOS ARM (M1+) | `aarch64-apple-darwin` | `macos-latest` | `gale-aarch64-apple-darwin` |
 | macOS Intel | `x86_64-apple-darwin` | `macos-latest` (cross) | `gale-x86_64-apple-darwin` |
-| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `gale-x86_64-unknown-linux-gnu` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `gale-aarch64-unknown-linux-gnu` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` (zigbuild, glibc 2.17) | `gale-x86_64-unknown-linux-gnu` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` (zigbuild, glibc 2.17) | `gale-aarch64-unknown-linux-gnu` |
 | Windows x64 | `x86_64-pc-windows-msvc` | `windows-latest` | `gale-x86_64-pc-windows-msvc.exe` |
 | Windows ARM64 | `aarch64-pc-windows-msvc` | `windows-latest` (cross) | `gale-aarch64-pc-windows-msvc.exe` |
 
