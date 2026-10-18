@@ -20,7 +20,7 @@ const target = resolveTarget(process.platform, process.arch);
 if (!target) {
   process.stderr.write(`Unsupported platform: ${process.platform}-${process.arch}\n`);
   process.stderr.write(`Supported: ${supportedPlatforms().join(", ")}\n`);
-  process.stderr.write("Build from source instead: cargo install gale-lint\n");
+  process.stderr.write("Build from source instead: cargo install --git https://github.com/codebend3r/gale gale-lint\n");
   process.exit(1);
 }
 
@@ -30,7 +30,7 @@ if (!existsSync(binary)) {
   process.stderr.write(`Gale binary missing for ${target} at ${binary}\n`);
   process.stderr.write(`This package should ship prebuilt binaries for ${target}.\n`);
   process.stderr.write("Try reinstalling the package, or build from source:\n");
-  process.stderr.write("  cargo install gale-lint\n");
+  process.stderr.write("  cargo install --git https://github.com/codebend3r/gale gale-lint\n");
   process.exit(1);
 }
 

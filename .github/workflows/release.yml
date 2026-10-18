@@ -1,10 +1,10 @@
 name: 📦 Release
 
 # Pushing a v* tag builds every platform binary, publishes @codebend3r/gale to
-# npm and the gale-lint crates to crates.io, then creates the GitHub Release.
+# npm, then creates the GitHub Release.
 #
 # Dispatch it by hand with "dry run" ticked to run the whole pipeline without
-# publishing: npm and cargo publish with --dry-run, and no GitHub Release.
+# publishing: npm publish with --dry-run, and no GitHub Release.
 #
 # Every publish step skips what is already published, so a failed run can be
 # re-run as is once the cause is fixed. PUBLISHING.md has the one-time setup.
@@ -317,58 +317,10 @@ jobs:
             fi
           fi
 
-  crates:
-    name: Publish to crates.io
-    needs: [guard, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      VERSION: ${{ needs.guard.outputs.version }}
-      DRY_RUN: ${{ needs.guard.outputs.dry-run }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish every crate not yet on crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # cargo orders the crates by dependency, verifies each one builds from
-        # its packaged sources, and waits for each to reach the index before
-        # publishing the crates that depend on it. Crates already at VERSION
-        # are left out, so a run that failed partway can simply be re-run.
-        run: |
-          # crates.io's sparse index path; every crate name here is 4+ characters.
-          index_url() {
-            local name
-            name=$(tr '[:upper:]' '[:lower:]' <<<"$1")
-            echo "https://index.crates.io/${name:0:2}/${name:2:2}/$name"
-          }
-
-          pending=()
-          for crate in $(cargo metadata --no-deps --locked --format-version 1 | jq -r '.packages[] | select(.publish != []) | .name'); do
-            if curl -sf "$(index_url "$crate")" | jq -e --arg v "$VERSION" 'select(.vers == $v)' >/dev/null; then
-              echo "$crate $VERSION is already on crates.io; skipping it."
-            else
-              pending+=(--package "$crate")
-            fi
-          done
-
-          if [ ${#pending[@]} -eq 0 ]; then
-            echo "::notice title=crates.io::Every crate is already at $VERSION; nothing to publish."
-          elif [ "$DRY_RUN" = "true" ]; then
-            cargo publish --locked --dry-run "${pending[@]}"
-          elif [ -z "$CARGO_REGISTRY_TOKEN" ]; then
-            echo "::error title=crates.io::No CARGO_REGISTRY_TOKEN secret. Add one (see PUBLISHING.md), then re-run this job."
-            exit 1
-          else
-            cargo publish --locked "${pending[@]}"
-          fi
-
   github-release:
-    # Last, so a published release always means npm and crates.io have it too.
+    # Last, so a published release always means npm has it too.
     name: GitHub Release
-    needs: [guard, npm, crates]
+    needs: [guard, npm]
     if: needs.guard.outputs.dry-run == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10

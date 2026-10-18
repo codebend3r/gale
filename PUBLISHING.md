@@ -3,10 +3,9 @@
 One `v*` tag publishes Gale everywhere it ships:
 
 - **npm**: `@codebend3r/gale`, with a prebuilt binary for every supported platform inside the tarball
-- **crates.io**: `gale-lint` (the `gale` binary) and the seven `gale_*` library crates it depends on
 - **GitHub Releases**: the raw binaries plus a `SHA256SUMS` file
 
-The [release workflow](.github/workflows/release.yml) does all three. Until its
+The [release workflow](.github/workflows/release.yml) does both. Until its
 one-time setup is done, publish from your machine instead (see
 [Fallback: publish locally](#fallback-publish-locally)).
 
@@ -62,12 +61,8 @@ worked, ship without the Windows binaries.
    3. **npm**: stage a binary for every platform `npm/platform.cjs` maps
       (refusing to publish if one is missing), check the file list, and
       publish with provenance.
-   4. **crates.io**: one `cargo publish` for every crate not yet at `X.Y.Z`.
-      Cargo orders them by dependency, verifies each one builds from its
-      packaged sources, and waits for each to reach the index before
-      publishing the crates that depend on it.
-   5. **GitHub Release**: created last, so a release on GitHub always means
-      npm and crates.io have it too. Notes are generated from the commits.
+   4. **GitHub Release**: created last, so a release on GitHub always means
+      npm has it too. Notes are generated from the commits.
 
 ### Re-running a failed release
 
@@ -91,9 +86,8 @@ git push -f origin vX.Y.Z
 
 A dispatch with **dry run** ticked runs the whole pipeline, publishing nothing:
 the version guard (checked against `Cargo.toml` when not run from a tag), all
-six builds, the npm staging and file list, `npm publish --dry-run`, and
-`cargo publish --dry-run`, which packages and verifies every crate. It skips
-the GitHub Release.
+six builds, the npm staging and file list, and `npm publish --dry-run`. It
+skips the GitHub Release.
 
 A dry run skips versions that are already published, exactly as a real run
 would (npm refuses even a dry run of a version it already has). To exercise
@@ -109,7 +103,7 @@ that follows starts warm. Caches saved by tag runs are not reusable.
 ### 1. Enable the workflow
 
 Every run before this setup failed at the npm publish step, so the workflow was
-disabled. Turn it back on once npm and crates.io are configured:
+disabled. Turn it back on once npm is configured:
 
 ```bash
 gh workflow enable release.yml
@@ -130,6 +124,7 @@ On [npmjs.com](https://www.npmjs.com/package/@codebend3r/gale), open
 | Repository | `gale` |
 | Workflow filename | `release.yml` |
 | Environment name | leave empty |
+| Allowed actions | tick **Allow `npm publish`** (staging alone fails the job) |
 
 After the first release succeeds this way, you can lock the package down under
 **Settings > Publishing access > Require two-factor authentication and
@@ -147,21 +142,6 @@ gh secret set NPM_TOKEN
 npm tries OIDC first and falls back to the token. Write tokens expire (90 days
 at most), which is why trusted publishing is the better default.
 
-### 3. crates.io: `CARGO_REGISTRY_TOKEN`
-
-On [crates.io/settings/tokens](https://crates.io/settings/tokens), create a
-token from the account that owns the crates (`cargo owner --list gale-lint`
-shows who that is) with:
-
-- **Scopes:** `publish-update` (add `publish-new` only when adding a new crate)
-- **Crates:** `gale-lint` and `gale_*`
-
-Then store it:
-
-```bash
-gh secret set CARGO_REGISTRY_TOKEN
-```
-
 ## Fallback: publish locally
 
 Until the setup above is done, publish from your machine. This path cannot build
@@ -177,10 +157,6 @@ node ./npm/bin/gale.cjs --version     # must print the new version
 cd npm
 npm pack --dry-run
 npm publish --access public
-
-# 3. Optionally, the crates (needs `cargo login` first)
-cd ..
-cargo publish --workspace --locked
 ```
 
 ## Rust targets reference
@@ -198,13 +174,14 @@ Adding a platform means adding it to `npm/platform.cjs` and to the build matrix
 together. `tests/features/npm-package.test.ts` fails if the two disagree, and
 the npm job refuses to publish a package with a missing binary.
 
-## Crates.io
+## Cargo
 
-The binary crate is `gale-lint` on crates.io (the name `gale` was taken). The
-binary it installs is still called `gale`.
+Gale is not published to crates.io: `gale-lint` and the `gale_*` names there
+belong to an unrelated project. Cargo users install from this repository, and
+the binary is called `gale`:
 
 ```bash
-cargo install gale-lint
+cargo install --git https://github.com/codebend3r/gale gale-lint
 ```
 
 ## Testing locally
@@ -230,7 +207,8 @@ bunx gale --version
 persists, report a packaging bug.
 
 **Unsupported platform**: the launcher covers the six platforms listed above.
-Anywhere else, build from source or use `cargo install gale-lint`.
+Anywhere else, build from source or use
+`cargo install --git https://github.com/codebend3r/gale gale-lint`.
 
 **Version guard failed**: see [Re-running a failed
 release](#re-running-a-failed-release).
@@ -239,7 +217,3 @@ release](#re-running-a-failed-release).
 credentials it could use. Check that the trusted publisher fields match the
 table above exactly (the workflow filename is `release.yml`, not a path), or
 set `NPM_TOKEN`, then re-run the failed jobs.
-
-**crates.io publish failed**: a missing `CARGO_REGISTRY_TOKEN` fails with a
-message saying so. Anything else, such as a crate that does not build from its
-packaged sources, shows up in a dry run first.

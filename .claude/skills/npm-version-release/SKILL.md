@@ -8,7 +8,9 @@ argument-hint: <semver | patch | minor | major>
 
 ## Overview
 
-A release is **one commit named `X.Y.Z` on the current branch** that carries every version reference in the repo, and an annotated tag `vX.Y.Z` on that commit. Pushing the tag runs `.github/workflows/release.yml`, which builds all six platform binaries, publishes `@codebend3r/gale` to npm and the `gale-lint` crates to crates.io, and creates the GitHub Release. The whole thing, through confirming the registries have the new version, is this skill's job.
+A release is **one commit named `X.Y.Z` on the current branch** that carries every version reference in the repo, and an annotated tag `vX.Y.Z` on that commit. Pushing the tag runs `.github/workflows/release.yml`, which builds all six platform binaries, publishes `@codebend3r/gale` to npm, and creates the GitHub Release. The whole thing, through confirming npm and the GitHub Release have the new version, is this skill's job.
+
+Gale is **not** published to crates.io: `gale-lint` and the `gale_*` names there belong to an unrelated account (LyricalString). Never add a crates.io step, and never tell users to `cargo install gale-lint`; it installs that other project.
 
 **No release branch. No pull request. No `git reset --hard`.** The user commits releases directly on the branch they are on. Do not branch or switch branches. Do not ask which of several release strategies to use — this file is the strategy.
 
@@ -43,10 +45,9 @@ git fetch origin --tags --force
 git rev-list --left-right --count HEAD...@{u}   # "<ahead> <behind>"
 git tag -l "v$VERSION"                 # non-empty means a re-release: see step 9
 gh api "repos/{owner}/{repo}/actions/workflows/release.yml" --jq .state   # "active" means CI is set up
-gh secret list --json name --jq '.[].name'                                # must include CARGO_REGISTRY_TOKEN
 ```
 
-**CI path** when the workflow state is `active` and `CARGO_REGISTRY_TOKEN` is listed. npm auth is either a trusted publisher on npmjs.com (not visible from here) or an `NPM_TOKEN` secret; the owner enables the workflow only after configuring it (see `PUBLISHING.md`). Otherwise use the **local fallback** (step 10) and tell the user which piece of setup is missing.
+**CI path** when the workflow state is `active`. npm auth is a trusted publisher on npmjs.com (`codebend3r` / `gale` / `release.yml`, no environment, **Allow `npm publish`** ticked), set up 2026-10-17 and not visible from here, or else an `NPM_TOKEN` secret (see `PUBLISHING.md`). Otherwise use the **local fallback** (step 10) and tell the user which piece of setup is missing.
 
 `behind` must be 0 for a fresh release. `behind` greater than 0 is acceptable only when the remote-only commits are the earlier attempt at this same `VERSION` (step 9). Any other divergence: stop and report it; do not reset or rebase on your own.
 
@@ -86,14 +87,14 @@ done
 # perl, not sed: BSD sed has no \b and silently matches nothing. \${1} not \$1: "$1" + "0.2.2" is read as group $10.
 # Sweep: any 0.x.y in a tracked file that is not VERSION. Must print nothing.
 git ls-files \
-  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^benchmarks/|^npm/bin/|^\.claude/skills/' \
+  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^docs/feature-research\.md$|^benchmarks/|^npm/bin/|^\.claude/skills/' \
   | xargs grep -nE '\bv?0\.[0-9]+\.[0-9]+\b' 2>/dev/null | grep -vF "$VERSION"
 git diff --stat
 ```
 
 Any line the sweep prints is either a gale version that still needs updating (fix it, add the file to the table above) or a third-party version that happens to start with `0.` (leave it, add its path to the exclusion list). Do not proceed with hits you have not classified.
 
-Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `benchmarks/` (cloned repos), `npm/bin/` (binaries), `.claude/skills/` (illustrative semvers in skill docs, not references).
+Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `docs/feature-research.md` (a dated research snapshot), `benchmarks/` (cloned repos), `npm/bin/` (binaries), `.claude/skills/` (illustrative semvers in skill docs, not references).
 
 ### 4. Commit and tag on the current branch
 
@@ -138,7 +139,7 @@ gh run view "$RUN" --log-failed | tail -40
 gh run rerun "$RUN" --failed
 ```
 
-A failure the user has to fix (a missing or expired `NPM_TOKEN` or `CARGO_REGISTRY_TOKEN`, a trusted publisher that does not match `codebend3r` / `gale` / `release.yml`) is the one thing to hand back. Say exactly which setting, then re-run once they confirm.
+A failure the user has to fix (a missing or expired `NPM_TOKEN`, a trusted publisher that does not match `codebend3r` / `gale` / `release.yml` or lacks the `npm publish` permission) is the one thing to hand back. Say exactly which setting, then re-run once they confirm.
 
 If the version guard failed, the tag points at the wrong commit: fix the manifests, amend, and move the tag with `git tag -fa` and `git push -f origin "v$VERSION"`.
 
@@ -151,11 +152,10 @@ for i in $(seq 1 30); do
   [ "$(bun info "$PKG" version 2>/dev/null)" = "$VERSION" ] && break; sleep 10
 done
 bun info "$PKG" version                 # must equal VERSION
-curl -s https://index.crates.io/ga/le/gale-lint | tail -1 | grep -o '"vers":"[^"]*"'   # must show VERSION
 gh release view "v$VERSION" --json assets --jq '.assets[].name'   # six binaries and SHA256SUMS
 ```
 
-Report the tag commit, the run URL, and the npm, crates.io, and GitHub Release versions in the final message.
+Report the tag commit, the run URL, and the npm and GitHub Release versions in the final message.
 
 ### 9. Re-releasing a version that already exists
 

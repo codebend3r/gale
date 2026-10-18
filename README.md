@@ -120,10 +120,10 @@ macOS and Linux only; on Windows, use a newer release or build from source.
 ### Cargo
 
 ```bash
-cargo install gale-lint
+cargo install --git https://github.com/codebend3r/gale gale-lint
 ```
 
-The crate is named `gale-lint` on crates.io (since `gale` was taken), but the installed binary is called `gale`. The release workflow publishes it alongside the npm package; until it has run once, crates.io carries an older version than npm, so build from source for the latest.
+Gale is not published to crates.io; the `gale-lint` crate there belongs to an unrelated project, so install from this repository. The package is named `gale-lint`, but the installed binary is called `gale`.
 
 ### From source
 
@@ -612,8 +612,7 @@ The [release workflow](.github/workflows/release.yml) then:
 1. Checks the tag matches every version in the repo, and stops if one differs
 2. Builds binaries for macOS (arm64, x64), Linux (x64, arm64), and Windows (x64, arm64)
 3. Publishes `@codebend3r/gale` to npm with every binary bundled, with provenance
-4. Publishes `gale-lint` and its member crates to crates.io
-5. Creates the GitHub Release with the binaries and their checksums
+4. Creates the GitHub Release with the binaries and their checksums
 
 Each publish step skips what is already published, so a failed run can be
 re-run once its cause is fixed.
@@ -631,7 +630,7 @@ For local testing, and for the local publish fallback in
 ./scripts/build-npm.sh --all
 
 # Set npm package version before building
-./scripts/build-npm.sh --version 0.3.0
+./scripts/build-npm.sh --version 0.3.1
 ```
 
 ## Architecture
