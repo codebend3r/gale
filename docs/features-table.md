@@ -215,7 +215,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Feature | Description | Gale | Stylelint |
 |---------|-------------|:----:|:---------:|
 | npm package | `npm install -D ...` | ✅ `@codebend3r/gale` with prebuilt binaries | ✅ `stylelint` |
-| Cargo | `cargo install gale-lint` | ✅ | ❌ |
+| Cargo | `cargo install --git https://github.com/codebend3r/gale gale-lint` | ✅ | ❌ |
 | Prebuilt binaries on GitHub Releases | Download and run without a package manager | ✅ | ❌ |
 | macOS (arm64, x64) | Runs natively | ✅ | ✅ |
 | Linux (x64, arm64) | Runs natively | ✅ | ✅ |
