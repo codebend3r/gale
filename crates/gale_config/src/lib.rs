@@ -4,6 +4,10 @@
 //! [`ConfigResolver`]), reads it in any format Stylelint accepts, JavaScript
 //! included ([`load_config`]), and resolves its `extends`, built-in presets
 //! and overrides into the [`GaleConfig`] a run lints with.
+//!
+//! [`RuleSetResolver`] is the one place a file's settings come from, for
+//! the CLI and the language server alike: whether it is ignored, which
+//! parser reads it, and the [`gale_linter::RuleSet`] it is linted with.
 
 mod discovery;
 mod extends;

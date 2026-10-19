@@ -175,7 +175,7 @@ pub struct GaleConfig {
   /// `--formatter` flag is given.
   pub formatter: Option<String>,
   pub overrides: Vec<ResolvedOverride>,
-  /// Directory containing the config file.  Used by [`rules_for_file`] to
+  /// Directory containing the config file.  Used by [`GaleConfig::rules_for_file`] to
   /// resolve override glob patterns relative to the config location.
   pub config_dir: Option<PathBuf>,
   /// Plugin names declared in the config file (extracted from the `plugins` field).

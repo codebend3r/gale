@@ -643,7 +643,7 @@ gale (binary)
   v
 gale_cli         CLI definition (clap), file discovery, orchestration
   |
-  +-- gale_config       Config loading, resolution, presets
+  +-- gale_config       Config loading, resolution, presets, per-file rule sets
   |     +-- gale_linter        Its rule table, which gale:all and the presets come from
   +-- gale_linter       Rule trait, registry, runner, 279 built-in rules
   |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
@@ -657,10 +657,10 @@ gale_cli         CLI definition (clap), file discovery, orchestration
 | `gale_css_parser` | Wraps **lightningcss** (CSS) and **raffia** (SCSS/Less) into a unified, owned AST |
 | `gale_diagnostics` | Core types: `Span`, `Diagnostic`, `LintResult`, `Fix`, `Edit` |
 | `gale_linter` | `Rule` trait, `RuleRegistry`, `RuleSet` (the one way a file is linted), inline disable comments, all rule implementations |
-| `gale_config` | Config file discovery, parsing (JSON/YAML/TOML/JS), `extends` resolution, built-in presets |
+| `gale_config` | Config file discovery, parsing (JSON/YAML/TOML/JS), `extends` resolution, built-in presets, and `RuleSetResolver`: whether a file is ignored, its parser and its `RuleSet`, shared by the CLI and the LSP |
 | `gale_formatter` | `TextFormatter`, `JsonFormatter`, `CompactFormatter`, `VerboseFormatter`, `TapFormatter`, `UnixFormatter` |
-| `gale_cli` | Clap CLI, file discovery with ignore support, cache layer, `--fix` orchestration |
-| `gale_lsp` | LSP server for real-time editor diagnostics |
+| `gale_cli` | Clap CLI and its stages (`args`, `config`, `discover`, `lint`, `fix`, `report`), file discovery with ignore support, cache layer |
+| `gale_lsp` | LSP server for real-time editor diagnostics, with the same per-file settings as the CLI |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a rule.
 
