@@ -1,29 +1,50 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of compound selectors in a selector.
-///
-/// Equivalent to Stylelint's `selector-max-compound-selectors` rule.
-/// Default maximum: 3. Counts parts separated by combinators (space, `>`, `+`, `~`).
-pub struct SelectorMaxCompoundSelectors;
+const NAME: &str = "selector-max-compound-selectors";
+
+declare_rule! {
+  /// Limit the number of compound selectors in a selector.
+  ///
+  /// Equivalent to Stylelint's `selector-max-compound-selectors` rule.
+  /// Default maximum: 3. Counts parts separated by combinators (space, `>`, `+`, `~`).
+  pub struct SelectorMaxCompoundSelectors => SelectorMaxCompoundSelectorsCheck {
+    name: NAME,
+    description: "Limit the number of compound selectors in a selector",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-max-compound-selectors` as configured.
+pub struct SelectorMaxCompoundSelectorsCheck {
+  /// The most compound selectors allowed.
+  max: usize,
+}
+
+impl SelectorMaxCompoundSelectorsCheck {
+  /// Stylelint's options: a whole number of zero or more (tested by a
+  /// function, so a problem reads `Invalid option`), then `ignoreSelectors`,
+  /// which gale accepts but does not yet apply.  Gale reads no number as 3.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
+    options.strings("ignoreSelectors");
+    options.finish()?;
+    Ok(Self {
+      max: max
+        .and_then(serde_json::Value::as_u64)
+        .map_or(MAX_COMPOUND, |max| max as usize),
+    })
+  }
+}
 
 const MAX_COMPOUND: usize = 3;
 
-impl Rule for SelectorMaxCompoundSelectors {
-  fn name(&self) -> &'static str {
-    "selector-max-compound-selectors"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the number of compound selectors in a selector"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorMaxCompoundSelectorsCheck {
   /// Flags a selector holding more compound selectors than allowed.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -31,11 +52,7 @@ impl Rule for SelectorMaxCompoundSelectors {
     };
 
     // Read configured max from options (primary option is a number).
-    let max = ctx
-      .options
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(MAX_COMPOUND);
+    let max = self.max;
 
     let selector = if matches!(
       ctx.syntax,
@@ -54,12 +71,11 @@ impl Rule for SelectorMaxCompoundSelectors {
       if count > max {
         diags.push(
                     Diagnostic::new(
-                        self.name(),
+                        NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} compound selector(s), found {count}"
                         ),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(rule.span.offset, rule.span.length)),
                 );
       }
@@ -188,7 +204,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -206,54 +222,61 @@ mod tests {
 
   #[test]
   fn reports_too_many_compound_selectors() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 4 compound selectors: .a .b .c .d
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(".a .b .c .d"), &ctx());
+    let d = rule.check(&style_with_selector(".a .b .c .d"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 4"));
   }
 
   #[test]
   fn allows_within_limit() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 3 compound selectors: .a .b .c
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(".a .b .c"), &ctx());
+    let d = rule.check(&style_with_selector(".a .b .c"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn counts_child_combinator() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 4 compound selectors: .a > .b > .c > .d
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(".a > .b > .c > .d"), &ctx());
+    let d = rule.check(&style_with_selector(".a > .b > .c > .d"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn single_selector_ok() {
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(".foo"), &ctx());
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
+    let d = rule.check(&style_with_selector(".foo"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn strips_inline_scss_comments() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // "dt, // TODO: Deprecate\n.form-group-header" should be treated as
     // "dt,\n.form-group-header" which is two selectors each with 1 compound.
     let sel = "dt, // TODO: Deprecate\n.form-group-header";
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(sel), &scss_ctx());
+    let d = rule.check(&style_with_selector(sel), &scss_ctx());
     assert!(d.is_empty(), "Expected no diagnostics, got: {:?}", d);
   }
 
   #[test]
   fn strips_full_line_scss_comments() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Full-line SCSS comments should be stripped entirely
     let sel = "// This is a comment\n.foo .bar";
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(sel), &scss_ctx());
+    let d = rule.check(&style_with_selector(sel), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn counts_compounds_inside_is() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Stylelint v17: compound selectors inside :is() ARE counted.
     // `:is(.a .b .c .d)` has 4 compound selectors.
-    let d = SelectorMaxCompoundSelectors.check(&style_with_selector(":is(.a .b .c .d)"), &ctx());
+    let d = rule.check(&style_with_selector(":is(.a .b .c .d)"), &ctx());
     assert_eq!(
       d.len(),
       1,
@@ -264,12 +287,34 @@ mod tests {
 
   #[test]
   fn counts_compounds_inside_has() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Stylelint v17: `.foo:has(.bar > .baz > .qux > .quux)` has compounds
     // counted across the whole selector as-written.
-    let d = SelectorMaxCompoundSelectors.check(
+    let d = rule.check(
       &style_with_selector(".foo:has(.bar > .baz > .qux > .quux)"),
       &ctx(),
     );
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The primary option is tested by a function, so Stylelint words its
+    // problem without "value".
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, { "ignoreSelectors": [":host", "/^:deep/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(-1)),
+      ["Invalid option \"-1\" for rule \"selector-max-compound-selectors\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([2, { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"selector-max-compound-selectors\""]
+    );
   }
 }

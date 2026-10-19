@@ -1,8 +1,9 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::nesting::{resolve_nested, resolve_nested_list};
 use crate::selector::{
   Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
@@ -10,22 +11,55 @@ use crate::selector::{
 use crate::style_rules::RawStyleRule;
 use crate::stylelint_version::stylelint_major_version;
 
-/// Limit the number of attribute selectors in a selector.
-///
-/// Equivalent to Stylelint's `selector-max-attribute` rule, whose counting
-/// changed in Stylelint 17:
-///
-/// - Stylelint 16 resolves nested selectors and counts the attribute
-///   selectors of each complex selector on its own: those at the top level,
-///   and separately those of each selector inside `:not()`, `:is()`,
-///   `:where()`, `:has()`, `:matches()` and the `of S` clause of
-///   `:nth-child()` / `:nth-last-child()`.
-/// - Stylelint 17 counts every attribute selector in a selector as written,
-///   at any depth.
-///
-/// `ignoreAttributes` (names or `/regex/` entries) leaves attributes out of
-/// the count.
-pub struct SelectorMaxAttribute;
+const NAME: &str = "selector-max-attribute";
+
+declare_rule! {
+  /// Limit the number of attribute selectors in a selector.
+  ///
+  /// Equivalent to Stylelint's `selector-max-attribute` rule, whose counting
+  /// changed in Stylelint 17:
+  ///
+  /// - Stylelint 16 resolves nested selectors and counts the attribute
+  ///   selectors of each complex selector on its own: those at the top level,
+  ///   and separately those of each selector inside `:not()`, `:is()`,
+  ///   `:where()`, `:has()`, `:matches()` and the `of S` clause of
+  ///   `:nth-child()` / `:nth-last-child()`.
+  /// - Stylelint 17 counts every attribute selector in a selector as written,
+  ///   at any depth.
+  ///
+  /// `ignoreAttributes` (names or `/regex/` entries) leaves attributes out of
+  /// the count.
+  pub struct SelectorMaxAttribute => SelectorMaxAttributeCheck {
+    name: NAME,
+    description: "Limit the number of attribute selectors in a selector",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-max-attribute` as configured.
+pub struct SelectorMaxAttributeCheck {
+  /// The most attribute selectors allowed; with none configured the rule
+  /// reports nothing.
+  max: Option<u64>,
+  /// The `ignoreAttributes` option.
+  ignore: Matchers,
+}
+
+impl SelectorMaxAttributeCheck {
+  /// Stylelint's options: a whole number of zero or more (tested by a
+  /// function, so a problem reads `Invalid option`), then
+  /// `ignoreAttributes`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
+    let ignore = options.matchers("ignoreAttributes");
+    options.finish()?;
+    Ok(Self {
+      max: max.and_then(serde_json::Value::as_u64),
+      ignore,
+    })
+  }
+}
 
 /// Pseudo-classes whose selectors Stylelint 16 checks on their own
 /// (`isContextFunctionalPseudoClass`).
@@ -63,19 +97,19 @@ fn attribute_name(raw: &str) -> &str {
   &inner[..end]
 }
 
-/// The rule's options, read once per file.
+/// The options as the counting reads them.
 struct Options<'a> {
   /// The most attribute selectors allowed.
   max: u64,
   /// The `ignoreAttributes` option.
-  ignore: Option<&'a serde_json::Value>,
+  ignore: &'a Matchers,
 }
 
 impl Options<'_> {
   /// Whether `node` is an attribute selector that counts.
   fn counts(&self, node: &SelectorNode) -> bool {
     matches!(node, SelectorNode::Attribute(raw)
-      if !pattern::option_matches(self.ignore, attribute_name(raw)))
+      if !self.ignore.matches(attribute_name(raw)))
   }
 
   /// Stylelint 17: every counted attribute selector in `nodes`, at any depth.
@@ -132,7 +166,7 @@ impl Options<'_> {
   }
 }
 
-impl SelectorMaxAttribute {
+impl SelectorMaxAttributeCheck {
   /// The report for `selector` of `raw`, written as `text`.
   fn report(&self, raw: &RawStyleRule, selector: &Selector, max: u64, v17: bool) -> Diagnostic {
     let text = &raw.prelude[selector.offset..selector.end];
@@ -142,39 +176,23 @@ impl SelectorMaxAttribute {
       let noun = if max == 1 { "selector" } else { "selectors" };
       format!("Expected \"{text}\" to have no more than {max} attribute {noun}")
     };
-    Diagnostic::new(self.name(), message)
-      .severity(self.default_severity())
-      .span(Span::from_range(
-        raw.offset + selector.offset,
-        raw.offset + selector.end,
-      ))
+    Diagnostic::new(NAME, message).span(Span::from_range(
+      raw.offset + selector.offset,
+      raw.offset + selector.end,
+    ))
   }
 }
 
-impl Rule for SelectorMaxAttribute {
-  fn name(&self) -> &'static str {
-    "selector-max-attribute"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the number of attribute selectors in a selector"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorMaxAttributeCheck {
   /// Flags selectors holding more attribute selectors than allowed, counted
   /// the way the installed Stylelint counts them.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let Some(max) = ctx.primary_option().and_then(|v| v.as_u64()) else {
+    let Some(max) = self.max else {
       return vec![];
     };
     let options = Options {
       max,
-      ignore: ctx
-        .secondary_options()
-        .and_then(|secondary| secondary.get("ignoreAttributes")),
+      ignore: &self.ignore,
     };
     let v17 = stylelint_major_version() >= 17;
 
@@ -225,22 +243,17 @@ mod tests {
   use crate::style_rules::scan_style_rules;
   use gale_css_parser::Syntax;
 
-  use crate::testing::scss_ctx_with_source_and_options;
+  use crate::testing::invalid_options;
 
   /// The messages for `source` with `options`, counted the Stylelint 17
   /// way when `v17` is set and the Stylelint 16 way otherwise.
   fn lint(source: &str, options: serde_json::Value, v17: bool) -> Vec<String> {
-    let ctx = scss_ctx_with_source_and_options(source, &options);
-    let max = options
-      .as_array()
-      .map_or(&options, |a| &a[0])
-      .as_u64()
-      .unwrap();
+    let setting = Setting::new(NAME, Some(&options), false);
+    let check = SelectorMaxAttributeCheck::from_setting(&setting, &LintEnv::default()).unwrap();
+    let max = check.max.unwrap();
     let opts = Options {
       max,
-      ignore: ctx
-        .secondary_options()
-        .and_then(|secondary| secondary.get("ignoreAttributes")),
+      ignore: &check.ignore,
     };
     // Exercise both counting modes directly, whatever Stylelint the test
     // run happens to find.
@@ -251,19 +264,11 @@ mod tests {
       for selector in &list.selectors {
         if v17 {
           if opts.count_deep(&selector.nodes) > max {
-            out.push(
-              SelectorMaxAttribute
-                .report(raw, selector, max, true)
-                .message,
-            );
+            out.push(check.report(raw, selector, max, true).message);
           }
         } else {
           opts.counts_by_context(selector, &mut |_| {
-            out.push(
-              SelectorMaxAttribute
-                .report(raw, selector, max, false)
-                .message,
-            );
+            out.push(check.report(raw, selector, max, false).message);
           });
         }
       }
@@ -326,5 +331,30 @@ mod tests {
     }
     assert_eq!(attribute_name("[xlink|href]"), "href");
     assert_eq!(attribute_name("[ lang |= en ]"), "lang");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The primary option is tested by a function, so Stylelint words its
+    // problem without "value".
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, { "ignoreAttributes": ["type", "/^data-/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(-1)),
+      ["Invalid option \"-1\" for rule \"selector-max-attribute\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([1, { "ignoreAttributes": [3] }])),
+      ["Invalid value \"3\" for option \"ignoreAttributes\" of rule \"selector-max-attribute\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([1, { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"selector-max-attribute\""]
+    );
   }
 }

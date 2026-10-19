@@ -1,62 +1,69 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify a pattern for the selectors of rules nested within rules.
-///
-/// Equivalent to Stylelint's `selector-nested-pattern` rule.
-/// The primary option is a regex pattern string that nested selectors must match.
-pub struct SelectorNestedPattern;
+const NAME: &str = "selector-nested-pattern";
 
-impl Rule for SelectorNestedPattern {
-  fn name(&self) -> &'static str {
-    "selector-nested-pattern"
+declare_rule! {
+  /// Specify a pattern for the selectors of rules nested within rules.
+  ///
+  /// Equivalent to Stylelint's `selector-nested-pattern` rule.
+  /// The primary option is a regex pattern string that nested selectors must match.
+  pub struct SelectorNestedPattern => SelectorNestedPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for the selectors of rules nested within rules",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for the selectors of rules nested within rules"
+/// `selector-nested-pattern` as configured.
+pub struct SelectorNestedPatternCheck {
+  /// The pattern nested selectors must match; with none configured the
+  /// rule reports nothing.
+  pattern: Option<Pattern>,
+}
+
+impl SelectorNestedPatternCheck {
+  /// Stylelint's options: a regular expression, as a string or `/regex/`,
+  /// then `splitList`, which gale accepts but does not yet apply (it always
+  /// tests each selector of a list).  Lookarounds such as `^(?!.*&[-_])`
+  /// work, and a pattern that does not compile is an invalid option.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.flag("splitList");
+    options.finish()?;
+    Ok(Self { pattern })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNestedPatternCheck {
   /// Flags nested selectors that do not match the configured pattern. Uses
   /// `fancy_regex` so lookarounds in the pattern work.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
-
-    // Read the pattern from options. If no pattern configured, skip.
-    let pattern_str = match ctx.primary_option_str() {
-      Some(p) => p,
-      None => return vec![],
-    };
-
-    // Lookaheads/lookbehinds (e.g. "^(?!.*&[-_])") are supported, and a
-    // pattern that does not compile is reported as an invalid option.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
+    let Some(pattern) = &self.pattern else {
+      return vec![];
     };
 
     let mut diags = Vec::new();
-    check_nested_selectors(self, rule, &re, pattern_str, &mut diags);
+    check_nested_selectors(rule, pattern, &mut diags);
     diags
   }
 }
 
 /// Reports each nested selector, split on commas, that fails the pattern.
 fn check_nested_selectors(
-  rule: &SelectorNestedPattern,
   style: &gale_css_parser::StyleRule,
-  re: &pattern::Regex,
-  pattern_str: &str,
+  pattern: &Pattern,
   diags: &mut Vec<Diagnostic>,
 ) {
+  let pattern_str = &pattern.source;
   for child in &style.children {
     let selector = child.selector.trim();
     // Check each selector in a selector list (split by comma)
@@ -65,13 +72,12 @@ fn check_nested_selectors(
       if sel.is_empty() {
         continue;
       }
-      if !pattern::is_match(re, sel) {
+      if !pattern.is_match(sel) {
         diags.push(
           Diagnostic::new(
-            rule.name(),
+            NAME,
             format!("Expected nested selector \"{sel}\" to match pattern \"{pattern_str}\""),
           )
-          .severity(rule.default_severity())
           .span(Span::new(child.span.offset, child.span.length)),
         );
         // Only report once per selector list, not per individual selector
@@ -79,7 +85,7 @@ fn check_nested_selectors(
       }
     }
     // Recurse into deeper nesting
-    check_nested_selectors(rule, child, re, pattern_str, diags);
+    check_nested_selectors(child, pattern, diags);
   }
 }
 
@@ -88,7 +94,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx_with_options};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -102,6 +108,7 @@ mod tests {
   #[test]
   fn reports_nested_without_ampersand() {
     let opts = serde_json::json!("^&");
+    let rule = configured(&SelectorNestedPattern, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -115,7 +122,7 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNestedPattern.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(".child"));
   }
@@ -123,6 +130,7 @@ mod tests {
   #[test]
   fn allows_nested_with_ampersand() {
     let opts = serde_json::json!("^&");
+    let rule = configured(&SelectorNestedPattern, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -136,13 +144,14 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNestedPattern.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn no_diagnostics_for_no_children() {
     let opts = serde_json::json!("^&");
+    let rule = configured(&SelectorNestedPattern, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -150,12 +159,13 @@ mod tests {
       span: ParserSpan::new(0, 20),
       ..Default::default()
     });
-    let d = SelectorNestedPattern.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn no_diagnostics_without_options() {
+    let rule = configured(&SelectorNestedPattern, None);
     let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
@@ -169,7 +179,7 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNestedPattern.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert!(d.is_empty());
   }
 
@@ -178,6 +188,7 @@ mod tests {
     // Pattern like patternfly uses: "^(?!.*&[-_])"
     // This pattern rejects selectors containing &- or &_
     let opts = serde_json::json!("^(?!.*&[-_])");
+    let rule = configured(&SelectorNestedPattern, opts.clone());
     let ctx = scss_ctx_with_options(&opts);
     // &__child should be rejected (contains &_)
     let node = CssNode::Style(StyleRule {
@@ -192,7 +203,7 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNestedPattern.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert_eq!(d.len(), 1);
 
     // &:hover should be accepted (no &- or &_)
@@ -208,7 +219,7 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d2 = SelectorNestedPattern.check(&node2, &ctx);
+    let d2 = rule.check(&node2, &ctx);
     assert!(d2.is_empty());
 
     // .child without & should also be accepted (no &-)
@@ -224,7 +235,20 @@ mod tests {
       span: ParserSpan::new(0, 40),
       nested_at_rules: Vec::new(),
     });
-    let d3 = SelectorNestedPattern.check(&node3, &ctx);
+    let d3 = rule.check(&node3, &ctx);
     assert!(d3.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(["^&", { "splitList": true }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"selector-nested-pattern\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["^&", { "splitList": "yes" }])),
+      ["Invalid value \"yes\" for option \"splitList\" of rule \"selector-nested-pattern\""]
+    );
   }
 }

@@ -1,26 +1,84 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the specificity of selectors.
-///
-/// Accepts a specificity string like `"0,2,0"` as the primary option,
-/// representing max (id, class, type). Defaults to `"0,2,0"` if no option
-/// is provided.
-///
-/// Equivalent to Stylelint's `selector-max-specificity` rule.
-///
-/// ## Options
-///
-/// Primary: `"<id>,<class>,<type>"` — maximum allowed specificity.
-///
-/// Secondary:
-/// - `ignoreSelectors: [":is", ":has", "/my-/", ...]` — pseudo-classes/selectors
-///   matching these strings or regex patterns have their specificity contribution
-///   ignored.
-pub struct SelectorMaxSpecificity;
+const NAME: &str = "selector-max-specificity";
+
+declare_rule! {
+  /// Limit the specificity of selectors.
+  ///
+  /// Accepts a specificity string like `"0,2,0"` as the primary option,
+  /// representing max (id, class, type). Defaults to `"0,2,0"` if no option
+  /// is provided.
+  ///
+  /// Equivalent to Stylelint's `selector-max-specificity` rule.
+  ///
+  /// ## Options
+  ///
+  /// Primary: `"<id>,<class>,<type>"` — maximum allowed specificity.
+  ///
+  /// Secondary:
+  /// - `ignoreSelectors: [":is", ":has", "/my-/", ...]` — pseudo-classes/selectors
+  ///   matching these strings or regex patterns have their specificity contribution
+  ///   ignored.
+  pub struct SelectorMaxSpecificity => SelectorMaxSpecificityCheck {
+    name: NAME,
+    description: "Limit the specificity of selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-max-specificity` as configured.
+pub struct SelectorMaxSpecificityCheck {
+  config: Config,
+}
+
+impl SelectorMaxSpecificityCheck {
+  /// Stylelint's options: a specificity written `"a,b,c"`, then
+  /// `ignoreSelectors` (names or `/regex/` entries).  Gale reads no
+  /// specificity as `"0,2,0"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_value(&[Accept::Test(is_specificity)]);
+    let ignore_selectors = options.strings("ignoreSelectors");
+    options.finish()?;
+    let (max_id, max_class, max_type) = max
+      .and_then(serde_json::Value::as_str)
+      .and_then(parse_specificity_option)
+      .unwrap_or((DEFAULT_MAX_ID, DEFAULT_MAX_CLASS, DEFAULT_MAX_TYPE));
+    let ignore_selectors = ignore_selectors
+      .iter()
+      .map(|s| match pattern::regex_entry(s) {
+        Some(re) => IgnorePattern::Regex(re),
+        None => IgnorePattern::Exact(s.to_string()),
+      })
+      .collect();
+    Ok(Self {
+      config: Config {
+        max_id,
+        max_class,
+        max_type,
+        ignore_selectors,
+      },
+    })
+  }
+}
+
+/// Stylelint's test of the primary option: a string of three whole numbers
+/// separated by commas.
+fn is_specificity(value: &serde_json::Value) -> bool {
+  value.as_str().is_some_and(|text| {
+    let parts: Vec<&str> = text.split(',').collect();
+    parts.len() == 3
+      && parts
+        .iter()
+        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+  })
+}
 
 const DEFAULT_MAX_ID: usize = 0;
 const DEFAULT_MAX_CLASS: usize = 2;
@@ -52,39 +110,6 @@ enum IgnorePattern {
 }
 
 impl Config {
-  /// Reads the `id,class,type` maximum and the `ignoreSelectors` secondary.
-  fn from_context(ctx: &RuleContext) -> Self {
-    let (max_id, max_class, max_type) = ctx
-      .primary_option()
-      .and_then(|v| v.as_str())
-      .and_then(parse_specificity_option)
-      .unwrap_or((DEFAULT_MAX_ID, DEFAULT_MAX_CLASS, DEFAULT_MAX_TYPE));
-
-    let secondary = ctx.secondary_options();
-
-    let ignore_selectors: Vec<IgnorePattern> = secondary
-      .and_then(|v| v.get("ignoreSelectors"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str())
-          .map(|s| match pattern::regex_entry(s) {
-            Some(re) => IgnorePattern::Regex(re),
-            None => IgnorePattern::Exact(s.to_string()),
-          })
-          .collect()
-      })
-      .unwrap_or_default();
-
-    Config {
-      max_id,
-      max_class,
-      max_type,
-      ignore_selectors,
-    }
-  }
-
   /// Whether this pseudo-class's specificity contribution is ignored.
   fn is_pseudo_ignored(&self, pseudo_name: &str) -> bool {
     // Check against patterns like ":is", ":has", "/my-/"
@@ -132,19 +157,7 @@ impl Config {
   }
 }
 
-impl Rule for SelectorMaxSpecificity {
-  fn name(&self) -> &'static str {
-    "selector-max-specificity"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the specificity of selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorMaxSpecificityCheck {
   /// Flags selectors whose specificity exceeds the maximum, stripping
   /// preprocessor interpolation first.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -152,7 +165,7 @@ impl Rule for SelectorMaxSpecificity {
       return vec![];
     };
 
-    let config = Config::from_context(ctx);
+    let config = &self.config;
 
     let selector = if matches!(
       ctx.syntax,
@@ -177,18 +190,17 @@ impl Rule for SelectorMaxSpecificity {
         continue;
       }
 
-      let (ids, classes, types) = compute_single_specificity(sel, &config);
+      let (ids, classes, types) = compute_single_specificity(sel, config);
 
       if config.exceeds_max(ids, classes, types) {
         diags.push(
                     Diagnostic::new(
-                        self.name(),
+                        NAME,
                         format!(
                             "Expected selector \"{sel}\" to have a specificity no more than \"{},{},{}\", but got \"{ids},{classes},{types}\"",
                             config.max_id, config.max_class, config.max_type,
                         ),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(rule.span.offset, rule.span.length)),
                 );
       }
@@ -532,7 +544,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -545,50 +557,56 @@ mod tests {
 
   #[test]
   fn reports_high_specificity() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // #id has specificity 1,0,0 which exceeds default 0,2,0
-    let d = SelectorMaxSpecificity.check(&style_with_selector("#id"), &ctx());
+    let d = rule.check(&style_with_selector("#id"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
   }
 
   #[test]
   fn allows_low_specificity() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // .a .b has specificity 0,2,0 which is within default 0,2,0
-    let d = SelectorMaxSpecificity.check(&style_with_selector(".a .b"), &ctx());
+    let d = rule.check(&style_with_selector(".a .b"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_too_many_classes() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // .a.b.c has specificity 0,3,0 which exceeds default 0,2,0
-    let d = SelectorMaxSpecificity.check(&style_with_selector(".a.b.c"), &ctx());
+    let d = rule.check(&style_with_selector(".a.b.c"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0,3,0"));
   }
 
   #[test]
   fn where_has_zero_specificity() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // :where(#id) should have (0,0,0), well under the limit
-    let d = SelectorMaxSpecificity.check(&style_with_selector(":where(#id)"), &ctx());
+    let d = rule.check(&style_with_selector(":where(#id)"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn is_takes_max_argument_specificity() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // :is(#id) should have (1,0,0) which exceeds limit
-    let d = SelectorMaxSpecificity.check(&style_with_selector(":is(#id)"), &ctx());
+    let d = rule.check(&style_with_selector(":is(#id)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
 
     // :is(.a) should have (0,1,0) which is within default 0,2,0
-    let d = SelectorMaxSpecificity.check(&style_with_selector(":is(.a)"), &ctx());
+    let d = rule.check(&style_with_selector(":is(.a)"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn not_takes_max_argument_specificity() {
+    let rule = configured(&SelectorMaxSpecificity, None);
     // :not(#id) should have (1,0,0) which exceeds limit
-    let d = SelectorMaxSpecificity.check(&style_with_selector(":not(#id)"), &ctx());
+    let d = rule.check(&style_with_selector(":not(#id)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
   }
@@ -596,18 +614,20 @@ mod tests {
   #[test]
   fn custom_option_allows_higher_specificity() {
     let opts = serde_json::json!(["0,4,1"]);
+    let rule = configured(&SelectorMaxSpecificity, opts.clone());
     let c = ctx_with_options(&opts);
     // .a.b.c.d has specificity 0,4,0 -- within "0,4,1"
-    let d = SelectorMaxSpecificity.check(&style_with_selector(".a.b.c.d"), &c);
+    let d = rule.check(&style_with_selector(".a.b.c.d"), &c);
     assert!(d.is_empty());
   }
 
   #[test]
   fn custom_option_restricts_specificity() {
     let opts = serde_json::json!(["0,1,0"]);
+    let rule = configured(&SelectorMaxSpecificity, opts.clone());
     let c = ctx_with_options(&opts);
     // .a.b has specificity 0,2,0 -- exceeds "0,1,0"
-    let d = SelectorMaxSpecificity.check(&style_with_selector(".a.b"), &c);
+    let d = rule.check(&style_with_selector(".a.b"), &c);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0,1,0"));
   }
@@ -622,8 +642,9 @@ mod tests {
     // id: 0<=0, class: 0<=2 (less), so no exceed.
     // Only exceeds if a higher bucket is equal and a lower bucket exceeds.
     let opts = serde_json::json!(["0,2,0"]);
+    let rule = configured(&SelectorMaxSpecificity, opts.clone());
     let c = ctx_with_options(&opts);
-    let d = SelectorMaxSpecificity.check(&style_with_selector("span a"), &c);
+    let d = rule.check(&style_with_selector("span a"), &c);
     assert!(d.is_empty(), "span a should be allowed with max 0,2,0");
   }
 
@@ -638,5 +659,29 @@ mod tests {
     assert_eq!(parse_specificity_option("abc"), None);
     assert_eq!(parse_specificity_option("0,2"), None);
     assert_eq!(parse_specificity_option("0,2,0,1"), None);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The primary option is tested by a function inside a list, so Stylelint
+    // words its problem with "value".
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["0,3,1", { "ignoreSelectors": [":is", "/^:my-/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("0, 2, 0")),
+      ["Invalid option value \"0, 2, 0\" for rule \"selector-max-specificity\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["0,2,0", { "ignoreSelectors": [1] }])
+      ),
+      ["Invalid value \"1\" for option \"ignoreSelectors\" of rule \"selector-max-specificity\""]
+    );
   }
 }
