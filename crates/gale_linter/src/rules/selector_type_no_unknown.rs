@@ -5,6 +5,7 @@ use crate::data::is_known_html_element;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::strip_line_comments;
 
 const NAME: &str = "selector-type-no-unknown";
 
@@ -55,7 +56,7 @@ impl Check for SelectorTypeNoUnknownCheck {
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
     ) {
-      strip_scss_line_comments(&rule.selector)
+      strip_line_comments(&rule.selector)
     } else {
       rule.selector.clone()
     };
@@ -229,34 +230,6 @@ fn extract_type_selectors(selector: &str) -> Vec<String> {
   }
 
   types
-}
-
-/// Strip `//` line comments from a selector string (SCSS/Less).
-/// Handles both full-line comments and inline trailing comments.
-fn strip_scss_line_comments(selector: &str) -> String {
-  selector
-    .lines()
-    .map(|line| {
-      // Find `//` that's not inside a string
-      let mut in_single = false;
-      let mut in_double = false;
-      let bytes = line.as_bytes();
-      let mut i = 0;
-      while i < bytes.len() {
-        match bytes[i] {
-          b'\'' if !in_double => in_single = !in_single,
-          b'"' if !in_single => in_double = !in_double,
-          b'/' if !in_single && !in_double && i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-            return &line[..i];
-          }
-          _ => {}
-        }
-        i += 1;
-      }
-      line
-    })
-    .collect::<Vec<_>>()
-    .join("\n")
 }
 
 #[cfg(test)]

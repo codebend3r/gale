@@ -282,6 +282,15 @@ fn strip_redundant_escape_spaces(text: &str) -> String {
 /// PostCSS's `rule.selectors`: the selector split at commas outside
 /// parentheses, brackets and strings, each trimmed.
 pub fn rule_selectors(selector: &str) -> Vec<&str> {
+  split_selectors(selector)
+    .into_iter()
+    .map(|(_, part)| part.trim())
+    .collect()
+}
+
+/// The selectors of a list as [`rule_selectors`] splits it, untrimmed and
+/// with the offset each starts at.
+pub fn split_selectors(selector: &str) -> Vec<(usize, &str)> {
   let bytes = selector.as_bytes();
   let mut parts = Vec::new();
   let mut depth = 0usize;
@@ -301,13 +310,13 @@ pub fn rule_selectors(selector: &str) -> Vec<&str> {
       (None, b'(' | b'[') => depth += 1,
       (None, b')' | b']') => depth = depth.saturating_sub(1),
       (None, b',') if depth == 0 => {
-        parts.push(selector[start..i].trim());
+        parts.push((start, &selector[start..i]));
         start = i + 1;
       }
       _ => {}
     }
   }
-  parts.push(selector[start..].trim());
+  parts.push((start, &selector[start..]));
   parts
 }
 

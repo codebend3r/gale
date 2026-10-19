@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -121,11 +122,6 @@ fn mentions_hue_function(value: &str) -> bool {
       }
     })
   })
-}
-
-/// Whether `b` is a regex `\w` character.
-fn is_word_byte(b: u8) -> bool {
-  b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// The hue argument of a hue color function, skipping `from <color>` in

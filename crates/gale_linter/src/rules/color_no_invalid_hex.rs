@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
+use crate::hex_colors::is_valid_hex;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -37,7 +38,7 @@ impl Check for ColorNoInvalidHexCheck {
     };
     let mut diags = Vec::new();
     for decl in &rule.declarations {
-      for hex in find_hex_colors(&decl.value) {
+      for hex in hex_candidates(&decl.value) {
         if !is_valid_hex(&hex) {
           diags.push(
             Diagnostic::new(NAME, format!("Unexpected invalid hex color \"{hex}\""))
@@ -50,12 +51,14 @@ impl Check for ColorNoInvalidHexCheck {
   }
 }
 
-/// Find hex color candidates in a value string (# followed by hex-like chars).
+/// The words after a `#` in a value: hex colors, valid or not.  Unlike
+/// [`crate::hex_colors::find_hex_colors`] it reads any letters and digits,
+/// as an invalid color is what this rule looks for.
 /// Skips:
 /// - Content inside `url(…)` (URLs may contain `#fragment` references)
 /// - Content after `//` (SCSS line comments that may leak into the value)
 /// - `#{}` SCSS interpolation
-fn find_hex_colors(value: &str) -> Vec<String> {
+fn hex_candidates(value: &str) -> Vec<String> {
   let mut colors = Vec::new();
   let chars: Vec<char> = value.chars().collect();
   let len = chars.len();
@@ -121,14 +124,6 @@ fn find_hex_colors(value: &str) -> Vec<String> {
   }
 
   colors
-}
-
-/// Check if a hex color is valid (#RGB, #RGBA, #RRGGBB, #RRGGBBAA).
-fn is_valid_hex(hex: &str) -> bool {
-  let digits = &hex[1..]; // strip #
-  let valid_len = matches!(digits.len(), 3 | 4 | 6 | 8);
-  let valid_chars = digits.chars().all(|c| c.is_ascii_hexdigit());
-  valid_len && valid_chars
 }
 
 #[cfg(test)]

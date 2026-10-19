@@ -4,6 +4,7 @@ use gale_diagnostics::Diagnostic;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::strip_line_comments;
 
 const NAME: &str = "selector-max-compound-selectors";
 
@@ -58,7 +59,7 @@ impl Check for SelectorMaxCompoundSelectorsCheck {
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
     ) {
-      strip_scss_line_comments(&rule.selector)
+      strip_line_comments(&rule.selector)
     } else {
       rule.selector.clone()
     };
@@ -145,58 +146,6 @@ fn count_compound_selectors(selector: &str) -> usize {
   }
 
   count
-}
-
-/// Strip `//` line comments from a selector string (SCSS/Less).
-///
-/// Handles both full-line comments (`// comment`) and inline comments
-/// at the end of a line (e.g., `dt, // TODO: Deprecate`).
-/// Also strips lines that become empty after comment removal.
-fn strip_scss_line_comments(selector: &str) -> String {
-  selector
-    .lines()
-    .map(|line| {
-      // Find `//` that is not inside a string or url()
-      if let Some(pos) = find_line_comment(line) {
-        &line[..pos]
-      } else {
-        line
-      }
-    })
-    .filter(|line| !line.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join("\n")
-}
-
-/// Find the byte position of a `//` line comment in a SCSS line,
-/// ignoring `//` inside strings or `url()`.
-fn find_line_comment(line: &str) -> Option<usize> {
-  let bytes = line.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-  while i < len {
-    match bytes[i] {
-      // Skip single- and double-quoted strings
-      b'\'' | b'"' => {
-        let quote = bytes[i];
-        i += 1;
-        while i < len && bytes[i] != quote {
-          if bytes[i] == b'\\' {
-            i += 1; // skip escaped char
-          }
-          i += 1;
-        }
-        i += 1; // skip closing quote
-      }
-      b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-        return Some(i);
-      }
-      _ => {
-        i += 1;
-      }
-    }
-  }
-  None
 }
 
 #[cfg(test)]

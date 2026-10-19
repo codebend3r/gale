@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::hex_colors::is_valid_hex;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -104,14 +105,6 @@ impl Check for ColorHexLengthCheck {
     }
     diags
   }
-}
-
-/// Whether `word` is a hex color as Stylelint's `isValidHex` sees it: `#`
-/// followed by 3, 4, 6 or 8 hex digits.
-fn is_valid_hex(word: &str) -> bool {
-  word.strip_prefix('#').is_some_and(|digits| {
-    matches!(digits.len(), 3 | 4 | 6 | 8) && digits.bytes().all(|b| b.is_ascii_hexdigit())
-  })
 }
 
 /// Check if a 6-digit hex can be shortened to 3, or 8-digit to 4.  Digits

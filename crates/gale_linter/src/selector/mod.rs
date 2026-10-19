@@ -338,3 +338,53 @@ pub fn is_standard_syntax_selector(selector: &str) -> bool {
     || selector.contains("@{")
     || selector.contains('$'))
 }
+
+/// The selector with its `//` comments (SCSS, Less) cut from each line,
+/// leaving out the lines that held nothing else.  A `//` inside a quoted
+/// string is not a comment.
+pub fn strip_line_comments(selector: &str) -> String {
+  selector
+    .lines()
+    .map(|line| {
+      // A `//` outside a string starts a comment.
+      if let Some(pos) = find_line_comment(line) {
+        &line[..pos]
+      } else {
+        line
+      }
+    })
+    .filter(|line| !line.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+/// Offset of the `//` that starts a line comment in `line`, outside
+/// quoted strings.
+fn find_line_comment(line: &str) -> Option<usize> {
+  let bytes = line.as_bytes();
+  let len = bytes.len();
+  let mut i = 0;
+  while i < len {
+    match bytes[i] {
+      // Skip single- and double-quoted strings
+      b'\'' | b'"' => {
+        let quote = bytes[i];
+        i += 1;
+        while i < len && bytes[i] != quote {
+          if bytes[i] == b'\\' {
+            i += 1; // skip escaped char
+          }
+          i += 1;
+        }
+        i += 1; // skip closing quote
+      }
+      b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
+        return Some(i);
+      }
+      _ => {
+        i += 1;
+      }
+    }
+  }
+  None
+}

@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::braces::is_block_single_line;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -214,26 +215,6 @@ fn is_empty_block(source: &str, closing_brace_pos: usize) -> bool {
         // Check if everything between { and } is whitespace
         let between = &source[j + 1..closing_brace_pos];
         return between.trim().is_empty();
-      }
-    }
-  }
-  true
-}
-
-/// Whether the block closing at this brace opens on the same line.
-fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
-  let bytes = source.as_bytes();
-  let mut depth = 1;
-  let mut j = closing_brace_pos;
-  while j > 0 {
-    j -= 1;
-    if bytes[j] == b'}' {
-      depth += 1;
-    } else if bytes[j] == b'{' {
-      depth -= 1;
-      if depth == 0 {
-        let segment = &source[j..closing_brace_pos];
-        return !segment.contains('\n');
       }
     }
   }

@@ -4,6 +4,7 @@ use std::path::Path;
 use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -323,7 +324,6 @@ fn check_declaration(
 
 struct VarRef {
   name: String,
-  has_fallback: bool,
 }
 
 /// Find all `var(--name)` references in a value string, at all nesting levels.
@@ -356,7 +356,7 @@ fn find_var_refs_in_value(value: &str) -> Vec<VarRef> {
 
       if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
         let name_start = i;
-        while i < len && is_name_char(bytes[i]) {
+        while i < len && is_word_or_hyphen_byte(bytes[i]) {
           i += 1;
         }
         let prop_name = &value[name_start..i];
@@ -366,11 +366,8 @@ fn find_var_refs_in_value(value: &str) -> Vec<VarRef> {
           i += 1;
         }
 
-        let has_fallback = i < len && bytes[i] == b',';
-
         refs.push(VarRef {
           name: prop_name.to_string(),
-          has_fallback,
         });
 
         continue;
@@ -387,12 +384,6 @@ fn find_var_refs_in_value(value: &str) -> Vec<VarRef> {
 #[inline]
 fn is_whitespace(b: u8) -> bool {
   b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
-}
-
-/// Whether the byte can appear in a custom property name.
-#[inline]
-fn is_name_char(b: u8) -> bool {
-  b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
 #[cfg(test)]
@@ -450,9 +441,7 @@ mod tests {
     let refs = find_var_refs_in_value("var(--a, var(--b))");
     assert_eq!(refs.len(), 2);
     assert_eq!(refs[0].name, "--a");
-    assert!(refs[0].has_fallback);
     assert_eq!(refs[1].name, "--b");
-    assert!(!refs[1].has_fallback);
   }
 
   #[test]

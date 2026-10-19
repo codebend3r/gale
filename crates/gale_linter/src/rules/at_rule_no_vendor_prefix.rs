@@ -36,9 +36,13 @@ impl AtRuleNoVendorPrefixCheck {
   }
 }
 
-/// Strip the vendor prefix from an at-rule name.
-/// E.g. `-webkit-keyframes` → `keyframes`.
-fn strip_vendor_prefix(name: &str) -> &str {
+/// The at-rule name without a `-webkit-`, `-moz-`, `-ms-` or `-o-` prefix:
+/// `-webkit-keyframes` → `keyframes`.
+///
+/// Not Stylelint's `unprefix` (`/-\w+-/`): Stylelint reports only the names
+/// Autoprefixer handles, where the two agree, while gale reports every name
+/// starting with `-` and leaves an unknown prefix (`@--my-rule`) in place.
+fn strip_known_vendor_prefix(name: &str) -> &str {
   let lower = name.to_ascii_lowercase();
   for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
     if lower.starts_with(prefix) {
@@ -59,7 +63,7 @@ impl Check for AtRuleNoVendorPrefixCheck {
       return vec![];
     }
     if rule.name.starts_with('-') {
-      let unprefixed = strip_vendor_prefix(&rule.name);
+      let unprefixed = strip_known_vendor_prefix(&rule.name);
       // Search the source within the at-rule span for `@-prefix-name`
       let rule_start = rule.span.offset;
       let rule_end = rule_start + rule.span.length;

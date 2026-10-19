@@ -4,6 +4,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::postcss::split_selectors;
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
@@ -75,7 +76,10 @@ impl Check for SelectorClassPatternCheck {
     // class within the source.  We split by comma, extract classes from
     // each part, and compute byte offsets for accurate reporting.
     let selector_start = rule.span.offset;
-    let parts = split_selector_list(&rule.selector);
+    let parts: Vec<&str> = split_selectors(&rule.selector)
+      .into_iter()
+      .map(|(_, part)| part)
+      .collect();
     let mut cursor: usize = 0; // byte position within the selector string
 
     for (idx, part) in parts.iter().enumerate() {
@@ -118,28 +122,6 @@ impl Check for SelectorClassPatternCheck {
 /// and produces a human-readable "to be kebab-case" message for it.
 fn is_kebab_case_pattern(pattern: &str) -> bool {
   pattern == DEFAULT_PATTERN || pattern == "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$"
-}
-
-/// Split a selector list by commas, respecting parentheses and brackets.
-fn split_selector_list(selector: &str) -> Vec<&str> {
-  let mut parts = Vec::new();
-  let mut depth = 0usize;
-  let mut start = 0;
-  let bytes = selector.as_bytes();
-
-  for (i, &b) in bytes.iter().enumerate() {
-    match b {
-      b'(' | b'[' => depth += 1,
-      b')' | b']' => depth = depth.saturating_sub(1),
-      b',' if depth == 0 => {
-        parts.push(&selector[start..i]);
-        start = i + 1;
-      }
-      _ => {}
-    }
-  }
-  parts.push(&selector[start..]);
-  parts
 }
 
 /// Extract class names from a selector along with their byte offsets
@@ -208,69 +190,6 @@ fn extract_class_names_with_offsets(selector: &str) -> Vec<(String, usize)> {
       }
     } else {
       byte_pos += char_byte_len;
-      i += 1;
-    }
-  }
-
-  classes
-}
-
-/// Pulls the class names out of a selector, skipping `.` that does not start
-/// a valid identifier.
-fn extract_class_names(selector: &str) -> Vec<String> {
-  let mut classes = Vec::new();
-  let chars: Vec<char> = selector.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
-
-  while i < len {
-    if chars[i] == '.' {
-      i += 1;
-      let start = i;
-      // A CSS class selector must start with a letter, hyphen, underscore,
-      // or non-ASCII character after the dot. If the next character is a
-      // digit, this is a numeric value (e.g. `.5` in `opacity: .5`), not
-      // a class selector.
-      if i < len && chars[i].is_ascii_digit() {
-        while i < len
-          && (chars[i].is_ascii_alphanumeric()
-            || chars[i] == '.'
-            || chars[i] == '-'
-            || chars[i] == '_')
-        {
-          i += 1;
-        }
-        continue;
-      }
-      // CSS class: ident chars (alphanum, hyphen, underscore, non-ASCII)
-      // Also consume SCSS interpolation #{...} within class names
-      while i < len {
-        if chars[i].is_ascii_alphanumeric()
-          || chars[i] == '-'
-          || chars[i] == '_'
-          || !chars[i].is_ascii()
-        {
-          i += 1;
-        } else if chars[i] == '#' && i + 1 < len && chars[i + 1] == '{' {
-          // Consume SCSS interpolation #{...}
-          i += 2; // skip #{
-          let mut depth = 1;
-          while i < len && depth > 0 {
-            if chars[i] == '{' {
-              depth += 1;
-            } else if chars[i] == '}' {
-              depth -= 1;
-            }
-            i += 1;
-          }
-        } else {
-          break;
-        }
-      }
-      if i > start {
-        classes.push(chars[start..i].iter().collect());
-      }
-    } else {
       i += 1;
     }
   }
@@ -377,12 +296,18 @@ mod tests {
   #[test]
   fn extract_class_names_skips_numeric_dot_values() {
     // Verify the extraction function itself skips numeric values
-    assert!(extract_class_names(".5").is_empty());
-    assert!(extract_class_names(".15").is_empty());
-    assert!(extract_class_names(".8").is_empty());
+    let names = |selector| -> Vec<String> {
+      extract_class_names_with_offsets(selector)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+    };
+    assert!(names(".5").is_empty());
+    assert!(names(".15").is_empty());
+    assert!(names(".8").is_empty());
     // But real class names still work
-    assert_eq!(extract_class_names(".foo"), vec!["foo"]);
-    assert_eq!(extract_class_names(".foo-bar"), vec!["foo-bar"]);
+    assert_eq!(names(".foo"), vec!["foo"]);
+    assert_eq!(names(".foo-bar"), vec!["foo-bar"]);
   }
 
   #[test]

@@ -143,7 +143,6 @@ struct BrowserCompatOptions {
   browserslist: Vec<String>,
   allow_features: HashSet<String>,
   allow_prefix: bool,
-  #[allow(dead_code)]
   allow_flagged: bool,
   allow_partial_implementation: bool,
 }
@@ -211,7 +210,6 @@ struct CompatEntry {
 #[derive(Clone)]
 struct SupportStatement {
   version_added: VersionAdded,
-  #[allow(dead_code)]
   version_removed: Option<String>,
   prefix: Option<String>,
   alternative_name: Option<String>,
@@ -373,7 +371,6 @@ fn parse_single_support(val: &serde_json::Value) -> SupportStatement {
 #[derive(Clone, Debug)]
 struct BrowserTarget {
   /// The browserslist identifier (e.g. "chrome", "firefox").
-  #[allow(dead_code)]
   browserslist_id: String,
   /// The MDN identifier (e.g. "chrome", "firefox", "safari_ios").
   mdn_id: String,
@@ -860,7 +857,7 @@ fn check_property(
   }
 
   // Try stripping vendor prefix
-  if let Some(stripped) = strip_vendor_prefix_prop(prop) {
+  if let Some(stripped) = strip_vendor_prefix(prop) {
     let feature_id = format!("properties.{}", stripped);
     if let Some(entry) = compat_data.get(&feature_id) {
       if opts.allow_features.contains(&feature_id) {
@@ -956,7 +953,7 @@ fn check_selectors(
         }
 
         // Try stripping vendor prefix from pseudo name
-        if let Some(stripped) = strip_vendor_prefix_pseudo(pseudo_name) {
+        if let Some(stripped) = strip_vendor_prefix(pseudo_name) {
           let feature_id = format!("selectors.{}", stripped);
           if let Some(entry) = compat_data.get(&feature_id)
             && !opts.allow_features.contains(&feature_id)
@@ -1031,22 +1028,12 @@ fn check_support_and_report(
 
 // ── Utility functions ───────────────────────────────────────────────────
 
-/// The unprefixed property name, or `None` if it carries no vendor prefix.
-fn strip_vendor_prefix_prop(prop: &str) -> Option<&str> {
+/// The name after a `-webkit-`, `-moz-`, `-ms-` or `-o-` prefix, or `None`
+/// without one.
+fn strip_vendor_prefix(prop: &str) -> Option<&str> {
   let prefixes = ["-webkit-", "-moz-", "-ms-", "-o-"];
   for prefix in &prefixes {
     if let Some(stripped) = prop.strip_prefix(prefix) {
-      return Some(stripped);
-    }
-  }
-  None
-}
-
-/// The unprefixed pseudo name, or `None` if it carries no vendor prefix.
-fn strip_vendor_prefix_pseudo(name: &str) -> Option<&str> {
-  let prefixes = ["-webkit-", "-moz-", "-ms-", "-o-"];
-  for prefix in &prefixes {
-    if let Some(stripped) = name.strip_prefix(prefix) {
       return Some(stripped);
     }
   }
@@ -1075,25 +1062,22 @@ mod tests {
   use super::*;
 
   #[test]
-  fn test_strip_vendor_prefix_prop() {
+  fn strips_vendor_prefix_from_properties() {
     assert_eq!(
-      strip_vendor_prefix_prop("-webkit-tap-highlight-color"),
+      strip_vendor_prefix("-webkit-tap-highlight-color"),
       Some("tap-highlight-color")
     );
-    assert_eq!(
-      strip_vendor_prefix_prop("-moz-appearance"),
-      Some("appearance")
-    );
-    assert_eq!(strip_vendor_prefix_prop("color"), None);
+    assert_eq!(strip_vendor_prefix("-moz-appearance"), Some("appearance"));
+    assert_eq!(strip_vendor_prefix("color"), None);
   }
 
   #[test]
-  fn test_strip_vendor_prefix_pseudo() {
+  fn strips_vendor_prefix_from_pseudos() {
     assert_eq!(
-      strip_vendor_prefix_pseudo("-webkit-inner-spin-button"),
+      strip_vendor_prefix("-webkit-inner-spin-button"),
       Some("inner-spin-button")
     );
-    assert_eq!(strip_vendor_prefix_pseudo("hover"), None);
+    assert_eq!(strip_vendor_prefix("hover"), None);
   }
 
   #[test]
