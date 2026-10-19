@@ -3,13 +3,12 @@
 //!
 //! Stylelint runs these as modules, and so does gale: [`node`] imports the
 //! file under Node.js and reads back the JSON it prints.  Without Node.js,
-//! gale reads the file without running it: it finds the exported object
-//! literal, inlines what relative imports and simple constants it can
-//! ([`imports`]), and rewrites the literal into JSON ([`to_json`]).
+//! [`fallback`] reads the file without running it, which covers a plain
+//! exported object, and gale warns about each part it had to skip.
 
-mod imports;
+mod fallback;
 mod node;
-mod to_json;
+mod scan;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,12 +16,6 @@ use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 use serde_json::Value;
-
-use imports::{
-  extract_reexport_require, find_variable_value, resolve_import_path, resolve_js_imports,
-  strip_import_lines, substitute_scalar_vars,
-};
-use to_json::js_object_to_json;
 
 use crate::{ConfigError, ConfigFile};
 
@@ -66,7 +59,7 @@ pub(crate) fn load_js_config(path: &Path) -> Result<ConfigFile, ConfigError> {
 }
 
 /// Evaluate the file at `path` under Node.js, or read it statically when
-/// Node.js is not available.
+/// Node.js is not available, warning about whatever had to be left out.
 fn evaluate(path: &Path) -> Result<Value, ConfigError> {
   let cwd = std::env::current_dir().unwrap_or_default();
   let shown = path.strip_prefix(&cwd).unwrap_or(path).display();
@@ -78,7 +71,7 @@ fn evaluate(path: &Path) -> Result<Value, ConfigError> {
            which cannot hold it"
         );
       }
-      evaluated.config
+      Some(evaluated.config)
     }
     Some(Err(message)) => {
       return Err(ConfigError::JavaScript(format!(
@@ -86,243 +79,38 @@ fn evaluate(path: &Path) -> Result<Value, ConfigError> {
       )));
     }
     None => {
-      let source = std::fs::read_to_string(path)?;
-      serde_json::to_value(parse_js_config(&source, path.parent())?)?
+      let reading = fallback::read(path)?;
+      for skipped in &reading.skipped {
+        eprintln!(
+          "warning: {shown}: Node.js was not found, so gale read this config without \
+           running it and skipped: {skipped}"
+        );
+      }
+      reading.value
     }
   };
-  if !value.is_object() {
-    return Err(ConfigError::JavaScript(
+  match value {
+    Some(value) if value.is_object() => Ok(value),
+    Some(_) => Err(ConfigError::JavaScript(
       "it does not export an object".to_string(),
-    ));
+    )),
+    None => Err(ConfigError::JavaScript(
+      "Node.js was not found, and gale could not read the export without running it".to_string(),
+    )),
   }
-  Ok(value)
-}
-
-/// Parse a JavaScript config file that uses `module.exports = { ... }`,
-/// `exports = { ... }`, or `export default { ... }` with a static object literal.
-///
-/// This does NOT execute JavaScript — it extracts the object literal and converts
-/// JS object syntax into valid JSON before deserializing.
-///
-/// When `file_dir` is provided, relative imports (`./` or `../`) are resolved
-/// by reading the imported file and inlining the exported value.
-fn parse_js_config(source: &str, file_dir: Option<&Path>) -> Result<ConfigFile, ConfigError> {
-  // Handle re-export pattern: `module.exports = require("./relative")`
-  // This is common in npm config packages where index.js delegates to another file.
-  if let Some(file_dir) = file_dir
-    && let Some(reexport_path) = extract_reexport_require(source)
-    && (reexport_path.starts_with("./") || reexport_path.starts_with("../"))
-    && let Some(resolved) = resolve_import_path(file_dir, &reexport_path)
-    && let Ok(contents) = std::fs::read_to_string(&resolved)
-  {
-    return parse_js_config(&contents, resolved.parent());
-  }
-
-  // Pre-process: resolve relative imports and inline their exported values.
-  let source = resolve_js_imports(source, file_dir);
-  // Strip remaining import/require lines that would confuse the JSON converter.
-  let source = strip_import_lines(&source);
-  // Substitute scalar const/let/var variables (e.g. `const OFF = null;`)
-  // so that bare identifiers in the exported object get replaced with their
-  // literal values before the JS→JSON conversion.
-  let source = substitute_scalar_vars(&source);
-
-  // Find the start of the exported object literal.
-  let markers = ["module.exports", "exports", "export default"];
-
-  let mut obj_start: Option<usize> = None;
-
-  for marker in &markers {
-    if let Some(pos) = source.find(marker) {
-      // Find the `=` after the marker (for module.exports / exports), or
-      // no `=` for `export default`.
-      let after_marker = pos + marker.len();
-      let rest = &source[after_marker..];
-      let brace_search = if *marker == "export default" {
-        rest
-      } else {
-        // Skip past the `=`
-        if let Some(eq_pos) = rest.find('=') {
-          &rest[eq_pos + 1..]
-        } else {
-          continue;
-        }
-      };
-
-      let trimmed = brace_search.trim_start();
-
-      // Check if the export is a variable reference (e.g. `export default config`)
-      // rather than a direct object literal.
-      if !trimmed.starts_with('{')
-        && trimmed
-          .chars()
-          .next()
-          .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
-      {
-        let ident_end = trimmed
-          .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
-          .unwrap_or(trimmed.len());
-        let var_name = &trimmed[..ident_end];
-        // Look for `const <var_name> = {` in the source
-        if let Some(value) = find_variable_value(&source, var_name)
-          && value.starts_with('{')
-        {
-          // Replace the variable reference with the inlined object
-          let source = format!(
-            "{}{}{}",
-            &source[..pos],
-            if *marker == "export default" {
-              "export default "
-            } else {
-              "module.exports = "
-            },
-            value
-          );
-          let new_marker_pos = pos;
-          let new_after = new_marker_pos
-            + if *marker == "export default" {
-              "export default ".len()
-            } else {
-              "module.exports = ".len()
-            };
-          if let Some(brace_offset) = source[new_after..].find('{') {
-            // We need to use the modified source for extraction
-            let extracted =
-              extract_braced_object(&source[new_after + brace_offset..]).ok_or_else(|| {
-                ConfigError::UnsupportedFormat(
-                  "failed to extract object literal from JS config".to_string(),
-                )
-              })?;
-            let json = js_object_to_json(&extracted);
-            return serde_json::from_str::<ConfigFile>(&json).map_err(ConfigError::from);
-          }
-        }
-      }
-
-      // Find the opening `{`
-      if let Some(brace_offset) = brace_search.find('{') {
-        let absolute_offset = source.len() - brace_search.len() + brace_offset;
-        obj_start = Some(absolute_offset);
-        break;
-      }
-    }
-  }
-
-  let start = obj_start.ok_or_else(|| {
-    ConfigError::UnsupportedFormat(
-      "no module.exports/export default object found in JS config".to_string(),
-    )
-  })?;
-
-  // Extract from opening `{` to the matching `}`, respecting strings and comments.
-  let extracted = extract_braced_object(&source[start..]).ok_or_else(|| {
-    ConfigError::UnsupportedFormat("failed to extract object literal from JS config".to_string())
-  })?;
-
-  // Convert JS object syntax to JSON.
-  let json = js_object_to_json(&extracted);
-
-  serde_json::from_str::<ConfigFile>(&json).map_err(ConfigError::from)
-}
-
-/// Extract a brace-balanced substring starting from the opening `{`.
-/// Returns the substring including the outer braces.
-fn extract_braced_object(s: &str) -> Option<String> {
-  let mut depth = 0i32;
-  let mut result = String::new();
-  let mut chars = s.chars().peekable();
-  let mut in_single_quote = false;
-  let mut in_double_quote = false;
-  let mut in_template = false;
-  let mut escape_next = false;
-
-  while let Some(c) = chars.next() {
-    if escape_next {
-      result.push(c);
-      escape_next = false;
-      continue;
-    }
-
-    if c == '\\' && (in_single_quote || in_double_quote || in_template) {
-      result.push(c);
-      escape_next = true;
-      continue;
-    }
-
-    // String handling
-    if !in_double_quote && !in_template && c == '\'' {
-      in_single_quote = !in_single_quote;
-      result.push(c);
-      continue;
-    }
-    if !in_single_quote && !in_template && c == '"' {
-      in_double_quote = !in_double_quote;
-      result.push(c);
-      continue;
-    }
-    if !in_single_quote && !in_double_quote && c == '`' {
-      in_template = !in_template;
-      result.push(c);
-      continue;
-    }
-
-    if in_single_quote || in_double_quote || in_template {
-      result.push(c);
-      continue;
-    }
-
-    // Line comments
-    if c == '/' {
-      if chars.peek() == Some(&'/') {
-        // Skip until end of line
-        for nc in chars.by_ref() {
-          if nc == '\n' {
-            break;
-          }
-        }
-        result.push(' '); // replace comment with space
-        continue;
-      }
-      if chars.peek() == Some(&'*') {
-        // Block comment — skip until */
-        chars.next(); // consume *
-        loop {
-          match chars.next() {
-            Some('*') if chars.peek() == Some(&'/') => {
-              chars.next(); // consume /
-              break;
-            }
-            None => break,
-            _ => {}
-          }
-        }
-        result.push(' ');
-        continue;
-      }
-    }
-
-    if c == '{' {
-      depth += 1;
-    } else if c == '}' {
-      depth -= 1;
-    }
-
-    result.push(c);
-
-    if depth == 0 {
-      return Some(result);
-    }
-  }
-
-  None // unbalanced braces
 }
 
 #[cfg(test)]
 mod tests {
-  use super::to_json::js_string_body_to_json;
   use super::*;
   use crate::RuleConfigValue;
   use crate::raw::UNEVALUATED_EXTENDS;
+
+  /// `source` read by the static fallback, as a config.
+  fn parse_js_config(source: &str, dir: Option<&Path>) -> Result<ConfigFile, ConfigError> {
+    let reading = fallback::read_source(source, dir, 0)?;
+    Ok(serde_json::from_value(reading.value.unwrap_or_default())?)
+  }
 
   #[test]
   fn js_config_module_exports_single_quoted_keys() {
@@ -825,10 +613,9 @@ module.exports = {
 
   #[test]
   fn js_config_with_multibyte_text_before_bare_identifiers_parses() {
-    // Bare identifiers are turned into `null` and `true`/`false` kept; the
-    // identifier used to be read back as a byte range from character
-    // indices, so multibyte text earlier in the config made `true` read as
-    // garbage (and the rule silently `null`), or split a character.
+    // Token offsets are byte offsets, so multibyte text earlier in the
+    // config cannot shift what `true` reads as, or split a character.  A
+    // name the reader cannot resolve leaves its key out.
     let config_src = r#"
 module.exports = {
   rules: {
@@ -845,10 +632,7 @@ module.exports = {
       rules.get("block-no-empty"),
       Some(&RuleConfigValue::Bool(true))
     );
-    assert_eq!(
-      rules.get("custom-property-pattern"),
-      Some(&RuleConfigValue::Null(None))
-    );
+    assert!(!rules.contains_key("custom-property-pattern"));
   }
 
   #[test]
@@ -919,13 +703,13 @@ module.exports = {
     match rules.get("selector-class-pattern").unwrap() {
       RuleConfigValue::Array(arr) => {
         assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0], serde_json::json!("^[a-z]([a-z0-9-_!])*$"));
+        assert_eq!(arr[0], serde_json::json!("/^[a-z]([a-z0-9-_!])*$/"));
       }
       other => panic!("Expected array, got {:?}", other),
     }
     match rules.get("selector-id-pattern").unwrap() {
       RuleConfigValue::Severity(s) => {
-        assert_eq!(s, "^[a-z]([a-z0-9-])*$");
+        assert_eq!(s, "/^[a-z]([a-z0-9-])*$/i");
       }
       other => panic!("Expected string, got {:?}", other),
     }
@@ -1008,15 +792,7 @@ module.exports = {
   }
 
   #[test]
-  fn js_string_escapes_become_json_escapes() {
-    assert_eq!(js_string_body_to_json(r"it\'s"), "it's");
-    assert_eq!(js_string_body_to_json(r#"say "hi""#), r#"say \"hi\""#);
-    assert_eq!(
-      js_string_body_to_json(r"\x41\u0042\u{43}\v"),
-      r"\u0041\u0042C\u000b"
-    );
-    assert_eq!(js_string_body_to_json("a\\\nb\tc"), r"ab\tc");
-    assert_eq!(js_string_body_to_json(r"\d\$\\"), r"d$\\");
+  fn js_string_escapes_are_decoded() {
     let js = "module.exports = { rules: { 'a': ['x', { message: \"it\\'s \\x41\" }] } }";
     let raw = parse_js_config(js, None).unwrap();
     assert_eq!(secondary_string(&raw, "a", "message"), "it's A");

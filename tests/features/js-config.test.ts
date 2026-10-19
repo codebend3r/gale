@@ -114,7 +114,7 @@ describe("without Node on PATH", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("says what the static reader could not evaluate", () => {
+  test("says what the static reader could not evaluate", () => {
     const project = makeProject({
       "stylelint.config.js":
         'const base = { "block-no-empty": true };\nmodule.exports = { rules: { ...base } };\n',
