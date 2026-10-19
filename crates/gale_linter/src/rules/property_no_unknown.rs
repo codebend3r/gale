@@ -1,8 +1,10 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_property;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 /// Pattern matcher for ignoreProperties — supports plain strings and regex-like "/pattern/".
 enum PropertyMatcher {
@@ -30,21 +32,48 @@ impl PropertyMatcher {
   }
 }
 
-pub struct PropertyNoUnknown;
+const NAME: &str = "property-no-unknown";
 
-impl Rule for PropertyNoUnknown {
-  fn name(&self) -> &'static str {
-    "property-no-unknown"
+declare_rule! {
+  pub struct PropertyNoUnknown => PropertyNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown properties"
+/// `property-no-unknown` as configured.
+pub struct PropertyNoUnknownCheck {
+  /// `ignoreProperties`: names (any case) and `/regex/` entries.
+  ignore_properties: Vec<PropertyMatcher>,
+  /// `ignoreSelectors`: the selectors of rules whose properties are not
+  /// checked.
+  ignore_selectors: Matchers,
+}
+
+impl PropertyNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreProperties`, `checkPrefixed`,
+  /// `ignoreSelectors` and `ignoreAtRules`.  Gale accepts but does not yet
+  /// apply `checkPrefixed` and `ignoreAtRules`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_properties = options.strings("ignoreProperties");
+    options.flag("checkPrefixed");
+    let ignore_selectors = options.matchers("ignoreSelectors");
+    options.strings("ignoreAtRules");
+    options.finish()?;
+    Ok(Self {
+      ignore_properties: ignore_properties
+        .iter()
+        .map(|pattern| PropertyMatcher::from_pattern(pattern))
+        .collect(),
+      ignore_selectors,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PropertyNoUnknownCheck {
   /// Flags properties that are not standard CSS, skipping any matched by
   /// `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -52,19 +81,9 @@ impl Rule for PropertyNoUnknown {
       return vec![];
     };
 
-    // Check for `ignoreProperties` option (may be in secondary options object).
-    // Supports plain strings (exact match) and regex patterns like "/^mso-/".
-    let secondary = ctx.secondary_options().or(ctx.options);
-    let ignore_properties: Vec<PropertyMatcher> = secondary
-      .and_then(|v| v.get("ignoreProperties"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(PropertyMatcher::from_pattern))
-          .collect()
-      })
-      .unwrap_or_default();
+    if self.ignore_selectors.matches(&rule.selector) {
+      return vec![];
+    }
 
     let mut diags = Vec::new();
     for decl in &rule.declarations {
@@ -95,7 +114,8 @@ impl Rule for PropertyNoUnknown {
       }
       // Skip explicitly ignored properties (exact match or regex pattern)
       let prop_lower = prop.to_ascii_lowercase();
-      if ignore_properties
+      if self
+        .ignore_properties
         .iter()
         .any(|m| m.matches(&prop_lower, prop))
       {
@@ -103,12 +123,8 @@ impl Rule for PropertyNoUnknown {
       }
       if !is_known_property(prop) {
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected unknown property \"{prop}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          Diagnostic::new(NAME, format!("Unexpected unknown property \"{prop}\""))
+            .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
     }
@@ -122,11 +138,11 @@ mod tests {
 
   use gale_linter_test_helper::*;
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   #[test]
   fn reports_unknown() {
-    let rule = PropertyNoUnknown;
+    let rule = configured(&PropertyNoUnknown, None);
     let node = style_node("a", &[("colr", "red")]);
     let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
@@ -135,23 +151,23 @@ mod tests {
 
   #[test]
   fn allows_known() {
-    let rule = PropertyNoUnknown;
+    let rule = configured(&PropertyNoUnknown, None);
     let node = style_node("a", &[("color", "red")]);
     assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn skips_custom_and_vendor() {
-    let rule = PropertyNoUnknown;
+    let rule = configured(&PropertyNoUnknown, None);
     let node = style_node("a", &[("--my-var", "1"), ("-webkit-appearance", "none")]);
     assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn ignore_properties_exact() {
-    let rule = PropertyNoUnknown;
     let node = style_node("a", &[("mso-padding-alt", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["mso-padding-alt"] });
+    let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
       options: Some(&opts),
@@ -162,9 +178,9 @@ mod tests {
 
   #[test]
   fn ignore_properties_regex_pattern() {
-    let rule = PropertyNoUnknown;
     let node = style_node("a", &[("mso-padding-alt", "0"), ("mso-table-lspace", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
+    let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
       options: Some(&opts),
@@ -175,9 +191,9 @@ mod tests {
 
   #[test]
   fn ignore_properties_regex_does_not_match_other() {
-    let rule = PropertyNoUnknown;
     let node = style_node("a", &[("colr", "red")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
+    let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
       options: Some(&opts),
@@ -204,5 +220,40 @@ mod tests {
         ..Default::default()
       })
     }
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    let valid = serde_json::json!([true, {
+      "ignoreProperties": ["/^mso-/"],
+      "checkPrefixed": true,
+      "ignoreSelectors": [":export"],
+      "ignoreAtRules": ["/^my-/"]
+    }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "checkPrefixed": "yes" }])),
+      ["Invalid value \"yes\" for option \"checkPrefixed\" of rule \"property-no-unknown\""]
+    );
+  }
+
+  #[test]
+  fn ignore_selectors_skips_matching_rules() {
+    let rule = configured(
+      &PropertyNoUnknown,
+      serde_json::json!([true, { "ignoreSelectors": ["/^:export/"] }]),
+    );
+    assert!(
+      rule
+        .check(&style_node(":export", &[("colr", "red")]), &ctx())
+        .is_empty()
+    );
+    assert_eq!(
+      rule
+        .check(&style_node("a", &[("colr", "red")]), &ctx())
+        .len(),
+      1
+    );
   }
 }

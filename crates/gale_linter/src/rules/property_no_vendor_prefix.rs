@@ -1,41 +1,51 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 
-/// Reports vendor-prefixed properties (e.g. `-webkit-transform`).
-///
-/// Equivalent to Stylelint's `property-no-vendor-prefix` rule.  Only
-/// prefixes Autoprefixer would add back are reported, and the fix strips the
-/// prefix from the property as written, keeping its case.
-pub struct PropertyNoVendorPrefix;
+const NAME: &str = "property-no-vendor-prefix";
+
+declare_rule! {
+  /// Reports vendor-prefixed properties (e.g. `-webkit-transform`).
+  ///
+  /// Equivalent to Stylelint's `property-no-vendor-prefix` rule.  Only
+  /// prefixes Autoprefixer would add back are reported, and the fix strips the
+  /// prefix from the property as written, keeping its case.
+  pub struct PropertyNoVendorPrefix => PropertyNoVendorPrefixCheck {
+    name: NAME,
+    description: "Disallow vendor prefixes for properties",
+    default_severity: Warning,
+  }
+}
+
+/// `property-no-vendor-prefix` as configured.
+pub struct PropertyNoVendorPrefixCheck {
+  /// `ignoreProperties`: names or `/regex/` entries.
+  ignore_properties: Matchers,
+}
+
+impl PropertyNoVendorPrefixCheck {
+  /// Stylelint's options: `true`, then `ignoreProperties`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_properties = options.matchers("ignoreProperties");
+    options.finish()?;
+    Ok(Self { ignore_properties })
+  }
+}
 
 /// Stylelint's `basicKeywords`.
 const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
-impl Rule for PropertyNoVendorPrefix {
-  fn name(&self) -> &'static str {
-    "property-no-vendor-prefix"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow vendor prefixes for properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PropertyNoVendorPrefixCheck {
   /// Flags vendor-prefixed properties that have an unprefixed equivalent,
   /// skipping any listed in `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_props = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreProperties"));
-
     let decls: Vec<&gale_css_parser::Declaration> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
       CssNode::Declaration(decl) => vec![decl],
@@ -50,7 +60,7 @@ impl Rule for PropertyNoVendorPrefix {
       let Some((prop, prop_start)) = source_text::declaration_property(ctx.source, decl) else {
         continue;
       };
-      if pattern::option_matches(ignore_props, prop) {
+      if self.ignore_properties.matches(prop) {
         continue;
       }
       // A vendor prefix, but not a custom property.
@@ -76,15 +86,10 @@ impl Rule for PropertyNoVendorPrefix {
       } else {
         format!("Unexpected vendor-prefix \"{prop}\"")
       };
-      diags.push(
-        Diagnostic::new(self.name(), message)
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("Remove vendor prefix from \"{prop}\""),
-            vec![Edit::new(span, unprefixed)],
-          )),
-      );
+      diags.push(Diagnostic::new(NAME, message).span(span).fix(Fix::new(
+        format!("Remove vendor prefix from \"{prop}\""),
+        vec![Edit::new(span, unprefixed)],
+      )));
     }
     diags
   }
@@ -214,6 +219,26 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a { -o-columns: 2; }", Syntax::Css),
       "a { -o-columns: 2; }"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, { "ignoreProperties": "/^-webkit-/" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"property-no-vendor-prefix\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!([true, { "ignore": ["a"] }])),
+      ["Invalid option name \"ignore\" for rule \"property-no-vendor-prefix\""]
     );
   }
 }
