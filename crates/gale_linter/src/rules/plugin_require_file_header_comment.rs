@@ -140,7 +140,7 @@ mod tests {
   use gale_css_parser::{Comment, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   #[test]
   fn passes_with_matching_comment() {
@@ -148,7 +148,7 @@ mod tests {
         "pattern": "/Copyright|License/i"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 Acme Corp ".to_string(),
       span: ParserSpan::new(0, 30),
@@ -164,7 +164,7 @@ mod tests {
         "pattern": "/Copyright|License/i"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " MIT License ".to_string(),
       span: ParserSpan::new(0, 16),
@@ -180,7 +180,7 @@ mod tests {
         "pattern": "/Copyright|License/i"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " This is just a comment ".to_string(),
       span: ParserSpan::new(0, 28),
@@ -197,7 +197,7 @@ mod tests {
         "pattern": "/Copyright/"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
@@ -217,7 +217,7 @@ mod tests {
         "pattern": "/Copyright/"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes: Vec<CssNode> = vec![];
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
@@ -239,7 +239,7 @@ mod tests {
         "pattern": "Copyright"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 ".to_string(),
       span: ParserSpan::new(0, 20),
@@ -255,7 +255,7 @@ mod tests {
         "pattern": "/copyright/i"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " COPYRIGHT 2024 ".to_string(),
       span: ParserSpan::new(0, 20),
@@ -271,7 +271,7 @@ mod tests {
         "pattern": "/Copyright/"
     }]);
     let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],

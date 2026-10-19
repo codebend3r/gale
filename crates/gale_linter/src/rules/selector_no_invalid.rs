@@ -264,7 +264,6 @@ mod tests {
       file_path: "t.css",
       source: css,
       syntax,
-      options: None,
       cache: None,
     };
     let index = SourceLineIndex::build(css);

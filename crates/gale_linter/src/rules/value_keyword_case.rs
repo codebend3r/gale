@@ -1060,7 +1060,7 @@ mod tests {
 
   /// The diagnostics for `source` in `syntax` with `options`.
   fn lint(source: &str, syntax: Syntax, options: Option<&serde_json::Value>) -> Vec<Diagnostic> {
-    let ctx = context(source, syntax, options.cloned());
+    let ctx = context(source, syntax);
     configured(&ValueKeywordCase, options.cloned()).check_root(&[], &ctx)
   }
 

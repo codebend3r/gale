@@ -148,12 +148,12 @@ impl Check for StylisticMediaFeatureRangeOperatorSpaceBeforeCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
     let opts = serde_json::json!(option);
     let rule = configured(&StylisticMediaFeatureRangeOperatorSpaceBefore, opts.clone());
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     rule.check_root(&[], &ctx)
   }
 

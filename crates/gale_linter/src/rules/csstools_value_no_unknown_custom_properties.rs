@@ -442,7 +442,6 @@ mod tests {
       file_path: "test.css",
       source,
       syntax: Syntax::Css,
-      options: None,
       cache: None,
     };
     rule.check_root(&parsed.nodes, &context)

@@ -588,7 +588,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -652,7 +652,7 @@ mod tests {
       &SelectorNoQualifyingType,
       serde_json::json!({"ignore": ["id"]}),
     );
-    let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["id"]}));
+    let ctx_with_ignore = ctx();
     let node = style_with_selector("div#bar");
     let d = rule.check_root(&[node], &ctx_with_ignore);
     assert!(
@@ -667,7 +667,7 @@ mod tests {
       &SelectorNoQualifyingType,
       serde_json::json!({"ignore": ["class"]}),
     );
-    let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["class"]}));
+    let ctx_with_ignore = ctx();
     let node = style_with_selector("ul.list");
     let d = rule.check_root(&[node], &ctx_with_ignore);
     assert!(

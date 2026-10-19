@@ -391,14 +391,14 @@ impl StylisticIndentationCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_correct_2_space_indent() {
     let opt = serde_json::json!(2);
     let source = "a {\n  color: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -410,8 +410,8 @@ mod tests {
   fn reports_wrong_indent() {
     let opt = serde_json::json!(2);
     let source = "a {\ncolor: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected indentation"));
   }
@@ -420,8 +420,8 @@ mod tests {
   fn allows_tab_indent() {
     let opt = serde_json::json!("tab");
     let source = "a {\n\tcolor: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -433,8 +433,8 @@ mod tests {
   fn reports_spaces_when_tab_expected() {
     let opt = serde_json::json!("tab");
     let source = "a {\n  color: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("tabs"));
   }
@@ -443,8 +443,8 @@ mod tests {
   fn allows_4_space_indent() {
     let opt = serde_json::json!(4);
     let source = "a {\n    color: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -453,8 +453,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line value: continuation lines after `src:` should not be checked
     let source = "@font-face {\n  src:\n    url('a.woff2') format('woff2'),\n    url('a.woff') format('woff');\n  font-weight: normal;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -467,8 +467,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line @import: continuation lines should not be checked
     let source = "@import\n  'foo',\n  'bar';";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -481,8 +481,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line value with nested parens (calc, var)
     let source = "a {\n  margin: calc(\n    var(--x) * -1\n  );\n  color: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -495,8 +495,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line transition property value
     let source = "a {\n  transition:\n    background-color 0.2s linear,\n    opacity 0.2s linear;\n  color: red;\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -510,8 +510,8 @@ mod tests {
     // multi-byte character when one follows a shorter at-rule name.
     let opt = serde_json::json!(2);
     let source = "a {\n  @media \u{4e2d} {\n    color: red;\n  }\n}";
-    let d = configured(&StylisticIndentation, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d =
+      configured(&StylisticIndentation, opt.clone()).check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",

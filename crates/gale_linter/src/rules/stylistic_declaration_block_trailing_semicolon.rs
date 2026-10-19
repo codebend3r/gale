@@ -156,7 +156,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_trailing_semicolon() {
@@ -263,7 +263,7 @@ mod tests {
     let source = "a { color: red; }";
     let opts = serde_json::json!(["never"]);
     let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, opts.clone());
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {

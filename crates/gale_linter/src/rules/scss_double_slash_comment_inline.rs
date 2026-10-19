@@ -170,10 +170,7 @@ fn has_non_whitespace_before_on_line(source: &str, pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{
-    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
-    scss_ctx_with_source_and_options,
-  };
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn never_allows_standalone_comment() {
@@ -197,7 +194,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssDoubleSlashCommentInline, opts.clone());
     let src = ".foo { color: red; // inline comment\n}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -206,7 +203,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssDoubleSlashCommentInline, opts.clone());
     let src = "// standalone comment\n.foo { color: red; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(
       d[0]

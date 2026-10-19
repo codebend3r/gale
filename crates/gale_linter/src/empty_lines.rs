@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
 use crate::postcss_tree::PostcssTree;
@@ -108,7 +108,6 @@ pub fn rejected_message(what: &str, reworded: bool) -> String {
 /// the fix that adds or removes the empty line.
 pub fn empty_line_report(
   rule_name: &str,
-  severity: Severity,
   tree: &PostcssTree,
   node: usize,
   expect_empty_line: bool,
@@ -127,7 +126,6 @@ pub fn empty_line_report(
   };
   let n = &tree.nodes[node];
   Diagnostic::new(rule_name, message)
-    .severity(severity)
     .span(Span::from_range(n.start, n.end.max(n.start)))
     .fix(fix_empty_lines_before(tree, node, action))
 }

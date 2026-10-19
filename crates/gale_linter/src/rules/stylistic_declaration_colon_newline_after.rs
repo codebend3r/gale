@@ -272,14 +272,14 @@ impl Check for StylisticDeclarationColonNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_multi_line_allows_single_line_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -288,7 +288,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url()\n    no-repeat; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -298,7 +298,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background:\n    url() no-repeat; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -307,7 +307,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { color: red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
   }
 
@@ -316,7 +316,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { color:\n  red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 

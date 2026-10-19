@@ -170,7 +170,6 @@ mod tests {
     let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
-      options: Some(&opts),
       ..ctx()
     };
     assert!(rule.check(&node, &c).is_empty());
@@ -183,7 +182,6 @@ mod tests {
     let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
-      options: Some(&opts),
       ..ctx()
     };
     assert!(rule.check(&node, &c).is_empty());
@@ -196,7 +194,6 @@ mod tests {
     let rule = configured(&PropertyNoUnknown, opts.clone());
     let c = RuleContext {
       env: Default::default(),
-      options: Some(&opts),
       ..ctx()
     };
     assert_eq!(rule.check(&node, &c).len(), 1);

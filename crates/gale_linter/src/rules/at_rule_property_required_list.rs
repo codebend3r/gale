@@ -133,7 +133,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn at_rule_with_decls(name: &str, decls: Vec<(&str, &str)>) -> CssNode {
     let children = decls
@@ -159,7 +159,7 @@ mod tests {
   fn reports_missing_required_property() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
     let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
 
     let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
     let d = rule.check(&node, &c);
@@ -171,7 +171,7 @@ mod tests {
   fn allows_when_all_properties_present() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
     let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
 
     let node = at_rule_with_decls(
       "font-face",
@@ -185,7 +185,7 @@ mod tests {
   fn ignores_unmatched_at_rules() {
     let opts = serde_json::json!({ "font-face": ["font-family"] });
     let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
 
     let node = at_rule_with_decls("media", vec![]);
     let d = rule.check(&node, &c);

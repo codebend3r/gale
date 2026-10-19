@@ -1126,7 +1126,6 @@ mod tests {
       file_path: "test.less",
       source,
       syntax: Syntax::Less,
-      options: None,
       cache: None,
     };
     let diags = rule.check_root(&nodes, &less_context);

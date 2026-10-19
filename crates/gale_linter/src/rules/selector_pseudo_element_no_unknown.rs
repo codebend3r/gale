@@ -128,7 +128,6 @@ mod tests {
     let rule = configured(&SelectorPseudoElementNoUnknown, options.clone());
     let ctx = RuleContext {
       env: Default::default(),
-      options: Some(&options),
       ..ctx()
     };
     assert!(

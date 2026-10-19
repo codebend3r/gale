@@ -172,7 +172,7 @@ impl Check for StylisticMediaFeatureColonSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_space_after_colon() {
@@ -187,7 +187,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media (min-width:768px) { }";
     let d = configured(&StylisticMediaFeatureColonSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -197,7 +197,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media (min-width:768px) { }";
     let d = configured(&StylisticMediaFeatureColonSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -206,7 +206,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media (min-width: 768px) { }";
     let d = configured(&StylisticMediaFeatureColonSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }

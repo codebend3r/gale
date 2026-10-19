@@ -82,101 +82,41 @@ fn file_name(syntax: Syntax) -> &'static str {
   }
 }
 
-/// Rule options in whatever form a test has them: borrowed, owned, or an
-/// owned `Option`.  Owned values are leaked, which lets a context built from
-/// a temporary `json!` outlive the statement that made it.
-pub trait TestOptions<'a> {
-  /// The options as a [`RuleContext`] holds them.
-  fn into_options(self) -> Option<&'a Value>;
-}
-
-impl<'a> TestOptions<'a> for &'a Value {
-  /// Borrow the options as they are.
-  fn into_options(self) -> Option<&'a Value> {
-    Some(self)
-  }
-}
-
-impl<'a> TestOptions<'a> for Value {
-  /// Leak the options so the context can keep a reference to them.
-  fn into_options(self) -> Option<&'a Value> {
-    Some(Box::leak(Box::new(self)))
-  }
-}
-
-impl<'a> TestOptions<'a> for Option<Value> {
-  /// Leak the options, if any, so the context can keep a reference to them.
-  fn into_options(self) -> Option<&'a Value> {
-    self.map(|value| &*Box::leak(Box::new(value)))
-  }
-}
-
-/// A context for `source` in `syntax`, configured with `options`, for a file
-/// whose name matches the syntax.  It has no per-file cache, so every
-/// accessor builds afresh, as it does for any context outside the runner.
-pub fn context<'a>(
-  source: &'a str,
-  syntax: Syntax,
-  options: impl TestOptions<'a>,
-) -> RuleContext<'a> {
+/// A context for `source` in `syntax`, for a file whose name matches the
+/// syntax.  It has no per-file cache, so every accessor builds afresh, as it
+/// does for any context outside the runner.
+pub fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
   RuleContext {
     env: Default::default(),
     file_path: file_name(syntax),
     source,
     syntax,
-    options: options.into_options(),
     cache: None,
   }
 }
 
-/// A CSS context with no source text and no options, for tests that build
-/// their nodes by hand.
+/// A CSS context with no source text, for tests that build their nodes by
+/// hand.
 pub fn ctx<'a>() -> RuleContext<'a> {
-  context("", Syntax::Css, None)
+  context("", Syntax::Css)
 }
 
-/// A CSS context for `source`, with no options.
+/// A CSS context for `source`.
 pub fn ctx_with_source(source: &str) -> RuleContext<'_> {
-  context(source, Syntax::Css, None)
+  context(source, Syntax::Css)
 }
 
-/// A CSS context with no source text, configured with `options`.
-pub fn ctx_with_options<'a>(options: impl TestOptions<'a>) -> RuleContext<'a> {
-  context("", Syntax::Css, options)
-}
-
-/// A CSS context for `source`, configured with `options`.
-pub fn ctx_with_source_and_options<'a>(
-  source: &'a str,
-  options: impl TestOptions<'a>,
-) -> RuleContext<'a> {
-  context(source, Syntax::Css, options)
-}
-
-/// An SCSS context with no source text and no options.
+/// An SCSS context with no source text.
 pub fn scss_ctx<'a>() -> RuleContext<'a> {
-  context("", Syntax::Scss, None)
+  context("", Syntax::Scss)
 }
 
-/// An SCSS context for `source`, with no options.
+/// An SCSS context for `source`.
 pub fn scss_ctx_with_source(source: &str) -> RuleContext<'_> {
-  context(source, Syntax::Scss, None)
+  context(source, Syntax::Scss)
 }
 
-/// An SCSS context with no source text, configured with `options`.
-pub fn scss_ctx_with_options<'a>(options: impl TestOptions<'a>) -> RuleContext<'a> {
-  context("", Syntax::Scss, options)
-}
-
-/// An SCSS context for `source`, configured with `options`.
-pub fn scss_ctx_with_source_and_options<'a>(
-  source: &'a str,
-  options: impl TestOptions<'a>,
-) -> RuleContext<'a> {
-  context(source, Syntax::Scss, options)
-}
-
-/// A Less context with no source text and no options.
+/// A Less context with no source text.
 pub fn less_ctx<'a>() -> RuleContext<'a> {
-  context("", Syntax::Less, None)
+  context("", Syntax::Less)
 }

@@ -277,9 +277,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{
-    configured, ctx, ctx_with_source, ctx_with_source_and_options, scss_ctx_with_source,
-  };
+  use crate::testing::{configured, ctx, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_duplicate_selectors_with_line_reference() {
@@ -430,7 +428,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(
       diags.is_empty(),
@@ -457,7 +455,7 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(
       diags.is_empty(),

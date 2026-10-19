@@ -40,5 +40,5 @@ pub mod value_parser;
 pub use lint_env::LintEnv;
 pub use options::{InvalidOption, Setting};
 pub use registry::RuleRegistry;
-pub use rule::{Check, LegacyRule, Rule, RuleContext, RuleMeta};
+pub use rule::{Check, Rule, RuleContext, RuleMeta};
 pub use runner::{DisableOptions, RuleSet, RuleSetSpec, RuleSetting};

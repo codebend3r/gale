@@ -152,12 +152,12 @@ impl Check for StylisticFunctionMaxEmptyLinesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, max: u64) -> Vec<Diagnostic> {
     let opts = serde_json::json!(max);
     let rule = configured(&StylisticFunctionMaxEmptyLines, opts.clone());
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     rule.check_root(&[], &ctx)
   }
 

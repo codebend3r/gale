@@ -107,7 +107,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn layer(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -180,7 +180,7 @@ mod tests {
   fn custom_pattern() {
     let opts = serde_json::json!("^[A-Z][a-zA-Z0-9]+$");
     let rule = configured(&LayerNamePattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // PascalCase should pass
     assert!(rule.check(&layer("MyLayer"), &c).is_empty());
     // kebab-case should fail

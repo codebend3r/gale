@@ -272,7 +272,7 @@ mod tests {
   /// The messages for `source` in `syntax` with `option`, with their
   /// offsets.
   fn messages(source: &str, syntax: Syntax, option: &str) -> Vec<(String, usize)> {
-    let ctx = context(source, syntax, &serde_json::Value::Null);
+    let ctx = context(source, syntax);
     configured(&CommentWhitespaceInside, serde_json::json!(option))
       .check_root(&[], &ctx)
       .into_iter()

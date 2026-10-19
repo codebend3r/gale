@@ -248,7 +248,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan};
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn dollar_var(name: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -388,7 +388,7 @@ mod tests {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
     let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx_with_options(&opts);
+    let ctx = scss_ctx();
 
     // Variable inside a @mixin — should be ignored
     let nodes = vec![CssNode::AtRule(ParserAtRule {
@@ -410,7 +410,7 @@ mod tests {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
     let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx_with_options(&opts);
+    let ctx = scss_ctx();
 
     // Top-level variable that doesn't match — should still be reported
     let nodes = vec![dollar_var("$bad-name")];
@@ -424,7 +424,7 @@ mod tests {
     use serde_json::json;
     let opts = json!(["^pf-", {"ignoreInside": "inside-at-rule"}]);
     let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx_with_options(&opts);
+    let ctx = scss_ctx();
 
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "function".to_string(),

@@ -558,10 +558,7 @@ fn is_stylelint_command(comment_text: &str) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{
-    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
-    scss_ctx_with_source_and_options,
-  };
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn always_allows_empty_line_before() {
@@ -585,7 +582,7 @@ mod tests {
     let opts = serde_json::json!("never");
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo { color: red; }\n// comment\n.bar {}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -594,7 +591,7 @@ mod tests {
     let opts = serde_json::json!("never");
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo { color: red; }\n\n// comment\n.bar {}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected empty line"));
   }
@@ -604,7 +601,7 @@ mod tests {
     let opts = serde_json::json!(["always", { "except": ["first-nested"] }]);
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo {\n  // first nested comment\n  color: red;\n}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     // first-nested reverses "always" to "never", so no empty line is fine
     assert!(d.is_empty());
   }
@@ -614,7 +611,7 @@ mod tests {
     let opts = serde_json::json!(["always", { "except": ["first-nested"] }]);
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo {\n\n  // first nested comment\n  color: red;\n}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     // first-nested reverses "always" to "never", so empty line is bad
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected empty line"));
@@ -625,7 +622,7 @@ mod tests {
     let opts = serde_json::json!(["always", { "ignore": ["between-comments"] }]);
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo { color: red; }\n\n// first comment\n// second comment\n.bar {}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     // first comment has empty line before - ok
     // second comment has no empty line but previous line is a // comment - ignored
     assert!(d.is_empty());
@@ -636,7 +633,7 @@ mod tests {
     let opts = serde_json::json!(["always", { "ignore": ["stylelint-commands"] }]);
     let rule = configured(&ScssDoubleSlashCommentEmptyLineBefore, opts.clone());
     let src = ".foo { color: red; }\n// stylelint-disable color-no-invalid-hex\n.bar {}";
-    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 

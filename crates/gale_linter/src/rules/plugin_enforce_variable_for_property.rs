@@ -228,7 +228,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn style_with_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -253,7 +253,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("color", "$text-primary");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -267,7 +267,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("color", "inherit");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -281,7 +281,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);
@@ -302,7 +302,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);
@@ -316,7 +316,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("font-size", "16px");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -339,7 +339,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = style_with_decl("color", "Inherit");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -354,7 +354,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
 
     let node1 = style_with_decl("color", "red");
     assert_eq!(rule.check(&node1, &ctx).len(), 1);
@@ -374,7 +374,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
 
     let node = style_with_decl("margin", "0");
     assert!(rule.check(&node, &ctx).is_empty());
@@ -397,7 +397,7 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = CssNode::Declaration(Declaration {
       property: "color".to_string(),
       value: "red".to_string(),

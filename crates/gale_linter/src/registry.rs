@@ -185,7 +185,9 @@ pub fn resolve_deprecated_alias(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::rule::LegacyRule;
+  use crate::lint_env::LintEnv;
+  use crate::options::{InvalidOption, Setting};
+  use crate::rule::{Check, RuleMeta};
 
   #[test]
   fn default_registry_has_rules() {
@@ -225,17 +227,27 @@ mod tests {
   /// A rule that only differs from another by its description.
   struct Named(&'static str);
 
-  impl LegacyRule for Named {
-    fn name(&self) -> &'static str {
-      "duplicate-name"
+  /// What [`Named`] checks: nothing.
+  struct ChecksNothing;
+
+  impl Check for ChecksNothing {}
+
+  impl Rule for Named {
+    fn meta(&self) -> RuleMeta {
+      RuleMeta {
+        name: "duplicate-name",
+        description: self.0,
+        default_severity: gale_diagnostics::Severity::Error,
+        primary_option_array: false,
+      }
     }
 
-    fn description(&self) -> &'static str {
-      self.0
-    }
-
-    fn default_severity(&self) -> gale_diagnostics::Severity {
-      gale_diagnostics::Severity::Error
+    fn configure(
+      &self,
+      _setting: &Setting,
+      _env: &LintEnv,
+    ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>> {
+      Ok(Box::new(ChecksNothing))
     }
   }
 
