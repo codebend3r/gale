@@ -229,7 +229,6 @@ mod tests {
       file_path: "t.scss",
       source,
       syntax,
-      options: None,
       cache: None,
     };
     let mut out = Vec::new();

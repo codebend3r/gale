@@ -240,7 +240,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn make_nodes(decls: Vec<(&str, &str)>) -> Vec<CssNode> {
     vec![CssNode::Style(StyleRule {
@@ -285,7 +285,7 @@ mod tests {
         "ignoreProperties": ["/^--external-/"]
     }]);
     let rule = configured(&PluginNoUnusedCustomProperties, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = make_nodes(vec![("--external-api", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(diags.is_empty());
@@ -297,7 +297,7 @@ mod tests {
         "ignoreProperties": ["--my-var"]
     }]);
     let rule = configured(&PluginNoUnusedCustomProperties, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = make_nodes(vec![("--my-var", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(diags.is_empty());

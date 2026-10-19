@@ -94,7 +94,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -109,7 +109,7 @@ mod tests {
   fn reports_nested_without_ampersand() {
     let opts = serde_json::json!("^&");
     let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -131,7 +131,7 @@ mod tests {
   fn allows_nested_with_ampersand() {
     let opts = serde_json::json!("^&");
     let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -152,7 +152,7 @@ mod tests {
   fn no_diagnostics_for_no_children() {
     let opts = serde_json::json!("^&");
     let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
@@ -189,7 +189,7 @@ mod tests {
     // This pattern rejects selectors containing &- or &_
     let opts = serde_json::json!("^(?!.*&[-_])");
     let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = scss_ctx_with_options(&opts);
+    let ctx = scss_ctx();
     // &__child should be rejected (contains &_)
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),

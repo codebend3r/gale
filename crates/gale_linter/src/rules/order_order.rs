@@ -627,7 +627,7 @@ mod tests {
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, None);
+    let ctx = context(source, syntax);
     configured(&OrderOrder, options)
       .check_root(&[], &ctx)
       .into_iter()

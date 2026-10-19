@@ -124,14 +124,14 @@ impl Check for StylisticSelectorPseudoElementCaseCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_lowercase_pseudo_element() {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::before { }";
     let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -140,7 +140,7 @@ mod tests {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::Before { }";
     let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("before"));
   }
@@ -150,7 +150,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::AFTER { }";
     let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -159,7 +159,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::after { }";
     let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("AFTER"));
   }

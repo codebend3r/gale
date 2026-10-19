@@ -193,7 +193,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -213,7 +213,7 @@ mod tests {
   fn reports_too_many_universal() {
     let opts = serde_json::json!([1]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("* *"), &c);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
@@ -251,7 +251,7 @@ mod tests {
   fn respects_custom_max() {
     let options = serde_json::json!([2]);
     let rule = configured(&SelectorMaxUniversal, options.clone());
-    let ctx = ctx_with_options(&options);
+    let ctx = ctx();
     let d = rule.check(&style_with_selector("* *"), &ctx);
     assert!(d.is_empty());
   }
@@ -260,7 +260,7 @@ mod tests {
   fn ignore_after_child_combinator() {
     let opts = serde_json::json!([1, {"ignoreAfterCombinators": [">"]}]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // * > * — the second * is after child combinator, should be ignored
     let d = rule.check(&style_with_selector("* > *"), &c);
     assert!(d.is_empty());
@@ -270,7 +270,7 @@ mod tests {
   fn max_zero_rejects_single_universal() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("*"), &c);
     assert_eq!(d.len(), 1);
   }

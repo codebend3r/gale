@@ -438,7 +438,7 @@ impl<'s> Options<'s> {
 
   /// A primary option that is a regular expression (Stylelint's
   /// `[isRegExp, isString]`), compiled.  One that does not compile is
-  /// reported with the reason, as [`pattern::for_rule`] words it.
+  /// reported with the reason, as [`pattern::invalid_option_text`] words it.
   pub fn primary_pattern(&mut self) -> Option<Pattern> {
     let source = self.primary_value(STRING_OR_REGEX)?.as_str()?;
     match pattern::compile(source) {

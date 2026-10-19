@@ -153,7 +153,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -188,7 +188,7 @@ mod tests {
   #[test]
   fn respects_configured_max() {
     let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
-    let ctx = ctx_with_options(serde_json::json!(2));
+    let ctx = ctx();
     let d = rule.check(&style_with_selector("a:hover:focus"), &ctx);
     assert!(d.is_empty());
   }
@@ -238,7 +238,7 @@ mod tests {
   fn allows_pseudo_classes_inside_functional_within_limit() {
     let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
     // `:not(:hover)` = 2 pseudo-classes, max 2 should be OK
-    let ctx = ctx_with_options(serde_json::json!(2));
+    let ctx = ctx();
     let d = rule.check(&style_with_selector("a:not(:hover)"), &ctx);
     assert!(d.is_empty());
   }

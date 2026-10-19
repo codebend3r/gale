@@ -508,7 +508,6 @@ mod tests {
       file_path: "t.css",
       source: css,
       syntax,
-      options: Some(&options),
       cache: None,
     };
     let index = SourceLineIndex::build(css);

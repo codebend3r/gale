@@ -16,8 +16,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gale_diagnostics::Diagnostic;
-
 pub use fancy_regex::Regex;
 
 thread_local! {
@@ -44,15 +42,6 @@ pub fn compile(pattern: &str) -> Result<Arc<Regex>, String> {
       .insert(pattern.to_string(), compiled.clone());
     compiled
   })
-}
-
-/// Compile `pattern` for a rule, turning a failure into Stylelint's
-/// invalid-option report for that rule.
-///
-/// The usual shape at a call site is
-/// `let re = match pattern::for_rule(self.name(), p) { Ok(re) => re, Err(d) => return vec![d] };`.
-pub fn for_rule(rule_name: &str, pattern: &str) -> Result<Arc<Regex>, Diagnostic> {
-  compile(pattern).map_err(|error| invalid_option(rule_name, pattern, &error))
 }
 
 /// Whether `pattern` matches `text`.
@@ -99,28 +88,6 @@ pub fn match_regex_entry(entry: &str, text: &str) -> Option<bool> {
   Some(compile(entry).is_ok_and(|re| is_match(&re, text)))
 }
 
-/// Stylelint's `matchesStringOrRegExp` for one list entry: an entry written
-/// as a regex literal (`"/^foo/"`) is tested as a regex, any other entry
-/// must equal `text` exactly.
-pub fn matches_entry(entry: &str, text: &str) -> bool {
-  match_regex_entry(entry, text).unwrap_or(entry == text)
-}
-
-/// Whether any entry of a string-or-list option matches `text`, the way
-/// Stylelint's `optionsMatches` reads an option such as `ignoreAtRules`:
-/// the option may be a single string or an array of them, and non-string
-/// entries match nothing.
-pub fn option_matches(option: Option<&serde_json::Value>, text: &str) -> bool {
-  match option {
-    Some(serde_json::Value::String(entry)) => matches_entry(entry, text),
-    Some(serde_json::Value::Array(entries)) => entries
-      .iter()
-      .filter_map(serde_json::Value::as_str)
-      .any(|entry| matches_entry(entry, text)),
-    _ => false,
-  }
-}
-
 /// Secondary options every rule accepts that never hold a pattern.
 const NON_PATTERN_OPTIONS: &[&str] = &["message", "url", "severity"];
 
@@ -131,15 +98,15 @@ const NON_PATTERN_OPTIONS: &[&str] = &["message", "url", "severity"];
 /// in `ignoreProperties: ["/^my-/"]` or `{ "/^border/": [...] }` — so a
 /// broken pattern is reported whichever option holds it.  Plain strings are
 /// left alone: only a rule knows whether it treats one as a pattern (the
-/// `*-pattern` rules report theirs through [`for_rule`]).
-pub fn invalid_options(rule_name: &str, options: &serde_json::Value) -> Vec<Diagnostic> {
+/// `*-pattern` rules report theirs as they read their options).
+pub fn invalid_options(rule_name: &str, options: &serde_json::Value) -> Vec<String> {
   let mut found = Vec::new();
   collect_invalid(rule_name, options, &mut found);
   found
 }
 
 /// The recursive walk behind [`invalid_options`].
-fn collect_invalid(rule_name: &str, value: &serde_json::Value, found: &mut Vec<Diagnostic>) {
+fn collect_invalid(rule_name: &str, value: &serde_json::Value, found: &mut Vec<String>) {
   match value {
     serde_json::Value::String(text) => check_literal(rule_name, text, found),
     serde_json::Value::Array(items) => {
@@ -161,22 +128,17 @@ fn collect_invalid(rule_name: &str, value: &serde_json::Value, found: &mut Vec<D
 }
 
 /// Report `text` if it is a regex literal that does not compile.
-fn check_literal(rule_name: &str, text: &str, found: &mut Vec<Diagnostic>) {
+fn check_literal(rule_name: &str, text: &str, found: &mut Vec<String>) {
   if split_literal(text).is_some()
     && let Err(reason) = compile(text)
   {
-    found.push(invalid_option(rule_name, text, &reason));
+    found.push(invalid_option_text(rule_name, text, &reason));
   }
 }
 
 /// Stylelint's report for an option value a rule cannot use, here a pattern
 /// that does not compile: `Invalid option value "<value>" for rule "<rule>"`,
 /// followed by the reason.
-pub fn invalid_option(rule_name: &str, value: &str, reason: &str) -> Diagnostic {
-  Diagnostic::invalid_option(invalid_option_text(rule_name, value, reason))
-}
-
-/// The text of [`invalid_option`].
 pub fn invalid_option_text(rule_name: &str, value: &str, reason: &str) -> String {
   format!("Invalid option value \"{value}\" for rule \"{rule_name}\": {reason}")
 }
@@ -246,23 +208,6 @@ mod tests {
   }
 
   #[test]
-  fn entries_match_as_regex_literals_or_exact_strings() {
-    assert!(matches_entry("/^font/", "font-size"));
-    assert!(matches_entry("/^FONT/i", "font-size"));
-    assert!(matches_entry("color", "color"));
-    assert!(!matches_entry("color", "background-color"));
-    assert!(!matches_entry("Color", "color"));
-
-    let list = serde_json::json!(["include", "/^mix/"]);
-    assert!(option_matches(Some(&list), "include"));
-    assert!(option_matches(Some(&list), "mixin"));
-    assert!(!option_matches(Some(&list), "media"));
-    assert!(option_matches(Some(&serde_json::json!("media")), "media"));
-    assert!(!option_matches(Some(&serde_json::json!(true)), "media"));
-    assert!(!option_matches(None, "media"));
-  }
-
-  #[test]
   fn invalid_options_finds_broken_literals_anywhere_in_the_options() {
     let options = serde_json::json!([
       "always",
@@ -272,13 +217,7 @@ mod tests {
         "message": "/[not a pattern/"
       }
     ]);
-    let found: Vec<String> = invalid_options("some-rule", &options)
-      .into_iter()
-      .map(|d| {
-        assert!(d.is_invalid_option());
-        d.message
-      })
-      .collect();
+    let found = invalid_options("some-rule", &options);
     assert_eq!(found.len(), 2, "{found:?}");
     assert!(
       found
@@ -302,14 +241,10 @@ mod tests {
     );
     assert_eq!(compile("[a-z").unwrap_err(), first);
 
-    let diag = for_rule("selector-class-pattern", "[a-z").unwrap_err();
-    assert!(diag.is_invalid_option());
+    let text = invalid_option_text("selector-class-pattern", "[a-z", &first);
     assert!(
-      diag
-        .message
-        .starts_with("Invalid option value \"[a-z\" for rule \"selector-class-pattern\": "),
-      "{}",
-      diag.message
+      text.starts_with("Invalid option value \"[a-z\" for rule \"selector-class-pattern\": "),
+      "{text}"
     );
   }
 

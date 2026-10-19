@@ -141,10 +141,7 @@ impl Check for ScssAtFunctionParenthesesSpaceBeforeCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{
-    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
-    scss_ctx_with_source_and_options,
-  };
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn never_allows_no_space() {
@@ -168,7 +165,7 @@ mod tests {
     let src = "@function foo ($x) { @return $x; }";
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, opts.clone());
-    let ctx = scss_ctx_with_source_and_options(src, &opts);
+    let ctx = scss_ctx_with_source(src);
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
@@ -178,7 +175,7 @@ mod tests {
     let src = "@function foo($x) { @return $x; }";
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, opts.clone());
-    let ctx = scss_ctx_with_source_and_options(src, &opts);
+    let ctx = scss_ctx_with_source(src);
     let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));

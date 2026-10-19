@@ -283,7 +283,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -329,7 +329,7 @@ mod tests {
   fn custom_pattern_camel_case() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&SelectorClassPattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // camelCase should pass
     assert!(rule.check(&style_with_selector(".myClass"), &c).is_empty());
     // kebab-case should fail
@@ -341,7 +341,7 @@ mod tests {
   fn custom_pattern_in_message() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&SelectorClassPattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector(".my-class"), &c);
     assert!(d[0].message.contains("^[a-z][a-zA-Z0-9]+$"));
   }

@@ -179,14 +179,14 @@ impl StylisticSelectorAttributeOperatorSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_allows_space_after_operator() {
     let opt = serde_json::json!("always");
     let source = "[attr= value] { }";
     let d = configured(&StylisticSelectorAttributeOperatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -195,7 +195,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "[attr=value] { }";
     let d = configured(&StylisticSelectorAttributeOperatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space after"));
   }
@@ -205,7 +205,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let source = "[attr=value] { }";
     let d = configured(&StylisticSelectorAttributeOperatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -214,7 +214,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let source = "[attr= value] { }";
     let d = configured(&StylisticSelectorAttributeOperatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space after"));
   }
@@ -224,7 +224,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "[class^=foo] { }";
     let d = configured(&StylisticSelectorAttributeOperatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("^="));
   }

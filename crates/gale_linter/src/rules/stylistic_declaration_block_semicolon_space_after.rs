@@ -201,14 +201,14 @@ fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_single_line_allows_space_after_semicolon() {
     let opt = serde_json::json!("always-single-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -221,7 +221,7 @@ mod tests {
     let opt = serde_json::json!("always-single-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -231,7 +231,7 @@ mod tests {
     let opt = serde_json::json!("always-single-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a {\n  color: red;display: block;\n}";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "should not report in multi-line block, got: {:?}",
@@ -244,7 +244,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a {\n  color: red; display: block;\n}";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected whitespace"));
   }
@@ -254,7 +254,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -264,7 +264,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;}";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "should skip semicolon before }}, got: {:?}",
@@ -277,7 +277,7 @@ mod tests {
     let opt = serde_json::json!("never-single-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected whitespace"));
   }

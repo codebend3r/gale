@@ -230,7 +230,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -280,7 +280,7 @@ mod tests {
     // When ignoreAtRules includes "mixin", ALL content inside @mixin
     // should be exempt from depth checking, even deeply nested rules.
     let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = scss_ctx_with_options(&options);
+    let ctx_with_opts = scss_ctx();
 
     // @mixin { .a { .b { .c { .d { .e {} } } } } }
     let e = StyleRule {
@@ -339,7 +339,7 @@ mod tests {
   fn ignore_at_rules_still_flags_outside() {
     // Content OUTSIDE ignored at-rules should still be checked.
     let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = scss_ctx_with_options(&options);
+    let ctx_with_opts = scss_ctx();
 
     // .top { .nested { color: red; } }  -- depth 1 exceeds max 0
     let nested = StyleRule {
@@ -368,7 +368,7 @@ mod tests {
   fn ignore_blockless_at_rules() {
     // With ignore: ["blockless-at-rules"], @media shouldn't count.
     let options: serde_json::Value = serde_json::json!([2, { "ignore": ["blockless-at-rules"] }]);
-    let ctx_with_opts = ctx_with_options(&options);
+    let ctx_with_opts = ctx();
 
     // .a { .b { @media { .c {} } } }
     // Without ignore: depth of .c = 3 (exceeds 2)
@@ -418,7 +418,7 @@ mod tests {
   fn ignore_pseudo_classes() {
     // With ignore: ["pseudo-classes"], &:hover shouldn't count.
     let options: serde_json::Value = serde_json::json!([1, { "ignore": ["pseudo-classes"] }]);
-    let ctx_with_opts = ctx_with_options(&options);
+    let ctx_with_opts = ctx();
 
     // .a { &:hover { .b {} } }
     // Without pseudo-classes ignore: .b depth = 2 (exceeds 1)

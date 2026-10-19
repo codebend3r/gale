@@ -131,7 +131,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn keyframes(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -176,7 +176,7 @@ mod tests {
   fn custom_pattern() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&KeyframesNamePattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // camelCase should pass
     assert!(rule.check(&keyframes("keyframes", "fadeIn"), &c).is_empty());
     // kebab-case should fail

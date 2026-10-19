@@ -175,7 +175,7 @@ impl Check for StylisticAtRuleNameSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_space_after_at_rule_name() {
@@ -190,7 +190,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticAtRuleNameSpaceAfter, opt.clone());
     let source = "@media(min-width: 100px) { }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }

@@ -818,7 +818,7 @@ mod tests {
 
   /// The offsets reported for `source` in `syntax` with `options`.
   fn offsets(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<usize> {
-    let ctx = context(source, syntax, &serde_json::Value::Null);
+    let ctx = context(source, syntax);
     configured(&DeclarationBlockNoDuplicateProperties, options)
       .check_root(&[], &ctx)
       .into_iter()

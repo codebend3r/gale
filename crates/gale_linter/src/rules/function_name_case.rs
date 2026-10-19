@@ -255,16 +255,12 @@ mod tests {
   use crate::testing::{configured, invalid_options};
   use gale_css_parser::Syntax;
 
-  fn make_ctx_with_source_and_options<'a>(
-    source: &'a str,
-    options: Option<&'a serde_json::Value>,
-  ) -> RuleContext<'a> {
+  fn make_ctx(source: &str) -> RuleContext<'_> {
     RuleContext {
       env: Default::default(),
       file_path: "t.css",
       source,
       syntax: Syntax::Css,
-      options,
       cache: None,
     }
   }
@@ -278,7 +274,7 @@ mod tests {
   #[test]
   fn reports_uppercase_function() {
     let source = "a { color: RGB(0, 0, 0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -288,7 +284,7 @@ mod tests {
   #[test]
   fn allows_lowercase_function() {
     let source = "a { color: rgb(0, 0, 0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, None)
@@ -300,7 +296,7 @@ mod tests {
   #[test]
   fn reports_mixed_case_calc() {
     let source = "a { margin: Calc(100% - 20px); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -310,7 +306,7 @@ mod tests {
   #[test]
   fn allows_camel_case_function_in_canonical_form() {
     let source = "a { transform: translateX(0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, None)
@@ -322,7 +318,7 @@ mod tests {
   #[test]
   fn reports_wrong_case_camel_case_function() {
     let source = "a { transform: TranslateX(0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -334,7 +330,7 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { margin: calc(5%); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, opts.clone()).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -346,7 +342,7 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { margin: CALC(5%); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, opts.clone())
@@ -360,7 +356,7 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { transform: TRANSLATEX(0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, opts.clone())
@@ -374,7 +370,7 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["lower", {"ignoreFunctions": ["someFunction"]}]);
     let source = "a { color: someFunction(); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, opts.clone())
@@ -388,7 +384,7 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["lower", {"ignoreFunctions": ["/^get.*$/"]}]);
     let source = "a { color: getDefaultColor(); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, opts.clone())
@@ -400,7 +396,7 @@ mod tests {
   #[test]
   fn vendor_prefix_lowercase_mode() {
     let source = "a { background: -webkit-radial-gradient(red, green, blue); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     assert!(
       configured(&FunctionNameCase, None)
@@ -412,7 +408,7 @@ mod tests {
   #[test]
   fn vendor_prefix_uppercase_detected() {
     let source = "a { background: -WEBKIT-radial-gradient(red, green, blue); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -421,7 +417,7 @@ mod tests {
   #[test]
   fn correct_column_for_function_name() {
     let source = "a { padding: Some-function(5px); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -432,7 +428,7 @@ mod tests {
   #[test]
   fn emits_fix_for_uppercase_function() {
     let source = "a { color: RGB(0, 0, 0); }";
-    let ctx = make_ctx_with_source_and_options(source, None);
+    let ctx = make_ctx(source);
     let node = make_node_from_source(source);
     let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);

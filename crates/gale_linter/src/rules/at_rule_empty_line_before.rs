@@ -120,7 +120,6 @@ impl Check for AtRuleEmptyLineBeforeCheck {
       }
       diags.push(empty_line_report(
         NAME,
-        AtRuleEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,

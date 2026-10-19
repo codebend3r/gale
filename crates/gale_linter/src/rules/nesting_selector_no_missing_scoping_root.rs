@@ -158,7 +158,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, scss_ctx};
 
   fn style(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -269,7 +269,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("&.#{$class} .source")],
     })];
-    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert!(d.is_empty(), "expected no diagnostics, got: {:?}", d);
   }
 
@@ -285,7 +285,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("& .child")],
     })];
-    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
@@ -301,7 +301,7 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("& .bar")],
     })];
-    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert!(
       d.is_empty(),
       "case-insensitive match should suppress diagnostic"
