@@ -23,15 +23,18 @@ import time
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness import (
+    build_gale, clone_repo, find_stylelint_bin, install_deps, load_repos, run_cmd,
+)
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).parent
-REPOS_JSON = SCRIPT_DIR / "repos.json"
 CLONES_DIR = SCRIPT_DIR / ".clones"
 RESULTS_DIR = SCRIPT_DIR / "results"
-GALE_ROOT = SCRIPT_DIR.parent.parent  # gale/
 
 # No rule filtering. Both Stylelint and Gale output is compared as-is.
 # If Stylelint reports a warning, Gale must report it too. Period.
@@ -41,171 +44,6 @@ GALE_ROOT = SCRIPT_DIR.parent.parent  # gale/
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def load_repos() -> list[dict]:
-    with open(REPOS_JSON) as f:
-        return json.load(f)
-
-
-def run_cmd(cmd: list[str], cwd: str | None = None, timeout: int = 300) -> subprocess.CompletedProcess:
-    """Run a command and return the result. Does not raise on non-zero exit."""
-    return subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-    )
-
-
-def clone_repo(repo: str, branch: str, dest: Path, force: bool = False) -> bool:
-    """Shallow-clone a repo. Returns True if clone dir exists after."""
-    if dest.exists() and not force:
-        print(f"  [pull] Updating existing clone: {dest.name}")
-        result = run_cmd(["git", "pull", "--ff-only"], cwd=str(dest), timeout=60)
-        if result.returncode != 0:
-            print(f"  [warn] git pull failed (continuing with existing clone): {result.stderr.strip()[:200]}")
-        return True
-
-    if dest.exists():
-        import shutil
-        shutil.rmtree(dest)
-
-    print(f"  [clone] {repo} @ {branch} -> {dest.name}")
-    result = run_cmd(
-        ["git", "clone", "--depth", "1", "--branch", branch,
-         f"https://github.com/{repo}.git", str(dest)],
-        timeout=120,
-    )
-    if result.returncode != 0:
-        print(f"  [error] Clone failed: {result.stderr.strip()}")
-        return False
-    return True
-
-
-def detect_package_manager(clone_dir: Path) -> str:
-    if (clone_dir / "pnpm-lock.yaml").exists():
-        return "pnpm"
-    if (clone_dir / "yarn.lock").exists():
-        return "yarn"
-    if (clone_dir / "bun.lockb").exists() or (clone_dir / "bun.lock").exists():
-        return "bun"
-    if (clone_dir / "package-lock.json").exists():
-        return "npm"
-    return "bun"
-
-
-def _get_current_node_version() -> str:
-    """Return the current Node.js version string (e.g., '22.21.1')."""
-    result = run_cmd(["node", "--version"], timeout=10)
-    return result.stdout.strip().lstrip("v")
-
-
-def _check_node_version(install_dir: Path) -> tuple[bool, str | None]:
-    """Check if the repo requires a Node version we don't have.
-
-    Returns (ok, required_version). If ok is False, required_version is the
-    version the repo needs.
-    """
-    nvmrc = install_dir / ".nvmrc"
-    node_version_file = install_dir / ".node-version"
-
-    required = None
-    if nvmrc.exists():
-        required = nvmrc.read_text().strip().lstrip("v")
-    elif node_version_file.exists():
-        required = node_version_file.read_text().strip().lstrip("v")
-
-    if not required:
-        return True, None
-
-    current = _get_current_node_version()
-
-    # Compare major.minor.patch — require exact match or current >= required
-    try:
-        req_parts = [int(x) for x in required.split(".")]
-        cur_parts = [int(x) for x in current.split(".")]
-        if cur_parts >= req_parts:
-            return True, None
-        return False, required
-    except ValueError:
-        # Can't parse, assume it's fine
-        return True, None
-
-
-def install_deps(clone_dir: Path, search_paths: list[str] | None = None) -> bool | str:
-    """Install npm dependencies (needed for Stylelint and its plugins).
-
-    Returns True on success, False on hard failure, or "skip" if the repo
-    should be skipped (e.g., wrong Node version).
-    """
-    # Determine the actual install directory — for monorepos, package.json
-    # may live in a subdirectory rather than the clone root.
-    install_dir = clone_dir
-    if not (install_dir / "package.json").exists() and search_paths:
-        for sp in search_paths:
-            candidate = clone_dir / sp
-            if (candidate / "package.json").exists():
-                install_dir = candidate
-                print(f"  [info] Found package.json in subdirectory: {sp}/")
-                break
-
-    node_modules = install_dir / "node_modules"
-    if node_modules.exists():
-        print(f"  [skip] node_modules already exists")
-        return True
-
-    if not (install_dir / "package.json").exists():
-        print(f"  [warn] No package.json found")
-        return False
-
-    # Check Node.js version requirement before attempting install.
-    # Check both the clone root and install dir (for monorepos).
-    for check_dir in dict.fromkeys([clone_dir, install_dir]):
-        ok, required_version = _check_node_version(check_dir)
-        if not ok:
-            current = _get_current_node_version()
-            print(f"  [skip] requires Node {required_version} (current: {current})")
-            return "skip"
-
-    pm = detect_package_manager(install_dir)
-    print(f"  [install] Installing dependencies with {pm}...")
-
-    run_cmd(["corepack", "enable"], cwd=str(install_dir), timeout=30)
-
-    if pm == "pnpm":
-        cmd = ["pnpm", "install", "--ignore-scripts", "--no-frozen-lockfile"]
-    elif pm == "yarn":
-        env_file = install_dir / ".yarnrc.yml"
-        if env_file.exists():
-            content = env_file.read_text()
-            if "nodeLinker" not in content:
-                with open(env_file, "a") as f:
-                    f.write("\nnodeLinker: node-modules\n")
-        cmd = ["yarn", "install", "--mode", "skip-build"]
-    elif pm == "bun":
-        cmd = ["bun", "install", "--ignore-scripts"]
-    else:
-        cmd = ["npm", "install", "--ignore-scripts"]
-
-    result = run_cmd(cmd, cwd=str(install_dir), timeout=300)
-    if result.returncode != 0:
-        # Check if this is a Node version issue
-        stderr = result.stderr.strip()
-        ok2, req2 = _check_node_version(install_dir)
-        if not ok2:
-            current = _get_current_node_version()
-            print(f"  [skip] requires Node {req2} (current: {current})")
-            return "skip"
-        # Fallback to bun if the detected package manager fails
-        if pm != "bun":
-            print(f"  [warn] {pm} install failed, falling back to bun...")
-            fallback = run_cmd(
-                ["bun", "install", "--ignore-scripts"],
-                cwd=str(install_dir), timeout=300,
-            )
-            if fallback.returncode == 0:
-                return True
-        print(f"  [error] {pm} install failed: {stderr[:200]}")
-        return False
-    return True
 
 
 def find_css_files(clone_dir: Path, search_paths: list[str], css_only: bool = False) -> list[str]:
@@ -231,38 +69,15 @@ def find_css_files(clone_dir: Path, search_paths: list[str], css_only: bool = Fa
 # ---------------------------------------------------------------------------
 
 
-def _find_stylelint_bin(clone_dir: Path, search_paths: list[str] | None = None) -> Path | None:
-    """Find the Stylelint binary, checking clone root, subdirectories, and parent directories."""
-    # Check clone root first
-    candidate = clone_dir / "node_modules" / ".bin" / "stylelint"
-    if candidate.exists():
-        return candidate
-
-    # Check subdirectories (for monorepos)
-    if search_paths:
-        for sp in search_paths:
-            candidate = clone_dir / sp / "node_modules" / ".bin" / "stylelint"
-            if candidate.exists():
-                return candidate
-
-    # Walk up parent directories (for cwd overrides in monorepos)
-    current = clone_dir.parent
-    while current != current.parent:
-        candidate = current / "node_modules" / ".bin" / "stylelint"
-        if candidate.exists():
-            return candidate
-        current = current.parent
-
-    return None
-
-
-def run_stylelint(clone_dir: Path, globs: list[str], search_paths: list[str] | None = None) -> list[dict] | None:
+def run_stylelint(
+    work_dir: Path, clone_dir: Path, globs: list[str], search_paths: list[str] | None = None,
+) -> list[dict] | None:
     """Run Stylelint on glob patterns and return parsed JSON output.
 
     This mirrors how a real user would run Stylelint:
       bunx stylelint 'src/**/*.scss' --formatter json
     """
-    stylelint_bin = _find_stylelint_bin(clone_dir, search_paths)
+    stylelint_bin = find_stylelint_bin(work_dir, clone_dir, search_paths)
     if stylelint_bin is None:
         print(f"  [error] Stylelint binary not found")
         return None
@@ -270,7 +85,7 @@ def run_stylelint(clone_dir: Path, globs: list[str], search_paths: list[str] | N
     # Pass globs directly — let Stylelint discover files like a real user would.
     cmd = [str(stylelint_bin), "--formatter", "json", "--no-color"] + globs
     timeout = 600
-    result = run_cmd(cmd, cwd=str(clone_dir), timeout=timeout)
+    result = run_cmd(cmd, cwd=str(work_dir), timeout=timeout)
 
     # Stylelint 16+ may output JSON to stderr instead of stdout.
     output = result.stdout.strip()
@@ -579,22 +394,6 @@ def print_report(repo_name: str, report: dict):
 # ---------------------------------------------------------------------------
 
 
-def build_gale() -> Path | None:
-    print("[build] Building Gale (release)...")
-    result = run_cmd(["cargo", "build", "--release"], cwd=str(GALE_ROOT), timeout=300)
-    if result.returncode != 0:
-        print(f"[error] Gale build failed: {result.stderr.strip()[:500]}")
-        return None
-
-    binary = GALE_ROOT / "target" / "release" / "gale"
-    if not binary.exists():
-        print(f"[error] Gale binary not found")
-        return None
-
-    print(f"[build] Gale binary ready")
-    return binary
-
-
 def process_repo(
     repo_config: dict,
     gale_bin: Path,
@@ -620,10 +419,10 @@ def process_repo(
     cwd_override = repo_config.get("cwd")
     work_dir = clone_dir / cwd_override if cwd_override else clone_dir
 
-    if not clone_repo(repo, branch, clone_dir, force=force_clone):
+    if not clone_repo(repo, branch, clone_dir, pull=True, force=force_clone):
         return None
 
-    deps_result = install_deps(clone_dir, search_paths=search_paths)
+    deps_result = install_deps(clone_dir, work_dir=work_dir, search_paths=search_paths)
     if deps_result == "skip":
         print(f"  [skip] {name}: skipped due to environment requirements")
         return None
@@ -644,7 +443,7 @@ def process_repo(
     print(f"  [lint] Running Stylelint...")
     t0 = time.time()
     try:
-        stylelint_results = run_stylelint(work_dir, globs, search_paths=search_paths)
+        stylelint_results = run_stylelint(work_dir, clone_dir, globs, search_paths=search_paths)
     except subprocess.TimeoutExpired:
         stylelint_time = time.time() - t0
         print(f"  [warn] Stylelint timed out after {stylelint_time:.0f}s, skipping repo")
@@ -782,13 +581,8 @@ def main():
         if not gale_bin.exists():
             print(f"[error] Gale binary not found: {gale_bin}")
             sys.exit(1)
-    elif args.skip_build:
-        gale_bin = GALE_ROOT / "target" / "release" / "gale"
-        if not gale_bin.exists():
-            print("[error] No Gale binary found. Build first or use --gale-bin")
-            sys.exit(1)
     else:
-        gale_bin = build_gale()
+        gale_bin = build_gale(skip=args.skip_build)
         if gale_bin is None:
             sys.exit(1)
 

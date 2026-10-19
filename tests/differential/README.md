@@ -5,7 +5,7 @@ This harness validates that Gale is a true **drop-in replacement** for Stylelint
 ## How it works
 
 1. **Clone** — Shallow-clones a curated list of public repos that use Stylelint
-2. **Install** — Installs npm dependencies (auto-detects npm/yarn/pnpm/bun)
+2. **Install** — Installs dependencies with bun (pnpm and Yarn Berry repos use their own tool so the pinned Stylelint version is honoured; npm only if bun cannot read the lockfile)
 3. **Lint** — Runs both Stylelint and Gale on the same files using the repo's own config
 4. **Compare** — Normalizes JSON output and compares warnings by `(line, column, rule, severity, text)`
 5. **Report** — Generates a parity score, rule-level breakdown, and per-file diffs
@@ -158,6 +158,8 @@ Based on bootstrap test results, fixing these would have the highest impact:
 ## Architecture
 
 ```
+tests/
+  harness.py      — Clone, install, and build helpers shared by every harness
 tests/differential/
   run.py          — Main harness script
   repos.json      — Curated list of test repos

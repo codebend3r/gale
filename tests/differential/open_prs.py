@@ -19,33 +19,19 @@ Usage:
 import argparse
 import json
 import re
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness import GALE_ROOT, build_gale, load_repos, run_cmd
+
 SCRIPT_DIR = Path(__file__).parent
-REPOS_JSON = SCRIPT_DIR / "repos.json"
 CLONES_DIR = SCRIPT_DIR / ".clones"
-GALE_ROOT = SCRIPT_DIR.parent.parent
 # The published npm version, which the migration PRs install.
 GALE_VERSION = json.loads((GALE_ROOT / "npm" / "package.json").read_text())["version"]
 GALE_NPM_PACKAGE = "@codebend3r/gale"
 GALE_GITHUB = "https://github.com/codebend3r/gale"
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def run_cmd(cmd: list[str], cwd: str | None = None, timeout: int = 300) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-
-
-def load_repos() -> list[dict]:
-    with open(REPOS_JSON) as f:
-        return json.load(f)
-
 
 # ---------------------------------------------------------------------------
 # Differential test (reuse run.py)
@@ -377,15 +363,10 @@ def main():
     # Build or find Gale binary
     if args.gale_bin:
         gale_bin = Path(args.gale_bin)
-    elif args.skip_build:
-        gale_bin = GALE_ROOT / "target" / "release" / "gale"
     else:
-        print("[build] Building Gale...")
-        result = run_cmd(["cargo", "build", "--release"], cwd=str(GALE_ROOT), timeout=300)
-        if result.returncode != 0:
-            print(f"[error] Build failed")
+        gale_bin = build_gale(skip=args.skip_build)
+        if gale_bin is None:
             sys.exit(1)
-        gale_bin = GALE_ROOT / "target" / "release" / "gale"
 
     if not gale_bin.exists():
         print(f"[error] Gale binary not found: {gale_bin}")
