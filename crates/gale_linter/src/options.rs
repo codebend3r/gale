@@ -29,6 +29,7 @@ use serde_json::{Map, Value};
 
 use crate::js_number;
 use crate::pattern::{self, Regex};
+use crate::rule::RuleMeta;
 
 /// The secondary options every rule accepts, whatever the rule itself takes.
 /// The runner applies them (`severity`, `message`, `url`, `disableFix`) or
@@ -224,6 +225,18 @@ fn flat(value: &Value) -> impl Iterator<Item = &Value> {
 /// A rule's setting from the config, normalised the way Stylelint's
 /// `normalizeRuleSettings` does it: a primary option and, perhaps, a
 /// secondary options object.
+///
+/// Gale reads two shapes Stylelint does not, which its presets and
+/// existing configs use:
+///
+/// - `[true, setting]` is `setting`, as `["error", setting]` is (the config
+///   takes the severity off that one), and `[true]` is `true`: the rule
+///   with its default options.  Stylelint would read `true` as the primary
+///   option.
+/// - A bare `{...}` is the secondary options of a rule whose primary option
+///   is not an object, with its default primary option.  A rule whose
+///   primary option is an object (its meta's `primary_option_object`) reads
+///   it as Stylelint does, as the primary option.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Setting {
   rule: &'static str,
@@ -233,35 +246,37 @@ pub struct Setting {
   primary: Option<Value>,
   /// The secondary options as written, which need not be an object.
   secondary: Option<Value>,
-  /// Whether `secondary` is a bare object from gale's config model, which
-  /// stores `[true, {...}]` and a bare `{...}` alike.  A rule whose primary
-  /// option is an object reads it as the primary option instead.
-  bare_object: bool,
+  /// Whether the rule's primary option is an object, which only
+  /// [`Options::primary_object`] may read.
+  primary_option_object: bool,
 }
 
 impl Setting {
-  /// The setting for `rule` from `options`, the value gale's config model
-  /// keeps for it.  `primary_option_array` is the rule's
-  /// `primaryOptionArray`: whether a primary option can itself be an array,
-  /// which decides whether `["a", "b"]` is a list or a primary option
-  /// followed by a secondary one.
-  pub fn new(rule: &'static str, options: Option<&Value>, primary_option_array: bool) -> Self {
+  /// The setting for the rule `meta` describes from `options`, the setting
+  /// as the config wrote it (without gale's `["error", ...]` severity).
+  /// The meta's `primary_option_array` is Stylelint's `primaryOptionArray`:
+  /// whether a primary option can itself be an array, which decides
+  /// whether `["a", "b"]` is a list or a primary option followed by a
+  /// secondary one.
+  pub fn new(meta: &RuleMeta, options: Option<&Value>) -> Self {
     let mut setting = Self {
-      rule,
+      rule: meta.name,
       primary: None,
       secondary: None,
-      bare_object: false,
+      primary_option_object: meta.primary_option_object,
     };
     match options {
       None => {}
       // Stylelint turns a rule set to `[null, ...]` off; gale's config
       // model has already decided whether it runs, so it has no options.
       Some(Value::Array(items)) if items.first().is_some_and(Value::is_null) => {}
-      Some(Value::Object(_)) => {
-        setting.secondary = options.cloned();
-        setting.bare_object = true;
+      Some(Value::Array(items)) if items.first() == Some(&Value::Bool(true)) => {
+        return Self::new(meta, items.get(1));
       }
-      Some(Value::Array(items)) if !primary_option_array => {
+      Some(Value::Object(_)) if !meta.primary_option_object => {
+        setting.secondary = options.cloned();
+      }
+      Some(Value::Array(items)) if !meta.primary_option_array => {
         setting.primary = items.first().cloned();
         setting.secondary = items.get(1).cloned();
       }
@@ -456,14 +471,13 @@ impl<'s> Options<'s> {
   }
 
   /// A primary option that is an object, such as a map from property names
-  /// to lists.  Gale's config model stores a rule set to a bare object the
-  /// way it stores `[true, {...}]`, so for a rule whose primary option is an
-  /// object that bare object is the primary option and there are no
-  /// secondary options.  Read it before any secondary option.
+  /// to lists, for a rule whose meta says `primary_option_object`.
   pub fn primary_object(&mut self) -> Option<&'s Map<String, Value>> {
-    if self.primary.is_none() && self.setting.bare_object {
-      self.primary = self.secondary.take();
-    }
+    debug_assert!(
+      self.setting.primary_option_object,
+      "{} reads an object primary option, so its meta must say `primary_option_object`",
+      self.rule()
+    );
     let primary = self.primary_checked()?;
     match primary {
       Value::Object(map) => Some(map),
@@ -677,12 +691,37 @@ mod tests {
   use super::*;
   use serde_json::json;
 
+  /// A rule whose primary option is a plain value.
+  const RULE: RuleMeta = RuleMeta {
+    name: "test-rule",
+    description: "",
+    default_severity: gale_diagnostics::Severity::Warning,
+    primary_option_array: false,
+    primary_option_object: false,
+  };
+
+  /// A rule whose primary option can be an array.
+  const ARRAY_RULE: RuleMeta = RuleMeta {
+    primary_option_array: true,
+    ..RULE
+  };
+
+  /// A rule whose primary option is an object.
+  const OBJECT_RULE: RuleMeta = RuleMeta {
+    primary_option_object: true,
+    ..RULE
+  };
+
   fn setting(options: Value) -> Setting {
-    Setting::new("test-rule", Some(&options), false)
+    Setting::new(&RULE, Some(&options))
   }
 
   fn array_setting(options: Value) -> Setting {
-    Setting::new("test-rule", Some(&options), true)
+    Setting::new(&ARRAY_RULE, Some(&options))
+  }
+
+  fn object_setting(options: Value) -> Setting {
+    Setting::new(&OBJECT_RULE, Some(&options))
   }
 
   fn texts(result: Result<(), Vec<InvalidOption>>) -> Vec<String> {
@@ -720,20 +759,31 @@ mod tests {
     assert_eq!(pair.primary(), Some(&json!("always")));
     assert_eq!(pair.secondary(), Some(&json!({ "ignore": ["x"] })));
 
-    // `[true, {...}]` reaches the rule as the bare secondary object.
-    let bare = setting(json!({ "ignore": ["x"] }));
-    assert_eq!(bare.primary(), None);
-    assert_eq!(bare.secondary(), Some(&json!({ "ignore": ["x"] })));
+    // Gale reads `[true, {...}]` and a bare `{...}` as the secondary
+    // options of a rule run with its default primary option.
+    for written in [
+      json!([true, { "ignore": ["x"] }]),
+      json!({ "ignore": ["x"] }),
+    ] {
+      for defaults in [setting(written.clone()), array_setting(written)] {
+        assert_eq!(defaults.primary(), None);
+        assert_eq!(defaults.secondary(), Some(&json!({ "ignore": ["x"] })));
+      }
+    }
+    let enabled = array_setting(json!([true]));
+    assert_eq!((enabled.primary(), enabled.secondary()), (None, None));
+    // What follows `true` is the setting.
+    assert_eq!(setting(json!([true, "long"])), setting(json!("long")));
+    assert_eq!(
+      array_setting(json!([true, ["a", { "b": 1 }]])),
+      array_setting(json!(["a", { "b": 1 }]))
+    );
 
-    let none = Setting::new("test-rule", None, false);
+    let none = Setting::new(&RULE, None);
     assert_eq!((none.primary(), none.secondary()), (None, None));
 
-    for primary_option_array in [false, true] {
-      let off = Setting::new(
-        "test-rule",
-        Some(&json!([null, { "a": 1 }])),
-        primary_option_array,
-      );
+    for meta in [RULE, ARRAY_RULE, OBJECT_RULE] {
+      let off = Setting::new(&meta, Some(&json!([null, { "a": 1 }])));
       assert_eq!((off.primary(), off.secondary()), (None, None));
     }
   }
@@ -789,7 +839,7 @@ mod tests {
     assert_eq!(options.primary_one_of(&["short", "long"]), Some("long"));
     assert!(options.finish().is_ok());
 
-    let none = Setting::new("test-rule", None, false);
+    let none = Setting::new(&RULE, None);
     let mut options = none.options();
     assert_eq!(options.primary_one_of(&["short", "long"]), None);
     assert!(options.finish().is_ok(), "no primary means the default");
@@ -956,7 +1006,16 @@ mod tests {
 
   #[test]
   fn a_bare_object_is_the_primary_of_an_object_rule() {
-    let s = setting(json!({ "color": ["red"] }));
+    for written in [
+      json!({ "color": ["red"] }),
+      json!([true, { "color": ["red"] }]),
+    ] {
+      let s = object_setting(written);
+      assert_eq!(s.primary(), Some(&json!({ "color": ["red"] })));
+      assert_eq!(s.secondary(), None);
+    }
+
+    let s = object_setting(json!({ "color": ["red"] }));
     let mut options = s.options();
     let map = options.primary_object().unwrap();
     assert!(map.contains_key("color"));
@@ -966,7 +1025,7 @@ mod tests {
       "its keys are not secondary options"
     );
 
-    let s = setting(json!([{ "color": ["red"] }, { "ignore": ["x"] }]));
+    let s = object_setting(json!([{ "color": ["red"] }, { "ignore": ["x"] }]));
     let mut options = s.options();
     assert!(options.primary_object().is_some());
     assert_eq!(options.strings("ignore"), ["x"]);

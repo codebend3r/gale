@@ -156,6 +156,11 @@ pub struct RuleMeta {
   /// array, which decides how a setting written as an array is split into
   /// primary and secondary options (see [`Setting::new`]).
   pub primary_option_array: bool,
+  /// Whether the primary option is an object, such as a map from property
+  /// names to lists, which decides whether a bare `{...}` setting is the
+  /// primary option or, as gale reads it for other rules, the secondary
+  /// options (see [`Setting`]).
+  pub primary_option_object: bool,
 }
 
 /// A rule configured with its options, ready to check files.
@@ -228,7 +233,8 @@ pub trait Rule: Send + Sync {
 /// ```
 ///
 /// `primary_option_array: true` after the severity marks a rule whose
-/// primary option can be an array (Stylelint's `rule.primaryOptionArray`).
+/// primary option can be an array (Stylelint's `rule.primaryOptionArray`),
+/// and `primary_option_object: true` one whose primary option is an object.
 macro_rules! declare_rule {
   (
     $(#[$attr:meta])*
@@ -237,6 +243,7 @@ macro_rules! declare_rule {
       description: $description:expr,
       default_severity: $severity:ident
       $(, primary_option_array: $array:expr)?
+      $(, primary_option_object: $object:expr)?
       $(,)?
     }
   ) => {
@@ -250,6 +257,7 @@ macro_rules! declare_rule {
         description: $description,
         default_severity: gale_diagnostics::Severity::$severity,
         primary_option_array: false $(|| $array)?,
+        primary_option_object: false $(|| $object)?,
       };
     }
 
@@ -389,7 +397,7 @@ mod tests {
     options: serde_json::Value,
   ) -> Result<Box<dyn Check + '_>, Vec<String>> {
     let meta = rule.meta();
-    let setting = Setting::new(meta.name, Some(&options), meta.primary_option_array);
+    let setting = Setting::new(&meta, Some(&options));
     rule
       .configure(&setting, &LintEnv::default())
       .map_err(|problems| problems.into_iter().map(InvalidOption::into_text).collect())
@@ -404,6 +412,7 @@ mod tests {
         description: "Reports a word",
         default_severity: Severity::Error,
         primary_option_array: false,
+        primary_option_object: false,
       }
     );
     let ctx = context("", Syntax::Css);

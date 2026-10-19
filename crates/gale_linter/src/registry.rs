@@ -239,6 +239,7 @@ mod tests {
         description: self.0,
         default_severity: gale_diagnostics::Severity::Error,
         primary_option_array: false,
+        primary_option_object: false,
       }
     }
 

@@ -51,7 +51,7 @@ pub fn configured_in(
 ) -> Box<dyn Check> {
   let options = options.into();
   let meta = rule.meta();
-  let setting = Setting::new(meta.name, options.as_ref(), meta.primary_option_array);
+  let setting = Setting::new(&meta, options.as_ref());
   match rule.configure(&setting, &env) {
     Ok(check) => check,
     Err(problems) => panic!("invalid options for {}: {problems:?}", meta.name),

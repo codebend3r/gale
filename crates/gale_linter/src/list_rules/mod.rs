@@ -576,10 +576,19 @@ mod tests {
     assert_eq!(list.matched_text("fixme", "a fixme"), Some((2, "fixme")));
   }
 
+  /// A rule whose primary option is an object, as the keyed list rules'.
+  const OBJECT_RULE: crate::rule::RuleMeta = crate::rule::RuleMeta {
+    name: "test-rule",
+    description: "",
+    default_severity: gale_diagnostics::Severity::Warning,
+    primary_option_array: false,
+    primary_option_object: true,
+  };
+
   #[test]
   fn keyed_lists_pick_the_first_or_every_matching_key() {
     let options = serde_json::json!({ "/^margin/": ["px"], "margin-top": ["em"] });
-    let setting = Setting::new("test-rule", Some(&options), false);
+    let setting = Setting::new(&OBJECT_RULE, Some(&options));
     let mut reader = setting.options();
     let lists = KeyedList::read(&mut reader, "test-rule", Entries::Names).unwrap();
     assert!(reader.finish().is_ok());
@@ -591,7 +600,7 @@ mod tests {
   #[test]
   fn keyed_lists_must_hold_strings() {
     let options = serde_json::json!({ "margin": [1] });
-    let setting = Setting::new("test-rule", Some(&options), false);
+    let setting = Setting::new(&OBJECT_RULE, Some(&options));
     let mut reader = setting.options();
     assert!(KeyedList::read(&mut reader, "test-rule", Entries::Names).is_none());
     let problems: Vec<String> = reader

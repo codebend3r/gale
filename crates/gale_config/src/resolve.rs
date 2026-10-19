@@ -543,7 +543,7 @@ formatter: text
     // The nested override beats the outer override's extended rules...
     assert_eq!(
       vue["selector-pseudo-class-no-unknown"].options,
-      Some(serde_json::json!({ "ignorePseudoClasses": ["deep"] }))
+      Some(serde_json::json!([true, { "ignorePseudoClasses": ["deep"] }]))
     );
     // ...and the outer override's own rules beat both.
     assert!(!vue.contains_key("color-named"));
