@@ -32,7 +32,6 @@ serde_yaml = "0.9.34"
 toml = "1.1.7"
 
 # Diagnostics & Output
-miette = { version = "7.6.0", features = ["fancy"] }
 owo-colors = "4.4.0"
 
 # File discovery
