@@ -1,24 +1,36 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow `@extend` without a `%placeholder` selector.
-pub struct ScssAtExtendNoMissingPlaceholder;
+const NAME: &str = "scss/at-extend-no-missing-placeholder";
 
-impl Rule for ScssAtExtendNoMissingPlaceholder {
-  fn name(&self) -> &'static str {
-    "scss/at-extend-no-missing-placeholder"
+declare_rule! {
+  /// Disallow `@extend` without a `%placeholder` selector.
+  pub struct ScssAtExtendNoMissingPlaceholder => ScssAtExtendNoMissingPlaceholderCheck {
+    name: NAME,
+    description: "Disallow @extend without a %placeholder selector",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow @extend without a %placeholder selector"
+/// `scss/at-extend-no-missing-placeholder`, which takes no options.
+pub struct ScssAtExtendNoMissingPlaceholderCheck;
+
+impl ScssAtExtendNoMissingPlaceholderCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtExtendNoMissingPlaceholderCheck {
   /// Flags an `@extend` whose target is not a `%placeholder` selector.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -41,10 +53,9 @@ impl Rule for ScssAtExtendNoMissingPlaceholder {
       let sel_off = at_src.find(params).unwrap_or(0);
       vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           "Expected a placeholder selector (e.g. %placeholder) to be used in @extend".to_string(),
         )
-        .severity(self.default_severity())
         .span(Span::new(at.span.offset + sel_off, params.len())),
       ]
     } else {
@@ -58,7 +69,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn extend(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -71,39 +82,46 @@ mod tests {
 
   #[test]
   fn reports_non_placeholder() {
-    let d = ScssAtExtendNoMissingPlaceholder.check(&extend(".foo"), &scss_ctx());
+    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
+    let d = rule.check(&extend(".foo"), &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("placeholder"));
   }
 
   #[test]
   fn allows_placeholder() {
-    let d = ScssAtExtendNoMissingPlaceholder.check(&extend("%placeholder"), &scss_ctx());
+    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
+    let d = rule.check(&extend("%placeholder"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_extend() {
+    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
     let node = CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "foo".to_string(),
       span: ParserSpan::new(0, 10),
       children: vec![],
     });
-    assert!(
-      ScssAtExtendNoMissingPlaceholder
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
     let css_ctx = ctx();
-    assert!(
-      ScssAtExtendNoMissingPlaceholder
-        .check(&extend(".foo"), &css_ctx)
-        .is_empty()
+    assert!(rule.check(&extend(".foo"), &css_ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/at-extend-no-missing-placeholder\""]
     );
   }
 }

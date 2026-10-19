@@ -1,38 +1,50 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow parentheses in conditional `@` rules (`@if`, `@elsif`, `@else if`, `@while`).
-///
-/// ```scss
-/// // Bad
-/// @if ($condition) { }
-/// @elsif ($condition) { }
-/// @while ($condition) { }
-///
-/// // Good
-/// @if $condition { }
-/// @elsif $condition { }
-/// @while $condition { }
-/// ```
-///
-/// Equivalent to `scss/at-rule-conditional-no-parentheses`.
-pub struct ScssAtRuleConditionalNoParentheses;
+const NAME: &str = "scss/at-rule-conditional-no-parentheses";
 
-impl Rule for ScssAtRuleConditionalNoParentheses {
-  fn name(&self) -> &'static str {
-    "scss/at-rule-conditional-no-parentheses"
+declare_rule! {
+  /// Disallow parentheses in conditional `@` rules (`@if`, `@elsif`, `@else if`, `@while`).
+  ///
+  /// ```scss
+  /// // Bad
+  /// @if ($condition) { }
+  /// @elsif ($condition) { }
+  /// @while ($condition) { }
+  ///
+  /// // Good
+  /// @if $condition { }
+  /// @elsif $condition { }
+  /// @while $condition { }
+  /// ```
+  ///
+  /// Equivalent to `scss/at-rule-conditional-no-parentheses`.
+  pub struct ScssAtRuleConditionalNoParentheses => ScssAtRuleConditionalNoParenthesesCheck {
+    name: NAME,
+    description: "Disallow parentheses in conditional @ rules (if, elsif, while)",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow parentheses in conditional @ rules (if, elsif, while)"
+/// `scss/at-rule-conditional-no-parentheses`, which takes no options.
+pub struct ScssAtRuleConditionalNoParenthesesCheck;
+
+impl ScssAtRuleConditionalNoParenthesesCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtRuleConditionalNoParenthesesCheck {
   /// Flags parentheses wrapping the condition of `@if`, `@elsif` or `@while`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -63,10 +75,9 @@ impl Rule for ScssAtRuleConditionalNoParentheses {
       let paren_off = at_src.find('(').unwrap_or(0);
       vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           "Unexpected () used to surround statements for @-rules".to_string(),
         )
-        .severity(self.default_severity())
         .span(Span::new(at.span.offset + paren_off, 1)),
       ]
     } else {
@@ -106,7 +117,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn at_node(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -119,66 +130,85 @@ mod tests {
 
   #[test]
   fn reports_parenthesized_if() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("if", "($condition)"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("if", "($condition)"), &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected ()"));
   }
 
   #[test]
   fn reports_parenthesized_elsif() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("elsif", "($x > 1)"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("elsif", "($x > 1)"), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_parenthesized_while() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("while", "($i > 0)"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("while", "($i > 0)"), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_no_parens_if() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("if", "$condition"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("if", "$condition"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_parens_elsif() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("elsif", "$x > 1"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("elsif", "$x > 1"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_parens_while() {
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("while", "$i > 0"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("while", "$i > 0"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_inner_parens_not_wrapping() {
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
     // `($a) and ($b)` — not wrapped in a single outer paren pair
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("if", "($a) and ($b)"), &scss_ctx());
+    let d = rule.check(&at_node("if", "($a) and ($b)"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_function_call_in_condition() {
-    let d =
-      ScssAtRuleConditionalNoParentheses.check(&at_node("if", "length($list) > 0"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("if", "length($list) > 0"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_non_conditional_at_rules() {
-    let d = ScssAtRuleConditionalNoParentheses
-      .check(&at_node("media", "(min-width: 768px)"), &scss_ctx());
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
+    let d = rule.check(&at_node("media", "(min-width: 768px)"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
     let ctx = ctx();
-    let d = ScssAtRuleConditionalNoParentheses.check(&at_node("if", "($x)"), &ctx);
+    let d = rule.check(&at_node("if", "($x)"), &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/at-rule-conditional-no-parentheses\""]
+    );
   }
 }

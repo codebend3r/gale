@@ -1,21 +1,45 @@
 use std::sync::LazyLock;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{Node, NodeKind};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow a `@use` alias that repeats the namespace Sass would give the
-/// module anyway (`@use "sass:math" as math`).
-///
-/// Equivalent to stylelint-scss's `scss/at-use-no-redundant-alias`,
-/// including its autofix, which removes the `as <alias>`.  The default
-/// namespace is worked out the way upstream does it, quirks included: the
-/// last `/` or `:` segment of the URL, minus the first `.` and the character
-/// after it.
-pub struct ScssAtUseNoRedundantAlias;
+const NAME: &str = "scss/at-use-no-redundant-alias";
+
+declare_rule! {
+  /// Disallow a `@use` alias that repeats the namespace Sass would give the
+  /// module anyway (`@use "sass:math" as math`).
+  ///
+  /// Equivalent to stylelint-scss's `scss/at-use-no-redundant-alias`,
+  /// including its autofix, which removes the `as <alias>`.  The default
+  /// namespace is worked out the way upstream does it, quirks included: the
+  /// last `/` or `:` segment of the URL, minus the first `.` and the character
+  /// after it.
+  pub struct ScssAtUseNoRedundantAlias => ScssAtUseNoRedundantAliasCheck {
+    name: NAME,
+    description: "Disallow redundant namespace aliases",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/at-use-no-redundant-alias`, which takes no options.
+pub struct ScssAtUseNoRedundantAliasCheck;
+
+impl ScssAtUseNoRedundantAliasCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The characters JavaScript's `\s` matches, for a regex character class.
 const JS_SPACE: &str =
@@ -42,19 +66,7 @@ static ALIAS: LazyLock<Regex> = LazyLock::new(|| js_regex(r"as[{S}]+[^{S}]+"));
 /// space.
 static FIX_ALIAS: LazyLock<Regex> = LazyLock::new(|| js_regex(r"[{S}]*as[{S}]* [^{S}*]+[{S}]*"));
 
-impl Rule for ScssAtUseNoRedundantAlias {
-  fn name(&self) -> &'static str {
-    "scss/at-use-no-redundant-alias"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow redundant namespace aliases"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtUseNoRedundantAliasCheck {
   /// Reports the `as <alias>` of every `@use` whose alias is the module's
   /// default namespace, with a fix that removes it.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -82,8 +94,7 @@ impl Rule for ScssAtUseNoRedundantAlias {
       // the `@`, plus where the alias is in the (comment-free) params.
       let start =
         at_rule.start + 1 + at_rule.name.len() + at_rule.after_name.len() + matched.start();
-      let mut diag = Diagnostic::new(self.name(), "Unexpected redundant namespace.")
-        .severity(self.default_severity())
+      let mut diag = Diagnostic::new(NAME, "Unexpected redundant namespace.")
         .span(Span::new(start, matched.len()));
       if let Some(edit) = fix(ctx, at_rule) {
         diag = diag.fix(Fix::new("Remove the redundant namespace", vec![edit]));
@@ -149,12 +160,13 @@ fn is_css_space(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
   use super::default_namespace;
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "scss/at-use-no-redundant-alias";
 
@@ -279,5 +291,16 @@ mod tests {
   #[test]
   fn ignores_plain_css() {
     assert_eq!(ranges("@use \"foo\" as foo;", Syntax::Css), vec![]);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/at-use-no-redundant-alias\""]
+    );
   }
 }

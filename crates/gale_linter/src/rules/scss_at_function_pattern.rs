@@ -1,31 +1,50 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
-/// Specify a pattern for SCSS `@function` names.
-///
-/// Accepts a regex string as the primary option. Defaults to kebab-case.
-///
-/// Equivalent to `scss/at-function-pattern`.
-pub struct ScssAtFunctionPattern;
+const NAME: &str = "scss/at-function-pattern";
 
-impl Rule for ScssAtFunctionPattern {
-  fn name(&self) -> &'static str {
-    "scss/at-function-pattern"
+declare_rule! {
+  /// Specify a pattern for SCSS `@function` names.
+  ///
+  /// Accepts a regex string as the primary option. Defaults to kebab-case.
+  ///
+  /// Equivalent to `scss/at-function-pattern`.
+  pub struct ScssAtFunctionPattern => ScssAtFunctionPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for SCSS function names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for SCSS function names"
+/// `scss/at-function-pattern` as configured.
+pub struct ScssAtFunctionPatternCheck {
+  /// The pattern every name must match.
+  pattern: Pattern,
+}
+
+impl ScssAtFunctionPatternCheck {
+  /// Stylelint's options: a regular expression, as a string or `/regex/`.
+  /// Gale reads no option as kebab-case, and a pattern that does not
+  /// compile is an invalid option, as Stylelint reports it.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    let pattern = match pattern {
+      Some(pattern) => pattern,
+      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
+    };
+    Ok(Self { pattern })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtFunctionPatternCheck {
   /// Flags an `@function` name that does not match the configured regex,
   /// defaulting to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -41,13 +60,7 @@ impl Rule for ScssAtFunctionPattern {
       return vec![];
     }
 
-    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
+    let pattern_str = self.pattern.source.as_str();
 
     // The function name is the first word in params (before `(`)
     let first_token = at.params.split_whitespace().next().unwrap_or("");
@@ -57,16 +70,15 @@ impl Rule for ScssAtFunctionPattern {
       return vec![];
     }
 
-    if !pattern::is_match(&re, func_name) {
+    if !self.pattern.is_match(func_name) {
       vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!(
             "Expected @function name \"{}\" to match pattern \"{}\"",
             func_name, pattern_str
           ),
         )
-        .severity(self.default_severity())
         .span(Span::new(at.span.offset, at.span.length)),
       ]
     } else {
@@ -80,7 +92,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn function(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -93,38 +105,51 @@ mod tests {
 
   #[test]
   fn allows_kebab_case() {
-    assert!(
-      ScssAtFunctionPattern
-        .check(&function("my-func($a)"), &scss_ctx())
-        .is_empty()
-    );
+    let rule = configured(&ScssAtFunctionPattern, None);
+    assert!(rule.check(&function("my-func($a)"), &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_non_matching_pattern() {
-    let d = ScssAtFunctionPattern.check(&function("MyFunc($a)"), &scss_ctx());
+    let rule = configured(&ScssAtFunctionPattern, None);
+    let d = rule.check(&function("MyFunc($a)"), &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("MyFunc"));
   }
 
   #[test]
   fn skips_non_function_at_rule() {
+    let rule = configured(&ScssAtFunctionPattern, None);
     let node = CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "MyMixin".to_string(),
       span: ParserSpan::new(0, 10),
       children: vec![],
     });
-    assert!(ScssAtFunctionPattern.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtFunctionPattern, None);
     let css_ctx = ctx();
+    assert!(rule.check(&function("MyFunc"), &css_ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("^[a-z]+$")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("/^[a-z]+$/i")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"scss/at-function-pattern\""]
+    );
+    let broken = invalid_options(NAME, serde_json::json!("^[a-z"));
+    assert_eq!(broken.len(), 1);
     assert!(
-      ScssAtFunctionPattern
-        .check(&function("MyFunc"), &css_ctx)
-        .is_empty()
+      broken[0]
+        .starts_with("Invalid option value \"^[a-z\" for rule \"scss/at-function-pattern\": "),
+      "{broken:?}"
     );
   }
 }

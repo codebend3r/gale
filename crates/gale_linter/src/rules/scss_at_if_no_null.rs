@@ -1,27 +1,39 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow `@if` conditions that compare to `null`.
-///
-/// Users should use `not $variable` instead of `$variable != null`,
-/// and `$variable` instead of `$variable == null`.
-pub struct ScssAtIfNoNull;
+const NAME: &str = "scss/at-if-no-null";
 
-impl Rule for ScssAtIfNoNull {
-  fn name(&self) -> &'static str {
-    "scss/at-if-no-null"
+declare_rule! {
+  /// Disallow `@if` conditions that compare to `null`.
+  ///
+  /// Users should use `not $variable` instead of `$variable != null`,
+  /// and `$variable` instead of `$variable == null`.
+  pub struct ScssAtIfNoNull => ScssAtIfNoNullCheck {
+    name: NAME,
+    description: "Disallow null comparisons in @if conditions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow null comparisons in @if conditions"
+/// `scss/at-if-no-null`, which takes no options.
+pub struct ScssAtIfNoNullCheck;
+
+impl ScssAtIfNoNullCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtIfNoNullCheck {
   /// Flags an `@if` condition comparing against `null` — `not $x` and `$x` say
   /// the same thing more directly.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -48,8 +60,7 @@ impl Rule for ScssAtIfNoNull {
 
     if params.contains("== null") || params.contains("!= null") {
       vec![
-        Diagnostic::new(self.name(), "Unexpected null comparison in @if condition")
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, "Unexpected null comparison in @if condition")
           .span(Span::new(at.span.offset, at.span.length)),
       ]
     } else {
@@ -63,7 +74,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn if_rule(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -76,42 +87,55 @@ mod tests {
 
   #[test]
   fn reports_equals_null() {
-    let d = ScssAtIfNoNull.check(&if_rule("$var == null"), &scss_ctx());
+    let rule = configured(&ScssAtIfNoNull, None);
+    let d = rule.check(&if_rule("$var == null"), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_not_equals_null() {
-    let d = ScssAtIfNoNull.check(&if_rule("$var != null"), &scss_ctx());
+    let rule = configured(&ScssAtIfNoNull, None);
+    let d = rule.check(&if_rule("$var != null"), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_non_null_comparison() {
-    let d = ScssAtIfNoNull.check(&if_rule("$var"), &scss_ctx());
+    let rule = configured(&ScssAtIfNoNull, None);
+    let d = rule.check(&if_rule("$var"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_not_variable() {
-    let d = ScssAtIfNoNull.check(&if_rule("not $var"), &scss_ctx());
+    let rule = configured(&ScssAtIfNoNull, None);
+    let d = rule.check(&if_rule("not $var"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_not_equals_null_and_compound() {
+    let rule = configured(&ScssAtIfNoNull, None);
     // `!= null and <expr>` is a compound condition — Stylelint skips these.
-    let d = ScssAtIfNoNull.check(&if_rule("$var != null and $var != ''"), &scss_ctx());
+    let d = rule.check(&if_rule("$var != null and $var != ''"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtIfNoNull, None);
     let ctx = ctx();
-    assert!(
-      ScssAtIfNoNull
-        .check(&if_rule("$var == null"), &ctx)
-        .is_empty()
+    assert!(rule.check(&if_rule("$var == null"), &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/at-if-no-null\""]
     );
   }
 }
