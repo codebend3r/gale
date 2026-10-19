@@ -60,10 +60,17 @@ function binaryNotFound(bin) {
 function runGale(args, { stdinData, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const bin = findBinary();
+    // Gale runs JavaScript configs under Node.js: the one running this
+    // module, as in bin/gale.cjs, unless GALE_NODE names another (Bun
+    // cannot stand in for it).
+    const env = { ...process.env };
+    if (!env.GALE_NODE && !process.versions.bun) {
+      env.GALE_NODE = process.execPath;
+    }
     const proc = spawn(bin, args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env,
     });
 
     const stdoutChunks = [];

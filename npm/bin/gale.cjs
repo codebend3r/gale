@@ -34,9 +34,19 @@ if (!existsSync(binary)) {
   process.exit(1);
 }
 
+// Gale runs JavaScript configs under Node.js, so hand it the Node running
+// this launcher rather than whichever `node` is first on PATH (or none).
+// An explicit GALE_NODE wins, and Bun, which can also run this launcher,
+// cannot stand in for Node there.
+const env = { ...process.env };
+if (!env.GALE_NODE && !process.versions.bun) {
+  env.GALE_NODE = process.execPath;
+}
+
 const result = spawnSync(binary, process.argv.slice(2), {
   stdio: "inherit",
   windowsHide: true,
+  env,
 });
 
 if (result.error) {
