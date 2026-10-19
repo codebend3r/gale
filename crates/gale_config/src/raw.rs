@@ -171,9 +171,10 @@ pub enum RuleConfigValue {
   Severity(String),
   /// Array form: `["error", { ...options }]`.
   Array(Vec<serde_json::Value>),
-  /// Object form: a bare object used as the primary option (e.g.
-  /// `{ "border": "none" }` for `declaration-property-value-disallowed-list`).
-  /// Treated as error severity with the object as options.
+  /// Object form: a bare object, the primary option of a rule whose primary
+  /// option is an object (e.g. `{ "border": "none" }` for
+  /// `declaration-property-value-disallowed-list`) and the secondary options
+  /// of any other.  Treated as error severity with the object as options.
   Object(serde_json::Map<String, serde_json::Value>),
 }
 
@@ -243,7 +244,9 @@ impl RuleConfigValue {
           let options = items.get(1).cloned();
           RuleConfig { severity, options }
         } else if is_bool {
-          // First element is a boolean: [true, { options }]
+          // First element is a boolean: [true, { options }].  The setting
+          // is kept as written; the rule's `Setting` reads the `true` as
+          // its default primary option.
           let enabled = first.and_then(|v| v.as_bool()).unwrap_or(true);
           let severity = if enabled {
             secondary_severity.or(Some(Severity::Error))
@@ -252,7 +255,7 @@ impl RuleConfigValue {
             // secondary severity cannot resurrect it.
             Some(Severity::Off)
           };
-          let options = items.get(1).cloned();
+          let options = Some(serde_json::Value::Array(items.clone()));
           RuleConfig { severity, options }
         } else {
           // First element is a primary option (e.g. "always", 4):
@@ -373,6 +376,33 @@ mod tests {
     let r = v.resolve();
     assert_eq!(r.severity, Some(Severity::Error));
     assert!(r.options.is_some());
+  }
+
+  /// A setting is kept as written, apart from gale's severity wrapper,
+  /// so that the rule's `Setting` alone decides what each part means.
+  #[test]
+  fn settings_are_kept_as_written() {
+    let options = |json: &str| {
+      let v: RuleConfigValue = serde_json::from_str(json).unwrap();
+      v.resolve().options
+    };
+    assert_eq!(
+      options(r#"[true, {"ignore": ["x"]}]"#),
+      Some(serde_json::json!([true, { "ignore": ["x"] }]))
+    );
+    assert_eq!(
+      options(r#"{"ignore": ["x"]}"#),
+      Some(serde_json::json!({ "ignore": ["x"] }))
+    );
+    assert_eq!(
+      options(r#"["always", {"ignore": ["x"]}]"#),
+      Some(serde_json::json!(["always", { "ignore": ["x"] }]))
+    );
+    assert_eq!(
+      options(r#"["warning", {"ignore": ["x"]}]"#),
+      Some(serde_json::json!({ "ignore": ["x"] }))
+    );
+    assert_eq!(options("true"), None);
   }
 
   #[test]

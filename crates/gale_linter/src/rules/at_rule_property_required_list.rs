@@ -26,6 +26,7 @@ declare_rule! {
     name: NAME,
     description: "Specify a list of required properties for at-rules",
     default_severity: Warning,
+    primary_option_object: true,
   }
 }
 

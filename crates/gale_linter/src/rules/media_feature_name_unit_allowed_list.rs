@@ -19,6 +19,7 @@ declare_rule! {
     name: NAME,
     description: "Specify a list of allowed units for specific media feature names",
     default_severity: Warning,
+    primary_option_object: true,
   }
 }
 

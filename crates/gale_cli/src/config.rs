@@ -208,8 +208,17 @@ pub(crate) fn print_config(cli: &Cli, root: &RootConfig, file: &Path) -> Result<
       .as_ref()
       .map(|s| format!("{s:?}").to_lowercase())
       .unwrap_or_else(|| "error".to_string());
-    if let Some(ref opts) = rc.options {
-      // Show [severity, options] for rules with options.
+    // Show [severity, options] for rules with options.  A setting written
+    // `[true, setting]` prints as `["error", setting]`, which means the same.
+    let options = match &rc.options {
+      Some(serde_json::Value::Array(items))
+        if items.first() == Some(&serde_json::Value::Bool(true)) =>
+      {
+        items.get(1)
+      }
+      other => other.as_ref(),
+    };
+    if let Some(opts) = options {
       rules_json.insert(name.clone(), serde_json::json!([severity, opts]));
     } else {
       rules_json.insert(name.clone(), serde_json::Value::String(severity));

@@ -57,6 +57,11 @@ impl Severity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuleConfig {
   pub severity: Option<Severity>,
+  /// The rule's setting as the config wrote it, less gale's
+  /// `["<severity>", setting]` wrapper: `"always"`, `["always", {...}]`,
+  /// `[true, {...}]` or a bare `{...}`.  `None` for a rule set to `true` or
+  /// to a severity.  The linter's `Setting` splits it into the primary and
+  /// secondary options, as Stylelint's `normalizeRuleSettings` does.
   pub options: Option<serde_json::Value>,
 }
 
