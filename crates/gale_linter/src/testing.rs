@@ -6,28 +6,26 @@
 //! snippet with one rule through the real parser and runner, then apply fixes
 //! and re-lint until the source settles, the way `gale --fix` does.
 
-use std::collections::HashMap;
-
 use gale_css_parser::Syntax;
 use gale_diagnostics::{Diagnostic, apply_fixes};
 use serde_json::Value;
 
-use crate::{LintRunner, RuleContext, RuleRegistry};
+use crate::{RuleContext, RuleSet, RuleSetSpec, RuleSetting};
 
 /// The warnings `rule` (configured with `options`) reports for `source`.
 pub fn lint(rule: &str, options: Value, source: &str, syntax: Syntax) -> Vec<Diagnostic> {
-  runner(rule, options)
-    .lint_source(source, file_name(syntax), syntax)
+  rule_set(rule, options)
+    .lint(source, file_name(syntax), syntax)
     .diagnostics
 }
 
 /// `source` after `gale --fix` with only `rule` (configured with `options`)
 /// enabled.
 pub fn fix(rule: &str, options: Value, source: &str, syntax: Syntax) -> String {
-  let runner = runner(rule, options);
+  let set = rule_set(rule, options);
   let mut current = source.to_string();
   for _ in 0..10 {
-    let result = runner.lint_source(&current, file_name(syntax), syntax);
+    let result = set.lint(&current, file_name(syntax), syntax);
     let (fixed, count) = apply_fixes(&current, &result.diagnostics);
     if count == 0 || fixed == current {
       break;
@@ -37,11 +35,12 @@ pub fn fix(rule: &str, options: Value, source: &str, syntax: Syntax) -> String {
   current
 }
 
-/// A runner with just `rule` enabled.
-fn runner(rule: &str, options: Value) -> LintRunner {
-  let mut all = HashMap::new();
-  all.insert(rule.to_string(), options);
-  LintRunner::with_options(RuleRegistry::default(), vec![rule.to_string()], all)
+/// A rule set with just `rule` enabled.
+fn rule_set(rule: &str, options: Value) -> RuleSet {
+  RuleSet::new(RuleSetSpec {
+    rules: vec![RuleSetting::new(rule).with_options(options)],
+    ..RuleSetSpec::default()
+  })
 }
 
 /// A file name whose extension matches `syntax`.
@@ -92,6 +91,7 @@ pub fn context<'a>(
   options: impl TestOptions<'a>,
 ) -> RuleContext<'a> {
   RuleContext {
+    env: Default::default(),
     file_path: file_name(syntax),
     source,
     syntax,

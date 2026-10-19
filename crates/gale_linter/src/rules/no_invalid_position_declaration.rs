@@ -272,6 +272,7 @@ mod tests {
   fn lines(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
     let parsed = gale_css_parser::parse(source, syntax).expect("parses");
     let ctx = RuleContext {
+      env: Default::default(),
       file_path: "t.scss",
       source,
       syntax,

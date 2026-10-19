@@ -429,6 +429,7 @@ mod tests {
     let rule = CsstoolsValueNoUnknownCustomProperties;
     let parsed = gale_css_parser::parse(source, Syntax::Css).unwrap();
     let context = RuleContext {
+      env: Default::default(),
       file_path: "test.css",
       source,
       syntax: Syntax::Css,

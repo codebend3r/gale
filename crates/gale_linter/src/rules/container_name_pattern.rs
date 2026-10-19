@@ -214,6 +214,7 @@ mod tests {
   fn lint(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<(usize, String)> {
     let parsed = gale_css_parser::parse(source, syntax).expect("parses");
     let ctx = RuleContext {
+      env: Default::default(),
       file_path: "t.scss",
       source,
       syntax,

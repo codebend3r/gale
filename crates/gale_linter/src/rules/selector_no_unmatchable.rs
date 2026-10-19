@@ -498,6 +498,7 @@ mod tests {
     let parsed = parse(css, syntax).expect("fixture should parse");
     let options = serde_json::json!([true]);
     let ctx = RuleContext {
+      env: Default::default(),
       file_path: "t.css",
       source: css,
       syntax,
