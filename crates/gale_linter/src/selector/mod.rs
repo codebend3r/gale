@@ -16,6 +16,7 @@ use std::fmt;
 pub mod nesting;
 pub mod parser;
 pub mod postcss;
+pub mod specificity;
 
 pub use parser::{ParseError, parse_selector_list};
 
