@@ -22,7 +22,7 @@ use crate::options::Setting;
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::{RuleRegistry, resolve_deprecated_alias};
-use crate::rule::{Check, Rule, RuleContext};
+use crate::rule::{Check, Rule, RuleContext, RuleMeta};
 
 /// The secondary options every Stylelint rule accepts, whatever the rule
 /// itself does with its options, read once from a rule's setting.
@@ -278,6 +278,16 @@ pub struct RuleSet {
   env: LintEnv,
 }
 
+/// What a rule set assumes about a rule gale does not have, to read its
+/// common secondary options: that its primary option is a plain value.
+const UNKNOWN_RULE: RuleMeta = RuleMeta {
+  name: "",
+  description: "",
+  default_severity: Severity::Warning,
+  primary_option_array: false,
+  primary_option_object: false,
+};
+
 /// A name with any deprecated alias resolved to the rule's own name.
 fn canonical(name: &str) -> &str {
   resolve_deprecated_alias(name).unwrap_or(name)
@@ -311,10 +321,8 @@ impl RuleSet {
     for setting in settings {
       configured.insert(canonical(&setting.name).to_string());
       let Some(rule) = registry.get(&setting.name) else {
-        // A rule gale does not have still honours `reportDisables`; its
-        // options are read as those of a rule whose primary option is no
-        // list.
-        let unknown_setting = Setting::new("", setting.options.as_ref(), false);
+        // A rule gale does not have still honours `reportDisables`.
+        let unknown_setting = Setting::new(&UNKNOWN_RULE, setting.options.as_ref());
         if CommonOptions::of(&unknown_setting).report_disables {
           forbids_disable.insert(setting.name.clone());
         }
@@ -327,11 +335,7 @@ impl RuleSet {
         continue;
       };
       let meta = rule.meta();
-      let rule_setting = Setting::new(
-        meta.name,
-        setting.options.as_ref(),
-        meta.primary_option_array,
-      );
+      let rule_setting = Setting::new(&meta, setting.options.as_ref());
       let common = CommonOptions::of(&rule_setting);
       if common.report_disables {
         forbids_disable.insert(rule.name().to_string());
@@ -870,7 +874,6 @@ mod tests {
   use super::*;
   use crate::options::InvalidOption;
   use crate::registry::RuleRegistry;
-  use crate::rule::RuleMeta;
 
   /// Implement [`Rule`] for `$rule`, a unit struct that is also its own
   /// configured form: a test rule that takes no options and warns.
@@ -883,6 +886,7 @@ mod tests {
             description: $description,
             default_severity: Severity::Warning,
             primary_option_array: false,
+            primary_option_object: false,
           }
         }
 

@@ -26,6 +26,7 @@ declare_rule! {
     name: NAME,
     description: "Limit the number of values for properties",
     default_severity: Warning,
+    primary_option_object: true,
   }
 }
 

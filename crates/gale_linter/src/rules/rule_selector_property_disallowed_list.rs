@@ -19,6 +19,7 @@ declare_rule! {
     name: NAME,
     description: "Specify a list of disallowed properties for selectors within rules",
     default_severity: Warning,
+    primary_option_object: true,
   }
 }
 

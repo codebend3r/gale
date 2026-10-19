@@ -248,7 +248,7 @@ mod tests {
   /// The messages for `source` with `options`, counted the Stylelint 17
   /// way when `v17` is set and the Stylelint 16 way otherwise.
   fn lint(source: &str, options: serde_json::Value, v17: bool) -> Vec<String> {
-    let setting = Setting::new(NAME, Some(&options), false);
+    let setting = Setting::new(&SelectorMaxAttribute::META, Some(&options));
     let check = SelectorMaxAttributeCheck::from_setting(&setting, &LintEnv::default()).unwrap();
     let max = check.max.unwrap();
     let opts = Options {
