@@ -208,7 +208,11 @@ fn hash_rules(rules: &HashMap<String, gale_config::RuleConfig>, hasher: &mut imp
     let rc = &rules[name];
     // Hash severity (use debug repr for determinism).
     format!("{:?}", rc.severity).hash(hasher);
-    // Hash options via JSON serialization.
+    // Hash options via JSON serialization.  Objects keep the order their
+    // keys were written in, which is deterministic for a given config and
+    // part of what it means: the order of a rule's invalid-option warnings
+    // and which key of a keyed list matches first follow it.  So writing
+    // the same keys in another order is a different cache key.
     rc.options
       .as_ref()
       .map(|opts| serde_json::to_string(opts).unwrap_or_default())
@@ -388,6 +392,23 @@ mod tests {
       compute_config_hash(&forward),
       compute_config_hash(&with_options)
     );
+
+    // The order of an option's keys matters (the first key of a keyed list
+    // that matches wins), so it is part of the hash.
+    let keyed = |options: serde_json::Value| {
+      let mut config = forward.clone();
+      config.rules.insert(
+        "declaration-property-unit-allowed-list".to_string(),
+        rule(Some(options)),
+      );
+      compute_config_hash(&config)
+    };
+    let margin_first: serde_json::Value =
+      serde_json::from_str(r#"{ "margin": ["px"], "/^margin/": ["em"] }"#).unwrap();
+    let pattern_first: serde_json::Value =
+      serde_json::from_str(r#"{ "/^margin/": ["em"], "margin": ["px"] }"#).unwrap();
+    assert_eq!(keyed(margin_first.clone()), keyed(margin_first.clone()));
+    assert_ne!(keyed(margin_first), keyed(pattern_first));
   }
 
   #[test]

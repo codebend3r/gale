@@ -136,9 +136,10 @@ mod tests {
         NAME,
         json!([["px"], { "ignoreProperties": ["em"], "ignoreFunctions": [1], "other": 1 }])
       ),
+      // In the order the options are written, as Stylelint reports them.
       [
-        "Invalid value \"1\" for option \"ignoreFunctions\" of rule \"unit-allowed-list\"",
         "Invalid value \"em\" for option \"ignoreProperties\" of rule \"unit-allowed-list\"",
+        "Invalid value \"1\" for option \"ignoreFunctions\" of rule \"unit-allowed-list\"",
         "Invalid option name \"other\" for rule \"unit-allowed-list\"",
       ]
     );
