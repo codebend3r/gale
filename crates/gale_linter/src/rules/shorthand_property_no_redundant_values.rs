@@ -1,18 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable::vendor_prefix_len;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Reports shorthand property values that contain redundant parts
-/// (e.g. `margin: 1px 1px 1px 1px` → `margin: 1px`).
-///
-/// Equivalent to Stylelint's `shorthand-property-no-redundant-values` rule.
-/// The fix replaces the value as written with its shortest form and leaves
-/// `!important` alone.
-pub struct ShorthandPropertyNoRedundantValues;
+const NAME: &str = "shorthand-property-no-redundant-values";
+
+declare_rule! {
+  /// Reports shorthand property values that contain redundant parts
+  /// (e.g. `margin: 1px 1px 1px 1px` → `margin: 1px`).
+  ///
+  /// Equivalent to Stylelint's `shorthand-property-no-redundant-values` rule.
+  /// The fix replaces the value as written with its shortest form and leaves
+  /// `!important` alone.
+  pub struct ShorthandPropertyNoRedundantValues => ShorthandPropertyNoRedundantValuesCheck {
+    name: NAME,
+    description: "Disallow redundant values within shorthand properties",
+    default_severity: Warning,
+  }
+}
+
+/// `shorthand-property-no-redundant-values` as configured.
+pub struct ShorthandPropertyNoRedundantValuesCheck {
+  /// `ignore: ["four-into-three-edge-values"]`.
+  ignore_four_into_three: bool,
+}
+
+impl ShorthandPropertyNoRedundantValuesCheck {
+  /// Stylelint's options: nothing but `true`, then `ignore:
+  /// ["four-into-three-edge-values"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.keywords("ignore", &["four-into-three-edge-values"]);
+    options.finish()?;
+    Ok(Self {
+      ignore_four_into_three: ignore.contains(&"four-into-three-edge-values"),
+    })
+  }
+}
 
 /// Returns `true` if the value is "standard CSS syntax" — i.e., it does not
 /// contain SCSS/Less constructs that would make comparison unreliable.
@@ -90,32 +120,7 @@ const FOUR_DIRECTIONAL_PROPERTIES: &[&str] = &[
   "inset",
 ];
 
-/// Whether the `ignore: ["four-into-three-edge-values"]` option is set.
-fn ignores_four_into_three(ctx: &RuleContext) -> bool {
-  ctx
-    .secondary_options()
-    .and_then(|v| v.get("ignore"))
-    .and_then(|v| v.as_array())
-    .is_some_and(|items| {
-      items
-        .iter()
-        .any(|item| item.as_str() == Some("four-into-three-edge-values"))
-    })
-}
-
-impl Rule for ShorthandPropertyNoRedundantValues {
-  fn name(&self) -> &'static str {
-    "shorthand-property-no-redundant-values"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow redundant values within shorthand properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ShorthandPropertyNoRedundantValuesCheck {
   /// Flags shorthand values that repeat parts a shorter form would imply, and
   /// offers the shortened value as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -124,7 +129,7 @@ impl Rule for ShorthandPropertyNoRedundantValues {
       CssNode::Declaration(decl) => vec![decl],
       _ => return vec![],
     };
-    let ignore_four_into_three = ignores_four_into_three(ctx);
+    let ignore_four_into_three = self.ignore_four_into_three;
     let mut diags = Vec::new();
     for decl in decls {
       let Some((prop, _)) = source_text::declaration_property(ctx.source, decl) else {
@@ -160,16 +165,12 @@ impl Rule for ShorthandPropertyNoRedundantValues {
 
       let span = Span::new(value_start, value.len());
       diags.push(
-        Diagnostic::new(
-          self.name(),
-          format!("Expected \"{value}\" to be \"{shortest}\""),
-        )
-        .severity(self.default_severity())
-        .span(span)
-        .fix(Fix::new(
-          format!("Shorten to \"{shortest}\""),
-          vec![Edit::new(span, &shortest)],
-        )),
+        Diagnostic::new(NAME, format!("Expected \"{value}\" to be \"{shortest}\""))
+          .span(span)
+          .fix(Fix::new(
+            format!("Shorten to \"{shortest}\""),
+            vec![Edit::new(span, &shortest)],
+          )),
       );
     }
     diags
@@ -318,7 +319,7 @@ fn condense(values: &[String]) -> Vec<String> {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "shorthand-property-no-redundant-values";
 
@@ -446,6 +447,27 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a { gap: 1rem 1rem; }", Syntax::Css),
       "a { gap: 1rem 1rem; }"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, { "ignore": ["four-into-three-edge-values"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"shorthand-property-no-redundant-values\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!([true, { "ignore": ["x"] }])),
+      [
+        "Invalid value \"x\" for option \"ignore\" of rule \"shorthand-property-no-redundant-values\""
+      ]
     );
   }
 }
