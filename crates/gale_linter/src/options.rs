@@ -254,6 +254,9 @@ impl Setting {
     };
     match options {
       None => {}
+      // Stylelint turns a rule set to `[null, ...]` off; gale's config
+      // model has already decided whether it runs, so it has no options.
+      Some(Value::Array(items)) if items.first().is_some_and(Value::is_null) => {}
       Some(Value::Object(_)) => {
         setting.secondary = options.cloned();
         setting.bare_object = true;
@@ -602,6 +605,16 @@ pub struct Pattern {
 }
 
 impl Pattern {
+  /// `source` compiled (see [`pattern::compile`]), or why it does not
+  /// compile.  For a rule's default pattern; one from the config is read
+  /// with [`Options::primary_pattern`].
+  pub fn compile(source: &str) -> Result<Self, String> {
+    Ok(Self {
+      source: source.to_string(),
+      regex: pattern::compile(source)?,
+    })
+  }
+
   /// Whether the pattern matches `text` (see [`pattern::is_match`]).
   pub fn is_match(&self, text: &str) -> bool {
     pattern::is_match(&self.regex, text)
@@ -714,6 +727,15 @@ mod tests {
 
     let none = Setting::new("test-rule", None, false);
     assert_eq!((none.primary(), none.secondary()), (None, None));
+
+    for primary_option_array in [false, true] {
+      let off = Setting::new(
+        "test-rule",
+        Some(&json!([null, { "a": 1 }])),
+        primary_option_array,
+      );
+      assert_eq!((off.primary(), off.secondary()), (None, None));
+    }
   }
 
   #[test]
@@ -735,6 +757,13 @@ mod tests {
     let string_then_object = array_setting(json!(["a", { "ignore": [] }]));
     assert_eq!(string_then_object.primary(), Some(&json!("a")));
     assert!(string_then_object.secondary().is_some());
+
+    let objects = array_setting(json!([{ "type": "rule" }, { "type": "at-rule" }]));
+    assert_eq!(
+      objects.primary(),
+      Some(&json!([{ "type": "rule" }, { "type": "at-rule" }]))
+    );
+    assert_eq!(objects.secondary(), None);
 
     let three = array_setting(json!(["a", "b", { "x": 1 }]));
     assert_eq!(three.primary(), Some(&json!(["a", "b", { "x": 1 }])));

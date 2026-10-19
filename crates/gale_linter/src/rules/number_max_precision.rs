@@ -1,28 +1,60 @@
 use gale_css_parser::{CssNode, Declaration};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports numbers with more than 4 decimal places.
-///
-/// Equivalent to Stylelint's `number-max-precision` rule (default: 4).
-pub struct NumberMaxPrecision;
+const NAME: &str = "number-max-precision";
 
+declare_rule! {
+  /// Reports numbers with more than 4 decimal places.
+  ///
+  /// Equivalent to Stylelint's `number-max-precision` rule (default: 4).
+  pub struct NumberMaxPrecision => NumberMaxPrecisionCheck {
+    name: NAME,
+    description: "Limit the number of decimal places allowed in numbers",
+    default_severity: Warning,
+  }
+}
+
+/// `number-max-precision` as configured.
+pub struct NumberMaxPrecisionCheck {
+  /// The most decimal places a number may have.
+  max: usize,
+}
+
+/// The precision allowed when the config gives none.
 const MAX_PRECISION: usize = 4;
 
-impl Rule for NumberMaxPrecision {
-  fn name(&self) -> &'static str {
-    "number-max-precision"
+impl NumberMaxPrecisionCheck {
+  /// Stylelint's options: a whole number of zero or more, then
+  /// `ignoreProperties`, `ignoreUnits` and `insideFunctions`.  Gale reads no
+  /// number as 4, and accepts but does not yet apply the secondary options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_number(&[Accept::NonNegativeInteger]);
+    options.strings("ignoreProperties");
+    options.strings("ignoreUnits");
+    options.value("insideFunctions", &[Accept::Test(precisions_by_function)]);
+    options.finish()?;
+    Ok(Self {
+      max: max.map_or(MAX_PRECISION, |max| max as usize),
+    })
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Limit the number of decimal places allowed in numbers"
-  }
+/// Stylelint's `validateObjectWithProps(isNonNegativeInteger)`: an object
+/// whose every value is a whole number of zero or more.
+fn precisions_by_function(value: &serde_json::Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map
+      .values()
+      .all(|precision| Accept::NonNegativeInteger.accepts(precision))
+  })
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NumberMaxPrecisionCheck {
   /// Flags numbers with more decimal places than allowed, scanning the raw source
   /// since lightningcss rounds values.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -30,13 +62,7 @@ impl Rule for NumberMaxPrecision {
       return vec![];
     };
 
-    // The primary option is a number, and it may arrive bare (`4`) or in
-    // Stylelint's array form (`[4, { ... }]`) — `primary_option` unwraps both.
-    let max = ctx
-      .primary_option()
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(MAX_PRECISION);
+    let max = self.max;
 
     let mut diags = Vec::new();
     for decl in &rule.declarations {
@@ -63,12 +89,7 @@ impl Rule for NumberMaxPrecision {
 
       let (original, rounded) = (found.original, found.rounded);
       diags.push(
-        Diagnostic::new(
-          self.name(),
-          format!("Expected \"{original}\" to be \"{rounded}\""),
-        )
-        .severity(self.default_severity())
-        .span(span),
+        Diagnostic::new(NAME, format!("Expected \"{original}\" to be \"{rounded}\"")).span(span),
       );
     }
     diags
@@ -168,7 +189,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
 
   fn style_decl(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -205,27 +226,20 @@ mod tests {
 
   #[test]
   fn reports_excess_precision() {
-    let d = NumberMaxPrecision.check(&style_decl("0.12345em"), &ctx());
+    let d = configured(&NumberMaxPrecision, None).check(&style_decl("0.12345em"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_within_precision() {
-    assert!(
-      NumberMaxPrecision
-        .check(&style_decl("0.1234em"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      NumberMaxPrecision
-        .check(&style_decl("10px"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&NumberMaxPrecision, None);
+    assert!(rule.check(&style_decl("0.1234em"), &ctx()).is_empty());
+    assert!(rule.check(&style_decl("10px"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_excess_in_multiple_values() {
-    let d = NumberMaxPrecision.check(&style_decl("0.12345 0.6789"), &ctx());
+    let d = configured(&NumberMaxPrecision, None).check(&style_decl("0.12345 0.6789"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
@@ -233,28 +247,19 @@ mod tests {
   fn honours_array_form_primary_option() {
     // `[2, { ... }]` is Stylelint's standard shape; the max must be read
     // from element 0, not from the array itself.
-    static OPTS: std::sync::LazyLock<serde_json::Value> =
-      std::sync::LazyLock::new(|| serde_json::json!([2, {}]));
     let source = "a { width: 1.234px; }";
-    let d = NumberMaxPrecision.check(
-      &sourced_decl(source, "1.234px"),
-      &ctx_with_source_and_options(source, &*OPTS),
-    );
+    let d = configured(&NumberMaxPrecision, serde_json::json!([2, {}]))
+      .check(&sourced_decl(source, "1.234px"), &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("to be \"1.23\""), "{}", d[0].message);
   }
 
   #[test]
   fn array_form_can_disable_by_raising_max() {
-    static OPTS: std::sync::LazyLock<serde_json::Value> =
-      std::sync::LazyLock::new(|| serde_json::json!([6, {}]));
     let source = "a { width: 1.234px; }";
     assert!(
-      NumberMaxPrecision
-        .check(
-          &sourced_decl(source, "1.234px"),
-          &ctx_with_source_and_options(source, &*OPTS)
-        )
+      configured(&NumberMaxPrecision, serde_json::json!([6, {}]))
+        .check(&sourced_decl(source, "1.234px"), &ctx_with_source(source))
         .is_empty()
     );
   }
@@ -263,13 +268,11 @@ mod tests {
   fn reports_the_source_literal_not_the_printed_value() {
     // lightningcss rounds long literals when printing a value; the warning
     // must still quote what the author wrote, at the author's column.
-    static OPTS: std::sync::LazyLock<serde_json::Value> =
-      std::sync::LazyLock::new(|| serde_json::json!(2));
     let source = "a { width: 1.123456789px; }";
-    let d = NumberMaxPrecision.check(
+    let d = configured(&NumberMaxPrecision, serde_json::json!(2)).check(
       // What lightningcss hands us is already rounded to 1.12346.
       &sourced_decl(source, "1.12346px"),
-      &ctx_with_source_and_options(source, &*OPTS),
+      &ctx_with_source(source),
     );
     assert_eq!(d.len(), 1);
     assert!(
@@ -281,6 +284,38 @@ mod tests {
       d[0].span.offset,
       source.find("1.123456789").unwrap(),
       "should point at the number, not the declaration start"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, {
+          "ignoreProperties": ["/^my-/"],
+          "ignoreUnits": ["px"],
+          "insideFunctions": { "/^(?:rgb|hsl)a?$/": 0 }
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(-1)),
+      ["Invalid option value \"-1\" for rule \"number-max-precision\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(1.5)),
+      ["Invalid option value \"1.5\" for rule \"number-max-precision\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, { "insideFunctions": { "rgb": "x" } }])
+      ),
+      [
+        "Invalid value \"{\"rgb\":\"x\"}\" for option \"insideFunctions\" of rule \"number-max-precision\""
+      ]
     );
   }
 }

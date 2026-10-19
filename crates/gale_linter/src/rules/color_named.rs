@@ -1,14 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow/require named colors in CSS declarations.
-///
-/// Equivalent to Stylelint's `color-named` rule.
-/// Options: `"never"` (default) disallows named colors; `"always-where-possible"` requires them.
-pub struct ColorNamed;
+const NAME: &str = "color-named";
+
+declare_rule! {
+  /// Disallow/require named colors in CSS declarations.
+  ///
+  /// Equivalent to Stylelint's `color-named` rule.
+  /// Options: `"never"` (default) disallows named colors; `"always-where-possible"` requires them.
+  pub struct ColorNamed => ColorNamedCheck {
+    name: NAME,
+    description: "Require or disallow named colors",
+    default_severity: Warning,
+  }
+}
+
+/// `color-named` as configured.
+pub struct ColorNamedCheck {
+  /// `"never"` or `"always-where-possible"`.
+  expectation: &'static str,
+  /// `ignore: ["inside-function"]`.
+  ignore_inside_function: bool,
+  /// `ignoreProperties`: names (any case) and `/regex/` literals.
+  ignore_properties: Vec<String>,
+}
+
+impl ColorNamedCheck {
+  /// Stylelint's options: `"never"` or `"always-where-possible"`, then
+  /// `ignore: ["inside-function"]`, `ignoreProperties` and
+  /// `ignoreFunctions`.  Gale reads no option as `"never"`, and accepts but
+  /// does not yet apply `ignoreFunctions`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["never", "always-where-possible"]);
+    let ignore = options.keywords("ignore", &["inside-function"]);
+    let ignore_properties = options.strings("ignoreProperties");
+    options.strings("ignoreFunctions");
+    options.finish()?;
+    Ok(Self {
+      expectation: expectation.unwrap_or("never"),
+      ignore_inside_function: ignore.contains(&"inside-function"),
+      ignore_properties,
+    })
+  }
+}
 
 /// Full list of CSS named colors (Level 4).
 const NAMED_COLORS: &[&str] = &[
@@ -405,19 +445,7 @@ fn rgb_to_named_color(r: u8, g: u8, b: u8) -> Option<&'static str> {
   None
 }
 
-impl Rule for ColorNamed {
-  fn name(&self) -> &'static str {
-    "color-named"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow named colors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ColorNamedCheck {
   /// Flags named colors under "never", or hex/function colors that have an exact
   /// name under "always-where-possible", honouring the ignore secondaries.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -425,36 +453,16 @@ impl Rule for ColorNamed {
       return vec![];
     };
 
-    let option = ctx.primary_option_str().unwrap_or("never");
-
-    // Read secondary options
-    let secondary = ctx
-      .secondary_options()
-      .or_else(|| ctx.options.filter(|v| v.is_object()));
-
-    let ignore_inside_function = secondary
-      .and_then(|obj| obj.get("ignore"))
-      .and_then(|v| v.as_array())
-      .map(|arr| arr.iter().any(|v| v.as_str() == Some("inside-function")))
-      .unwrap_or(false);
-
-    let ignore_properties: Vec<String> = secondary
-      .and_then(|obj| obj.get("ignoreProperties"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
+    let option = self.expectation;
+    let ignore_inside_function = self.ignore_inside_function;
+    let ignore_properties = &self.ignore_properties;
 
     let mut diags = Vec::new();
 
     for decl in &rule.declarations {
       // Check if this property should be ignored
       let prop_lower = decl.property.to_ascii_lowercase();
-      if should_ignore_property(&prop_lower, &ignore_properties) {
+      if should_ignore_property(&prop_lower, ignore_properties) {
         continue;
       }
 
@@ -479,7 +487,6 @@ impl Rule for ColorNamed {
       match option {
         "never" => {
           check_never(
-            self,
             value,
             value_offset,
             &prop_lower,
@@ -488,7 +495,7 @@ impl Rule for ColorNamed {
           );
         }
         "always-where-possible" => {
-          check_always_where_possible(self, value, value_offset, &mut diags);
+          check_always_where_possible(value, value_offset, &mut diags);
         }
         _ => {}
       }
@@ -499,7 +506,6 @@ impl Rule for ColorNamed {
 
 /// Check "never" mode: find named colors that should not be used.
 fn check_never(
-  rule: &ColorNamed,
   value: &str,
   value_offset: usize,
   property: &str,
@@ -521,8 +527,7 @@ fn check_never(
         if is_named_color(&lower) && !is_system_color(&lower) {
           let abs_offset = value_offset + offset;
           diags.push(
-            Diagnostic::new(rule.name(), format!("Unexpected named color \"{}\"", lower))
-              .severity(rule.default_severity())
+            Diagnostic::new(NAME, format!("Unexpected named color \"{}\"", lower))
               .span(Span::new(abs_offset, text.len())),
           );
         }
@@ -542,7 +547,6 @@ fn check_never(
           }
           // Recurse into function arguments
           check_never(
-            rule,
             args,
             value_offset + fn_offset,
             property,
@@ -557,12 +561,7 @@ fn check_never(
 }
 
 /// Check "always-where-possible" mode: find hex/rgb/hsl values that could be named colors.
-fn check_always_where_possible(
-  rule: &ColorNamed,
-  value: &str,
-  value_offset: usize,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec<Diagnostic>) {
   let tokens = tokenize_value(value);
 
   for token in &tokens {
@@ -573,12 +572,8 @@ fn check_always_where_possible(
           if let Some(name) = rgb_to_named_color(rgb.0, rgb.1, rgb.2) {
             let abs_offset = value_offset + offset;
             diags.push(
-              Diagnostic::new(
-                rule.name(),
-                format!("Expected \"{name}\" instead of \"#{text}\""),
-              )
-              .severity(rule.default_severity())
-              .span(Span::new(abs_offset, text.len() + 1)), // +1 for #
+              Diagnostic::new(NAME, format!("Expected \"{name}\" instead of \"#{text}\""))
+                .span(Span::new(abs_offset, text.len() + 1)), // +1 for #
             );
           }
         }
@@ -600,13 +595,12 @@ fn check_always_where_possible(
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
-                      rule.name(),
+                      NAME,
                       format!(
                         "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
                         args.trim()
                       ),
                     )
-                    .severity(rule.default_severity())
                     .span(Span::new(func_start, *full_len)),
                   );
                 }
@@ -620,13 +614,12 @@ fn check_always_where_possible(
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
-                      rule.name(),
+                      NAME,
                       format!(
                         "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
                         args.trim()
                       ),
                     )
-                    .severity(rule.default_severity())
                     .span(Span::new(func_start, *full_len)),
                   );
                 }
@@ -640,13 +633,12 @@ fn check_always_where_possible(
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
-                      rule.name(),
+                      NAME,
                       format!(
                         "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
                         args.trim()
                       ),
                     )
-                    .severity(rule.default_severity())
                     .span(Span::new(func_start, *full_len)),
                   );
                 }
@@ -660,13 +652,12 @@ fn check_always_where_possible(
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
-                      rule.name(),
+                      NAME,
                       format!(
                         "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
                         args.trim()
                       ),
                     )
-                    .severity(rule.default_severity())
                     .span(Span::new(func_start, *full_len)),
                   );
                 }
@@ -683,10 +674,9 @@ fn check_always_where_possible(
                     let func_start = value_offset + fn_offset - name.len() - 1;
                     diags.push(
                       Diagnostic::new(
-                        rule.name(),
+                        NAME,
                         format!("Expected \"{color_name}\" instead of \"#{text}\""),
                       )
-                      .severity(rule.default_severity())
                       .span(Span::new(func_start, *full_len)),
                     );
                   }
@@ -1213,7 +1203,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options, lint};
 
   fn style_with_decl(property: &str, value: &str) -> (CssNode, String) {
     let source = format!("a {{ {property}: {value}; }}");
@@ -1241,7 +1231,7 @@ mod tests {
       source: &source,
       ..ctx()
     };
-    let d = ColorNamed.check(&node, &c);
+    let d = configured(&ColorNamed, None).check(&node, &c);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("red"));
   }
@@ -1254,7 +1244,7 @@ mod tests {
       source: &source,
       ..ctx()
     };
-    let d = ColorNamed.check(&node, &c);
+    let d = configured(&ColorNamed, None).check(&node, &c);
     assert!(d.is_empty());
   }
 
@@ -1266,7 +1256,7 @@ mod tests {
       source: &source,
       ..ctx()
     };
-    let d = ColorNamed.check(&node, &c);
+    let d = configured(&ColorNamed, None).check(&node, &c);
     assert!(d.is_empty());
   }
 
@@ -1278,7 +1268,7 @@ mod tests {
       source: &source,
       ..ctx()
     };
-    let d = ColorNamed.check(&node, &c);
+    let d = configured(&ColorNamed, None).check(&node, &c);
     assert!(d.is_empty());
   }
 
@@ -1290,7 +1280,7 @@ mod tests {
       source: &source,
       ..ctx()
     };
-    let d = ColorNamed.check(&node, &c);
+    let d = configured(&ColorNamed, None).check(&node, &c);
     assert!(d.is_empty());
   }
 
@@ -1302,5 +1292,54 @@ mod tests {
     assert_eq!(parse_hex_to_rgb("ffffff"), Some((255, 255, 255)));
     assert_eq!(parse_hex_to_rgb("000f"), Some((0, 0, 0))); // #000F = black with full alpha
     assert_eq!(parse_hex_to_rgb("000000ff"), Some((0, 0, 0)));
+  }
+
+  #[test]
+  fn secondary_options_change_what_is_reported() {
+    let css = "a { color: red; fill: blue; }";
+    let lint_with = |options| lint(NAME, options, css, gale_css_parser::Syntax::Css).len();
+    assert_eq!(lint_with(serde_json::json!("never")), 2);
+    assert_eq!(
+      lint_with(serde_json::json!(["never", { "ignoreProperties": ["FILL"] }])),
+      1
+    );
+    assert_eq!(
+      lint_with(serde_json::json!(["never", { "ignoreProperties": ["/^col/"] }])),
+      1
+    );
+    assert_eq!(lint_with(serde_json::json!("always-where-possible")), 0);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", {
+          "ignore": ["inside-function"],
+          "ignoreProperties": ["fill"],
+          "ignoreFunctions": ["/^var/"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"color-named\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "ignoreEverything": true }])
+      ),
+      ["Invalid option name \"ignoreEverything\" for rule \"color-named\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "ignoreProperties": [1] }])
+      ),
+      ["Invalid value \"1\" for option \"ignoreProperties\" of rule \"color-named\""]
+    );
   }
 }

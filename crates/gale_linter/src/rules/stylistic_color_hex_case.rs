@@ -1,31 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify lowercase or uppercase for hex colors (@stylistic/ version).
-///
-/// Equivalent to `@stylistic/color-hex-case`. Supports both "lower" and "upper"
-/// primary options, unlike the core `color-hex-case` which only enforces lowercase.
-pub struct StylisticColorHexCase;
+const NAME: &str = "@stylistic/color-hex-case";
 
-impl Rule for StylisticColorHexCase {
-  fn name(&self) -> &'static str {
-    "@stylistic/color-hex-case"
+declare_rule! {
+  /// Specify lowercase or uppercase for hex colors (@stylistic/ version).
+  ///
+  /// Equivalent to `@stylistic/color-hex-case`. Supports both "lower" and "upper"
+  /// primary options, unlike the core `color-hex-case` which only enforces lowercase.
+  pub struct StylisticColorHexCase => StylisticColorHexCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for hex colors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for hex colors"
+/// `@stylistic/color-hex-case` as configured.
+pub struct StylisticColorHexCaseCheck {
+  /// `"lower"` or `"upper"`.
+  expected_case: &'static str,
+}
+
+impl StylisticColorHexCaseCheck {
+  /// The plugin's options: `"lower"` or `"upper"`.  Gale reads no option as
+  /// `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    options.finish()?;
+    Ok(Self {
+      expected_case: expected_case.unwrap_or("lower"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticColorHexCaseCheck {
   /// Flags hex colors not in the configured case and offers the converted value
   /// as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = ctx.primary_option_str().unwrap_or("lower");
+    let expected_case = self.expected_case;
 
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -68,8 +85,7 @@ impl Rule for StylisticColorHexCase {
             decl_start
           };
           diags.push(
-            Diagnostic::new(self.name(), format!("Expected \"{hex}\" to be \"{fixed}\""))
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{fixed}\""))
               .span(Span::new(abs_offset, hex.len()))
               .fix(Fix::new(
                 format!("Convert to {expected_case}case"),
@@ -111,7 +127,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -129,21 +145,38 @@ mod tests {
 
   #[test]
   fn reports_uppercase_hex_default_lower() {
-    let d = StylisticColorHexCase.check(&style_with_value("#FFFFFF"), &ctx());
+    let d = configured(&StylisticColorHexCase, None).check(&style_with_value("#FFFFFF"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#ffffff"));
   }
 
   #[test]
   fn allows_lowercase_hex() {
-    let d = StylisticColorHexCase.check(&style_with_value("#abc"), &ctx());
+    let d = configured(&StylisticColorHexCase, None).check(&style_with_value("#abc"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_mixed_case() {
-    let d = StylisticColorHexCase.check(&style_with_value("#aBcDeF"), &ctx());
+    let d = configured(&StylisticColorHexCase, None).check(&style_with_value("#aBcDeF"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#abcdef"));
+  }
+
+  #[test]
+  fn upper_reports_lowercase_hex() {
+    let rule = configured(&StylisticColorHexCase, serde_json::json!("upper"));
+    let d = rule.check(&style_with_value("#aBc"), &ctx());
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("#ABC"));
+  }
+
+  #[test]
+  fn only_lower_and_upper_are_options() {
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("Lower")),
+      ["Invalid option value \"Lower\" for rule \"@stylistic/color-hex-case\""]
+    );
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
   }
 }

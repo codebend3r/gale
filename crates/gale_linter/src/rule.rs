@@ -1,6 +1,3 @@
-use std::any::{Any, TypeId};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gale_css_parser::{CssNode, Syntax};
@@ -292,7 +289,6 @@ pub trait Rule: Send + Sync {
 ///
 /// `primary_option_array: true` after the severity marks a rule whose
 /// primary option can be an array (Stylelint's `rule.primaryOptionArray`).
-#[allow(unused_macros)] // until the first rule file is converted
 macro_rules! declare_rule {
   (
     $(#[$attr:meta])*
@@ -332,7 +328,6 @@ macro_rules! declare_rule {
     }
   };
 }
-#[allow(unused_imports)] // until the first rule file is converted
 pub(crate) use declare_rule;
 
 /// LEGACY: a rule that has not been converted to typed options yet.  It
@@ -414,76 +409,9 @@ impl<T: LegacyRule> Check for LegacyCheck<'_, T> {
   }
 }
 
-/// How many parsed options values [`per_run`] keeps for each rule and
-/// parsed type on a thread.  A run needs one for each config the rule is
-/// set in; the language server, which outlives configs, keeps the latest.
-const PARSED_OPTIONS_PER_RULE: usize = 8;
-
-/// One options value [`per_run`] parsed, and what the parse returned.
-struct ParsedOptions {
-  /// A copy of the options value, compared by content.
-  options: Option<serde_json::Value>,
-  /// What `parse` returned.
-  parsed: Rc<dyn Any>,
-}
-
-thread_local! {
-  /// Options parsed on this thread, by rule and parsed type, the most
-  /// recent last.
-  static PARSED_OPTIONS: RefCell<HashMap<(&'static str, TypeId), Vec<ParsedOptions>>> =
-    RefCell::new(HashMap::new());
-}
-
-/// Parse a rule's options at most once per run.
-///
-/// A rule whose options take real work to interpret (long lists, lookup
-/// tables) wraps that work in this, and it is done once on each worker
-/// thread for each distinct options value, however many files the run
-/// lints.  `parse` must depend only on `options`.
-///
-/// Options are compared by content rather than by address, so the copy a
-/// config override makes for every file, or a config the language server
-/// reloads, still finds its parse, and an address that a dropped value
-/// left behind never finds another value's.
-pub fn per_run<T: 'static>(
-  rule: &'static str,
-  options: Option<&serde_json::Value>,
-  parse: impl FnOnce() -> T,
-) -> Rc<T> {
-  let key = (rule, TypeId::of::<T>());
-  let cached = PARSED_OPTIONS.with(|memo| {
-    let memo = memo.borrow();
-    let entry = memo
-      .get(&key)?
-      .iter()
-      .rev()
-      .find(|entry| entry.options.as_ref() == options)?;
-    Rc::clone(&entry.parsed).downcast::<T>().ok()
-  });
-  if let Some(parsed) = cached {
-    return parsed;
-  }
-  // Parse without holding the memo borrowed, so a panicking parse leaves
-  // it unlocked and caches nothing.
-  let parsed = Rc::new(parse());
-  PARSED_OPTIONS.with(|memo| {
-    let mut memo = memo.borrow_mut();
-    let entries = memo.entry(key).or_default();
-    if entries.len() >= PARSED_OPTIONS_PER_RULE {
-      entries.remove(0);
-    }
-    entries.push(ParsedOptions {
-      options: options.cloned(),
-      parsed: Rc::clone(&parsed) as Rc<dyn Any>,
-    });
-  });
-  parsed
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::cell::Cell;
 
   /// A context over `source` with no options.
   fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
@@ -672,78 +600,5 @@ mod tests {
     };
     let found = check.check(&CssNode::Style(Default::default()), &ctx);
     assert_eq!(found[0].message, "Some(Number(3))");
-  }
-
-  /// Calls `per_run` for `options` as `rule`, counting how often it had to
-  /// parse.
-  fn parse_counting(
-    rule: &'static str,
-    options: &serde_json::Value,
-    parses: &Cell<usize>,
-  ) -> Rc<usize> {
-    per_run(rule, Some(options), || {
-      parses.set(parses.get() + 1);
-      options.as_array().map_or(0, Vec::len)
-    })
-  }
-
-  /// Each distinct options value is parsed once, whichever copy of it a
-  /// file hands over, and the parse is kept from one file to the next.
-  #[test]
-  fn per_run_parses_each_options_value_once() {
-    let first = serde_json::json!([1, 2, 3]);
-    let second = serde_json::json!([1]);
-    let parses = Cell::new(0);
-    for _ in 0..5 {
-      // A fresh copy each time, as config overrides make for every file.
-      let copy = first.clone();
-      assert_eq!(*parse_counting("test/once", &copy, &parses), 3);
-      assert_eq!(*parse_counting("test/once", &second, &parses), 1);
-    }
-    assert_eq!(parses.get(), 2);
-
-    // Another rule, or another parsed type, gets its own entry.
-    assert_eq!(*per_run("test/other", Some(&first), || 7usize), 7);
-    let as_string = per_run("test/once", Some(&first), || "parsed".to_string());
-    assert_eq!(*as_string, "parsed");
-    assert_eq!(*per_run("test/once", None, || 0usize), 0);
-    assert_eq!(
-      *per_run("test/once", None, || 1usize),
-      0,
-      "no options is a value too"
-    );
-  }
-
-  /// A parse that panics caches nothing, and the next call parses again.
-  #[test]
-  fn per_run_keeps_nothing_from_a_parse_that_panics() {
-    let options = serde_json::json!(["a"]);
-    let caught = crate::panic_guard::catch(|| {
-      per_run("test/panics", Some(&options), || -> usize {
-        panic!("bad options")
-      })
-    })
-    .unwrap_err();
-    assert_eq!(caught.message, "bad options");
-    assert_eq!(*per_run("test/panics", Some(&options), || 1usize), 1);
-    assert_eq!(*per_run("test/panics", Some(&options), || 2usize), 1);
-  }
-
-  /// Only the latest few options values of a rule are kept.
-  #[test]
-  fn per_run_keeps_the_latest_options_values() {
-    let parses = Cell::new(0);
-    let values: Vec<serde_json::Value> = (0..=PARSED_OPTIONS_PER_RULE)
-      .map(|n| serde_json::json!(vec![0; n]))
-      .collect();
-    for value in &values {
-      parse_counting("test/latest", value, &parses);
-    }
-    assert_eq!(parses.get(), values.len());
-    // The newest are still there; the oldest was dropped.
-    parse_counting("test/latest", &values[values.len() - 1], &parses);
-    assert_eq!(parses.get(), values.len());
-    parse_counting("test/latest", &values[0], &parses);
-    assert_eq!(parses.get(), values.len() + 1);
   }
 }

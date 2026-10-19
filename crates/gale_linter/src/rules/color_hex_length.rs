@@ -1,31 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Enforces hex color length.
-///
-/// With "short" (default): reports hex colors that can be shortened (e.g. #ffffff → #fff).
-/// With "long": reports short hex colors that can be expanded (e.g. #fff → #ffffff).
-///
-/// Equivalent to Stylelint's `color-hex-length` rule.
-pub struct ColorHexLength;
+const NAME: &str = "color-hex-length";
 
-impl Rule for ColorHexLength {
-  fn name(&self) -> &'static str {
-    "color-hex-length"
+declare_rule! {
+  /// Enforces hex color length.
+  ///
+  /// With "short" (default): reports hex colors that can be shortened (e.g. #ffffff → #fff).
+  /// With "long": reports short hex colors that can be expanded (e.g. #fff → #ffffff).
+  ///
+  /// Equivalent to Stylelint's `color-hex-length` rule.
+  pub struct ColorHexLength => ColorHexLengthCheck {
+    name: NAME,
+    description: "Specify short or long notation for hex colors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify short or long notation for hex colors"
+/// `color-hex-length` as configured.
+pub struct ColorHexLengthCheck {
+  /// `"long"` rather than `"short"`.
+  long: bool,
+}
+
+impl ColorHexLengthCheck {
+  /// Stylelint's options: `"short"` or `"long"`.  Gale reads no option as
+  /// `"short"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let length = options.primary_one_of(&["short", "long"]);
+    options.finish()?;
+    Ok(Self {
+      long: length == Some("long"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ColorHexLengthCheck {
   /// Flags hex colors that could be shortened under "short", or expanded under
   /// "long", and offers the rewritten value as a fix.
   ///
@@ -39,8 +56,7 @@ impl Rule for ColorHexLength {
       _ => return vec![],
     };
 
-    // Primary option: "short" (default) or "long".
-    let long = ctx.primary_option_str() == Some("long");
+    let long = self.long;
 
     let mut diags = Vec::new();
     for decl in decls {
@@ -76,16 +92,12 @@ impl Rule for ColorHexLength {
         let span = Span::new(value_start + node.source_index, hex.len());
         let verb = if long { "Expand" } else { "Shorten" };
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{hex}\" to be \"{expected}\""),
-          )
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("{verb} to \"{expected}\""),
-            vec![Edit::new(span, &expected)],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{expected}\""))
+            .span(span)
+            .fix(Fix::new(
+              format!("{verb} to \"{expected}\""),
+              vec![Edit::new(span, &expected)],
+            )),
         );
         true
       });
@@ -139,7 +151,7 @@ fn expand(hex: &str) -> String {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "color-hex-length";
 
@@ -217,6 +229,32 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a { color: #FFFFFF; }", Syntax::Css),
       "a { color: #FFFFFF; }"
+    );
+  }
+
+  #[test]
+  fn only_short_and_long_are_options() {
+    assert!(invalid_options(RULE, serde_json::json!("long")).is_empty());
+    assert!(
+      invalid_options(RULE, serde_json::json!(["short", { "ignoreAnything": 1 }])).is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"color-hex-length\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!(6)),
+      ["Invalid option value \"6\" for rule \"color-hex-length\""]
+    );
+    // An invalid option keeps the rule from running.
+    assert!(
+      lint(
+        RULE,
+        serde_json::json!("sideways"),
+        "a { color: #ffffff; }",
+        Syntax::Css
+      )
+      .is_empty()
     );
   }
 }
