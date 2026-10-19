@@ -1,28 +1,45 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow duplicate font family names within `font-family` or `font` declarations.
-///
-/// Equivalent to Stylelint's `font-family-no-duplicate-names` rule.
-pub struct FontFamilyNoDuplicateNames;
+const NAME: &str = "font-family-no-duplicate-names";
 
-impl Rule for FontFamilyNoDuplicateNames {
-  fn name(&self) -> &'static str {
-    "font-family-no-duplicate-names"
+declare_rule! {
+  /// Disallow duplicate font family names within `font-family` or `font` declarations.
+  ///
+  /// Equivalent to Stylelint's `font-family-no-duplicate-names` rule.
+  pub struct FontFamilyNoDuplicateNames => FontFamilyNoDuplicateNamesCheck {
+    name: NAME,
+    description: "Disallow duplicate names in font-family declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow duplicate names in font-family declarations"
+/// `font-family-no-duplicate-names` as configured.
+pub struct FontFamilyNoDuplicateNamesCheck {
+  /// `ignoreFontFamilyNames`: names (unquoted, as written) that may repeat.
+  ignore_font_family_names: Matchers,
+}
+
+impl FontFamilyNoDuplicateNamesCheck {
+  /// Stylelint's options: `true`, then `ignoreFontFamilyNames`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_font_family_names = options.matchers("ignoreFontFamilyNames");
+    options.finish()?;
+    Ok(Self {
+      ignore_font_family_names,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FontFamilyNoDuplicateNamesCheck {
   /// Flags a family name listed twice in the same `font-family` or `font` value.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -49,10 +66,11 @@ impl Rule for FontFamilyNoDuplicateNames {
 
       let mut seen = HashSet::new();
       for family in &families {
-        let normalized = family
-          .trim()
-          .trim_matches(|c| c == '"' || c == '\'')
-          .to_ascii_lowercase();
+        let unquoted = family.trim().trim_matches(|c| c == '"' || c == '\'');
+        if self.ignore_font_family_names.matches(unquoted.trim()) {
+          continue;
+        }
+        let normalized = unquoted.to_ascii_lowercase();
 
         if normalized.is_empty() {
           continue;
@@ -61,10 +79,9 @@ impl Rule for FontFamilyNoDuplicateNames {
         if !seen.insert(normalized.clone()) {
           diagnostics.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Unexpected duplicate font family name \"{}\"", normalized),
             )
-            .severity(self.default_severity())
             .span(Span::new(decl.span.offset, decl.span.length)),
           );
         }
@@ -80,11 +97,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   #[test]
   fn reports_duplicate_font_family_names() {
-    let rule = FontFamilyNoDuplicateNames;
+    let rule = configured(&FontFamilyNoDuplicateNames, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -106,7 +123,7 @@ mod tests {
 
   #[test]
   fn ignores_unique_font_family_names() {
-    let rule = FontFamilyNoDuplicateNames;
+    let rule = configured(&FontFamilyNoDuplicateNames, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -124,7 +141,7 @@ mod tests {
 
   #[test]
   fn detects_duplicates_with_quotes() {
-    let rule = FontFamilyNoDuplicateNames;
+    let rule = configured(&FontFamilyNoDuplicateNames, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -138,5 +155,49 @@ mod tests {
     });
     let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
+  }
+
+  #[test]
+  fn ignore_font_family_names_may_repeat() {
+    let rule = configured(
+      &FontFamilyNoDuplicateNames,
+      serde_json::json!([true, { "ignoreFontFamilyNames": ["/^My /", "monospace"] }]),
+    );
+    let node = CssNode::Style(StyleRule {
+      selector: "a".to_string(),
+      declarations: vec![Declaration {
+        property: "font-family".to_string(),
+        value: "\"My Font\", My Font, monospace, monospace, serif, serif".to_string(),
+        span: ParserSpan::new(0, 10),
+        important: false,
+      }],
+      span: ParserSpan::new(0, 0),
+      ..Default::default()
+    });
+    let d = rule.check(&node, &ctx());
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("serif"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFontFamilyNames": "monospace" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"font-family-no-duplicate-names\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFontFamilies": ["x"] }])
+      ),
+      ["Invalid option name \"ignoreFontFamilies\" for rule \"font-family-no-duplicate-names\""]
+    );
   }
 }

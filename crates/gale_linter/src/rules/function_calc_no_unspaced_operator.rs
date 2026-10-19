@@ -1,20 +1,44 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow invalid unspaced operators within math functions.
-///
-/// Equivalent to Stylelint's `function-calc-no-unspaced-operator` rule, and
-/// a port of its algorithm: declaration values are tokenized as CSS, each
-/// math function (and parenthesised group inside one) is split into
-/// `operand operator operand` operations, and a `+` or `-` operator must
-/// have exactly one space (or a newline) on each side.  Operators hidden in
-/// a token (`2px+1px` reads as `2px` and `+1px`, `1px-` as a unit `px-`)
-/// are found too.  The fix inserts or normalises the whitespace, exactly as
-/// Stylelint's does.
-pub struct FunctionCalcNoUnspacedOperator;
+const NAME: &str = "function-calc-no-unspaced-operator";
+
+declare_rule! {
+  /// Disallow invalid unspaced operators within math functions.
+  ///
+  /// Equivalent to Stylelint's `function-calc-no-unspaced-operator` rule, and
+  /// a port of its algorithm: declaration values are tokenized as CSS, each
+  /// math function (and parenthesised group inside one) is split into
+  /// `operand operator operand` operations, and a `+` or `-` operator must
+  /// have exactly one space (or a newline) on each side.  Operators hidden in
+  /// a token (`2px+1px` reads as `2px` and `+1px`, `1px-` as a unit `px-`)
+  /// are found too.  The fix inserts or normalises the whitespace, exactly as
+  /// Stylelint's does.
+  pub struct FunctionCalcNoUnspacedOperator => FunctionCalcNoUnspacedOperatorCheck {
+    name: NAME,
+    description: "Disallow invalid unspaced operator within calc functions",
+    default_severity: Warning,
+  }
+}
+
+/// `function-calc-no-unspaced-operator`, which takes no options.
+pub struct FunctionCalcNoUnspacedOperatorCheck;
+
+impl FunctionCalcNoUnspacedOperatorCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Stylelint's `mathFunctions`.
 const MATH_FUNCTIONS: &[&str] = &[
@@ -42,19 +66,7 @@ const MATH_FUNCTIONS: &[&str] = &[
   "round",
 ];
 
-impl Rule for FunctionCalcNoUnspacedOperator {
-  fn name(&self) -> &'static str {
-    "function-calc-no-unspaced-operator"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow invalid unspaced operator within calc functions"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FunctionCalcNoUnspacedOperatorCheck {
   /// Flags `+` and `-` operators in math functions that lack a single space
   /// on either side.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -77,12 +89,10 @@ impl Rule for FunctionCalcNoUnspacedOperator {
             report.operator
           ),
         };
-        let mut diag = Diagnostic::new(self.name(), message)
-          .severity(self.default_severity())
-          .span(Span::new(
-            decl.value_start + report.position,
-            report.operator.len_utf8(),
-          ));
+        let mut diag = Diagnostic::new(NAME, message).span(Span::new(
+          decl.value_start + report.position,
+          report.operator.len_utf8(),
+        ));
         if !report.edits.is_empty() {
           let edits = report
             .edits
@@ -706,7 +716,7 @@ mod tests {
 
   use super::mentions_math_function;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "function-calc-no-unspaced-operator";
 
@@ -876,5 +886,14 @@ mod tests {
     let warnings = lint(RULE, options, css, Syntax::Css);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].fix.is_none());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"function-calc-no-unspaced-operator\""]
+    );
   }
 }

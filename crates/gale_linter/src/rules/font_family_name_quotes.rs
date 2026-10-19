@@ -1,27 +1,62 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text::WrittenDeclaration;
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Require or disallow quotes for font family names.
-///
-/// Options:
-/// - `"always-where-recommended"`: names the CSS spec recommends quoting
-///   (anything but letters and hyphens) must be quoted, others must not be.
-/// - `"always-unless-keyword"`: every non-keyword family must be quoted.
-/// - `"always-where-required"`: only names that are not valid identifiers
-///   must be quoted; the rest must not be.
-///
-/// Keywords (`serif`, `inherit`, system fonts) must never be quoted.
-///
-/// Equivalent to Stylelint's `font-family-name-quotes` rule: families are
-/// found in `font-family` and `font` values as written, the way Stylelint's
-/// `findFontFamily` finds them, and the fix adds `"` quotes or removes the
-/// existing ones in place.
-pub struct FontFamilyNameQuotes;
+const NAME: &str = "font-family-name-quotes";
+
+declare_rule! {
+  /// Require or disallow quotes for font family names.
+  ///
+  /// Options:
+  /// - `"always-where-recommended"`: names the CSS spec recommends quoting
+  ///   (anything but letters and hyphens) must be quoted, others must not be.
+  /// - `"always-unless-keyword"`: every non-keyword family must be quoted.
+  /// - `"always-where-required"`: only names that are not valid identifiers
+  ///   must be quoted; the rest must not be.
+  ///
+  /// Keywords (`serif`, `inherit`, system fonts) must never be quoted.
+  ///
+  /// Equivalent to Stylelint's `font-family-name-quotes` rule: families are
+  /// found in `font-family` and `font` values as written, the way Stylelint's
+  /// `findFontFamily` finds them, and the fix adds `"` quotes or removes the
+  /// existing ones in place.
+  pub struct FontFamilyNameQuotes => FontFamilyNameQuotesCheck {
+    name: NAME,
+    description: "Require or disallow quotes for font family names",
+    default_severity: Warning,
+  }
+}
+
+/// `font-family-name-quotes` as configured.
+pub struct FontFamilyNameQuotesCheck {
+  /// `"always-where-required"`, `"always-where-recommended"` or
+  /// `"always-unless-keyword"`.
+  mode: &'static str,
+}
+
+impl FontFamilyNameQuotesCheck {
+  /// Stylelint's option: `"always-where-required"`,
+  /// `"always-where-recommended"` or `"always-unless-keyword"`.  Gale reads
+  /// no option as `"always-where-recommended"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let mode = options.primary_one_of(&[
+      "always-where-required",
+      "always-where-recommended",
+      "always-unless-keyword",
+    ]);
+    options.finish()?;
+    Ok(Self {
+      mode: mode.unwrap_or("always-where-recommended"),
+    })
+  }
+}
 
 /// Stylelint's `basicKeywords`.
 const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
@@ -337,25 +372,11 @@ fn find_font_family(value: &str) -> Vec<Family> {
   families
 }
 
-impl Rule for FontFamilyNameQuotes {
-  fn name(&self) -> &'static str {
-    "font-family-name-quotes"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow quotes for font family names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FontFamilyNameQuotesCheck {
   /// Flags font family names in `font-family` and `font` values whose
   /// quoting does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let mode = ctx
-      .primary_option_str()
-      .unwrap_or("always-where-recommended");
+    let mode = self.mode;
     let mut diags = Vec::new();
     for &decl in ctx.written_declarations(node).iter() {
       let prop = decl.prop.to_ascii_lowercase();
@@ -370,7 +391,7 @@ impl Rule for FontFamilyNameQuotes {
   }
 }
 
-impl FontFamilyNameQuotes {
+impl FontFamilyNameQuotesCheck {
   /// Report `family` if its quoting does not match `mode`.
   fn check_family(
     &self,
@@ -423,19 +444,14 @@ impl FontFamilyNameQuotes {
         Edit::new(Span::new(start, name.len() + 2), name.to_string()),
       )
     };
-    diags.push(
-      Diagnostic::new(self.name(), message)
-        .severity(self.default_severity())
-        .span(span)
-        .fix(Fix::new(
-          if expect_quotes {
-            "Add quotes"
-          } else {
-            "Remove quotes"
-          },
-          vec![edit],
-        )),
-    );
+    diags.push(Diagnostic::new(NAME, message).span(span).fix(Fix::new(
+      if expect_quotes {
+        "Add quotes"
+      } else {
+        "Remove quotes"
+      },
+      vec![edit],
+    )));
   }
 }
 
@@ -443,7 +459,7 @@ impl FontFamilyNameQuotes {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "font-family-name-quotes";
 
@@ -549,5 +565,14 @@ mod tests {
     let css = "a { font-family: Arial; }";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, serde_json::json!("always-unless-keyword")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"font-family-name-quotes\""]
+    );
   }
 }

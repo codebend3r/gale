@@ -1,12 +1,42 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports when a `font-family` declaration does not end with a generic family keyword.
-///
-/// Equivalent to Stylelint's `font-family-no-missing-generic-family-keyword` rule.
-pub struct FontFamilyNoMissingGenericFamilyKeyword;
+const NAME: &str = "font-family-no-missing-generic-family-keyword";
+
+declare_rule! {
+  /// Reports when a `font-family` declaration does not end with a generic family keyword.
+  ///
+  /// Equivalent to Stylelint's `font-family-no-missing-generic-family-keyword` rule.
+  pub struct FontFamilyNoMissingGenericFamilyKeyword => FontFamilyNoMissingGenericFamilyKeywordCheck {
+    name: NAME,
+    description: "Require a generic family keyword in font-family declarations",
+    default_severity: Warning,
+  }
+}
+
+/// `font-family-no-missing-generic-family-keyword` as configured.
+pub struct FontFamilyNoMissingGenericFamilyKeywordCheck {
+  /// `ignoreFontFamilies`: a declaration naming one of these families
+  /// (unquoted) needs no generic family.
+  ignore_font_families: Matchers,
+}
+
+impl FontFamilyNoMissingGenericFamilyKeywordCheck {
+  /// Stylelint's options: `true`, then `ignoreFontFamilies`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_font_families = options.matchers("ignoreFontFamilies");
+    options.finish()?;
+    Ok(Self {
+      ignore_font_families,
+    })
+  }
+}
 
 const GENERIC_FAMILIES: &[&str] = &[
   "serif",
@@ -24,19 +54,7 @@ const GENERIC_FAMILIES: &[&str] = &[
   "fangsong",
 ];
 
-impl Rule for FontFamilyNoMissingGenericFamilyKeyword {
-  fn name(&self) -> &'static str {
-    "font-family-no-missing-generic-family-keyword"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require a generic family keyword in font-family declarations"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
   /// Flags a `font-family` whose last entry is not a generic family keyword.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let style = match node {
@@ -91,21 +109,28 @@ impl Rule for FontFamilyNoMissingGenericFamilyKeyword {
       // Split by comma and check if ANY entry is a generic family keyword.
       // Stylelint accepts the declaration if any family in the list is generic,
       // not just the last one.
-      let has_generic = value.split(',').any(|family| {
-        let trimmed = family.trim();
-        let unquoted = trimmed
+      let unquoted = |family: &'_ str| {
+        family
+          .trim()
           .trim_start_matches(['"', '\''])
           .trim_end_matches(['"', '\''])
-          .trim();
+          .trim()
+          .to_string()
+      };
+      let has_generic = value.split(',').any(|family| {
+        let unquoted = unquoted(family);
         GENERIC_FAMILIES
           .iter()
-          .any(|&g| g.eq_ignore_ascii_case(unquoted))
+          .any(|&g| g.eq_ignore_ascii_case(&unquoted))
       });
+      let ignored = !self.ignore_font_families.is_empty()
+        && value
+          .split(',')
+          .any(|family| self.ignore_font_families.matches(&unquoted(family)));
 
-      if !has_generic {
+      if !has_generic && !ignored {
         diagnostics.push(
-          Diagnostic::new(self.name(), "Unexpected missing generic font family")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected missing generic font family")
             .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -120,11 +145,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   #[test]
   fn reports_missing_generic_family() {
-    let rule = FontFamilyNoMissingGenericFamilyKeyword;
+    let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
     let node = CssNode::Style(StyleRule {
       selector: "body".to_string(),
       declarations: vec![Declaration {
@@ -143,7 +168,7 @@ mod tests {
 
   #[test]
   fn ignores_when_generic_family_present() {
-    let rule = FontFamilyNoMissingGenericFamilyKeyword;
+    let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
     let node = CssNode::Style(StyleRule {
       selector: "body".to_string(),
       declarations: vec![Declaration {
@@ -161,7 +186,7 @@ mod tests {
 
   #[test]
   fn accepts_system_ui() {
-    let rule = FontFamilyNoMissingGenericFamilyKeyword;
+    let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
     let node = CssNode::Style(StyleRule {
       selector: "body".to_string(),
       declarations: vec![Declaration {
@@ -175,5 +200,54 @@ mod tests {
     });
     let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn ignore_font_families_needs_no_generic_family() {
+    let rule = configured(
+      &FontFamilyNoMissingGenericFamilyKeyword,
+      serde_json::json!([true, { "ignoreFontFamilies": ["/^Icon/"] }]),
+    );
+    let node = |value: &str| {
+      CssNode::Style(StyleRule {
+        selector: "a".to_string(),
+        declarations: vec![Declaration {
+          property: "font-family".to_string(),
+          value: value.to_string(),
+          span: ParserSpan::new(0, 10),
+          important: false,
+        }],
+        span: ParserSpan::new(0, 0),
+        ..Default::default()
+      })
+    };
+    assert!(rule.check(&node("Arial, \"Icon Font\""), &ctx()).is_empty());
+    assert_eq!(rule.check(&node("Arial"), &ctx()).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFontFamilies": "Icons" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"font-family-no-missing-generic-family-keyword\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFontFamilies": [false] }])
+      ),
+      [
+        "Invalid value \"false\" for option \"ignoreFontFamilies\" of rule \"font-family-no-missing-generic-family-keyword\""
+      ]
+    );
   }
 }

@@ -1,17 +1,50 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Enforces consistent case for function names.
-///
-/// Equivalent to Stylelint's `function-name-case` rule.
-/// Supports `"lower"` (default) and `"upper"` primary options.
-///
-/// Secondary options:
-/// - `ignoreFunctions`: array of function name strings or regex patterns
-///   (e.g. `"/^get.*$/"`) to ignore.
-pub struct FunctionNameCase;
+const NAME: &str = "function-name-case";
+
+declare_rule! {
+  /// Enforces consistent case for function names.
+  ///
+  /// Equivalent to Stylelint's `function-name-case` rule.
+  /// Supports `"lower"` (default) and `"upper"` primary options.
+  ///
+  /// Secondary options:
+  /// - `ignoreFunctions`: array of function name strings or regex patterns
+  ///   (e.g. `"/^get.*$/"`) to ignore.
+  pub struct FunctionNameCase => FunctionNameCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for function names",
+    default_severity: Warning,
+  }
+}
+
+/// `function-name-case` as configured.
+pub struct FunctionNameCaseCheck {
+  /// `"lower"` or `"upper"`.
+  mode: &'static str,
+  /// `ignoreFunctions`: names (any case) and `/regex/` entries.
+  ignore_functions: Vec<String>,
+}
+
+impl FunctionNameCaseCheck {
+  /// Stylelint's options: `"lower"` or `"upper"`, then `ignoreFunctions`.
+  /// Gale reads no option as `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let mode = options.primary_one_of(&["lower", "upper"]);
+    let ignore_functions = options.strings("ignoreFunctions");
+    options.finish()?;
+    Ok(Self {
+      mode: mode.unwrap_or("lower"),
+      ignore_functions,
+    })
+  }
+}
 
 /// CSS functions whose canonical name contains uppercase letters (camelCase).
 /// When enforcing lowercase, these are expected in their canonical form,
@@ -98,19 +131,7 @@ fn strip_vendor_prefix(name: &str) -> (&str, &str) {
   ("", name)
 }
 
-impl Rule for FunctionNameCase {
-  fn name(&self) -> &'static str {
-    "function-name-case"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for function names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FunctionNameCaseCheck {
   /// Flags function names not in the configured case, skipping any matched by
   /// `ignoreFunctions`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -123,20 +144,8 @@ impl Rule for FunctionNameCase {
     );
 
     // Primary option: "lower" (default) or "upper"
-    let mode = ctx.primary_option_str().unwrap_or("lower");
-
-    // Secondary options
-    let ignore_fns: Vec<String> = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreFunctions"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
+    let mode = self.mode;
+    let ignore_fns = &self.ignore_functions;
 
     let mut diags = Vec::new();
     for decl in &rule.declarations {
@@ -184,7 +193,7 @@ impl Rule for FunctionNameCase {
         }
 
         // Check ignoreFunctions against the original function name
-        if is_ignored(&func_name, &ignore_fns) {
+        if is_ignored(&func_name, ignore_fns) {
           continue;
         }
 
@@ -200,10 +209,9 @@ impl Rule for FunctionNameCase {
         );
 
         let diag = Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Expected \"{func_name}\" to be \"{expected_full}\""),
         )
-        .severity(self.default_severity())
         .span(Span::new(abs_offset, func_name.len()))
         .fix(fix);
 
@@ -244,6 +252,7 @@ fn extract_function_names_with_offsets(value: &str) -> Vec<(String, usize)> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
   use gale_css_parser::Syntax;
 
   fn make_ctx_with_source_and_options<'a>(
@@ -271,7 +280,7 @@ mod tests {
     let source = "a { color: RGB(0, 0, 0); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("rgb"));
   }
@@ -281,7 +290,11 @@ mod tests {
     let source = "a { color: rgb(0, 0, 0); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, None)
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -289,7 +302,7 @@ mod tests {
     let source = "a { margin: Calc(100% - 20px); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("calc"));
   }
@@ -299,7 +312,11 @@ mod tests {
     let source = "a { transform: translateX(0); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, None)
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -307,7 +324,7 @@ mod tests {
     let source = "a { transform: TranslateX(0); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("translateX"));
   }
@@ -317,9 +334,9 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { margin: calc(5%); }";
-    let ctx = make_ctx_with_source_and_options(source, Some(Box::leak(Box::new(opts))));
+    let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, opts.clone()).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("CALC"));
   }
@@ -329,9 +346,13 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { margin: CALC(5%); }";
-    let ctx = make_ctx_with_source_and_options(source, Some(Box::leak(Box::new(opts))));
+    let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, opts.clone())
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -339,9 +360,13 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["upper"]);
     let source = "a { transform: TRANSLATEX(0); }";
-    let ctx = make_ctx_with_source_and_options(source, Some(Box::leak(Box::new(opts))));
+    let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, opts.clone())
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -349,9 +374,13 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["lower", {"ignoreFunctions": ["someFunction"]}]);
     let source = "a { color: someFunction(); }";
-    let ctx = make_ctx_with_source_and_options(source, Some(Box::leak(Box::new(opts))));
+    let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, opts.clone())
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -359,9 +388,13 @@ mod tests {
     use serde_json::json;
     let opts: serde_json::Value = json!(["lower", {"ignoreFunctions": ["/^get.*$/"]}]);
     let source = "a { color: getDefaultColor(); }";
-    let ctx = make_ctx_with_source_and_options(source, Some(Box::leak(Box::new(opts))));
+    let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, opts.clone())
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -369,7 +402,11 @@ mod tests {
     let source = "a { background: -webkit-radial-gradient(red, green, blue); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    assert!(FunctionNameCase.check(&node, &ctx).is_empty());
+    assert!(
+      configured(&FunctionNameCase, None)
+        .check(&node, &ctx)
+        .is_empty()
+    );
   }
 
   #[test]
@@ -377,7 +414,7 @@ mod tests {
     let source = "a { background: -WEBKIT-radial-gradient(red, green, blue); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
   }
 
@@ -386,7 +423,7 @@ mod tests {
     let source = "a { padding: Some-function(5px); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     // "Some-function" starts at column 14 (1-indexed), byte offset 13
     assert_eq!(d[0].span.offset, 13);
@@ -397,11 +434,30 @@ mod tests {
     let source = "a { color: RGB(0, 0, 0); }";
     let ctx = make_ctx_with_source_and_options(source, None);
     let node = make_node_from_source(source);
-    let d = FunctionNameCase.check(&node, &ctx);
+    let d = configured(&FunctionNameCase, None).check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].fix.is_some());
     let fix = d[0].fix.as_ref().unwrap();
     assert_eq!(fix.edits.len(), 1);
     assert_eq!(fix.edits[0].new_text, "rgb");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["upper", { "ignoreFunctions": "someFunction" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("camel")),
+      ["Invalid option value \"camel\" for rule \"function-name-case\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["lower", { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"function-name-case\""]
+    );
   }
 }
