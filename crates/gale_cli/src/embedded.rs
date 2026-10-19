@@ -16,12 +16,6 @@ pub(crate) fn is_host_file(path: &Path) -> bool {
   path.to_str().and_then(HostLanguage::from_path).is_some()
 }
 
-/// Whether a `customSyntax` names postcss-html, the syntax Stylelint lints
-/// these files with.
-pub(crate) fn is_postcss_html(custom_syntax: &str) -> bool {
-  custom_syntax.eq_ignore_ascii_case("postcss-html")
-}
-
 /// A style block gale skipped because it cannot parse its language.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkippedBlock {

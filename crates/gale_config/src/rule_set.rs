@@ -173,4 +173,26 @@ mod tests {
     assert!(recommended.rules.contains_key("block-no-empty"));
     assert!(recommended.rules.values().all(|r| r.severity.is_none()));
   }
+
+  #[test]
+  fn gale_all_preset_enables_every_registered_rule() {
+    // `gale:all` is built from the linter's rule table and the registry is
+    // filled from the same table; this checks the two end to end.
+    let preset: std::collections::BTreeSet<String> = crate::resolve_preset("gale:all")
+      .unwrap()
+      .into_keys()
+      .collect();
+    let registered: std::collections::BTreeSet<String> = RuleRegistry::global()
+      .all()
+      .iter()
+      .map(|rule| rule.name().to_string())
+      .collect();
+    let missing: Vec<&String> = registered.difference(&preset).collect();
+    let extra: Vec<&String> = preset.difference(&registered).collect();
+    assert!(
+      missing.is_empty() && extra.is_empty(),
+      "gale:all is out of step with the registry: {missing:?} are registered but not in the \
+       preset, and {extra:?} are in the preset but not registered"
+    );
+  }
 }

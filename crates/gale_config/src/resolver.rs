@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::GaleConfig;
 use crate::discovery::{config_in_dir, load_config};
@@ -54,7 +53,7 @@ impl ConfigResolver {
   /// parent's answer otherwise, so every directory passed on the way up is
   /// cached too.  Each directory is examined at most once per resolver, no
   /// matter how many of its descendants are asked about.
-  fn find_config_path_for_dir(&mut self, dir: PathBuf) -> Option<PathBuf> {
+  pub(crate) fn find_config_path_for_dir(&mut self, dir: PathBuf) -> Option<PathBuf> {
     let mut visited: Vec<PathBuf> = Vec::new();
     let mut cur = dir;
     let found = loop {
@@ -102,60 +101,6 @@ impl ConfigResolver {
   /// Check whether there are multiple distinct config files in play.
   pub fn has_multiple_configs(&self) -> bool {
     self.cache.len() > 1
-  }
-
-  /// Pre-resolve configs for a batch of files and return an `Arc`-based
-  /// lookup table keyed by parent directory.
-  ///
-  /// This is designed to be called **once** before parallel linting so that
-  /// the hot loop can do a simple `HashMap` lookup without any `Mutex`.
-  /// Files whose parent directory maps to the same config file will share
-  /// a single `Arc<GaleConfig>`.
-  pub fn resolve_all_for_files(
-    &mut self,
-    files: &[PathBuf],
-    fallback: &GaleConfig,
-  ) -> HashMap<PathBuf, Arc<GaleConfig>> {
-    // Deduplicate directories first to minimise I/O.
-    let mut dirs: Vec<PathBuf> = files
-      .iter()
-      .filter_map(|f| f.parent().map(|p| p.to_path_buf()))
-      .collect();
-    dirs.sort();
-    dirs.dedup();
-
-    // Resolve each directory's config (populates internal caches).
-    // Build an Arc-based config cache keyed by config file path so that
-    // directories sharing the same config file share one Arc.
-    let mut arc_cache: HashMap<PathBuf, Arc<GaleConfig>> = HashMap::new();
-    let fallback_arc = Arc::new(fallback.clone());
-
-    let mut dir_to_arc: HashMap<PathBuf, Arc<GaleConfig>> = HashMap::with_capacity(dirs.len());
-
-    for dir in &dirs {
-      let config_arc = if let Some(config_path) = self.find_config_path_for_dir(dir.clone()) {
-        // Load config if not already cached.
-        if !self.cache.contains_key(&config_path) {
-          let config = load_config(&config_path).unwrap_or_else(|err| {
-            eprintln!(
-              "Warning: failed to load config {}: {err}",
-              config_path.display()
-            );
-            GaleConfig::default()
-          });
-          self.cache.insert(config_path.clone(), config);
-        }
-        arc_cache
-          .entry(config_path.clone())
-          .or_insert_with(|| Arc::new(self.cache[&config_path].clone()))
-          .clone()
-      } else {
-        fallback_arc.clone()
-      };
-      dir_to_arc.insert(dir.clone(), config_arc);
-    }
-
-    dir_to_arc
   }
 }
 

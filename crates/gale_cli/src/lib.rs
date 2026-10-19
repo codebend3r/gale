@@ -1,7 +1,6 @@
 mod cache;
 mod embedded;
 
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -13,13 +12,15 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use tracing::debug;
 
-use gale_config::{ConfigResolver, GaleConfig, RunSettings, WithoutConfig};
-use gale_css_parser::{Syntax, detect_syntax};
+use gale_config::{
+  ConfigSource, GaleConfig, Ignored, ResolverOptions, RuleSetResolver, RunSettings, SkippedRules,
+  WithoutConfig, unsupported_plugin_warnings,
+};
+use gale_css_parser::Syntax;
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
 use gale_formatter::{StylelintResult, create_formatter_with_color, strip_ansi};
-use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::runner::PERF_TARGET;
-use gale_linter::{DisableOptions, LintEnv, RuleRegistry, RuleSet};
+use gale_linter::{DisableOptions, LintEnv, RuleSet};
 
 use crate::cache::{
   CacheStrategy, LintCache, combine_hashes, compute_config_hash, compute_hash, compute_run_hash,
@@ -206,55 +207,6 @@ const EXIT_INVALID_CONFIG: i32 = 78;
 // ---------------------------------------------------------------------------
 
 const CSS_EXTENSIONS: &[&str] = &["css", "scss", "less", "sass"];
-
-/// Map a Stylelint `customSyntax` package name onto the parser Gale uses.
-///
-/// Returns `None` for syntaxes Gale cannot parse (`postcss-markdown`, ...),
-/// and for `postcss-html`, which [`resolve_syntax`] accepts on its own: an
-/// HTML-like file's style blocks each pick their parser from their `lang`.
-/// Together they decide which `customSyntax` values Gale understands,
-/// whether they arrive from the config file or from `--custom-syntax`.
-fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
-  match name.to_ascii_lowercase().as_str() {
-    "postcss" => Some(Syntax::Css),
-    "postcss-scss" => Some(Syntax::Scss),
-    "postcss-less" => Some(Syntax::Less),
-    "postcss-sass" => Some(Syntax::Sass),
-    _ => None,
-  }
-}
-
-/// The parser to use for `file_path`, or `Err` when the file should be
-/// skipped because the `customSyntax` in play names a syntax Gale cannot parse.
-///
-/// `--custom-syntax` applies to every file and picks the parser directly.  The
-/// config's own `customSyntax` only decides whether a file is skipped —
-/// supported values still parse by file extension.  `postcss-html` parses by
-/// extension too: an HTML-like file is read for its style blocks whatever
-/// the syntax says, and other files are style sheets.
-///
-/// The error is the unsupported syntax's name, for the skipped-files warning.
-fn resolve_syntax(
-  cli_custom_syntax: Option<&str>,
-  config: &GaleConfig,
-  file_path: &str,
-) -> Result<Syntax, String> {
-  if let Some(name) = cli_custom_syntax {
-    if embedded::is_postcss_html(name) {
-      return Ok(detect_syntax(file_path));
-    }
-    return syntax_for_custom_syntax(name).ok_or_else(|| name.to_string());
-  }
-
-  if let Some(name) = config.custom_syntax_for_file(file_path)
-    && !embedded::is_postcss_html(name)
-    && syntax_for_custom_syntax(name).is_none()
-  {
-    return Err(name.to_string());
-  }
-
-  Ok(detect_syntax(file_path))
-}
 
 /// The formatter to use: the `--formatter` flag, else the config's
 /// `formatter`, else `text`.
@@ -1196,18 +1148,11 @@ pub fn run() -> Result<()> {
     return format_stdin_results(name, &cli);
   }
 
-  // Resolve configuration.
+  // Resolve configuration: the `--config` file, else the closest config to
+  // the working directory.  Without `--config` each file is linted with
+  // its own closest config (Stylelint's cosmiconfig behaviour), and this
+  // one is what files outside every config's tree fall back on.
   //
-  // `has_config_file` tracks whether the user has *any* config file (even if
-  // it resolves to zero rules).  When true we respect whatever the config
-  // says — including "no rules".  The "enable all rules" fallback only kicks
-  // in when there is genuinely no config file anywhere.
-  //
-  // When `--config` is NOT specified we use a `ConfigResolver` for per-file
-  // config lookup (matching Stylelint's cosmiconfig behaviour where each file
-  // is linted with the closest config in the directory hierarchy).
-  let use_per_file_config = cli.config.is_none();
-
   // A config that exists but cannot be loaded is a configuration error
   // (exit 78), not something to paper over with defaults.
   let load_or_exit = |path: &Path| -> GaleConfig {
@@ -1219,52 +1164,39 @@ pub fn run() -> Result<()> {
       }
     }
   };
-  let (config, has_config_file) = if let Some(ref cfg_path) = cli.config {
+  // `config_path` is the root config found for the working directory,
+  // which files without a closer config fall back on.
+  let (config, config_path) = if let Some(ref cfg_path) = cli.config {
     debug!("Using config file: {}", cfg_path.display());
-    (load_or_exit(cfg_path), true)
+    (load_or_exit(cfg_path), None)
   } else {
     let cwd = std::env::current_dir().unwrap_or_default();
     match gale_config::find_config(&cwd) {
-      Some(path) => (load_or_exit(&path), true),
-      None => (GaleConfig::default(), false),
+      Some(path) => (load_or_exit(&path), Some(path)),
+      None => (GaleConfig::default(), None),
     }
   };
 
-  let registry = RuleRegistry::global();
-
-  // Validate plugins declared in the config.
-  for plugin in &config.plugins {
-    if !gale_config::is_known_plugin(plugin) {
-      eprintln!(
-        "warning: Plugin \"{plugin}\" is not supported by Gale and will be ignored. \
-                 Rules from this plugin will have no effect."
-      );
-    }
+  for warning in unsupported_plugin_warnings(&config) {
+    eprintln!("{warning}");
   }
-
-  // Real Stylelint and plugin rules gale has not implemented, and rules
-  // older Stylelint versions had, are skipped with a warning per run.
-  // Names that are no rule at all are reported by the runner as
-  // `Unknown rule`, the way Stylelint does.
-  let mut skipped_rules = if has_config_file {
-    SkippedRules::in_config(&config, registry)
-  } else {
-    SkippedRules::default()
-  };
 
   // Handle --print-config: print resolved config as JSON and exit.
   if let Some(ref file) = cli.print_config {
     let file_str = file.display().to_string();
-    // Use per-file config resolution when --config is not specified.
-    let file_config;
-    let effective_config = if use_per_file_config {
-      let abs_path = std::env::current_dir().unwrap_or_default().join(file);
-      file_config =
-        gale_config::resolve_config_for_file(&abs_path).unwrap_or_else(|| config.clone());
-      &file_config
-    } else {
-      &config
-    };
+    let mut resolver = RuleSetResolver::new(ResolverOptions {
+      source: match (&cli.config, config_path) {
+        (Some(_), _) => ConfigSource::Explicit(config.clone()),
+        (None, root) => ConfigSource::Closest {
+          root: root.map(|path| (path, config.clone())),
+        },
+      },
+      without_config: WithoutConfig::NoRules,
+      forced_syntax: None,
+      run: RunSettings::default(),
+      cwd: std::env::current_dir().unwrap_or_default(),
+    });
+    let effective_config = resolver.resolve(&file_str).config;
     let effective_rules = effective_config.rules_for_file(&file_str);
     let mut rules_json = serde_json::Map::new();
     for (name, rc) in &effective_rules {
@@ -1353,6 +1285,7 @@ pub fn run() -> Result<()> {
   // What the run adds to every config's rule sets: the command line's
   // disable switches, and the installed Stylelint, whose version a few
   // rules follow.
+  let cwd = std::env::current_dir().unwrap_or_default();
   let run_settings = RunSettings {
     disables: DisableOptions {
       ignore: cli.ignore_disables,
@@ -1361,73 +1294,37 @@ pub fn run() -> Result<()> {
       report_descriptionless: cli.report_descriptionless_disables,
       report_unscoped: cli.report_unscoped_disables,
     },
-    env: LintEnv::detect(&std::env::current_dir().unwrap_or_default()),
+    env: LintEnv::detect(&cwd),
   };
 
   // The cache key part shared by every file: the forced syntax and what the
   // run adds to every config.
   let run_hash = compute_run_hash(cli_custom_syntax, &run_settings);
 
-  // The config for stdin and for `--config` runs: the one found or named,
-  // else (no config file at all) every rule gale has.
-  let root_config = if has_config_file {
-    config.clone()
-  } else {
-    WithoutConfig::AllRules.config()
-  };
-  let root_params = build_lint_params(Arc::new(root_config), &run_settings);
-
-  /// Pre-computed lint parameters for a resolved config.
-  ///
-  /// When multiple files share the same config (same directory or same config
-  /// file in the hierarchy), the rule set is built once and shared via `Arc`.
-  struct ResolvedLintParams {
-    config: Arc<GaleConfig>,
-    /// The rules for files no override applies to.
-    base: RuleSet,
-    has_overrides: bool,
-    /// The cache key part for files using this config.
-    cache_key: u64,
-  }
-
-  /// Build `ResolvedLintParams` from a `GaleConfig`.
-  fn build_lint_params(config: Arc<GaleConfig>, run: &RunSettings) -> Arc<ResolvedLintParams> {
-    Arc::new(ResolvedLintParams {
-      base: config.rule_set(&[], run),
-      has_overrides: config.has_overrides(),
-      cache_key: compute_config_hash(&config),
-      config,
-    })
-  }
-
-  /// Lint a single file with the rules its config, and the overrides in it
-  /// that match the file, enable.
-  fn lint_file(
-    source: &str,
-    file_path: &str,
-    syntax: gale_css_parser::Syntax,
-    params: &ResolvedLintParams,
-    run: &RunSettings,
-  ) -> LintResult {
-    if !params.has_overrides {
-      return params.base.lint(source, file_path, syntax);
-    }
-    // Stylelint marks files as fully ignored when they match an override's
-    // `files` pattern AND its `ignoreFiles` pattern.  Return an empty
-    // result so we don't produce false positives.
-    if params.config.is_file_ignored_by_override(file_path) {
-      return LintResult::new(file_path, source, Vec::new());
-    }
-    let overrides = params.config.matching_overrides(file_path);
-    params
-      .config
-      .rule_set(&overrides, run)
-      .lint(source, file_path, syntax)
-  }
+  // Each file is linted with its closest config (or the one `--config`
+  // names), the overrides in it that match the file, and the run's
+  // settings; the resolver builds each distinct rule set once.
+  let mut resolver = RuleSetResolver::new(ResolverOptions {
+    source: match (&cli.config, config_path) {
+      (Some(_), _) => ConfigSource::Explicit(config.clone()),
+      (None, root) => ConfigSource::Closest {
+        root: root.map(|path| (path, config.clone())),
+      },
+    },
+    // Stdin without any config file is linted with every rule, as it
+    // always has been; files are not linted at all.
+    without_config: if cli.stdin {
+      WithoutConfig::AllRules
+    } else {
+      WithoutConfig::NoRules
+    },
+    forced_syntax: cli.custom_syntax.clone(),
+    run: run_settings,
+    cwd: cwd.clone(),
+  });
 
   // Lint: either from stdin or from discovered files.
-  let mut results: Vec<LintResult> = if cli.stdin {
-    skipped_rules.warn();
+  let mut linted: Vec<Linted> = if cli.stdin {
     let mut source = String::new();
     std::io::stdin().read_to_string(&mut source)?;
 
@@ -1435,18 +1332,22 @@ pub fn run() -> Result<()> {
       .stdin_filename
       .as_deref()
       .unwrap_or(DEFAULT_STDIN_FILENAME);
-    match resolve_syntax(cli_custom_syntax, &config, file_path) {
+    let settings = resolver.resolve(file_path);
+    warn_skipped_rules(&resolver);
+    match settings.syntax {
       Ok(syntax) => {
         let blocks = embedded::skipped_blocks(Path::new(file_path), &source);
         if let Some(warning) = embedded::skipped_blocks_warning(&blocks) {
           eprintln!("{warning}");
         }
-        vec![lint_file(
+        // Stdin is linted whatever the config's top-level `ignoreFiles`
+        // says; an override that ignores the file leaves it clean.
+        let ignored = settings.ignored == Some(Ignored::Override);
+        vec![Linted::lint(
           &source,
           file_path,
           syntax,
-          &root_params,
-          &run_settings,
+          (!ignored).then_some(settings.rules),
         )]
       }
       Err(name) => {
@@ -1494,92 +1395,48 @@ pub fn run() -> Result<()> {
       return Ok(());
     }
 
-    // -----------------------------------------------------------------
-    // Pre-resolve configs for all files (lock-free parallel linting).
-    //
-    // When `--config` is not specified, Gale uses per-file config
-    // resolution (walking up directories to find the nearest config).
-    // Previously this was done inside the parallel loop behind a Mutex,
-    // causing severe contention.  Now we resolve all configs upfront
-    // (single-threaded, ~100 unique directories even for huge repos)
-    // and store them as `Arc<ResolvedLintParams>` keyed by parent dir.
-    // The parallel loop does a simple HashMap lookup — no locking.
-    // -----------------------------------------------------------------
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let dir_params: Option<std::collections::HashMap<PathBuf, Arc<ResolvedLintParams>>> =
-      if use_per_file_config {
-        let mut resolver = ConfigResolver::new();
-        // Convert relative paths to absolute for the resolver.
-        let abs_files: Vec<PathBuf> = files
-          .iter()
-          .map(|f| {
-            if f.is_absolute() {
-              f.clone()
-            } else {
-              cwd.join(f)
-            }
-          })
-          .collect();
-        let dir_to_config = resolver.resolve_all_for_files(&abs_files, &config);
-        // Build ResolvedLintParams per config (dedup by Arc pointer).
-        let mut params_by_ptr: std::collections::HashMap<usize, Arc<ResolvedLintParams>> =
-          std::collections::HashMap::new();
-        let dir_params: std::collections::HashMap<PathBuf, Arc<ResolvedLintParams>> = dir_to_config
-          .into_iter()
-          .map(|(dir, cfg_arc)| {
-            let ptr = Arc::as_ptr(&cfg_arc) as usize;
-            let params = params_by_ptr
-              .entry(ptr)
-              .or_insert_with(|| build_lint_params(cfg_arc, &run_settings))
-              .clone();
-            (dir, params)
-          })
-          .collect();
-        debug!(
-          "Pre-resolved {} directory configs ({} unique configs)",
-          dir_params.len(),
-          params_by_ptr.len()
-        );
-        for params in params_by_ptr.values() {
-          skipped_rules.extend(SkippedRules::in_config(&params.config, registry));
-        }
-        Some(dir_params)
-      } else {
-        None
-      };
-    skipped_rules.warn();
-
-    // Settle each file's parser up front.  A file whose `customSyntax`
-    // (from the CLI, an override or the top level of its config) names a
-    // syntax gale cannot parse is skipped, and joins the warning below.
-    let mut lintable: Vec<(PathBuf, Syntax)> = Vec::with_capacity(files.len());
+    // Settle each file's config, rules and parser up front, single
+    // threaded, so the parallel loop below only lints.  A file its
+    // config's `ignoreFiles` covers is dropped (unless `--no-ignore` turns
+    // ignore processing off, as it does for walks); one whose
+    // `customSyntax` (from the CLI, an override or the top level of its
+    // config) names a syntax gale cannot parse is skipped, and joins the
+    // warning below.
+    let mut config_hashes: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+    let mut planned: Vec<Planned> = Vec::with_capacity(files.len());
     for file in files {
-      let effective_config = dir_params.as_ref().and_then(|dp| {
-        let abs = if file.is_absolute() {
-          file.clone()
-        } else {
-          cwd.join(&file)
-        };
-        let dir = abs.parent().unwrap_or(Path::new("."));
-        dp.get(dir).map(|p| p.config.as_ref())
-      });
-      let cfg_for_check = effective_config.unwrap_or(&config);
-      match resolve_syntax(
-        cli_custom_syntax,
-        cfg_for_check,
-        &file.display().to_string(),
-      ) {
-        Ok(syntax) => lintable.push((file, syntax)),
+      let settings = resolver.resolve(&file.display().to_string());
+      if settings.ignored == Some(Ignored::IgnoreFiles) && !cli.no_ignore {
+        continue;
+      }
+      match settings.syntax {
+        Ok(syntax) => {
+          let config_hash = *config_hashes
+            .entry(settings.config_id)
+            .or_insert_with(|| compute_config_hash(&settings.config));
+          planned.push(Planned {
+            path: file,
+            syntax,
+            rules: (settings.ignored != Some(Ignored::Override)).then_some(settings.rules),
+            cache_key: combine_hashes(&[run_hash, config_hash]),
+          });
+        }
         Err(name) => skipped.push(Skipped {
           path: file,
           reason: SkipReason::CustomSyntax(name),
         }),
       }
     }
+    debug!(
+      "Resolved {} file(s) against {} config(s)",
+      planned.len(),
+      resolver.configs().count()
+    );
+    warn_skipped_rules(&resolver);
     if let Some(warning) = skipped_files_warning(&skipped) {
       eprintln!("{warning}");
     }
-    let files: Vec<PathBuf> = lintable.iter().map(|(file, _)| file.clone()).collect();
+    let files: Vec<PathBuf> = planned.iter().map(|plan| plan.path.clone()).collect();
     if let Some(warning) = embedded::skipped_blocks_warning(&embedded::skipped_blocks_in(&files)) {
       eprintln!("{warning}");
     }
@@ -1587,24 +1444,10 @@ pub fn run() -> Result<()> {
     if use_cache {
       // With caching: check the cache, skip clean files, lint the rest.
       let cache_mutex = Mutex::new(&mut lint_cache);
-      let results: Vec<LintResult> = lintable
-        .par_iter()
-        .filter_map(|(file, syntax)| {
-          let syntax = *syntax;
-          let file_path = file.display().to_string();
-          let params = dir_params.as_ref().and_then(|dp| {
-            let abs = if file.is_absolute() {
-              file.clone()
-            } else {
-              cwd.join(file)
-            };
-            let dir = abs.parent().unwrap_or(Path::new("."));
-            dp.get(dir)
-          });
-
-          // The key covers everything that changes this file's result.
-          let params = params.map_or(&root_params, |p| p);
-          let config_hash = combine_hashes(&[run_hash, params.cache_key]);
+      planned
+        .into_par_iter()
+        .filter_map(|plan| {
+          let file_path = plan.path.display().to_string();
 
           // Check cache: skip only files that were clean (0 diagnostics).
           // The metadata strategy needs only the file's size and mtime, so
@@ -1613,16 +1456,16 @@ pub fn run() -> Result<()> {
             let cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
             cache.is_clean(&file_path, fingerprint)
           };
-          let early = metadata_fingerprint(file, cache_strategy, config_hash);
+          let early = metadata_fingerprint(&plan.path, cache_strategy, plan.cache_key);
           if early.is_some_and(is_clean) {
             debug!("Cache hit (clean): {file_path}");
             return None;
           }
-          let source = std::fs::read_to_string(file).ok()?;
+          let source = std::fs::read_to_string(&plan.path).ok()?;
           let content_hash = match early {
             Some(fingerprint) => fingerprint,
             None => {
-              let fingerprint = compute_hash(&source, config_hash);
+              let fingerprint = compute_hash(&source, plan.cache_key);
               if is_clean(fingerprint) {
                 debug!("Cache hit (clean): {file_path}");
                 return None;
@@ -1631,48 +1474,29 @@ pub fn run() -> Result<()> {
             }
           };
 
-          let result = lint_file(&source, &file_path, syntax, params, &run_settings);
+          let linted = Linted::lint(&source, &file_path, plan.syntax, plan.rules);
 
           // Update cache with the new result.  A file with an invalid
           // option is not clean either: Stylelint never caches a result
           // that errored.
           {
             let mut cache = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
+            let result = &linted.result;
             let problems = result.diagnostics.len() + result.invalid_option_warnings.len();
             cache.record(file_path, content_hash, problems);
           }
 
-          Some(result)
+          Some(linted)
         })
-        .collect();
-      results
+        .collect()
     } else {
       // Without caching: lint each file in parallel (lock-free).
-      lintable
-        .par_iter()
-        .filter_map(|(file, syntax)| {
-          let syntax = *syntax;
-          let source = std::fs::read_to_string(file).ok()?;
-          let file_path = file.display().to_string();
-
-          let params = dir_params
-            .as_ref()
-            .and_then(|dp| {
-              let abs = if file.is_absolute() {
-                file.clone()
-              } else {
-                cwd.join(file)
-              };
-              dp.get(abs.parent().unwrap_or(Path::new(".")))
-            })
-            .unwrap_or(&root_params);
-          Some(lint_file(
-            &source,
-            &file_path,
-            syntax,
-            params,
-            &run_settings,
-          ))
+      planned
+        .into_par_iter()
+        .filter_map(|plan| {
+          let source = std::fs::read_to_string(&plan.path).ok()?;
+          let file_path = plan.path.display().to_string();
+          Some(Linted::lint(&source, &file_path, plan.syntax, plan.rules))
         })
         .collect()
     }
@@ -1691,7 +1515,12 @@ pub fn run() -> Result<()> {
     // would otherwise fight forever.
     const MAX_FIX_PASSES: usize = 10;
 
-    for result in &mut results {
+    for Linted {
+      result,
+      rules,
+      syntax,
+    } in &mut linted
+    {
       // In strict mode, skip files that have parse errors.
       if is_strict
         && result
@@ -1701,12 +1530,11 @@ pub fn run() -> Result<()> {
       {
         continue;
       }
+      // An ignored file has nothing to fix.
+      let Some(rules) = rules else {
+        continue;
+      };
 
-      // These files were linted, so a parser was already chosen for them;
-      // the config's own customSyntax only ever decides skipping.
-      let syntax = cli_custom_syntax
-        .and_then(syntax_for_custom_syntax)
-        .unwrap_or_else(|| detect_syntax(&result.file_path));
       let mut current = result.source.clone();
       let mut file_fixed = 0usize;
 
@@ -1717,15 +1545,9 @@ pub fn run() -> Result<()> {
         }
         current = fixed_source;
         file_fixed += count;
-        // Re-lint the fixed source to get remaining diagnostics, which
-        // also feeds the next pass.
-        *result = lint_file(
-          &current,
-          &result.file_path,
-          syntax,
-          &root_params,
-          &run_settings,
-        );
+        // Re-lint the fixed source with the file's own rules to get the
+        // remaining diagnostics, which also feed the next pass.
+        *result = rules.lint(&current, &result.file_path, *syntax);
       }
 
       if file_fixed == 0 {
@@ -1746,6 +1568,8 @@ pub fn run() -> Result<()> {
       eprintln!("Fixed {total_fixed} problem(s).");
     }
   }
+
+  let mut results: Vec<LintResult> = linted.into_iter().map(|linted| linted.result).collect();
 
   // Filter to errors-only when --quiet is set.
   if quiet {
@@ -1821,65 +1645,51 @@ pub fn run() -> Result<()> {
   Ok(())
 }
 
-/// Configured rules that gale skips rather than runs, by reason.
-#[derive(Debug, Default)]
-struct SkippedRules {
-  /// Real Stylelint or plugin rules gale has not implemented yet.
-  not_implemented: BTreeSet<String>,
-  /// Rules an older Stylelint had that Stylelint 17 has removed.
-  removed: BTreeSet<String>,
+/// Warn once about the rules that the configs the resolver loaded ask for
+/// and gale skips: real Stylelint and plugin rules gale has not
+/// implemented, and rules Stylelint has removed.  Names that are no rule at
+/// all are reported in each file as `Unknown rule`, as Stylelint does.
+fn warn_skipped_rules(resolver: &RuleSetResolver) {
+  let mut skipped = SkippedRules::default();
+  for config in resolver.configs() {
+    skipped.extend(SkippedRules::in_config(config));
+  }
+  for warning in skipped.warnings() {
+    eprintln!("{warning}");
+  }
 }
 
-impl SkippedRules {
-  /// The rules `config` enables (at the top level or in an override) that
-  /// gale skips.  Names that are no rule at all are not among them: the
-  /// runner reports those as `Unknown rule`.
-  fn in_config(config: &GaleConfig, registry: &RuleRegistry) -> Self {
-    let mut skipped = Self::default();
-    let enabled = config
-      .rules
-      .iter()
-      .chain(config.overrides.iter().flat_map(|o| o.rules.iter()))
-      .filter(|(_, rule)| rule.severity != Some(gale_config::Severity::Off));
-    for (name, _) in enabled {
-      match known_rules::classify(registry, name) {
-        RuleSupport::NotImplemented => skipped.not_implemented.insert(name.clone()),
-        RuleSupport::Removed => skipped.removed.insert(name.clone()),
-        RuleSupport::Implemented | RuleSupport::Unknown => false,
-      };
-    }
-    skipped
-  }
+/// A file ready to lint: its parser and its rules, settled before the
+/// parallel loop.
+struct Planned {
+  path: PathBuf,
+  syntax: Syntax,
+  /// `None` for a file an override ignores, which is reported clean.
+  rules: Option<Arc<RuleSet>>,
+  /// The cache key part for the file: its config and the run's settings.
+  cache_key: u64,
+}
 
-  /// Add the rules another config skips.
-  fn extend(&mut self, other: Self) {
-    self.not_implemented.extend(other.not_implemented);
-    self.removed.extend(other.removed);
-  }
+/// A file's result, with what `--fix` needs to lint it again.
+struct Linted {
+  result: LintResult,
+  /// `None` for an ignored file.
+  rules: Option<Arc<RuleSet>>,
+  syntax: Syntax,
+}
 
-  /// One warning line per reason that has any rules, each listing them.
-  fn warnings(&self) -> Vec<String> {
-    let list = |names: &BTreeSet<String>| names.iter().cloned().collect::<Vec<_>>().join(", ");
-    let mut warnings = Vec::new();
-    if !self.not_implemented.is_empty() {
-      warnings.push(format!(
-        "warning: gale does not support these rules yet, so they were skipped: {}",
-        list(&self.not_implemented)
-      ));
-    }
-    if !self.removed.is_empty() {
-      warnings.push(format!(
-        "warning: these rules were removed from Stylelint, so they were skipped: {}",
-        list(&self.removed)
-      ));
-    }
-    warnings
-  }
-
-  /// Print [`Self::warnings`] to stderr.
-  fn warn(&self) {
-    for warning in self.warnings() {
-      eprintln!("{warning}");
+impl Linted {
+  /// Lint `source`, the text of `file_path`, with `rules`; no rules is a
+  /// clean result.
+  fn lint(source: &str, file_path: &str, syntax: Syntax, rules: Option<Arc<RuleSet>>) -> Self {
+    let result = match &rules {
+      Some(rules) => rules.lint(source, file_path, syntax),
+      None => LintResult::new(file_path, source, Vec::new()),
+    };
+    Self {
+      result,
+      rules,
+      syntax,
     }
   }
 }
@@ -1925,42 +1735,6 @@ mod tests {
       ignore_patterns: &[],
       disable_default_ignores: false,
     }
-  }
-
-  #[test]
-  fn skipped_rules_lists_rules_gale_lacks_and_rules_stylelint_removed() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join(".stylelintrc.json");
-    fs::write(
-      &path,
-      r#"{
-        "rules": {
-          "block-no-empty": true,
-          "no-unknown-custom-properties": true,
-          "acme/no-foo": true,
-          "not-a-rule": true,
-          "linebreaks": "unix",
-          "no-unknown-custom-media": null
-        },
-        "overrides": [
-          { "files": ["*.scss"], "rules": { "no-unknown-custom-properties": true, "selector-no-deprecated": true } }
-        ]
-      }"#,
-    )
-    .unwrap();
-    let config = gale_config::load_config(&path).unwrap();
-    let skipped = SkippedRules::in_config(&config, &RuleRegistry::default());
-    assert_eq!(
-      skipped.warnings(),
-      vec![
-        "warning: gale does not support these rules yet, so they were skipped: \
-         acme/no-foo, no-unknown-custom-properties, selector-no-deprecated"
-          .to_string(),
-        "warning: these rules were removed from Stylelint, so they were skipped: linebreaks"
-          .to_string(),
-      ]
-    );
-    assert!(SkippedRules::default().warnings().is_empty());
   }
 
   #[test]
@@ -2054,28 +1828,6 @@ mod tests {
     assert_eq!(
       skipped_files_warning(&[skip("b.jsx", SkipReason::FileType(Some("CSS-in-JS")))]).unwrap(),
       "warning: Skipped 1 file that gale cannot lint yet:\n  b.jsx (CSS-in-JS files are not supported)"
-    );
-  }
-
-  #[test]
-  fn gale_all_preset_enables_every_registered_rule() {
-    // `gale:all` is built from the linter's rule table and the registry is
-    // filled from the same table; this checks the two end to end.
-    let preset: BTreeSet<String> = gale_config::resolve_preset("gale:all")
-      .unwrap()
-      .into_keys()
-      .collect();
-    let registered: BTreeSet<String> = RuleRegistry::default()
-      .all()
-      .iter()
-      .map(|rule| rule.name().to_string())
-      .collect();
-    let missing: Vec<&String> = registered.difference(&preset).collect();
-    let extra: Vec<&String> = preset.difference(&registered).collect();
-    assert!(
-      missing.is_empty() && extra.is_empty(),
-      "gale:all is out of step with the registry: {missing:?} are registered but not in the \
-       preset, and {extra:?} are in the preset but not registered"
     );
   }
 
@@ -2380,84 +2132,6 @@ mod tests {
       false,
       with(&[("FORCE_COLOR", "")])
     ));
-  }
-
-  #[test]
-  fn custom_syntax_names_map_to_parsers() {
-    assert_eq!(syntax_for_custom_syntax("postcss"), Some(Syntax::Css));
-    assert_eq!(syntax_for_custom_syntax("postcss-scss"), Some(Syntax::Scss));
-    assert_eq!(syntax_for_custom_syntax("PostCSS-Less"), Some(Syntax::Less));
-    assert_eq!(syntax_for_custom_syntax("postcss-sass"), Some(Syntax::Sass));
-    assert_eq!(syntax_for_custom_syntax("postcss-html"), None);
-    assert_eq!(syntax_for_custom_syntax("postcss-markdown"), None);
-  }
-
-  #[test]
-  fn resolve_syntax_detects_from_the_extension_by_default() {
-    let config = GaleConfig::default();
-    assert_eq!(resolve_syntax(None, &config, "a.css"), Ok(Syntax::Css));
-    assert_eq!(resolve_syntax(None, &config, "a.scss"), Ok(Syntax::Scss));
-  }
-
-  #[test]
-  fn resolve_syntax_lets_the_cli_flag_force_a_parser() {
-    let config = GaleConfig::default();
-    assert_eq!(
-      resolve_syntax(Some("postcss-scss"), &config, "a.css"),
-      Ok(Syntax::Scss)
-    );
-    // An unsupported flag skips the file rather than parsing it.
-    assert_eq!(
-      resolve_syntax(Some("postcss-markdown"), &config, "a.css"),
-      Err("postcss-markdown".to_string())
-    );
-    // postcss-html parses by extension: style blocks pick their own parser.
-    assert_eq!(
-      resolve_syntax(Some("postcss-html"), &config, "a.vue"),
-      Ok(Syntax::Css)
-    );
-    assert_eq!(
-      resolve_syntax(Some("postcss-html"), &config, "a.scss"),
-      Ok(Syntax::Scss)
-    );
-  }
-
-  #[test]
-  fn resolve_syntax_accepts_postcss_html_from_the_config() {
-    let config = GaleConfig {
-      custom_syntax: Some("postcss-html".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(resolve_syntax(None, &config, "a.vue"), Ok(Syntax::Css));
-    assert_eq!(resolve_syntax(None, &config, "a.svelte"), Ok(Syntax::Css));
-  }
-
-  #[test]
-  fn resolve_syntax_skips_files_whose_config_syntax_is_unsupported() {
-    let config = GaleConfig {
-      custom_syntax: Some("postcss-markdown".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(
-      resolve_syntax(None, &config, "a.css"),
-      Err("postcss-markdown".to_string())
-    );
-    // The CLI flag overrides the config's customSyntax entirely.
-    assert_eq!(
-      resolve_syntax(Some("postcss-less"), &config, "a.css"),
-      Ok(Syntax::Less)
-    );
-  }
-
-  #[test]
-  fn resolve_syntax_keeps_extension_detection_for_supported_config_syntax() {
-    // A supported config `customSyntax` decides only that the file is not
-    // skipped; the parser still comes from the extension.
-    let config = GaleConfig {
-      custom_syntax: Some("postcss-scss".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(resolve_syntax(None, &config, "a.css"), Ok(Syntax::Css));
   }
 
   #[test]
