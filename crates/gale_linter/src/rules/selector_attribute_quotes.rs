@@ -1,37 +1,53 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::postcss::{self, Escape, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
 
-/// Require or disallow quotes for attribute values in attribute selectors.
-///
-/// Equivalent to Stylelint's `selector-attribute-quotes` rule.  With
-/// `"always"` (the default) every attribute value must be quoted; with
-/// `"never"` none may be, unless the value is not a valid identifier without
-/// them.  Attribute selectors without a value (e.g. `[disabled]`) are
-/// ignored.  The fix requotes the value the way postcss-selector-parser
-/// serialises it: in double quotes, or unquoted with identifier escapes.
-pub struct SelectorAttributeQuotes;
+const NAME: &str = "selector-attribute-quotes";
 
-impl Rule for SelectorAttributeQuotes {
-  fn name(&self) -> &'static str {
-    "selector-attribute-quotes"
+declare_rule! {
+  /// Require or disallow quotes for attribute values in attribute selectors.
+  ///
+  /// Equivalent to Stylelint's `selector-attribute-quotes` rule.  With
+  /// `"always"` (the default) every attribute value must be quoted; with
+  /// `"never"` none may be, unless the value is not a valid identifier without
+  /// them.  Attribute selectors without a value (e.g. `[disabled]`) are
+  /// ignored.  The fix requotes the value the way postcss-selector-parser
+  /// serialises it: in double quotes, or unquoted with identifier escapes.
+  pub struct SelectorAttributeQuotes => SelectorAttributeQuotesCheck {
+    name: NAME,
+    description: "Require or disallow quotes for attribute values in attribute selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow quotes for attribute values in attribute selectors"
+/// `selector-attribute-quotes` as configured.
+pub struct SelectorAttributeQuotesCheck {
+  /// The primary option: `"always"` or `"never"`.
+  expectation: &'static str,
+}
+
+impl SelectorAttributeQuotesCheck {
+  /// Stylelint's options: `"always"` or `"never"`, `"always"` when not given.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&["always", "never"])
+      .unwrap_or("always");
+    options.finish()?;
+    Ok(Self { expectation })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorAttributeQuotesCheck {
   /// Flags attribute selectors whose value quoting does not match the
   /// option, in every style rule's selector as written.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let never = ctx.primary_option_str() == Some("never");
+    let never = self.expectation == "never";
     let mut diags = Vec::new();
     for rule in &ctx.scanned_rules().style_rules {
       if !has_attribute_with_operator(&rule.prelude) || !is_standard_syntax_selector(&rule.prelude)
@@ -81,15 +97,10 @@ impl Rule for SelectorAttributeQuotes {
           return;
         };
         let span = Span::from_range(value.start, value.end);
-        diags.push(
-          Diagnostic::new(self.name(), message)
-            .severity(self.default_severity())
-            .span(span)
-            .fix(Fix::new(
-              format!("Write the value as {replacement}"),
-              vec![Edit::new(span, replacement)],
-            )),
-        );
+        diags.push(Diagnostic::new(NAME, message).span(span).fix(Fix::new(
+          format!("Write the value as {replacement}"),
+          vec![Edit::new(span, replacement)],
+        )));
       });
     }
     diags
@@ -156,9 +167,10 @@ fn is_valid_identifier(ident: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-attribute-quotes";
 
@@ -251,5 +263,15 @@ mod tests {
       1
     );
     assert_eq!(fix(RULE, options, "[a=b] { }", Syntax::Css), "[a=b] { }");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"selector-attribute-quotes\""]
+    );
   }
 }
