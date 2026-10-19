@@ -1,13 +1,37 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports irregular whitespace characters such as non-breaking spaces,
-/// zero-width spaces, and other Unicode whitespace oddities.
-///
-/// Equivalent to Stylelint's `no-irregular-whitespace` rule.
-pub struct NoIrregularWhitespace;
+const NAME: &str = "no-irregular-whitespace";
+
+declare_rule! {
+  /// Reports irregular whitespace characters such as non-breaking spaces,
+  /// zero-width spaces, and other Unicode whitespace oddities.
+  ///
+  /// Equivalent to Stylelint's `no-irregular-whitespace` rule.
+  pub struct NoIrregularWhitespace => NoIrregularWhitespaceCheck {
+    name: NAME,
+    description: "Disallow irregular whitespace characters",
+    default_severity: Warning,
+  }
+}
+
+/// `no-irregular-whitespace`, which takes no options.
+pub struct NoIrregularWhitespaceCheck;
+
+impl NoIrregularWhitespaceCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Find byte ranges of comments in CSS/SCSS source.
 /// Returns a list of (start, end) byte offset pairs.
@@ -92,19 +116,7 @@ const IRREGULAR_WHITESPACE_CHARS: &[char] = &[
   '\u{FEFF}', // Zero-width no-break space (BOM)
 ];
 
-impl Rule for NoIrregularWhitespace {
-  fn name(&self) -> &'static str {
-    "no-irregular-whitespace"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow irregular whitespace characters"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoIrregularWhitespaceCheck {
   /// Flags irregular Unicode whitespace outside comments, which Stylelint allows.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -124,13 +136,12 @@ impl Rule for NoIrregularWhitespace {
         }
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected irregular whitespace character (U+{:04X})",
               ch as u32
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(i, ch.len_utf8())),
         );
       }
@@ -144,11 +155,11 @@ impl Rule for NoIrregularWhitespace {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source};
 
   #[test]
   fn reports_non_breaking_space() {
-    let rule = NoIrregularWhitespace;
+    let rule = configured(&NoIrregularWhitespace, None);
     let source = "a {\u{00A0}color: red; }";
     let context = ctx_with_source(source);
     let diags = rule.check_root(&[], &context);
@@ -158,7 +169,7 @@ mod tests {
 
   #[test]
   fn reports_zero_width_space() {
-    let rule = NoIrregularWhitespace;
+    let rule = configured(&NoIrregularWhitespace, None);
     let source = "a { color:\u{200B}red; }";
     let context = ctx_with_source(source);
     let diags = rule.check_root(&[], &context);
@@ -168,9 +179,27 @@ mod tests {
 
   #[test]
   fn ignores_normal_whitespace() {
-    let rule = NoIrregularWhitespace;
+    let rule = configured(&NoIrregularWhitespace, None);
     let context = ctx_with_source("a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options("no-irregular-whitespace", serde_json::json!(true)).is_empty());
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "no-irregular-whitespace",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options("no-irregular-whitespace", serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"no-irregular-whitespace\""]
+    );
   }
 }

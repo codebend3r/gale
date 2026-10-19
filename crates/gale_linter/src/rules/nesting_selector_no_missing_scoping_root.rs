@@ -1,16 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::pattern;
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Ensure that a nested rule using `&` always has a valid scoping root.
-///
-/// In CSS nesting, `&` refers to the parent selector. Using `&` in a
-/// top-level rule is invalid because there is no parent context. This rule
-/// flags style rules at the document root that contain `&` in their selector.
-///
-/// Equivalent to Stylelint's `nesting-selector-no-missing-scoping-root` rule.
-pub struct NestingSelectorNoMissingScopingRoot;
+const NAME: &str = "nesting-selector-no-missing-scoping-root";
+
+declare_rule! {
+  /// Ensure that a nested rule using `&` always has a valid scoping root.
+  ///
+  /// In CSS nesting, `&` refers to the parent selector. Using `&` in a
+  /// top-level rule is invalid because there is no parent context. This rule
+  /// flags style rules at the document root that contain `&` in their selector.
+  ///
+  /// Equivalent to Stylelint's `nesting-selector-no-missing-scoping-root` rule.
+  pub struct NestingSelectorNoMissingScopingRoot => NestingSelectorNoMissingScopingRootCheck {
+    name: NAME,
+    description: "Disallow nesting selector & without a scoping root",
+    default_severity: Error,
+  }
+}
+
+/// `nesting-selector-no-missing-scoping-root` as configured.
+pub struct NestingSelectorNoMissingScopingRootCheck {
+  /// `ignoreAtRules`: at-rule names (matched in any case) and `/regex/`
+  /// entries.
+  ignore_at_rules: Vec<String>,
+}
+
+impl NestingSelectorNoMissingScopingRootCheck {
+  /// Stylelint's options: `true`, then `ignoreAtRules`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    let ignore_at_rules = options.strings("ignoreAtRules");
+    options.finish()?;
+    Ok(Self { ignore_at_rules })
+  }
+
+  /// Whether the at-rule `name` is one of `ignoreAtRules`: a `/regex/`
+  /// entry matches by search, a name in any case.
+  fn is_ignored_at_rule(&self, name: &str) -> bool {
+    self.ignore_at_rules.iter().any(|ignored| {
+      pattern::match_regex_entry(ignored, name)
+        .unwrap_or_else(|| ignored.eq_ignore_ascii_case(name))
+    })
+  }
+}
 
 /// Check if a selector contains the nesting selector `&`.
 ///
@@ -66,59 +104,11 @@ fn selector_contains_nesting(selector: &str) -> bool {
   false
 }
 
-/// Parse the `ignoreAtRules` list from the rule's secondary options.
-///
-/// Supports both `[true, { ignoreAtRules: ["mixin"] }]` and
-/// `{ ignoreAtRules: ["mixin"] }` shapes.
-fn parse_ignore_at_rules(options: Option<&serde_json::Value>) -> Vec<String> {
-  let Some(opts) = options else {
-    return vec![];
-  };
-  let obj = match opts {
-    serde_json::Value::Object(o) => o,
-    serde_json::Value::Array(arr) => {
-      for item in arr {
-        if let serde_json::Value::Object(o) = item {
-          if let Some(serde_json::Value::Array(names)) = o.get("ignoreAtRules") {
-            return names
-              .iter()
-              .filter_map(|v| v.as_str().map(String::from))
-              .collect();
-          }
-        }
-      }
-      return vec![];
-    }
-    _ => return vec![],
-  };
-  if let Some(serde_json::Value::Array(names)) = obj.get("ignoreAtRules") {
-    names
-      .iter()
-      .filter_map(|v| v.as_str().map(String::from))
-      .collect()
-  } else {
-    vec![]
-  }
-}
-
-impl Rule for NestingSelectorNoMissingScopingRoot {
-  fn name(&self) -> &'static str {
-    "nesting-selector-no-missing-scoping-root"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow nesting selector & without a scoping root"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for NestingSelectorNoMissingScopingRootCheck {
   /// Walk the top-level nodes. Any top-level style rule whose selector
   /// contains `&` is invalid — there is no parent to scope against.
   /// Nested style rules inside other style rules are fine.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_at_rules = parse_ignore_at_rules(ctx.options);
     let mut diags = Vec::new();
     for node in nodes {
       if let CssNode::Style(rule) = node
@@ -126,23 +116,19 @@ impl Rule for NestingSelectorNoMissingScopingRoot {
       {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected nesting selector \"&\" without a scoping root in \"{}\"",
               rule.selector
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(rule.span.offset, rule.span.length)),
         );
       }
       // Also check inside @-rule children (e.g. top-level styles inside @layer),
       // unless the at-rule name is in the ignoreAtRules list.
       if let CssNode::AtRule(at) = node {
-        let at_rule_ignored = ignore_at_rules
-          .iter()
-          .any(|ignored| ignored.eq_ignore_ascii_case(&at.name));
-        if at_rule_ignored {
+        if self.is_ignored_at_rule(&at.name) {
           continue;
         }
         for child in &at.children {
@@ -151,13 +137,12 @@ impl Rule for NestingSelectorNoMissingScopingRoot {
           {
             diags.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!(
                   "Unexpected nesting selector \"&\" without a scoping root in \"{}\"",
                   rule.selector
                 ),
               )
-              .severity(self.default_severity())
               .span(Span::new(rule.span.offset, rule.span.length)),
             );
           }
@@ -173,7 +158,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, scss_ctx_with_options};
 
   fn style(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -211,37 +196,42 @@ mod tests {
 
   #[test]
   fn reports_top_level_nesting_selector() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     let nodes = vec![style("& .child")];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("&"));
   }
 
   #[test]
   fn reports_top_level_ampersand_alone() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     let nodes = vec![style("&")];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_normal_top_level_selector() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     let nodes = vec![style(".parent")];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_nested_nesting_selector() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     // A nested rule using & inside a parent is fine; check_root only
     // sees the top-level node ".parent" which does not contain &.
     let nodes = vec![nested_style(".parent", "& .child")];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_inside_at_rule_without_parent() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     // A style rule with & directly inside @layer (no parent style rule)
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "layer".to_string(),
@@ -249,19 +239,20 @@ mod tests {
       span: ParserSpan::new(0, 0),
       children: vec![style("& .child")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_no_ampersand_inside_at_rule() {
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, None);
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "screen".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![style(".normal")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert!(d.is_empty());
   }
 
@@ -271,13 +262,14 @@ mod tests {
     // be silenced.
     static OPTS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     let opts = OPTS.get_or_init(|| serde_json::json!([true, { "ignoreAtRules": ["mixin"] }]));
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, opts.clone());
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "onebox-favicon($class, $image)".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![style("&.#{$class} .source")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
     assert!(d.is_empty(), "expected no diagnostics, got: {:?}", d);
   }
 
@@ -286,13 +278,14 @@ mod tests {
     // @layer is not in the ignore list — should still fire.
     static OPTS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     let opts = OPTS.get_or_init(|| serde_json::json!([true, { "ignoreAtRules": ["mixin"] }]));
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, opts.clone());
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "layer".to_string(),
       params: "utilities".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![style("& .child")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
     assert_eq!(d.len(), 1);
   }
 
@@ -301,16 +294,48 @@ mod tests {
     // Option says "mixin" (lowercase), at-rule name "Mixin" — should be ignored.
     static OPTS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     let opts = OPTS.get_or_init(|| serde_json::json!([true, { "ignoreAtRules": ["mixin"] }]));
+    let rule = configured(&NestingSelectorNoMissingScopingRoot, opts.clone());
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "Mixin".to_string(),
       params: "foo".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![style("& .bar")],
     })];
-    let d = NestingSelectorNoMissingScopingRoot.check_root(&nodes, &scss_ctx_with_options(opts));
+    let d = rule.check_root(&nodes, &scss_ctx_with_options(opts));
     assert!(
       d.is_empty(),
       "case-insensitive match should suppress diagnostic"
     );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreAtRules": ["mixin", "/^incl/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"nesting-selector-no-missing-scoping-root\""]
+    );
+  }
+
+  #[test]
+  fn ignore_at_rules_takes_regexes() {
+    let rule = configured(
+      &NestingSelectorNoMissingScopingRoot,
+      serde_json::json!([true, { "ignoreAtRules": ["/^mix/"] }]),
+    );
+    let nodes = vec![CssNode::AtRule(AtRule {
+      name: "mixin".to_string(),
+      params: "foo".to_string(),
+      span: ParserSpan::new(0, 0),
+      children: vec![style("& .bar")],
+    })];
+    assert!(rule.check_root(&nodes, &ctx()).is_empty());
   }
 }

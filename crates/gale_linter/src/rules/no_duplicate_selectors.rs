@@ -1,29 +1,47 @@
 use std::collections::HashMap;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, SourceLineIndex, Span};
+use gale_diagnostics::{Diagnostic, SourceLineIndex, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow duplicate selectors within a stylesheet.
-///
-/// Equivalent to Stylelint's `no-duplicate-selectors` rule.
-pub struct NoDuplicateSelectors;
+const NAME: &str = "no-duplicate-selectors";
 
-impl Rule for NoDuplicateSelectors {
-  fn name(&self) -> &'static str {
-    "no-duplicate-selectors"
+declare_rule! {
+  /// Disallow duplicate selectors within a stylesheet.
+  ///
+  /// Equivalent to Stylelint's `no-duplicate-selectors` rule.
+  pub struct NoDuplicateSelectors => NoDuplicateSelectorsCheck {
+    name: NAME,
+    description: "Disallow duplicate selectors within a stylesheet",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow duplicate selectors within a stylesheet"
+/// `no-duplicate-selectors` as configured.
+pub struct NoDuplicateSelectorsCheck {
+  /// `ignoreSelectors`: selectors (names or `/regex/` entries) that may
+  /// repeat.
+  ignore_selectors: Matchers,
+}
+
+impl NoDuplicateSelectorsCheck {
+  /// Stylelint's options: `true`, then `disallowInList` and
+  /// `ignoreSelectors`.  Gale accepts but does not yet apply
+  /// `disallowInList`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.flag("disallowInList");
+    let ignore_selectors = options.matchers("ignoreSelectors");
+    options.finish()?;
+    Ok(Self { ignore_selectors })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoDuplicateSelectorsCheck {
   /// Flags a selector list that repeats one seen earlier in the file, reporting
   /// the first occurrence's line and skipping anything in `ignoreSelectors`.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
@@ -32,29 +50,15 @@ impl Rule for NoDuplicateSelectors {
     let mut diagnostics = Vec::new();
     let is_scss = matches!(context.syntax, Syntax::Scss | Syntax::Sass | Syntax::Less);
 
-    // Parse ignoreSelectors option (v17): array of string/regex patterns
-    let ignore_selectors: Vec<String> = context
-      .secondary_options()
-      .and_then(|v| v.get("ignoreSelectors"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
-
     collect_selectors(
       nodes,
       &[],
       &mut seen,
       &mut diagnostics,
-      self,
       &line_index,
       context.source,
       is_scss,
-      &ignore_selectors,
+      &self.ignore_selectors,
     );
 
     diagnostics
@@ -151,11 +155,10 @@ fn collect_selectors(
   parent_selectors: &[String],
   seen: &mut HashMap<String, usize>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule: &NoDuplicateSelectors,
   line_index: &SourceLineIndex,
   source: &str,
   is_scss: bool,
-  ignore_selectors: &[String],
+  ignore_selectors: &Matchers,
 ) {
   for node in nodes {
     match node {
@@ -183,12 +186,8 @@ fn collect_selectors(
           .iter()
           .any(|s| s.contains("#{") || s.contains("@{"));
         // Check ignoreSelectors: skip if any selector part matches an ignore pattern
-        let should_ignore = !ignore_selectors.is_empty()
-          && expanded.iter().any(|sel| {
-            ignore_selectors
-              .iter()
-              .any(|entry| pattern::match_regex_entry(entry, sel).unwrap_or_else(|| sel == entry))
-          });
+        let should_ignore =
+          !ignore_selectors.is_empty() && expanded.iter().any(|sel| ignore_selectors.matches(sel));
         if is_standard && expanded_is_standard && !expanded.is_empty() && !should_ignore {
           let normalized_key = normalize_expanded(&expanded);
           let (line, _) = line_index.offset_to_location(style_rule.span.offset);
@@ -196,13 +195,12 @@ fn collect_selectors(
           if let Some(&first_line) = seen.get(&normalized_key) {
             diagnostics.push(
               Diagnostic::new(
-                rule.name(),
+                NAME,
                 format!(
                   "Unexpected duplicate selector \"{}\", first used at line {}",
                   raw, first_line,
                 ),
               )
-              .severity(rule.default_severity())
               .span(Span::new(style_rule.span.offset, style_rule.span.length)),
             );
           } else {
@@ -234,7 +232,6 @@ fn collect_selectors(
           &new_parents,
           seen,
           diagnostics,
-          rule,
           line_index,
           source,
           is_scss,
@@ -247,7 +244,6 @@ fn collect_selectors(
           &new_parents,
           seen,
           diagnostics,
-          rule,
           line_index,
           source,
           is_scss,
@@ -265,7 +261,6 @@ fn collect_selectors(
           parent_selectors,
           &mut scoped_seen,
           diagnostics,
-          rule,
           line_index,
           source,
           is_scss,
@@ -282,11 +277,13 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{ctx, ctx_with_source, ctx_with_source_and_options, scss_ctx_with_source};
+  use crate::testing::{
+    configured, ctx, ctx_with_source, ctx_with_source_and_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn reports_duplicate_selectors_with_line_reference() {
-    let rule = NoDuplicateSelectors;
+    let rule = configured(&NoDuplicateSelectors, None);
     let source = ".foo { color: red; }\n.bar { color: blue; }\n.foo { display: block; }";
     let nodes = vec![
       CssNode::Style(StyleRule {
@@ -334,7 +331,7 @@ mod tests {
 
   #[test]
   fn ignores_unique_selectors() {
-    let rule = NoDuplicateSelectors;
+    let rule = configured(&NoDuplicateSelectors, None);
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
@@ -355,7 +352,7 @@ mod tests {
 
   #[test]
   fn scoped_selectors_in_at_rules_dont_clash() {
-    let rule = NoDuplicateSelectors;
+    let rule = configured(&NoDuplicateSelectors, None);
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
@@ -384,9 +381,9 @@ mod tests {
 
   #[test]
   fn detects_duplicates_in_parsed_scss() {
+    let rule = configured(&NoDuplicateSelectors, None);
     let scss = ".foo { color: red; }\n.bar { color: blue; }\n.foo { display: block; }";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
-    let rule = NoDuplicateSelectors;
     let ctx = scss_ctx_with_source(scss);
     let diags = rule.check_root(&result.nodes, &ctx);
     assert_eq!(diags.len(), 1, "should detect duplicate .foo in SCSS");
@@ -394,9 +391,9 @@ mod tests {
 
   #[test]
   fn detects_nested_scss_duplicate_ampersand() {
+    let rule = configured(&NoDuplicateSelectors, None);
     let scss = ".parent {\n  & { color: red; }\n  & { color: blue; }\n}";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
-    let rule = NoDuplicateSelectors;
     let ctx = scss_ctx_with_source(scss);
     let diags = rule.check_root(&result.nodes, &ctx);
     // Each `& {}` expands to `.parent`, which duplicates the parent rule.
@@ -410,9 +407,9 @@ mod tests {
 
   #[test]
   fn ignore_selectors_string_match() {
-    let rule = NoDuplicateSelectors;
     let source = ".foo { color: red; }\n.bar { color: blue; }\n.foo { display: block; }";
     let opts = serde_json::json!([true, {"ignoreSelectors": [".foo"]}]);
+    let rule = configured(&NoDuplicateSelectors, opts.clone());
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
@@ -443,9 +440,9 @@ mod tests {
 
   #[test]
   fn ignore_selectors_regex_match() {
-    let rule = NoDuplicateSelectors;
     let source = ".foo { color: red; }\n.foo { display: block; }";
     let opts = serde_json::json!([true, {"ignoreSelectors": ["/^\\.foo$/"]}]);
+    let rule = configured(&NoDuplicateSelectors, opts.clone());
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
@@ -466,5 +463,33 @@ mod tests {
       diags.is_empty(),
       "ignoreSelectors with regex should suppress duplicate .foo"
     );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "disallowInList": true, "ignoreSelectors": ".foo" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "disallowInList": "yes" }])),
+      ["Invalid value \"yes\" for option \"disallowInList\" of rule \"no-duplicate-selectors\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": [".foo"] }])),
+      ["Invalid option name \"ignore\" for rule \"no-duplicate-selectors\""]
+    );
+  }
+
+  #[test]
+  fn ignore_selectors_takes_a_single_string() {
+    use crate::testing::lint;
+    let source = ".foo {}\n.foo {}";
+    let ignore = serde_json::json!([true, { "ignoreSelectors": ".foo" }]);
+    assert!(lint(NAME, ignore, source, Syntax::Css).is_empty());
   }
 }

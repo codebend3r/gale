@@ -1,18 +1,44 @@
 use gale_css_parser::{CssNode, Declaration};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports declarations in a position where they do not apply: at the root
-/// of the stylesheet, or directly inside a conditional at-rule (`@media`,
-/// `@supports`, ...) that is not nested in a style rule.
-///
-/// Equivalent to Stylelint's `no-invalid-position-declaration` rule, which
-/// accepts `ignoreAtRules`: at-rules that, as an ancestor of the
-/// declaration's at-rule, make its position valid (`["include", "mixin"]`
-/// for SCSS content blocks and mixin bodies, say).
-pub struct NoInvalidPositionDeclaration;
+const NAME: &str = "no-invalid-position-declaration";
+
+declare_rule! {
+  /// Reports declarations in a position where they do not apply: at the root
+  /// of the stylesheet, or directly inside a conditional at-rule (`@media`,
+  /// `@supports`, ...) that is not nested in a style rule.
+  ///
+  /// Equivalent to Stylelint's `no-invalid-position-declaration` rule, which
+  /// accepts `ignoreAtRules`: at-rules that, as an ancestor of the
+  /// declaration's at-rule, make its position valid (`["include", "mixin"]`
+  /// for SCSS content blocks and mixin bodies, say).
+  pub struct NoInvalidPositionDeclaration => NoInvalidPositionDeclarationCheck {
+    name: NAME,
+    description: "Disallow invalid position declarations",
+    default_severity: Warning,
+  }
+}
+
+/// `no-invalid-position-declaration` as configured.
+pub struct NoInvalidPositionDeclarationCheck {
+  /// `ignoreAtRules`: names or `/regex/` entries.
+  ignore_at_rules: Matchers,
+}
+
+impl NoInvalidPositionDeclarationCheck {
+  /// Stylelint's options: `true`, then `ignoreAtRules`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    let ignore_at_rules = options.matchers("ignoreAtRules");
+    options.finish()?;
+    Ok(Self { ignore_at_rules })
+  }
+}
 
 /// At-rules that allow declarations only when nested inside a style rule
 /// (Stylelint's `nestingSupportedAtKeywords`).
@@ -42,17 +68,14 @@ enum Parent<'a> {
 }
 
 /// The walk's state: the rule's options and the problems found so far.
-struct Walk<'a, 'o> {
-  /// The rule, for its name and severity.
-  rule: &'a NoInvalidPositionDeclaration,
-  /// The `ignoreAtRules` option, a string or a list of strings and
-  /// `/regex/` entries.
-  ignore_at_rules: Option<&'o serde_json::Value>,
+struct Walk<'a> {
+  /// The `ignoreAtRules` option.
+  ignore_at_rules: &'a Matchers,
   /// Problems found so far.
   diags: Vec<Diagnostic>,
 }
 
-impl Walk<'_, '_> {
+impl Walk<'_> {
   /// Check the declarations among `nodes` and walk into their blocks.
   ///
   /// `shielded` is true when the parent or an ancestor is a style rule, a
@@ -65,7 +88,7 @@ impl Walk<'_, '_> {
         CssNode::AtRule(at) => {
           let shields = shielded
             || is_declaration_containing(&at.name)
-            || pattern::option_matches(self.ignore_at_rules, &at.name);
+            || self.ignore_at_rules.matches(&at.name);
           self.nodes(&at.children, Parent::AtRule(&at.name), shields);
         }
         CssNode::Style(style) => self.style_rule(style),
@@ -101,8 +124,7 @@ impl Walk<'_, '_> {
     // The declaration's own span, so a disable comment for the
     // declaration's line covers the report.
     self.diags.push(
-      Diagnostic::new(self.rule.name(), "Invalid position for declaration")
-        .severity(self.rule.default_severity())
+      Diagnostic::new(NAME, "Invalid position for declaration")
         .span(Span::new(decl.span.offset, decl.span.length)),
     );
   }
@@ -131,27 +153,12 @@ fn is_standard_syntax_declaration(property: &str) -> bool {
   !scss_variable && !less_variable
 }
 
-impl Rule for NoInvalidPositionDeclaration {
-  fn name(&self) -> &'static str {
-    "no-invalid-position-declaration"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow invalid position declarations"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoInvalidPositionDeclarationCheck {
   /// Flags declarations at the root, or directly inside an at-rule that
   /// takes them only when nested in a style rule.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check_root(&self, nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut walk = Walk {
-      rule: self,
-      ignore_at_rules: ctx
-        .secondary_options()
-        .and_then(|secondary| secondary.get("ignoreAtRules")),
+      ignore_at_rules: &self.ignore_at_rules,
       diags: Vec::new(),
     };
     walk.nodes(nodes, Parent::Root, false);
@@ -164,10 +171,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   #[test]
   fn reports_declaration_inside_media() {
+    let rule = configured(&NoInvalidPositionDeclaration, None);
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
@@ -179,13 +187,14 @@ mod tests {
         important: false,
       })],
     });
-    let d = NoInvalidPositionDeclaration.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Invalid position for declaration");
   }
 
   #[test]
   fn allows_style_rules_inside_media() {
+    let rule = configured(&NoInvalidPositionDeclaration, None);
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
@@ -202,12 +211,13 @@ mod tests {
         ..Default::default()
       })],
     });
-    let d = NoInvalidPositionDeclaration.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_scss_variable_inside_media() {
+    let rule = configured(&NoInvalidPositionDeclaration, None);
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
@@ -219,12 +229,13 @@ mod tests {
         important: false,
       })],
     });
-    let d = NoInvalidPositionDeclaration.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(d.is_empty(), "SCSS variables should not be flagged");
   }
 
   #[test]
   fn allows_declarations_inside_font_face() {
+    let rule = configured(&NoInvalidPositionDeclaration, None);
     let node = CssNode::AtRule(AtRule {
       name: "font-face".to_string(),
       params: String::new(),
@@ -236,12 +247,13 @@ mod tests {
         important: false,
       })],
     });
-    let d = NoInvalidPositionDeclaration.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_scss_nested_media_with_declarations() {
+    let rule = configured(&NoInvalidPositionDeclaration, None);
     // In SCSS, @media nested inside a style rule legitimately contains
     // declarations scoped by the parent selector.  This should NOT be flagged.
     let node = CssNode::Style(gale_css_parser::StyleRule {
@@ -261,7 +273,7 @@ mod tests {
       })],
       ..Default::default()
     });
-    let d = NoInvalidPositionDeclaration.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(
       d.is_empty(),
       "declarations inside @media nested in a style rule should not be flagged"
@@ -276,10 +288,10 @@ mod tests {
       file_path: "t.scss",
       source,
       syntax,
-      options: options.as_ref(),
+      options: None,
       cache: None,
     };
-    NoInvalidPositionDeclaration
+    configured(&NoInvalidPositionDeclaration, options)
       .check_root(&parsed.nodes, &ctx)
       .iter()
       .map(|d| source[..d.span.offset].lines().count().max(1))
@@ -323,5 +335,27 @@ mod tests {
   fn root_level_declarations_are_reported() {
     let source = "color: red;\n$x: 1;\n.a {\n  color: blue;\n}\n";
     assert_eq!(lines(source, Syntax::Scss, None), vec![1]);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreAtRules": ["include", "/^mix/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"no-invalid-position-declaration\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreAtRules": [1] }])),
+      [
+        "Invalid value \"1\" for option \"ignoreAtRules\" of rule \"no-invalid-position-declaration\""
+      ]
+    );
   }
 }
