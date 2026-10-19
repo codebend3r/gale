@@ -133,7 +133,11 @@ export function resolveConfig(
   options?: { configFile?: string; cwd?: string },
 ): Promise<Config | undefined>;
 
-/** Promise-based formatter functions keyed by name, like `stylelint.formatters`. */
+/**
+ * Promise-based formatter functions keyed by name, like `stylelint.formatters`.
+ * Each formats with the binary's own formatter, so its output is what
+ * `gale --formatter <name>` prints for the same results.
+ */
 export const formatters: {
   readonly json: Promise<FormatterFunction>;
   readonly string: Promise<FormatterFunction>;

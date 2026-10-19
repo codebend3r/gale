@@ -3,13 +3,16 @@
 node_modules/
 .gale_cache
 
+# Platform binaries staged by scripts/build-npm.sh and the release workflow.
+# npm users get the ones CI builds from the tag, never a committed copy.
+/npm/bin/*/
+
 # Benchmarks
 /benchmarks/fixtures/
 /benchmarks/.repos/
 /benchmarks/.hyperfine-*
 /benchmarks/.benchmark-*
 /benchmarks/.parity-*
-/benchmarks/results.md
 
 # Differential tests
 tests/differential/.clones/

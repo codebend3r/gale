@@ -48,35 +48,30 @@ jobs:
           path: target/release/gale
           if-no-files-found: error
 
+  corpus:
+    # The weekly repos are the entries of tests/differential/repos.json marked
+    # "weekly", the corpus the harness, the benchmark and the matrix share.
+    name: Weekly repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      repos: ${{ steps.repos.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: List the weekly repos
+        id: repos
+        run: echo "repos=$(jq -c '[.[] | select(.weekly) | .name]' tests/differential/repos.json)" >> "$GITHUB_OUTPUT"
+
   test-repos:
-    name: Parity (${{ matrix.repo.name }})
-    needs: build
+    name: Parity (${{ matrix.repo }})
+    needs: [build, corpus]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        repo:
-          - name: bootstrap
-            repo: twbs/bootstrap
-            branch: main
-            paths: scss
-            stars: "168K"
-          - name: gutenberg
-            repo: wordpress/gutenberg
-            branch: trunk
-            paths: packages
-            stars: "10K"
-          - name: grafana
-            repo: grafana/grafana
-            branch: main
-            paths: public
-            stars: "62K"
-          - name: primer-css
-            repo: primer/css
-            branch: main
-            paths: src
-            stars: "12K"
+        repo: ${{ fromJSON(needs.corpus.outputs.repos) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -109,18 +104,20 @@ jobs:
 
       - name: Run compatibility test
         env:
-          REPO: ${{ matrix.repo.name }}
-        # No pipefail on purpose: a crashed run still uploads its log, which the
-        # matrix generator turns into a "run failed" row instead of dropping it.
+          REPO: ${{ matrix.repo }}
+        # A crash leaves no report, which the matrix generator turns into a
+        # "run failed" row. Failing the job instead would skip update-matrix.
         run: |
-          python3 tests/differential/run.py "$REPO" --skip-build --benchmark 2>&1 | tee result.txt
+          python3 tests/differential/run.py "$REPO" --skip-build --benchmark \
+            || echo "::warning::run.py exited $? on $REPO"
 
-      - name: Upload result
+      - name: Upload the report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: result-${{ matrix.repo.name }}
-          path: result.txt
+          name: report-${{ matrix.repo }}
+          path: tests/differential/results/${{ matrix.repo }}_report.json
+          if-no-files-found: ignore
 
   benchmark:
     # Weekly rather than per pull request: it is the slowest job CI had, gated
@@ -174,11 +171,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download the parity results
+      - name: Download the parity reports
         uses: actions/download-artifact@v8
         with:
-          pattern: result-*
+          pattern: report-*
           path: results
+          merge-multiple: true
 
       - name: Generate the matrix
         id: matrix

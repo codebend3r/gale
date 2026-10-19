@@ -33,9 +33,9 @@ worked, ship without the Windows binaries.
 ## Releasing
 
 1. **Bump.** Move every version reference to `X.Y.Z` in one commit named
-   `X.Y.Z`: `workspace.package.version` and the seven internal crate pins in
-   `Cargo.toml`, `Cargo.lock` (`cargo update --workspace`), `package.json`,
-   `npm/package.json`, and the version examples in the docs. The
+   `X.Y.Z`: `workspace.package.version` in `Cargo.toml` (every crate inherits
+   it), `Cargo.lock` (`cargo update --workspace`), `npm/package.json`, and the
+   install snippet in `docs/index.html`. The
    `npm-version-release` skill does this and sweeps for stragglers.
 2. **Dry run (optional, recommended).** Push the commit, then run the workflow
    by hand with dry run ticked:
@@ -54,8 +54,8 @@ worked, ship without the Windows binaries.
 
 4. **CI publishes.** The workflow runs:
    1. **Version guard**: fails at once, listing every mismatch, unless the tag
-      equals `workspace.package.version`, every internal crate pin, the gale
-      entries in `Cargo.lock`, `package.json`, and `npm/package.json`.
+      equals `workspace.package.version`, the gale entries in `Cargo.lock`, and
+      `npm/package.json`.
    2. **Build** each target in the table below on its own runner, checking
       that every binary the runner can execute reports `gale X.Y.Z`.
    3. **npm**: stage a binary for every platform `npm/platform.cjs` maps

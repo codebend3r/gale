@@ -26,92 +26,14 @@ Usage:
 import argparse
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness import build_gale, clone_repo, install_deps, load_repos, run_cmd
+
 SCRIPT_DIR = Path(__file__).parent
-REPOS_JSON = SCRIPT_DIR / "repos.json"
 CLONES_DIR = SCRIPT_DIR / ".clones"
-GALE_ROOT = SCRIPT_DIR.parent.parent
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def run_cmd(
-    cmd: list[str], cwd: str | None = None, timeout: int = 300
-) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-
-
-def load_repos() -> list[dict]:
-    with open(REPOS_JSON) as f:
-        return json.load(f)
-
-
-def clone_repo(repo: str, branch: str, dest: Path) -> bool:
-    if dest.exists():
-        print(f"  [skip] Already cloned: {dest.name}")
-        return True
-    print(f"  [clone] {repo} @ {branch}")
-    result = run_cmd(
-        ["git", "clone", "--depth", "1", "--branch", branch,
-         f"https://github.com/{repo}.git", str(dest)],
-        timeout=120,
-    )
-    if result.returncode != 0:
-        print(f"  [error] Clone failed: {result.stderr.strip()[:200]}")
-        return False
-    return True
-
-
-def detect_package_manager(clone_dir: Path) -> str:
-    if (clone_dir / "pnpm-lock.yaml").exists():
-        return "pnpm"
-    if (clone_dir / "yarn.lock").exists():
-        return "yarn"
-    if (clone_dir / "bun.lockb").exists() or (clone_dir / "bun.lock").exists():
-        return "bun"
-    return "npm"
-
-
-def install_deps(clone_dir: Path) -> bool:
-    if (clone_dir / "node_modules").exists():
-        print(f"  [skip] node_modules exists")
-        return True
-
-    if not (clone_dir / "package.json").exists():
-        print(f"  [warn] No package.json")
-        return False
-
-    pm = detect_package_manager(clone_dir)
-    print(f"  [install] {pm} install...")
-
-    run_cmd(["corepack", "enable"], cwd=str(clone_dir), timeout=30)
-
-    if pm == "pnpm":
-        cmd = ["pnpm", "install", "--ignore-scripts", "--no-frozen-lockfile"]
-    elif pm == "yarn":
-        env_file = clone_dir / ".yarnrc.yml"
-        if env_file.exists():
-            content = env_file.read_text()
-            if "nodeLinker" not in content:
-                with open(env_file, "a") as f:
-                    f.write("\nnodeLinker: node-modules\n")
-        cmd = ["yarn", "install", "--mode", "skip-build"]
-    elif pm == "bun":
-        cmd = ["bun", "install", "--ignore-scripts"]
-    else:
-        cmd = ["npm", "install", "--ignore-scripts"]
-
-    result = run_cmd(cmd, cwd=str(clone_dir), timeout=300)
-    if result.returncode != 0:
-        print(f"  [error] Install failed: {result.stderr.strip()[:200]}")
-        return False
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +186,9 @@ def test_migration(
         result["status"] = "CLONE_FAILED"
         return result
 
-    if not install_deps(clone_dir):
-        result["status"] = "INSTALL_FAILED"
+    deps_result = install_deps(clone_dir)
+    if deps_result is not True:
+        result["status"] = "INSTALL_SKIPPED" if deps_result == "skip" else "INSTALL_FAILED"
         return result
 
     # Step 2: Find Stylelint config
@@ -400,19 +323,6 @@ def test_migration(
 # ---------------------------------------------------------------------------
 
 
-def build_gale() -> Path | None:
-    print("[build] Building Gale (release)...")
-    result = run_cmd(["cargo", "build", "--release"], cwd=str(GALE_ROOT), timeout=300)
-    if result.returncode != 0:
-        print(f"[error] Build failed: {result.stderr.strip()[:500]}")
-        return None
-    binary = GALE_ROOT / "target" / "release" / "gale"
-    if not binary.exists():
-        print(f"[error] Binary not found")
-        return None
-    return binary
-
-
 def main():
     parser = argparse.ArgumentParser(description="Migration test: Stylelint to Gale")
     parser.add_argument("repos", nargs="*", help="Specific repos to test")
@@ -438,10 +348,8 @@ def main():
 
     if args.gale_bin:
         gale_bin = Path(args.gale_bin)
-    elif args.skip_build:
-        gale_bin = GALE_ROOT / "target" / "release" / "gale"
     else:
-        gale_bin = build_gale()
+        gale_bin = build_gale(skip=args.skip_build)
         if gale_bin is None:
             sys.exit(1)
 

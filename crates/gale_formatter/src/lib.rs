@@ -1,8 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 
-use gale_diagnostics::{LintResult, Severity, SourceLineIndex, SourceLocation};
+use gale_diagnostics::{LintResult, SourceLineIndex, SourceLocation};
 use owo_colors::OwoColorize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Formatter trait
@@ -11,7 +11,126 @@ use serde::Serialize;
 /// Trait for formatting lint results into a displayable string.
 pub trait Formatter {
   /// Renders every result into the formatter's output string.
-  fn format(&self, results: &[LintResult]) -> String;
+  fn format(&self, results: &[StylelintResult]) -> String;
+}
+
+// ---------------------------------------------------------------------------
+// Results model
+// ---------------------------------------------------------------------------
+
+/// One source in Stylelint's results model: what the `json` formatter prints
+/// and what every formatter renders.
+///
+/// The CLI converts its lint results once, with [`stylelint_results`];
+/// `--format-results` reads the same shape back from JSON, which is how the
+/// npm package's `formatters` reach these formatters.  A field the JSON
+/// leaves out takes its empty value.
+///
+/// Mirrors Stylelint's per-source JSON object, including the fields Gale never
+/// populates. Consumers (editors, CI reporters, `stylelint.lint()` shims) index
+/// into these unconditionally, so they must be present even when empty.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StylelintResult {
+  pub source: String,
+  pub deprecations: Vec<serde_json::Value>,
+  pub invalid_option_warnings: Vec<InvalidOptionWarning>,
+  pub parse_errors: Vec<serde_json::Value>,
+  pub errored: bool,
+  pub warnings: Vec<StylelintWarning>,
+}
+
+/// One entry of Stylelint's `invalidOptionWarnings`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InvalidOptionWarning {
+  pub text: String,
+}
+
+/// One warning of a [`StylelintResult`], with 1-indexed positions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StylelintWarning {
+  pub line: usize,
+  pub column: usize,
+  /// Always set by the CLI; left out of the JSON for a warning read without one.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub end_line: Option<usize>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub end_column: Option<usize>,
+  pub rule: String,
+  pub severity: String,
+  /// The message with Stylelint's `" (rule-name)"` suffix, when it has one.
+  pub text: String,
+  /// Only present when the rule's `url` secondary option is set, as in
+  /// Stylelint, where an undefined `url` is dropped by `JSON.stringify`.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub url: Option<String>,
+  /// Whether `gale --fix` can fix it, for the agent formatter.  Not part of
+  /// Stylelint's model, so it is never written or read as JSON.
+  #[serde(skip)]
+  pub fixable: bool,
+}
+
+impl StylelintWarning {
+  /// The message without Stylelint's trailing `" (rule-name)"`, which is how
+  /// Stylelint's string formatter shows it.
+  pub fn message(&self) -> &str {
+    self
+      .text
+      .strip_suffix(format!(" ({})", self.rule).as_str())
+      .unwrap_or(&self.text)
+  }
+
+  /// Whether it counts as an error; every other severity counts as a warning.
+  fn is_error(&self) -> bool {
+    self.severity == "error"
+  }
+}
+
+/// Converts lint results into Stylelint's results model: 1-indexed start and
+/// end positions, and Stylelint's `" (rule-name)"` message suffix.
+pub fn stylelint_results(results: &[LintResult]) -> Vec<StylelintResult> {
+  results
+    .iter()
+    .map(|result| {
+      let line_index = SourceLineIndex::build(&result.source);
+      let warnings = result
+        .diagnostics
+        .iter()
+        .map(|diag| {
+          let (line, column) = line_index.offset_to_location(diag.span.offset);
+          let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
+          StylelintWarning {
+            line,
+            column,
+            end_line: Some(end_line),
+            end_column: Some(end_column),
+            rule: diag.rule_name.clone(),
+            severity: diag.severity.to_string(),
+            // Stylelint appends " (rule-name)" to every rule warning, but
+            // not to reports about disable comments.
+            text: diag.stylelint_text(),
+            url: diag.url.clone(),
+            fixable: diag.fix.is_some(),
+          }
+        })
+        .collect();
+
+      StylelintResult {
+        source: result.file_path.clone(),
+        deprecations: Vec::new(),
+        invalid_option_warnings: result
+          .invalid_option_warnings
+          .iter()
+          .map(|text| InvalidOptionWarning { text: text.clone() })
+          .collect(),
+        parse_errors: Vec::new(),
+        errored: result.errored(),
+        warnings,
+      }
+    })
+    .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -150,16 +269,22 @@ impl Palette {
   }
 }
 
+/// Each distinct invalid option across all results, in first-seen order.
+fn distinct_invalid_options(results: &[StylelintResult]) -> Vec<&str> {
+  let mut seen: Vec<&str> = Vec::new();
+  for option in results.iter().flat_map(|r| &r.invalid_option_warnings) {
+    if !seen.contains(&option.text.as_str()) {
+      seen.push(&option.text);
+    }
+  }
+  seen
+}
+
 /// Stylelint's `Invalid Option: <text>` lines, one per distinct invalid
 /// option across all results, followed by a blank line; empty when there are
 /// none.
-fn invalid_options_section(results: &[LintResult], paint: Palette) -> String {
-  let mut seen: Vec<&str> = Vec::new();
-  for text in results.iter().flat_map(|r| &r.invalid_option_warnings) {
-    if !seen.contains(&text.as_str()) {
-      seen.push(text);
-    }
-  }
+fn invalid_options_section(results: &[StylelintResult], paint: Palette) -> String {
+  let seen = distinct_invalid_options(results);
   if seen.is_empty() {
     return String::new();
   }
@@ -177,7 +302,7 @@ impl Formatter for TextFormatter {
   /// Lists invalid options first, as Stylelint does, then groups warnings
   /// under an underlined file header (the path relative to the working
   /// directory) and appends a `N problems (E errors, W warnings)` summary.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let paint = Palette {
       enabled: self.color,
     };
@@ -188,31 +313,24 @@ impl Formatter for TextFormatter {
     let cwd = std::env::current_dir().unwrap_or_default();
 
     for result in results {
-      if result.diagnostics.is_empty() {
+      if result.warnings.is_empty() {
         continue;
       }
 
-      let line_index = SourceLineIndex::build(&result.source);
-
-      output.push_str(&paint.underline(&display_path(&result.file_path, &cwd)));
+      output.push_str(&paint.underline(&display_path(&result.source, &cwd)));
       output.push('\n');
 
-      for diag in &result.diagnostics {
-        let (line, col) = line_index.offset_to_location(diag.span.offset);
-
-        let location = format!("{line}:{col}");
-        let (icon, colored_message) = match diag.severity {
-          Severity::Error => {
-            total_errors += 1;
-            (paint.red("\u{2716}"), paint.red(&diag.message))
-          }
-          Severity::Warning | Severity::Info | Severity::Hint => {
-            total_warnings += 1;
-            (paint.yellow("\u{26A0}"), paint.yellow(&diag.message))
-          }
+      for warning in &result.warnings {
+        let location = format!("{}:{}", warning.line, warning.column);
+        let (icon, colored_message) = if warning.is_error() {
+          total_errors += 1;
+          (paint.red("\u{2716}"), paint.red(warning.message()))
+        } else {
+          total_warnings += 1;
+          (paint.yellow("\u{26A0}"), paint.yellow(warning.message()))
         };
 
-        let rule = paint.dimmed(&diag.rule_name);
+        let rule = paint.dimmed(&warning.rule);
         output.push_str(&format!(
           "  {location:<8} {icon}  {colored_message}  {rule}\n"
         ));
@@ -249,91 +367,10 @@ impl Formatter for TextFormatter {
 /// JSON formatter matching Stylelint's JSON output format.
 pub struct JsonFormatter;
 
-/// Mirrors Stylelint's per-source JSON object, including the fields Gale never
-/// populates. Consumers (editors, CI reporters, `stylelint.lint()` shims) index
-/// into these unconditionally, so they must be present even when empty.
-#[derive(Serialize)]
-struct JsonResult {
-  source: String,
-  deprecations: Vec<serde_json::Value>,
-  #[serde(rename = "invalidOptionWarnings")]
-  invalid_option_warnings: Vec<JsonInvalidOption>,
-  #[serde(rename = "parseErrors")]
-  parse_errors: Vec<serde_json::Value>,
-  errored: bool,
-  warnings: Vec<JsonWarning>,
-}
-
-/// One entry of Stylelint's `invalidOptionWarnings`.
-#[derive(Serialize)]
-struct JsonInvalidOption {
-  text: String,
-}
-
-#[derive(Serialize)]
-struct JsonWarning {
-  line: usize,
-  column: usize,
-  #[serde(rename = "endLine")]
-  end_line: usize,
-  #[serde(rename = "endColumn")]
-  end_column: usize,
-  rule: String,
-  severity: String,
-  text: String,
-  /// Only present when the rule's `url` secondary option is set, as in
-  /// Stylelint, where an undefined `url` is dropped by `JSON.stringify`.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  url: Option<String>,
-}
-
 impl Formatter for JsonFormatter {
-  /// Emits one `JsonResult` per file, with 1-indexed start and end positions
-  /// and Stylelint's `" (rule-name)"` message suffix.
-  fn format(&self, results: &[LintResult]) -> String {
-    let json_results: Vec<JsonResult> = results
-      .iter()
-      .map(|result| {
-        let line_index = SourceLineIndex::build(&result.source);
-        let warnings = result
-          .diagnostics
-          .iter()
-          .map(|diag| {
-            let (line, column) = line_index.offset_to_location(diag.span.offset);
-            let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
-            // Stylelint appends " (rule-name)" to every rule
-            // warning, but not to reports about disable comments.
-            // Replicate both for byte-for-byte identical output.
-            let text = diag.stylelint_text();
-            JsonWarning {
-              line,
-              column,
-              end_line,
-              end_column,
-              rule: diag.rule_name.clone(),
-              severity: diag.severity.to_string(),
-              text,
-              url: diag.url.clone(),
-            }
-          })
-          .collect();
-
-        JsonResult {
-          source: result.file_path.clone(),
-          deprecations: Vec::new(),
-          invalid_option_warnings: result
-            .invalid_option_warnings
-            .iter()
-            .map(|text| JsonInvalidOption { text: text.clone() })
-            .collect(),
-          parse_errors: Vec::new(),
-          errored: result.errored(),
-          warnings,
-        }
-      })
-      .collect();
-
-    serde_json::to_string(&json_results).unwrap_or_else(|_| "[]".to_string())
+  /// Emits the results model as it is, one object per source.
+  fn format(&self, results: &[StylelintResult]) -> String {
+    serde_json::to_string(results).unwrap_or_else(|_| "[]".to_string())
   }
 }
 
@@ -350,20 +387,14 @@ pub struct CompactFormatter;
 
 impl Formatter for CompactFormatter {
   /// Emits `file: line N, col N, severity - message` per warning.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let mut output = String::new();
 
     for result in results {
-      let line_index = SourceLineIndex::build(&result.source);
-      for diag in &result.diagnostics {
-        let (line, col) = line_index.offset_to_location(diag.span.offset);
+      for warning in &result.warnings {
         output.push_str(&format!(
           "{}: line {}, col {}, {} - {}\n",
-          result.file_path,
-          line,
-          col,
-          diag.severity,
-          diag.stylelint_text(),
+          result.source, warning.line, warning.column, warning.severity, warning.text,
         ));
       }
     }
@@ -388,21 +419,15 @@ pub struct UnixFormatter;
 
 impl Formatter for UnixFormatter {
   /// Emits `file:line:col: message [severity]` per warning, then a total.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let mut output = String::new();
     let mut total = 0usize;
 
     for result in results {
-      let line_index = SourceLineIndex::build(&result.source);
-      for diag in &result.diagnostics {
-        let (line, col) = line_index.offset_to_location(diag.span.offset);
+      for warning in &result.warnings {
         output.push_str(&format!(
           "{}:{}:{}: {} [{}]\n",
-          result.file_path,
-          line,
-          col,
-          diag.stylelint_text(),
-          diag.severity,
+          result.source, warning.line, warning.column, warning.text, warning.severity,
         ));
         total += 1;
       }
@@ -437,46 +462,39 @@ pub struct AgentFormatter;
 
 impl Formatter for AgentFormatter {
   /// Lists invalid options, then one line per problem, then the summary.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let mut output = String::new();
     let cwd = std::env::current_dir().unwrap_or_default();
 
-    let mut seen: Vec<&str> = Vec::new();
-    for text in results.iter().flat_map(|r| &r.invalid_option_warnings) {
-      if !seen.contains(&text.as_str()) {
-        seen.push(text);
-        output.push_str(&format!("error: Invalid Option: {text}\n"));
-      }
+    for text in distinct_invalid_options(results) {
+      output.push_str(&format!("error: Invalid Option: {text}\n"));
     }
 
     let (mut errors, mut warnings, mut fixable) = (0usize, 0usize, 0usize);
     for result in results {
-      if result.diagnostics.is_empty() {
+      if result.warnings.is_empty() {
         continue;
       }
-      let path = display_path(&result.file_path, &cwd);
-      let line_index = SourceLineIndex::build(&result.source);
-      for diag in &result.diagnostics {
-        let (line, col) = line_index.offset_to_location(diag.span.offset);
-        let severity = match diag.severity {
-          Severity::Error => {
-            errors += 1;
-            "error"
-          }
-          Severity::Warning | Severity::Info | Severity::Hint => {
-            warnings += 1;
-            "warning"
-          }
-        };
-        let tag = if diag.fix.is_some() {
-          fixable += 1;
-          format!("{}, fixable", diag.rule_name)
+      let path = display_path(&result.source, &cwd);
+      for warning in &result.warnings {
+        let severity = if warning.is_error() {
+          errors += 1;
+          "error"
         } else {
-          diag.rule_name.clone()
+          warnings += 1;
+          "warning"
+        };
+        let tag = if warning.fixable {
+          fixable += 1;
+          format!("{}, fixable", warning.rule)
+        } else {
+          warning.rule.clone()
         };
         output.push_str(&format!(
-          "{path}:{line}:{col}: {severity}: {} [{tag}]\n",
-          diag.message
+          "{path}:{}:{}: {severity}: {} [{tag}]\n",
+          warning.line,
+          warning.column,
+          warning.message()
         ));
       }
     }
@@ -519,28 +537,26 @@ pub struct TapFormatter;
 impl Formatter for TapFormatter {
   /// Emits one TAP test point per file; failing files carry a YAML block
   /// per warning.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let mut output = String::from("TAP version 13\n");
     output.push_str(&format!("1..{}\n", results.len()));
 
     for (i, result) in results.iter().enumerate() {
       let n = i + 1;
-      if result.diagnostics.is_empty() {
-        output.push_str(&format!("ok {n} - {}\n", result.file_path));
+      if result.warnings.is_empty() {
+        output.push_str(&format!("ok {n} - {}\n", result.source));
         continue;
       }
 
-      output.push_str(&format!("not ok {n} - {}\n", result.file_path));
-      let line_index = SourceLineIndex::build(&result.source);
-      for diag in &result.diagnostics {
-        let (line, col) = line_index.offset_to_location(diag.span.offset);
+      output.push_str(&format!("not ok {n} - {}\n", result.source));
+      for warning in &result.warnings {
         output.push_str("  ---\n");
-        output.push_str(&format!("  message: {}\n", yaml_scalar(&diag.message)));
-        output.push_str(&format!("  severity: {}\n", diag.severity));
+        output.push_str(&format!("  message: {}\n", yaml_scalar(warning.message())));
+        output.push_str(&format!("  severity: {}\n", warning.severity));
         output.push_str("  data:\n");
-        output.push_str(&format!("    line: {line}\n"));
-        output.push_str(&format!("    column: {col}\n"));
-        output.push_str(&format!("    ruleId: {}\n", yaml_scalar(&diag.rule_name)));
+        output.push_str(&format!("    line: {}\n", warning.line));
+        output.push_str(&format!("    column: {}\n", warning.column));
+        output.push_str(&format!("    ruleId: {}\n", yaml_scalar(&warning.rule)));
         output.push_str("  ...\n");
       }
     }
@@ -579,7 +595,7 @@ impl Default for VerboseFormatter {
 
 impl Formatter for VerboseFormatter {
   /// Text output followed by the file count and per-rule tallies.
-  fn format(&self, results: &[LintResult]) -> String {
+  fn format(&self, results: &[StylelintResult]) -> String {
     let mut output = TextFormatter { color: self.color }.format(results);
 
     let file_count = results.len();
@@ -593,8 +609,8 @@ impl Formatter for VerboseFormatter {
     // runs produce identical output.
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for result in results {
-      for diag in &result.diagnostics {
-        *counts.entry(diag.rule_name.as_str()).or_insert(0) += 1;
+      for warning in &result.warnings {
+        *counts.entry(warning.rule.as_str()).or_insert(0) += 1;
       }
     }
 
@@ -691,16 +707,16 @@ pub fn create_formatter_with_color(format_type: &str, color: bool) -> Box<dyn Fo
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_diagnostics::{Diagnostic, Span};
+  use gale_diagnostics::{Diagnostic, Severity, Span};
 
-  fn sample_results() -> Vec<LintResult> {
+  fn sample_results() -> Vec<StylelintResult> {
     let source = "a {\n  \n}\n";
     let diag = Diagnostic::new("block-no-empty", "Unexpected empty block")
       .severity(Severity::Warning)
       .span(Span::new(4, 3))
       .file_path("src/app.css");
 
-    vec![LintResult::new("src/app.css", source, vec![diag])]
+    stylelint_results(&[LintResult::new("src/app.css", source, vec![diag])])
   }
 
   #[test]
@@ -745,16 +761,17 @@ mod tests {
   }
 
   /// Two files that both carry the same invalid option, and no problems.
-  fn results_with_invalid_option() -> Vec<LintResult> {
+  fn results_with_invalid_option() -> Vec<StylelintResult> {
     let text = "Invalid option value \"[\" for rule \"selector-class-pattern\": bad";
-    ["a.css", "b.css"]
+    let results: Vec<LintResult> = ["a.css", "b.css"]
       .into_iter()
       .map(|path| {
         let mut result = LintResult::new(path, "a {}", vec![]);
         result.invalid_option_warnings.push(text.to_string());
         result
       })
-      .collect()
+      .collect();
+    stylelint_results(&results)
   }
 
   #[test]
@@ -808,7 +825,11 @@ mod tests {
     let diag = Diagnostic::new("block-no-empty", "Unexpected empty block")
       .severity(Severity::Error)
       .span(Span::new(at, 2));
-    let output = JsonFormatter.format(&[LintResult::new("a.css", source, vec![diag])]);
+    let output = JsonFormatter.format(&stylelint_results(&[LintResult::new(
+      "a.css",
+      source,
+      vec![diag],
+    )]));
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     let warning = &parsed[0]["warnings"][0];
     assert_eq!(warning["column"], 33);
@@ -836,12 +857,12 @@ mod tests {
     );
   }
 
-  fn comment_problem_results() -> Vec<LintResult> {
+  fn comment_problem_results() -> Vec<StylelintResult> {
     let source = "/* stylelint-disable x */\na {}\n";
     let diag = Diagnostic::new("--report-needless-disables", "Needless disable for \"x\"")
       .severity(Severity::Error)
       .span(Span::new(0, 0));
-    vec![LintResult::new("src/app.css", source, vec![diag])]
+    stylelint_results(&[LintResult::new("src/app.css", source, vec![diag])])
   }
 
   #[test]
@@ -854,7 +875,7 @@ mod tests {
     let diag = Diagnostic::new("block-no-empty", "Unexpected empty block")
       .span(Span::new(4, 3))
       .url("https://example.com/empty");
-    let results = vec![LintResult::new("src/app.css", source, vec![diag])];
+    let results = stylelint_results(&[LintResult::new("src/app.css", source, vec![diag])]);
     let output = JsonFormatter.format(&results);
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(parsed[0]["warnings"][0]["url"], "https://example.com/empty");
@@ -999,7 +1020,7 @@ mod tests {
     let empty = Diagnostic::new("block-no-empty", "Unexpected empty block")
       .severity(Severity::Warning)
       .span(Span::new(24, 2));
-    let results = vec![LintResult::new("a.css", source, vec![hex, empty])];
+    let results = stylelint_results(&[LintResult::new("a.css", source, vec![hex, empty])]);
 
     assert_eq!(
       AgentFormatter.format(&results),
@@ -1011,7 +1032,7 @@ mod tests {
 
   #[test]
   fn agent_formatter_prints_nothing_for_a_clean_run() {
-    let results = vec![LintResult::new("a.css", "a { color: red; }\n", vec![])];
+    let results = stylelint_results(&[LintResult::new("a.css", "a { color: red; }\n", vec![])]);
     assert_eq!(AgentFormatter.format(&results), "");
   }
 
@@ -1038,7 +1059,7 @@ mod tests {
 
   #[test]
   fn tap_formatter_marks_clean_files_ok() {
-    let clean = vec![LintResult::new("src/ok.css", "a { color: red; }", vec![])];
+    let clean = stylelint_results(&[LintResult::new("src/ok.css", "a { color: red; }", vec![])]);
     let output = TapFormatter.format(&clean);
     assert!(output.contains("ok 1 - src/ok.css"), "{output}");
     assert!(!output.contains("not ok"), "{output}");
@@ -1050,7 +1071,7 @@ mod tests {
       .severity(Severity::Warning)
       .span(Span::new(0, 1))
       .file_path("src/app.css");
-    let results = vec![LintResult::new("src/app.css", "a{}", vec![diag])];
+    let results = stylelint_results(&[LintResult::new("src/app.css", "a{}", vec![diag])]);
     let output = TapFormatter.format(&results);
     // The YAML scalar must carry backslash-escaped quotes.
     assert!(
@@ -1071,5 +1092,58 @@ mod tests {
     let formatter = TextFormatter::default();
     let output = formatter.format(&[]);
     assert!(output.is_empty());
+  }
+
+  #[test]
+  fn message_drops_exactly_the_rule_suffix() {
+    let warning = |rule: &str, text: &str| StylelintWarning {
+      rule: rule.to_string(),
+      text: text.to_string(),
+      ..StylelintWarning::default()
+    };
+    assert_eq!(warning("a", "Bad (a)").message(), "Bad");
+    assert_eq!(warning("a", "Bad (a) (a)").message(), "Bad (a)");
+    assert_eq!(warning("a", "Bad(a)").message(), "Bad(a)");
+    assert_eq!(warning("a", "Bad (b)").message(), "Bad (b)");
+    assert_eq!(
+      warning("--report-needless-disables", "Needless disable").message(),
+      "Needless disable"
+    );
+  }
+
+  #[test]
+  fn every_formatter_renders_the_json_round_trip_the_same() {
+    let mut results = sample_results();
+    results.extend(comment_problem_results());
+    results.extend(results_with_invalid_option());
+    let parsed: Vec<StylelintResult> =
+      serde_json::from_str(&JsonFormatter.format(&results)).unwrap();
+    for name in FORMATTER_NAMES {
+      for color in [false, true] {
+        let formatter = create_formatter_with_color(name, color);
+        assert_eq!(
+          formatter.format(&parsed),
+          formatter.format(&results),
+          "{name}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn results_read_from_json_may_leave_fields_out() {
+    let input = r#"[{"source":"a.css","warnings":[
+      {"line":1,"column":3,"rule":"r","severity":"error","text":"Say \"no\" (r)"}
+    ]}]"#;
+    let results: Vec<StylelintResult> = serde_json::from_str(input).unwrap();
+    assert!(
+      TapFormatter
+        .format(&results)
+        .contains("  message: \"Say \\\"no\\\"\"\n"),
+    );
+    // Positions the input did not give are not made up.
+    let json = JsonFormatter.format(&results);
+    assert!(!json.contains("endLine"), "{json}");
+    assert!(json.contains(r#""invalidOptionWarnings":[]"#), "{json}");
   }
 }

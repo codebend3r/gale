@@ -31,6 +31,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from harness import build_gale, run_cmd
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -38,7 +41,6 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 TEST_CASES_FILE = SCRIPT_DIR / "test-cases.json"
 RESULTS_DIR = SCRIPT_DIR / "results"
-GALE_ROOT = SCRIPT_DIR.parent.parent  # gale/
 
 # Rules Gale actually implements (pulled from the registry).
 # We dynamically detect these by running `gale --print-config` or by
@@ -48,48 +50,6 @@ _GALE_RULES_CACHE: set[str] | None = None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def run_cmd(
-    cmd: list[str],
-    cwd: str | None = None,
-    timeout: int = 60,
-    stdin_data: str | None = None,
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        input=stdin_data,
-    )
-
-
-def build_gale(skip: bool = False) -> Path | None:
-    binary = GALE_ROOT / "target" / "release" / "gale"
-
-    if skip:
-        if not binary.exists():
-            print("[error] No Gale binary found. Build first or remove --skip-build.")
-            return None
-        print(f"[build] Using existing binary: {binary}")
-        return binary
-
-    print("[build] Building Gale (release)...")
-    result = run_cmd(
-        ["cargo", "build", "--release"], cwd=str(GALE_ROOT), timeout=1800
-    )
-    if result.returncode != 0:
-        print(f"[error] Build failed: {result.stderr.strip()[:500]}")
-        return None
-
-    if not binary.exists():
-        print("[error] Binary not found after build")
-        return None
-
-    print("[build] Gale binary ready")
-    return binary
 
 
 def get_gale_rules(gale_bin: Path) -> set[str]:
