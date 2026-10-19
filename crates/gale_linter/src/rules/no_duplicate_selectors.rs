@@ -4,7 +4,7 @@ use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, SourceLineIndex, Span};
 
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow duplicate selectors within a stylesheet.
 ///

@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::stylelint_version::installed_at_least;
 
 /// Require or disallow whitespace on the inside of comment markers.

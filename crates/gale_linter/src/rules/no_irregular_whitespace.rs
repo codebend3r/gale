@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Reports irregular whitespace characters such as non-breaking spaces,
 /// zero-width spaces, and other Unicode whitespace oddities.

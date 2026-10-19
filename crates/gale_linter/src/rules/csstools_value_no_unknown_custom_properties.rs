@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow unknown custom properties referenced via `var()`.
 ///

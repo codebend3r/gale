@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Reports when a selector with lower specificity appears after a selector with
 /// higher specificity, which may indicate a specificity ordering issue.

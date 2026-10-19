@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow nested properties of one namespace split into several groups
 /// in a block (`background: red { ... }` and later `background: { ... }`).

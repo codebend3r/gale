@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::{is_experimental_html_element, is_known_html_element};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::selector::nesting::{resolve_nested, resolve_nested_list};
 use crate::selector::{
   Pseudo, Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,

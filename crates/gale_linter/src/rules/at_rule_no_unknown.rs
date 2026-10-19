@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_at_rule_for_syntax;
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::stylelint_version::stylelint_major_version;
 
 /// Disallow unknown at-rules.

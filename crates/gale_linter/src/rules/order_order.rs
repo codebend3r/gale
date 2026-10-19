@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern::{self, Regex};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext, per_run};
+use crate::rule::{LegacyRule as Rule, RuleContext, per_run};
 use crate::stylelint_order::{
   blocks, comments_after_node, comments_before_node, is_allowed_to_process,
   is_standard_syntax_property, js_sort, reorder_edit, split_array_settings,

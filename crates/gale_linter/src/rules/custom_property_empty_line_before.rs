@@ -4,7 +4,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::pattern::option_matches;
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Require or disallow an empty line before custom properties (`--*`).
 ///

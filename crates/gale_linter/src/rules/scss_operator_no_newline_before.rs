@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::sass_operators::find_operators;
 
 /// Disallow a line break right before a Sass operator (`10px\n  + 1`).

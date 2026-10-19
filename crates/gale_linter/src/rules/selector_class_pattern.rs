@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 

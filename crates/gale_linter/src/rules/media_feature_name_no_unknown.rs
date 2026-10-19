@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_media_feature;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Reports unknown media feature names in `@media` rules.
 ///

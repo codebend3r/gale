@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow duplicate custom properties within declaration blocks.
 ///

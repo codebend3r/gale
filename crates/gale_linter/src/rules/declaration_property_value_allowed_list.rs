@@ -2,7 +2,7 @@ use gale_css_parser::{CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::source_text;
 
 /// Only allow specified values for specific properties.

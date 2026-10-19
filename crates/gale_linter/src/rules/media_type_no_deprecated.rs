@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Deprecated media types (sorted for binary search).
 static DEPRECATED_MEDIA_TYPES: &[&str] = &[

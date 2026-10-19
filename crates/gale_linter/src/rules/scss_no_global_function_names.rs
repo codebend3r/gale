@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow deprecated global SCSS function calls that should use modules.
 ///

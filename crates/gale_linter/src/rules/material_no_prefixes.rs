@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// No-op stub for Angular Material's `material/no-prefixes` plugin rule.
 ///

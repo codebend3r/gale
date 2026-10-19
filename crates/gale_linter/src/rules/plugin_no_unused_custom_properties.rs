@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Report custom properties that are defined but never referenced via `var()`.
 ///

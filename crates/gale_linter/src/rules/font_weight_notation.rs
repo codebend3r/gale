@@ -4,7 +4,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use crate::js_number::parse_number;
 use crate::pattern::option_matches;
 use crate::postcss_tree::Node;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 

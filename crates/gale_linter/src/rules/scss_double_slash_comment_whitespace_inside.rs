@@ -1,7 +1,7 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Returns `true` if `content` (the text after `//`) looks like a decorative
 /// separator — i.e. it consists entirely of a single repeated non-alphanumeric,

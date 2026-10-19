@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow `@use` rules that load a module without a namespace
 /// (`@use "foo" as *`).

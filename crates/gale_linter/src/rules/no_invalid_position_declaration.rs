@@ -2,7 +2,7 @@ use gale_css_parser::{CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Reports declarations in a position where they do not apply: at the root
 /// of the stylesheet, or directly inside a conditional at-rule (`@media`,

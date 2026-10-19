@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::value_parser::{self, ValueNode};
 
 /// Require `#{...}` around a Sass variable used where CSS reads its text

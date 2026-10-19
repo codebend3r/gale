@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::autoprefixable;
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow vendor prefixes in media feature names.
 ///

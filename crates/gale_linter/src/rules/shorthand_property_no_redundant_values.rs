@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::autoprefixable::vendor_prefix_len;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::source_text;
 use crate::value_parser::{self, NodeKind, ValueNode};
 

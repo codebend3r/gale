@@ -8,6 +8,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
 use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::PostcssTree;
 use crate::source_text::{self, WrittenDeclaration};
 use crate::style_rules::{self, ScannedRules};
@@ -20,7 +21,10 @@ pub struct RuleContext<'a> {
   pub source: &'a str,
   /// The CSS syntax variant.
   pub syntax: Syntax,
-  /// Per-rule options from the config (e.g. max value, ignore lists).
+  /// LEGACY: the rule's options exactly as the config gave them, for rules
+  /// not yet converted to typed options ([`LegacyRule`]).  A converted rule
+  /// reads its options once, in its `from_setting`, and never looks here.
+  /// Goes away with [`LegacyRule`].
   pub options: Option<&'a serde_json::Value>,
   /// What the rules linting this file share, built once per file.  The
   /// runner always sets it; without one (a rule's own tests, say) every
@@ -32,7 +36,8 @@ pub struct RuleContext<'a> {
 }
 
 impl<'a> RuleContext<'a> {
-  /// Extract the **primary option** from Stylelint-format options.
+  /// LEGACY (see [`RuleContext::options`]): extract the **primary option**
+  /// from Stylelint-format options.
   ///
   /// Options may arrive in several shapes depending on how the config was
   /// written and resolved:
@@ -49,13 +54,15 @@ impl<'a> RuleContext<'a> {
     }
   }
 
-  /// Extract the primary option as a `&str`, handling both plain strings
+  /// LEGACY (see [`RuleContext::options`]): extract the primary option as a
+  /// `&str`, handling both plain strings
   /// and array-format options `["value", { ... }]`.
   pub fn primary_option_str(&self) -> Option<&'a str> {
     self.primary_option().and_then(|v| v.as_str())
   }
 
-  /// Extract the **secondary options object** from Stylelint-format options.
+  /// LEGACY (see [`RuleContext::options`]): extract the **secondary options
+  /// object** from Stylelint-format options.
   ///
   /// Present when options are in array form `[primary, secondary]` (returns
   /// the second element), OR when options is a bare object (returned directly,
@@ -191,8 +198,150 @@ pub fn secondary_options_of(value: &serde_json::Value) -> Option<&serde_json::Va
   }
 }
 
-/// A single lint rule that can inspect CSS AST nodes and emit diagnostics.
+/// What the registry knows about a rule before it is configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleMeta {
+  /// Unique rule name, e.g. "block-no-empty".
+  pub name: &'static str,
+  /// Human-readable description of what this rule checks.
+  pub description: &'static str,
+  /// The severity of the rule's problems when neither its config nor the
+  /// config's `defaultSeverity` gives one.
+  pub default_severity: Severity,
+  /// Stylelint's `primaryOptionArray`: whether the primary option can be an
+  /// array, which decides how a setting written as an array is split into
+  /// primary and secondary options (see [`Setting::new`]).
+  pub primary_option_array: bool,
+}
+
+/// A rule configured with its options, ready to check files.
+///
+/// A rule set configures each of its rules once, and every file linted with
+/// the set is checked by the same configured rule.  The runner gives each
+/// problem its severity, so a check leaves it at the default.
+pub trait Check: Send + Sync {
+  /// Check a single CSS node and return any diagnostics.
+  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+    let _ = (node, context);
+    vec![]
+  }
+
+  /// Check the entire document (all top-level nodes). Used for rules that need
+  /// document-level context like duplicate detection or source-level checks.
+  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+    let _ = (nodes, context);
+    vec![]
+  }
+}
+
+/// A lint rule, as the registry holds it: its metadata, and a way to
+/// configure it.
+///
+/// A rule file declares its rule with [`declare_rule!`], which implements
+/// this for a unit struct from a type that holds the parsed options,
+/// implements [`Check`] and has a `from_setting` constructor.
 pub trait Rule: Send + Sync {
+  /// The rule's name, description, default severity and option shape.
+  fn meta(&self) -> RuleMeta;
+
+  /// The rule configured with `setting`, or every problem with its options.
+  /// A rule with invalid options does not run.
+  fn configure(
+    &self,
+    setting: &Setting,
+    env: &LintEnv,
+  ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>>;
+
+  /// Unique rule name, e.g. "block-no-empty".
+  fn name(&self) -> &'static str {
+    self.meta().name
+  }
+
+  /// Human-readable description of what this rule checks.
+  fn description(&self) -> &'static str {
+    self.meta().description
+  }
+
+  /// The default severity for diagnostics produced by this rule.
+  fn default_severity(&self) -> Severity {
+    self.meta().default_severity
+  }
+
+  /// LEGACY: whether the rule is a [`LegacyRule`], which reads its options
+  /// from the context on every node and sets its own severity.
+  #[doc(hidden)]
+  fn is_legacy(&self) -> bool {
+    false
+  }
+}
+
+/// Declare a rule whose options are parsed once: a unit struct the registry
+/// holds, implementing [`Rule`] by building `$check` with its
+/// `fn from_setting(&Setting, &LintEnv) -> Result<Self, Vec<InvalidOption>>`.
+///
+/// ```ignore
+/// declare_rule! {
+///   /// Disallow empty blocks.
+///   pub struct BlockNoEmpty => BlockNoEmptyCheck {
+///     name: NAME,
+///     description: "Disallow empty blocks",
+///     default_severity: Warning,
+///   }
+/// }
+/// ```
+///
+/// `primary_option_array: true` after the severity marks a rule whose
+/// primary option can be an array (Stylelint's `rule.primaryOptionArray`).
+#[allow(unused_macros)] // until the first rule file is converted
+macro_rules! declare_rule {
+  (
+    $(#[$attr:meta])*
+    $vis:vis struct $rule:ident => $check:ty {
+      name: $name:expr,
+      description: $description:expr,
+      default_severity: $severity:ident
+      $(, primary_option_array: $array:expr)?
+      $(,)?
+    }
+  ) => {
+    $(#[$attr])*
+    $vis struct $rule;
+
+    impl $rule {
+      /// The rule's name, description, default severity and option shape.
+      pub const META: $crate::rule::RuleMeta = $crate::rule::RuleMeta {
+        name: $name,
+        description: $description,
+        default_severity: gale_diagnostics::Severity::$severity,
+        primary_option_array: false $(|| $array)?,
+      };
+    }
+
+    impl $crate::rule::Rule for $rule {
+      fn meta(&self) -> $crate::rule::RuleMeta {
+        Self::META
+      }
+
+      fn configure(
+        &self,
+        setting: &$crate::options::Setting,
+        env: &$crate::lint_env::LintEnv,
+      ) -> Result<Box<dyn $crate::rule::Check + '_>, Vec<$crate::options::InvalidOption>> {
+        Ok(Box::new(<$check>::from_setting(setting, env)?))
+      }
+    }
+  };
+}
+#[allow(unused_imports)] // until the first rule file is converted
+pub(crate) use declare_rule;
+
+/// LEGACY: a rule that has not been converted to typed options yet.  It
+/// reads its raw options from [`RuleContext::options`] on every node and
+/// sets each diagnostic's severity itself.  Every legacy rule is a [`Rule`]
+/// whose configuration always succeeds.  Rule files import it as `Rule`
+/// (`use crate::rule::{LegacyRule as Rule, ...}`) so they compile unchanged;
+/// it goes away once every rule is converted.
+pub trait LegacyRule: Send + Sync {
   /// Unique rule name, e.g. "block-no-empty".
   fn name(&self) -> &'static str;
 
@@ -212,6 +361,56 @@ pub trait Rule: Send + Sync {
   /// document-level context like duplicate detection or source-level checks.
   fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
+  }
+}
+
+impl<T: LegacyRule> Rule for T {
+  fn meta(&self) -> RuleMeta {
+    RuleMeta {
+      name: LegacyRule::name(self),
+      description: LegacyRule::description(self),
+      default_severity: LegacyRule::default_severity(self),
+      primary_option_array: false,
+    }
+  }
+
+  /// A legacy rule takes any options; it reads them as it checks.
+  fn configure(
+    &self,
+    _setting: &Setting,
+    _env: &LintEnv,
+  ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>> {
+    Ok(Box::new(LegacyCheck(self)))
+  }
+
+  fn name(&self) -> &'static str {
+    LegacyRule::name(self)
+  }
+
+  fn description(&self) -> &'static str {
+    LegacyRule::description(self)
+  }
+
+  fn default_severity(&self) -> Severity {
+    LegacyRule::default_severity(self)
+  }
+
+  fn is_legacy(&self) -> bool {
+    true
+  }
+}
+
+/// LEGACY: a [`LegacyRule`] as a [`Check`], reading its options from the
+/// context the runner fills in.
+struct LegacyCheck<'r, T>(&'r T);
+
+impl<T: LegacyRule> Check for LegacyCheck<'_, T> {
+  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+    self.0.check(node, context)
+  }
+
+  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+    self.0.check_root(nodes, context)
   }
 }
 
@@ -365,6 +564,114 @@ mod tests {
       &uncached.postcss_tree(),
       &uncached.postcss_tree()
     ));
+  }
+
+  /// A rule declared the way rule files declare theirs: it reports its
+  /// primary option at the root.
+  struct ReportsWord {
+    word: &'static str,
+  }
+
+  impl ReportsWord {
+    fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+      let mut options = setting.options();
+      let word = options.primary_one_of(&["a", "b"]).unwrap_or("a");
+      options.finish()?;
+      Ok(Self { word })
+    }
+  }
+
+  impl Check for ReportsWord {
+    fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+      vec![Diagnostic::new("test/word", self.word)]
+    }
+  }
+
+  declare_rule! {
+    /// Reports its primary option.
+    struct WordRule => ReportsWord {
+      name: "test/word",
+      description: "Reports a word",
+      default_severity: Error,
+    }
+  }
+
+  fn configure(
+    rule: &dyn Rule,
+    options: serde_json::Value,
+  ) -> Result<Box<dyn Check + '_>, Vec<String>> {
+    let meta = rule.meta();
+    let setting = Setting::new(meta.name, Some(&options), meta.primary_option_array);
+    rule
+      .configure(&setting, &LintEnv::default())
+      .map_err(|problems| problems.into_iter().map(InvalidOption::into_text).collect())
+  }
+
+  #[test]
+  fn a_declared_rule_is_configured_from_its_setting() {
+    assert_eq!(
+      WordRule.meta(),
+      RuleMeta {
+        name: "test/word",
+        description: "Reports a word",
+        default_severity: Severity::Error,
+        primary_option_array: false,
+      }
+    );
+    assert!(!WordRule.is_legacy());
+    let ctx = context("", Syntax::Css);
+    let check = configure(&WordRule, serde_json::json!("b")).ok().unwrap();
+    assert_eq!(check.check_root(&[], &ctx)[0].message, "b");
+    assert!(
+      check
+        .check(&CssNode::Style(Default::default()), &ctx)
+        .is_empty()
+    );
+    assert_eq!(
+      configure(&WordRule, serde_json::json!("c")).err().unwrap(),
+      ["Invalid option value \"c\" for rule \"test/word\""]
+    );
+  }
+
+  /// A legacy rule, which reads its options from the context.
+  struct ReportsOptions;
+
+  impl LegacyRule for ReportsOptions {
+    fn name(&self) -> &'static str {
+      "test/legacy"
+    }
+
+    fn description(&self) -> &'static str {
+      "Reports its options"
+    }
+
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    fn check(&self, _node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+      vec![Diagnostic::new(
+        "test/legacy",
+        format!("{:?}", context.options),
+      )]
+    }
+  }
+
+  #[test]
+  fn a_legacy_rule_takes_any_options_and_reads_them_as_it_checks() {
+    assert!(ReportsOptions.is_legacy());
+    assert_eq!(Rule::name(&ReportsOptions), "test/legacy");
+    assert_eq!(Rule::default_severity(&ReportsOptions), Severity::Warning);
+    let check = configure(&ReportsOptions, serde_json::json!("anything"))
+      .ok()
+      .unwrap();
+    let options = serde_json::json!(3);
+    let ctx = RuleContext {
+      options: Some(&options),
+      ..context("", Syntax::Css)
+    };
+    let found = check.check(&CssNode::Style(Default::default()), &ctx);
+    assert_eq!(found[0].message, "Some(Number(3))");
   }
 
   /// Calls `per_run` for `options` as `rule`, counting how often it had to

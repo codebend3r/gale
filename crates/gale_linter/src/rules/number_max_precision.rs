@@ -1,7 +1,7 @@
 use gale_css_parser::{CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Reports numbers with more than 4 decimal places.
 ///

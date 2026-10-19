@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern::option_matches;
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::stylelint_version::installed_at_least_patch;
 use crate::value_parser;
 

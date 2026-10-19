@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow duplicate dollar variables within the same scope.
 ///

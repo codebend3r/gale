@@ -17,6 +17,7 @@ pub mod file_cache;
 pub mod js_number;
 pub mod known_rules;
 pub mod lint_env;
+pub mod options;
 pub mod panic_guard;
 pub mod pattern;
 pub mod postcss_tree;
@@ -36,6 +37,7 @@ pub mod testing;
 pub mod value_parser;
 
 pub use lint_env::LintEnv;
+pub use options::{InvalidOption, Setting};
 pub use registry::RuleRegistry;
-pub use rule::{Rule, RuleContext};
+pub use rule::{Check, LegacyRule, Rule, RuleContext, RuleMeta};
 pub use runner::{DisableOptions, RuleSet, RuleSetSpec, RuleSetting};

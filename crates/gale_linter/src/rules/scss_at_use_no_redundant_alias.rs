@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::{Node, NodeKind};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow a `@use` alias that repeats the namespace Sass would give the
 /// module anyway (`@use "sass:math" as math`).

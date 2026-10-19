@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::data::is_known_pseudo_class;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Known pseudo-classes that are only valid in a `@page` context.
 /// These should NOT be recognized as valid pseudo-classes in regular selectors.

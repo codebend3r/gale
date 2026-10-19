@@ -18,10 +18,11 @@ use crate::embedded::{HostOptions, lint_host};
 use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::lint_env::LintEnv;
+use crate::options::Setting;
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::{RuleRegistry, resolve_deprecated_alias};
-use crate::rule::{Rule, RuleContext, secondary_options_of};
+use crate::rule::{Check, Rule, RuleContext, secondary_options_of};
 
 /// Apply the secondary options every Stylelint rule accepts, whatever the
 /// rule itself does with its options:
@@ -210,8 +211,15 @@ struct ActiveRule {
   rule: &'static dyn Rule,
   /// The name the config used, under which problems are reported.
   config_name: String,
+  /// The options as the config wrote them, which the runner reads the
+  /// secondary options every rule accepts from (and legacy rules read
+  /// theirs from on every node).
   options: Option<serde_json::Value>,
   severity: Option<Severity>,
+  /// The rule configured with its options, once for the whole set; `None`
+  /// until configured, and for a rule whose options are invalid, which does
+  /// not run.
+  check: Option<Box<dyn Check>>,
 }
 
 /// Everything that decides how a file is linted, resolved once and shared
@@ -297,6 +305,7 @@ impl RuleSet {
         config_name: setting.name,
         options: setting.options,
         severity: setting.severity,
+        check: None,
       };
       match by_name.get(rule.name()) {
         // A config that names one rule twice, by its name and by an alias,
@@ -314,7 +323,25 @@ impl RuleSet {
     }
 
     let mut invalid_patterns: Vec<String> = Vec::new();
-    for active in &rules {
+    for active in &mut rules {
+      // Each rule is configured once here, for every file the set lints.
+      let meta = active.rule.meta();
+      let setting = Setting::new(
+        meta.name,
+        active.options.as_ref(),
+        meta.primary_option_array,
+      );
+      match active.rule.configure(&setting, &env) {
+        Ok(check) => active.check = Some(check),
+        Err(problems) => {
+          for problem in problems {
+            let text = problem.into_text();
+            if !invalid_patterns.contains(&text) {
+              invalid_patterns.push(text);
+            }
+          }
+        }
+      }
       if let Some(options) = &active.options {
         for invalid in pattern::invalid_options(active.rule.name(), options) {
           if !invalid_patterns.contains(&invalid.message) {
@@ -715,13 +742,17 @@ impl<'a> RuleRun<'a> {
   /// With `timed`, a rule whose `check_root` is slow is timed on its own.
   fn check_root(&mut self, nodes: &[CssNode], timed: bool) {
     for index in 0..self.set.rules.len() {
-      let rule = self.set.rules[index].rule;
+      let set: &'a RuleSet = self.set;
+      let rule = set.rules[index].rule;
+      let Some(check) = set.rules[index].check.as_deref() else {
+        continue;
+      };
       let context = self.context(index);
       let started = timed.then(Instant::now);
       let source = self.source;
       let outcome = panic_guard::catch(|| {
         debug_panic(rule.name(), source);
-        rule.check_root(nodes, &context)
+        check.check_root(nodes, &context)
       });
       if let Some(started) = started {
         let secs = started.elapsed().as_secs_f64();
@@ -752,9 +783,12 @@ impl<'a> RuleRun<'a> {
       if self.failed[index] {
         continue;
       }
-      let rule = self.set.rules[index].rule;
+      let set: &'a RuleSet = self.set;
+      let Some(check) = set.rules[index].check.as_deref() else {
+        continue;
+      };
       let context = self.context(index);
-      let outcome = panic_guard::catch(|| rule.check(&node, &context));
+      let outcome = panic_guard::catch(|| check.check(&node, &context));
       self.record(index, outcome, offset);
     }
     self.cache.leave_node();
@@ -794,7 +828,10 @@ fn clamp_to_char_boundary(source: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
+  // The test rules here read their options from the context, as legacy
+  // rules do.
   use crate::registry::RuleRegistry;
+  use crate::rule::LegacyRule as Rule;
 
   /// The spec of a set running `rules` with no options.
   fn spec_for(rules: &[&str]) -> RuleSetSpec {

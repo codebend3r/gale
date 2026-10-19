@@ -1,7 +1,7 @@
 use gale_css_parser::{CssNode, Declaration, StyleRule};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow declarations that have no effect because another declaration in
 /// the same block switches them off.

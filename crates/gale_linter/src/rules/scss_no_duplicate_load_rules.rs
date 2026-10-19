@@ -6,7 +6,7 @@ use gale_diagnostics::{Diagnostic, Severity, Span};
 use regex::Regex;
 
 use crate::postcss_tree::NodeKind as StatementKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Disallow loading the same module twice with `@use`, `@forward` or

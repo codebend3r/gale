@@ -2,7 +2,7 @@ use gale_css_parser::{AtRule, CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
 use crate::pattern::{self, Regex};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::source_text;
 use crate::value_parser::{self, ValueNode};
 

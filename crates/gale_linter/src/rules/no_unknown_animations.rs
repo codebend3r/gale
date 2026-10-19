@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Warn when an `animation-name` or `animation` shorthand references a name
 /// that doesn't have a corresponding `@keyframes` definition in the same file.

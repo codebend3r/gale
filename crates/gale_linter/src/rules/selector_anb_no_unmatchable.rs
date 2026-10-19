@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Disallow unmatchable An+B selectors like `:nth-child(0n+0)` or
 /// `:nth-child(-n+0)` which can never match any element.

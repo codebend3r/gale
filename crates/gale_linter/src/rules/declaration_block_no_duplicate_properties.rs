@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
 use crate::pattern::option_matches;
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::standard_syntax::{is_standard_syntax_property, is_standard_syntax_value};
 
 /// Disallow duplicate properties within declaration blocks.

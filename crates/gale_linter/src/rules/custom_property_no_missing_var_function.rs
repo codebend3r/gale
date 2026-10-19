@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use gale_css_parser::{CssNode, Declaration, StyleRule};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::source_text;
 use crate::stylelint_version::stylelint_major_version;
 use crate::value_parser::{self, NodeKind, ValueNode};

@@ -1,7 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 use crate::selector::postcss::{self, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
 use crate::stylelint_version::stylelint_major_version;

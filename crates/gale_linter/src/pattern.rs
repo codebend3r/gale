@@ -173,9 +173,12 @@ fn check_literal(rule_name: &str, text: &str, found: &mut Vec<Diagnostic>) {
 /// that does not compile: `Invalid option value "<value>" for rule "<rule>"`,
 /// followed by the reason.
 pub fn invalid_option(rule_name: &str, value: &str, reason: &str) -> Diagnostic {
-  Diagnostic::invalid_option(format!(
-    "Invalid option value \"{value}\" for rule \"{rule_name}\": {reason}"
-  ))
+  Diagnostic::invalid_option(invalid_option_text(rule_name, value, reason))
+}
+
+/// The text of [`invalid_option`].
+pub fn invalid_option_text(rule_name: &str, value: &str, reason: &str) -> String {
+  format!("Invalid option value \"{value}\" for rule \"{rule_name}\": {reason}")
 }
 
 /// Compile `pattern` without the cache.
