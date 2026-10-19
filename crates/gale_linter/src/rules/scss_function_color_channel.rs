@@ -1,17 +1,41 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, ValueNode};
 
-/// Require `color.channel()` in place of the Sass functions that read one
-/// channel of a colour (`color.alpha()`, `red()`, `opacity()` and the
-/// rest).
-///
-/// Equivalent to stylelint-scss's `scss/function-color-channel`.  Names are
-/// matched exactly, and nothing in a `filter` declaration is reported, since
-/// `opacity()` there is the CSS filter function.
-pub struct ScssFunctionColorChannel;
+const NAME: &str = "scss/function-color-channel";
+
+declare_rule! {
+  /// Require `color.channel()` in place of the Sass functions that read one
+  /// channel of a colour (`color.alpha()`, `red()`, `opacity()` and the
+  /// rest).
+  ///
+  /// Equivalent to stylelint-scss's `scss/function-color-channel`.  Names are
+  /// matched exactly, and nothing in a `filter` declaration is reported, since
+  /// `opacity()` there is the CSS filter function.
+  pub struct ScssFunctionColorChannel => ScssFunctionColorChannelCheck {
+    name: NAME,
+    description: "Require the color.channel function",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/function-color-channel`, which takes no options.
+pub struct ScssFunctionColorChannelCheck;
+
+impl ScssFunctionColorChannelCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The functions upstream reports.
 const FUNCTION_NAMES: &[&str] = &[
@@ -35,19 +59,7 @@ const FUNCTION_NAMES: &[&str] = &[
   "saturation",
 ];
 
-impl Rule for ScssFunctionColorChannel {
-  fn name(&self) -> &'static str {
-    "scss/function-color-channel"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require the color.channel function"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssFunctionColorChannelCheck {
   /// Reports the name of every channel function called in a declaration
   /// value, outside `filter`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -68,15 +80,12 @@ impl Rule for ScssFunctionColorChannel {
       value_parser::walk(&parsed, &mut |node: &ValueNode<'_>| {
         if node.is_function() && FUNCTION_NAMES.contains(&node.value) {
           diags.push(
-            Diagnostic::new(
-              self.name(),
-              "Expected the color.channel function to be used",
-            )
-            .severity(self.default_severity())
-            .span(Span::new(
-              decl.start + value_index + node.source_index,
-              node.value.len(),
-            )),
+            Diagnostic::new(NAME, "Expected the color.channel function to be used").span(
+              Span::new(
+                decl.start + value_index + node.source_index,
+                node.value.len(),
+              ),
+            ),
           );
         }
         true
@@ -88,11 +97,12 @@ impl Rule for ScssFunctionColorChannel {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/function-color-channel";
 
@@ -194,5 +204,16 @@ mod tests {
   #[test]
   fn ignores_plain_css() {
     assert_eq!(ranges("a { opacity: alpha(#fff); }", Syntax::Css), vec![]);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/function-color-channel\""]
+    );
   }
 }

@@ -1,26 +1,38 @@
 use std::collections::HashSet;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow duplicate `@mixin` declarations with the same name.
-pub struct ScssNoDuplicateMixins;
+const NAME: &str = "scss/no-duplicate-mixins";
 
-impl Rule for ScssNoDuplicateMixins {
-  fn name(&self) -> &'static str {
-    "scss/no-duplicate-mixins"
+declare_rule! {
+  /// Disallow duplicate `@mixin` declarations with the same name.
+  pub struct ScssNoDuplicateMixins => ScssNoDuplicateMixinsCheck {
+    name: NAME,
+    description: "Disallow duplicate mixin names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow duplicate mixin names"
+/// `scss/no-duplicate-mixins`, which takes no options.
+pub struct ScssNoDuplicateMixinsCheck;
+
+impl ScssNoDuplicateMixinsCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssNoDuplicateMixinsCheck {
   /// Flags a `@mixin` name declared more than once.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -29,7 +41,7 @@ impl Rule for ScssNoDuplicateMixins {
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut diagnostics = Vec::new();
-    collect_mixins(nodes, &mut seen, &mut diagnostics, self, ctx.source);
+    collect_mixins(nodes, &mut seen, &mut diagnostics, ctx.source);
     diagnostics
   }
 }
@@ -40,7 +52,6 @@ fn collect_mixins(
   nodes: &[CssNode],
   seen: &mut HashSet<String>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule: &ScssNoDuplicateMixins,
   source: &str,
 ) {
   for node in nodes {
@@ -63,21 +74,17 @@ fn collect_mixins(
           let at_src = &source[at.span.offset..at_src_end];
           let name_off = at_src.find(mixin_name).unwrap_or(0);
           diagnostics.push(
-            Diagnostic::new(
-              rule.name(),
-              format!("Unexpected duplicate mixin {}", mixin_name),
-            )
-            .severity(rule.default_severity())
-            .span(Span::new(at.span.offset + name_off, mixin_name.len())),
+            Diagnostic::new(NAME, format!("Unexpected duplicate mixin {}", mixin_name))
+              .span(Span::new(at.span.offset + name_off, mixin_name.len())),
           );
         } else {
           seen.insert(mixin_name.to_string());
         }
         // Also recurse into children for nested mixins.
-        collect_mixins(&at.children, seen, diagnostics, rule, source);
+        collect_mixins(&at.children, seen, diagnostics, source);
       }
       CssNode::AtRule(at) => {
-        collect_mixins(&at.children, seen, diagnostics, rule, source);
+        collect_mixins(&at.children, seen, diagnostics, source);
       }
       _ => {}
     }
@@ -89,7 +96,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn mixin(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -102,22 +109,36 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssNoDuplicateMixins, None);
     let nodes = vec![mixin("foo"), mixin("foo")];
-    assert!(ScssNoDuplicateMixins.check_root(&nodes, &ctx()).is_empty());
+    assert!(rule.check_root(&nodes, &ctx()).is_empty());
   }
 
   #[test]
   fn reports_duplicate_mixins() {
+    let rule = configured(&ScssNoDuplicateMixins, None);
     let nodes = vec![mixin("foo"), mixin("bar"), mixin("foo")];
-    let d = ScssNoDuplicateMixins.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("foo"));
   }
 
   #[test]
   fn allows_unique_mixins() {
+    let rule = configured(&ScssNoDuplicateMixins, None);
     let nodes = vec![mixin("foo"), mixin("bar"), mixin("baz")];
-    let d = ScssNoDuplicateMixins.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/no-duplicate-mixins\""]
+    );
   }
 }

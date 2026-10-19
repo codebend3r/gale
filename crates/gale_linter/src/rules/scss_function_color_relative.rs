@@ -1,18 +1,42 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, ValueNode};
 
-/// Require `scale-color()` in place of the Sass functions that shift a
-/// colour by a fixed amount (`darken()`, `lighten()`, `saturate()` and the
-/// rest).
-///
-/// Equivalent to stylelint-scss's `scss/function-color-relative`.  Names are
-/// matched exactly.  In a `filter` declaration `saturate()` and `opacity()`
-/// are CSS filter functions, so there only the colour functions passed
-/// straight to a `drop-shadow()` are reported.
-pub struct ScssFunctionColorRelative;
+const NAME: &str = "scss/function-color-relative";
+
+declare_rule! {
+  /// Require `scale-color()` in place of the Sass functions that shift a
+  /// colour by a fixed amount (`darken()`, `lighten()`, `saturate()` and the
+  /// rest).
+  ///
+  /// Equivalent to stylelint-scss's `scss/function-color-relative`.  Names are
+  /// matched exactly.  In a `filter` declaration `saturate()` and `opacity()`
+  /// are CSS filter functions, so there only the colour functions passed
+  /// straight to a `drop-shadow()` are reported.
+  pub struct ScssFunctionColorRelative => ScssFunctionColorRelativeCheck {
+    name: NAME,
+    description: "Require the scale-color function",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/function-color-relative`, which takes no options.
+pub struct ScssFunctionColorRelativeCheck;
+
+impl ScssFunctionColorRelativeCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The functions upstream reports.
 const FUNCTION_NAMES: &[&str] = &[
@@ -31,19 +55,7 @@ fn is_color_function(node: &ValueNode<'_>) -> bool {
   node.is_function() && FUNCTION_NAMES.contains(&node.value)
 }
 
-impl Rule for ScssFunctionColorRelative {
-  fn name(&self) -> &'static str {
-    "scss/function-color-relative"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require the scale-color function"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssFunctionColorRelativeCheck {
   /// Reports the name of every relative colour function called in a
   /// declaration value, and in a `filter` the ones inside `drop-shadow()`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -76,12 +88,10 @@ impl Rule for ScssFunctionColorRelative {
         };
         for func in reported {
           diags.push(
-            Diagnostic::new(self.name(), "Expected the scale-color function to be used")
-              .severity(self.default_severity())
-              .span(Span::new(
-                decl.start + value_index + func.source_index,
-                func.value.len(),
-              )),
+            Diagnostic::new(NAME, "Expected the scale-color function to be used").span(Span::new(
+              decl.start + value_index + func.source_index,
+              func.value.len(),
+            )),
           );
         }
         true
@@ -93,11 +103,12 @@ impl Rule for ScssFunctionColorRelative {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/function-color-relative";
 
@@ -202,6 +213,17 @@ mod tests {
     assert_eq!(
       ranges("a { color: darken(#fff, 10%); }", Syntax::Css),
       vec![]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/function-color-relative\""]
     );
   }
 }

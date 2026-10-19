@@ -1,31 +1,43 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow newlines after SCSS arithmetic/string operators (+, -, *, /, %).
-///
-/// Equivalent to Stylelint's `scss/operator-no-newline-after`.
-/// Flags lines where the last meaningful character before EOL is an operator
-/// that appears to be binary (not unary).
-pub struct ScssOperatorNoNewlineAfter;
+const NAME: &str = "scss/operator-no-newline-after";
+
+declare_rule! {
+  /// Disallow newlines after SCSS arithmetic/string operators (+, -, *, /, %).
+  ///
+  /// Equivalent to Stylelint's `scss/operator-no-newline-after`.
+  /// Flags lines where the last meaningful character before EOL is an operator
+  /// that appears to be binary (not unary).
+  pub struct ScssOperatorNoNewlineAfter => ScssOperatorNoNewlineAfterCheck {
+    name: NAME,
+    description: "Disallow newlines after Sass operators",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/operator-no-newline-after`, which takes no options.
+pub struct ScssOperatorNoNewlineAfterCheck;
+
+impl ScssOperatorNoNewlineAfterCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 // `%` is excluded because it's indistinguishable from CSS percentage values (e.g., `63%`).
 const OPERATORS: &[char] = &['+', '-', '*', '/'];
 
-impl Rule for ScssOperatorNoNewlineAfter {
-  fn name(&self) -> &'static str {
-    "scss/operator-no-newline-after"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow newlines after Sass operators"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssOperatorNoNewlineAfterCheck {
   /// Flags a line ending in a binary arithmetic operator, scanning line by line
   /// and tracking whether the position is inside a block comment.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -65,12 +77,8 @@ impl Rule for ScssOperatorNoNewlineAfter {
             {
               let op_byte_in_line = content_trimmed.len() - 1;
               diags.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Unexpected newline after \"{}\"", last_char),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(byte_offset + op_byte_in_line, 1)),
+                Diagnostic::new(NAME, format!("Unexpected newline after \"{}\"", last_char))
+                  .span(Span::new(byte_offset + op_byte_in_line, 1)),
               );
             }
           }
@@ -175,33 +183,36 @@ fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn reports_plus_before_newline() {
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let source = "$a: 1 +\n  2;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_root(&[], &scss_ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains('+'));
   }
 
   #[test]
   fn allows_operator_in_middle_of_line() {
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let source = "$a: 1 + 2;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_root(&[], &scss_ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let ctx = ctx_with_source("$a: 1 +\n  2;");
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_operators_inside_block_comments() {
-    let rule = ScssOperatorNoNewlineAfter;
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let ctx = scss_ctx_with_source(
       "/* two-line options (title +\n * description) render in a popover */\n.a { width: 1px + 2px; }\n",
     );
@@ -210,17 +221,29 @@ mod tests {
 
   #[test]
   fn reports_operator_after_block_comment_on_same_line() {
-    let rule = ScssOperatorNoNewlineAfter;
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let ctx = scss_ctx_with_source(".a { width: /* c */ 1px +\n 2px; }\n");
     assert_eq!(rule.check_root(&[], &ctx).len(), 1);
   }
 
   #[test]
   fn allows_unary_minus_at_line_end() {
+    let rule = configured(&ScssOperatorNoNewlineAfter, None);
     // A line ending with ` -` after a colon is likely unary (start of value)
     let source = "color:\n  -1rem;";
-    let d = ScssOperatorNoNewlineAfter.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_root(&[], &scss_ctx_with_source(source));
     // No operator at end of line — "color:" ends with ":", not an operator
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/operator-no-newline-after\""]
+    );
   }
 }
