@@ -6,7 +6,7 @@ use raffia::pos::Spanned as RaffiaSpanned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use gale_diagnostics::Span;
+use gale_diagnostics::{SourceLineIndex, Span};
 
 mod decl_spans;
 pub mod embedded;
@@ -230,43 +230,6 @@ fn po() -> PrinterOptions<'static> {
 // lightningcss → simplified AST conversion
 // ---------------------------------------------------------------------------
 
-/// A pre-built index mapping line numbers to byte offsets for O(log n) lookup.
-struct LineIndex {
-  /// `line_starts[i]` is the byte offset where line `i` (0-indexed) begins.
-  line_starts: Vec<usize>,
-}
-
-impl LineIndex {
-  /// Records the byte offset each line starts at, for binary search.
-  fn build(source: &str) -> Self {
-    let mut line_starts = vec![0usize];
-    for (i, b) in source.bytes().enumerate() {
-      if b == b'\n' {
-        line_starts.push(i + 1);
-      }
-    }
-    Self { line_starts }
-  }
-
-  /// Convert a 0-indexed `line` and 1-based `column` (UTF-16 code units) to a byte offset.
-  fn line_col_to_offset(&self, source: &str, line: u32, column: u32) -> usize {
-    let line = line as usize;
-    if line >= self.line_starts.len() {
-      return source.len();
-    }
-    let line_start = self.line_starts[line];
-    // column is 1-based, measured in UTF-16 code units.
-    let mut col: u32 = 1;
-    for (i, ch) in source[line_start..].char_indices() {
-      if col >= column {
-        return line_start + i;
-      }
-      col += ch.len_utf16() as u32;
-    }
-    source.len().min(line_start + source[line_start..].len())
-  }
-}
-
 /// Parses plain CSS with nesting and error recovery, then lowers the
 /// lightningcss stylesheet into the simplified AST.
 fn parse_css(source: &str) -> Result<ParseResult, ParseError> {
@@ -280,7 +243,7 @@ fn parse_css(source: &str) -> Result<ParseResult, ParseError> {
     message: err.to_string(),
   })?;
 
-  let line_index = LineIndex::build(source);
+  let line_index = SourceLineIndex::build(source);
   let nodes = convert_rules(&stylesheet.rules.0, source, &line_index);
 
   Ok(ParseResult {
@@ -292,7 +255,7 @@ fn parse_css(source: &str) -> Result<ParseResult, ParseError> {
 }
 
 /// Convert a list of lightningcss rules into our [`CssNode`] list.
-fn convert_rules(rules: &[LcssRule], source: &str, idx: &LineIndex) -> Vec<CssNode> {
+fn convert_rules(rules: &[LcssRule], source: &str, idx: &SourceLineIndex) -> Vec<CssNode> {
   let mut nodes = Vec::with_capacity(rules.len());
 
   for rule in rules {
@@ -636,7 +599,7 @@ fn convert_keyframes(
 fn convert_style_rule(
   style: &lightningcss::rules::style::StyleRule,
   source: &str,
-  idx: &LineIndex,
+  idx: &SourceLineIndex,
 ) -> StyleRule {
   let selector = style.selectors.to_css_string(po()).unwrap_or_default();
   let rule_span = loc_to_span(style.loc, source, idx);
@@ -832,49 +795,11 @@ fn extract_unknown_at_rule_children(source: &str, at_span: Span) -> Vec<CssNode>
   children
 }
 
-/// Convert a 0-indexed line and 1-based column (as reported by lightningcss)
-/// into a byte offset within `source`.
-///
-/// Returns 0 if the line/column is out of range.
-#[cfg(test)]
-fn line_col_to_byte_offset(source: &str, line: u32, column: u32) -> usize {
-  let mut current_line: u32 = 0;
-  let mut line_start: usize = 0;
-
-  for (i, ch) in source.char_indices() {
-    if current_line == line {
-      line_start = i;
-      break;
-    }
-    if ch == '\n' {
-      current_line += 1;
-      line_start = i + 1;
-    }
-  }
-
-  if current_line < line {
-    // line is beyond end of source
-    return source.len();
-  }
-
-  // column is 1-based, measured in UTF-16 code units.
-  // Walk from line_start counting UTF-16 code units.
-  let mut col: u32 = 1;
-  for (i, ch) in source[line_start..].char_indices() {
-    if col >= column {
-      return line_start + i;
-    }
-    col += ch.len_utf16() as u32;
-  }
-
-  // column points past end of line
-  source.len().min(line_start + source[line_start..].len())
-}
-
 /// Map a lightningcss `Location` (line/column) into our `Span` as a byte offset.
 /// Attempts to find the matching closing `}` to determine the span length.
-fn loc_to_span(loc: lightningcss::rules::Location, source: &str, idx: &LineIndex) -> Span {
-  let offset = idx.line_col_to_offset(source, loc.line, loc.column);
+fn loc_to_span(loc: lightningcss::rules::Location, source: &str, idx: &SourceLineIndex) -> Span {
+  // lightningcss counts lines from 0.
+  let offset = idx.utf16_column_to_offset(source, loc.line as usize + 1, loc.column as usize);
 
   // Find the matching closing brace to determine length.
   let rest = source.get(offset..).unwrap_or("");
@@ -1638,21 +1563,6 @@ mod tests {
   #[test]
   fn test_default_syntax_is_css() {
     assert_eq!(Syntax::default(), Syntax::Css);
-  }
-
-  #[test]
-  fn test_line_col_to_byte_offset() {
-    let src = "abc\ndef\nghi";
-    // line 0, col 1 => byte 0 ('a')
-    assert_eq!(line_col_to_byte_offset(src, 0, 1), 0);
-    // line 0, col 3 => byte 2 ('c')
-    assert_eq!(line_col_to_byte_offset(src, 0, 3), 2);
-    // line 1, col 1 => byte 4 ('d')
-    assert_eq!(line_col_to_byte_offset(src, 1, 1), 4);
-    // line 1, col 2 => byte 5 ('e')
-    assert_eq!(line_col_to_byte_offset(src, 1, 2), 5);
-    // line 2, col 1 => byte 8 ('g')
-    assert_eq!(line_col_to_byte_offset(src, 2, 1), 8);
   }
 
   #[test]

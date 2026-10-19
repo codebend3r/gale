@@ -1,3 +1,5 @@
+use gale_diagnostics::SourceLineIndex;
+
 /// Converts Sass indented syntax to SCSS so that the existing raffia parser can
 /// handle it.  This is intentionally a "good-enough" mechanical transformation:
 ///
@@ -25,16 +27,9 @@ pub fn convert_sass_to_scss_with_map(input: &str) -> (String, SourceMap) {
   let mut out = String::with_capacity(input.len() * 2);
   let mut map = SourceMap::default();
 
-  // Byte offset in `input` where each of `lines` starts.  `lines()` drops
-  // the `\n` (and a `\r` before it), so walk the newline-inclusive pieces.
-  let line_starts: Vec<usize> = input
-    .split_inclusive('\n')
-    .scan(0usize, |offset, piece| {
-      let start = *offset;
-      *offset += piece.len();
-      Some(start)
-    })
-    .collect();
+  // Where each of `lines` starts in `input`: `lines()` drops the `\n` (and
+  // a `\r` before it), so the offsets come from the line index.
+  let line_index = SourceLineIndex::build(input);
 
   // Where generated closing braces point: the end of the last line that
   // carried real content.
@@ -51,7 +46,7 @@ pub fn convert_sass_to_scss_with_map(input: &str) -> (String, SourceMap) {
   let mut inside_block_comment = false;
 
   for (i, raw_line) in lines.iter().enumerate() {
-    let line_start = line_starts.get(i).copied().unwrap_or(input.len());
+    let line_start = line_index.line_start(i + 1).unwrap_or(input.len());
     // ── Block comments ────────────────────────────────────────────
     if inside_block_comment {
       map.copied(out.len(), out.len(), line_start, raw_line.len(), 0, 0);

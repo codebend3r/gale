@@ -27,6 +27,7 @@
 use std::ops::Range;
 
 use gale_css_parser::Syntax;
+use gale_diagnostics::SourceLineIndex;
 
 /// The kind of a statement node, as PostCSS types it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +110,8 @@ pub struct PostcssTree<'a> {
   /// The root's `raws.semicolon`: whether its last non-comment node ended
   /// with `;`.
   pub root_semicolon: bool,
-  /// Offset where each line starts; line 1 starts at 0.
-  line_starts: Vec<usize>,
+  /// The line each offset is on.
+  lines: SourceLineIndex,
 }
 
 impl<'a> PostcssTree<'a> {
@@ -124,20 +125,12 @@ impl<'a> PostcssTree<'a> {
     };
     let mut parser = Parser::new(source, flavor);
     parser.parse();
-    let mut line_starts = vec![0];
-    line_starts.extend(
-      source
-        .bytes()
-        .enumerate()
-        .filter(|&(_, b)| b == b'\n')
-        .map(|(i, _)| i + 1),
-    );
     Self {
       source,
       nodes: parser.nodes,
       root: parser.root,
       root_semicolon: parser.root_semicolon,
-      line_starts,
+      lines: SourceLineIndex::build(source),
     }
   }
 
@@ -148,10 +141,7 @@ impl<'a> PostcssTree<'a> {
 
   /// The 1-based line holding `offset`.
   pub fn line_of(&self, offset: usize) -> usize {
-    match self.line_starts.binary_search(&offset) {
-      Ok(line) => line + 1,
-      Err(next) => next,
-    }
+    self.lines.line(offset)
   }
 
   /// The line the node starts on (Stylelint's `getNodeLine`).
