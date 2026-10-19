@@ -132,7 +132,7 @@ impl Check for StylisticAtRuleNameCaseCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_lowercase_at_rule_names() {
@@ -147,7 +147,7 @@ mod tests {
     let opt = serde_json::Value::String("lower".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@Media screen { }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("lowercase"));
   }
@@ -157,7 +157,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@MEDIA screen { }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -166,7 +166,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@media screen { }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("uppercase"));
   }

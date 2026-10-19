@@ -84,7 +84,6 @@ mod tests {
       file_path: "_partial.scss",
       source: "",
       syntax: Syntax::Scss,
-      options: None,
       cache: None,
     }
   }
@@ -95,7 +94,6 @@ mod tests {
       file_path: "main.scss",
       source: "",
       syntax: Syntax::Scss,
-      options: None,
       cache: None,
     }
   }
@@ -147,7 +145,6 @@ mod tests {
       file_path: "_partial.css",
       source: "",
       syntax: Syntax::Css,
-      options: None,
       cache: None,
     };
     assert!(rule.check(&import("\"foo\""), &css_ctx).is_empty());

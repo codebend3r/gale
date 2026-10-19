@@ -252,14 +252,14 @@ impl Check for StylisticValueListCommaNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_newline_after_value_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png),\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -268,7 +268,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -278,7 +278,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
   }
@@ -288,7 +288,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -298,7 +298,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a:hover, a:focus { color: red; }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag selector commas, got: {:?}",
@@ -311,7 +311,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), // comment\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by SCSS line comment, got {} diagnostics",
@@ -324,7 +324,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), /* comment */\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by block comment then newline, got {} diagnostics",
@@ -337,7 +337,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { prop: #{$a, $b}; }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 

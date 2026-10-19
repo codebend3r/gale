@@ -102,14 +102,7 @@ impl Check for RuleEmptyLineBeforeCheck {
       if expect_empty_line == has_empty_line(tree.before(i)) {
         continue;
       }
-      diags.push(empty_line_report(
-        NAME,
-        RuleEmptyLineBefore::META.default_severity,
-        &tree,
-        i,
-        expect_empty_line,
-        "rule",
-      ));
+      diags.push(empty_line_report(NAME, &tree, i, expect_empty_line, "rule"));
     }
     diags
   }
@@ -132,7 +125,7 @@ mod tests {
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &options);
+    let ctx = context(source, syntax);
     configured(&RuleEmptyLineBefore, options.clone())
       .check_root(&[], &ctx)
       .into_iter()

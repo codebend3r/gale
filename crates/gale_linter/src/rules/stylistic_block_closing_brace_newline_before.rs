@@ -189,12 +189,12 @@ fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
     let opts = serde_json::json!(option);
     let rule = configured(&StylisticBlockClosingBraceNewlineBefore, opts.clone());
-    let ctx = ctx_with_source_and_options(source, &opts);
+    let ctx = ctx_with_source(source);
     rule.check_root(&[], &ctx)
   }
 

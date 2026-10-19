@@ -181,7 +181,7 @@ impl Check for StylisticBlockOpeningBraceNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_newline_after_brace() {
@@ -196,7 +196,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\n}";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -206,7 +206,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -215,7 +215,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\nbackground: blue; }";
-    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 

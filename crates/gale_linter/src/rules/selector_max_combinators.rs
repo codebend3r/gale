@@ -143,7 +143,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -179,7 +179,7 @@ mod tests {
   #[test]
   fn respects_configured_max() {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(1));
-    let ctx = ctx_with_options(serde_json::json!(1));
+    let ctx = ctx();
     let d = rule.check(&style_with_selector(".a .b > .c"), &ctx);
     assert_eq!(d.len(), 1);
   }
@@ -204,7 +204,7 @@ mod tests {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(0));
     // Stylelint v17: combinators inside :is() ARE counted.
     // `:is(.a .b)` has 1 descendant combinator.
-    let ctx = ctx_with_options(serde_json::json!(0));
+    let ctx = ctx();
     let d = rule.check(&style_with_selector(":is(.a .b)"), &ctx);
     assert_eq!(
       d.len(),
@@ -218,7 +218,7 @@ mod tests {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(0));
     // Stylelint v17: combinators inside :has() ARE counted.
     // `.foo:has(.bar > .baz)` has 1 child combinator inside :has().
-    let ctx = ctx_with_options(serde_json::json!(0));
+    let ctx = ctx();
     let d = rule.check(&style_with_selector(".foo:has(.bar > .baz)"), &ctx);
     assert_eq!(d.len(), 1);
   }

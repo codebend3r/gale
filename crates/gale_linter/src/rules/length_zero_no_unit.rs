@@ -247,7 +247,7 @@ mod tests {
 
   /// The offsets of the units reported in `source`.
   fn reports(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
-    let ctx = context(source, syntax, None);
+    let ctx = context(source, syntax);
     configured(&LengthZeroNoUnit, options)
       .check_root(&[], &ctx)
       .into_iter()

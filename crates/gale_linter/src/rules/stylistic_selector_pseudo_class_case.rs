@@ -150,7 +150,7 @@ impl Check for StylisticSelectorPseudoClassCaseCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_lowercase_pseudo_class() {
@@ -174,7 +174,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a:HOVER { }";
     let d = configured(&StylisticSelectorPseudoClassCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -183,7 +183,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a:hover { }";
     let d = configured(&StylisticSelectorPseudoClassCase, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("uppercase"));
   }

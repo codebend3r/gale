@@ -131,14 +131,14 @@ impl Check for StylisticNumberLeadingZeroCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_allows_leading_zero() {
     let opt = serde_json::json!("always");
     let source = "a { opacity: 0.5; }";
     let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -147,7 +147,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { opacity: .5; }";
     let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a leading zero"));
   }
@@ -157,7 +157,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let source = "a { opacity: 0.5; }";
     let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected leading zero"));
   }
@@ -167,7 +167,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let source = "a { opacity: .5; }";
     let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -176,7 +176,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { width: 1.5px; }";
     let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 

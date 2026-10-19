@@ -174,7 +174,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -194,10 +194,7 @@ mod tests {
   fn flags_excess_values() {
     let opts = serde_json::json!({"border": 2});
     let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
-    let d = rule.check(
-      &style_decl("border", "1px solid red"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_decl("border", "1px solid red"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("no more than 2"));
   }
@@ -206,10 +203,7 @@ mod tests {
   fn allows_within_limit() {
     let opts = serde_json::json!({"border": 3});
     let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
-    let d = rule.check(
-      &style_decl("border", "1px solid red"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_decl("border", "1px solid red"), &ctx());
     assert!(d.is_empty());
   }
 
@@ -218,10 +212,7 @@ mod tests {
     // v17: "border" limit should NOT match "-webkit-border"
     let opts = serde_json::json!({"border": 1});
     let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
-    let d = rule.check(
-      &style_decl("-webkit-border", "1px solid red"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_decl("-webkit-border", "1px solid red"), &ctx());
     assert!(
       d.is_empty(),
       "v17: property limit should not match vendor-prefixed equivalent"
@@ -232,10 +223,7 @@ mod tests {
   fn matches_vendor_prefixed_when_explicitly_specified() {
     let opts = serde_json::json!({"-webkit-border": 1});
     let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
-    let d = rule.check(
-      &style_decl("-webkit-border", "1px solid red"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_decl("-webkit-border", "1px solid red"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
@@ -243,10 +231,7 @@ mod tests {
   fn function_args_count_as_one_value() {
     let opts = serde_json::json!({"background": 1});
     let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
-    let d = rule.check(
-      &style_decl("background", "rgb(0, 0, 0)"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_decl("background", "rgb(0, 0, 0)"), &ctx());
     assert!(
       d.is_empty(),
       "function args should not be counted as separate values"
@@ -267,7 +252,7 @@ mod tests {
       &DeclarationPropertyMaxValues,
       serde_json::json!([{ "/^margin/": 1 }]),
     );
-    let ctx = ctx_with_options(&serde_json::Value::Null);
+    let ctx = ctx();
     assert_eq!(
       rule.check(&style_decl("margin-top", "1px 2px"), &ctx).len(),
       1

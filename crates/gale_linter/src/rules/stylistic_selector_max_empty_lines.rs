@@ -79,12 +79,12 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn check_selector(selector: &str, max: u64) -> Vec<Diagnostic> {
     let opts = serde_json::json!(max);
     let rule = configured(&StylisticSelectorMaxEmptyLines, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: selector.to_string(),
       declarations: vec![Declaration {

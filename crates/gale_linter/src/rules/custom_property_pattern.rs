@@ -223,7 +223,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_property(prop: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -265,7 +265,7 @@ mod tests {
   fn custom_pattern() {
     let opts = serde_json::json!("^pf-(v[56]|t-)-(color|global|chart|[lcud])-.+$");
     let rule = configured(&CustomPropertyPattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // Should pass: matches the custom pattern
     assert!(
       rule
@@ -281,7 +281,7 @@ mod tests {
   fn custom_pattern_in_message() {
     let opts = serde_json::json!("^pf-");
     let rule = configured(&CustomPropertyPattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_property("--my-color"), &c);
     assert!(d[0].message.contains("^pf-"));
   }
@@ -291,7 +291,7 @@ mod tests {
     // Config like: ["^sds|slds-c|kx-...", { "message": "..." }]
     let opts = serde_json::json!(["^sds|slds-c|kx-([a-z][a-z0-9]*)(-[a-z0-9]+)*$", { "message": "Custom msg" }]);
     let rule = configured(&CustomPropertyPattern, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // _slds-c-... should match via the `slds-c` alternative
     assert!(
       rule

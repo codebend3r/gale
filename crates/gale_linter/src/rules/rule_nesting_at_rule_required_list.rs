@@ -104,7 +104,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn top_level_at_rule(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -133,7 +133,7 @@ mod tests {
   fn reports_top_level_at_rule_that_should_be_nested() {
     let opts = serde_json::json!(["media", "supports"]);
     let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![top_level_at_rule("media"), style_rule_node()];
     let d = rule.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);
@@ -144,7 +144,7 @@ mod tests {
   fn allows_at_rules_not_in_list() {
     let opts = serde_json::json!(["media"]);
     let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![top_level_at_rule("keyframes"), style_rule_node()];
     let d = rule.check_root(&nodes, &ctx);
     assert!(d.is_empty());
@@ -154,7 +154,7 @@ mod tests {
   fn allows_style_rules_at_top_level() {
     let opts = serde_json::json!(["media"]);
     let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![style_rule_node()];
     let d = rule.check_root(&nodes, &ctx);
     assert!(d.is_empty());
@@ -173,7 +173,7 @@ mod tests {
   fn case_insensitive_matching() {
     let opts = serde_json::json!(["media"]);
     let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = vec![top_level_at_rule("Media")];
     let d = rule.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);

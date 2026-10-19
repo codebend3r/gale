@@ -464,7 +464,6 @@ mod tests {
       file_path: "components/foo/themes/spectrum.css",
       source: ".a { color: var(--unknown); }",
       syntax: gale_css_parser::Syntax::Css,
-      options: None,
       cache: None,
     };
     let parsed = gale_css_parser::parse(ctx.source, gale_css_parser::Syntax::Css).unwrap();

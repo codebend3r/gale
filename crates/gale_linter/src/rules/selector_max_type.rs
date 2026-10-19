@@ -451,7 +451,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -504,7 +504,7 @@ mod tests {
   fn max_zero_rejects_single_type() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("foo {}"), &c);
     assert_eq!(d.len(), 1);
   }
@@ -513,7 +513,7 @@ mod tests {
   fn max_zero_accepts_class() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector(".bar {}"), &c);
     assert!(d.is_empty());
   }
@@ -522,7 +522,7 @@ mod tests {
   fn ignore_descendant() {
     let opts = serde_json::json!([0, {"ignore": ["descendant"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // `.foo div` — div is after descendant combinator, should be ignored
     let d = rule.check(&style_with_selector(".foo div"), &c);
     assert!(d.is_empty());
@@ -532,7 +532,7 @@ mod tests {
   fn ignore_child() {
     let opts = serde_json::json!([0, {"ignore": ["child"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // `.foo > div` — div is after child combinator, should be ignored
     let d = rule.check(&style_with_selector(".foo > div"), &c);
     assert!(d.is_empty());
@@ -542,7 +542,7 @@ mod tests {
   fn ignore_compounded() {
     let opts = serde_json::json!([0, {"ignore": ["compounded"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // `.foo.bar div.baz` — div.baz is compounded with class, should be ignored
     let d = rule.check(&style_with_selector("div.baz"), &c);
     assert!(d.is_empty());
@@ -552,7 +552,7 @@ mod tests {
   fn ignore_types_exact() {
     let opts = serde_json::json!([0, {"ignoreTypes": ["fieldset"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("fieldset"), &c);
     assert!(d.is_empty());
   }
@@ -561,7 +561,7 @@ mod tests {
   fn ignore_types_regex() {
     let opts = serde_json::json!([0, {"ignoreTypes": ["/^my-/"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("my-type"), &c);
     assert!(d.is_empty());
   }
@@ -572,7 +572,7 @@ mod tests {
     // `:is(div)` has 1 type selector.
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector(":is(div)"), &c);
     assert_eq!(d.len(), 1, "expected 1 diagnostic for type inside :is()");
   }
@@ -582,7 +582,7 @@ mod tests {
     // Stylelint v17: `.foo:not(div)` counts `div` as a type selector.
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector(".foo:not(div)"), &c);
     assert_eq!(d.len(), 1);
   }
@@ -596,7 +596,7 @@ mod tests {
 
     let opts = serde_json::json!([2]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("div:has(span a)"), &c);
     assert_eq!(d.len(), 1, "3 types with max 2 should fail");
   }
@@ -607,10 +607,7 @@ mod tests {
     // to be cut out of the selector at character indices.
     let opts = serde_json::json!(1);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let d = rule.check(
-      &style_with_selector("\u{4e2d}\u{6587} div"),
-      &ctx_with_options(&opts),
-    );
+    let d = rule.check(&style_with_selector("\u{4e2d}\u{6587} div"), &ctx());
     assert_eq!(d.len(), 1);
   }
 

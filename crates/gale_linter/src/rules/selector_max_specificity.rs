@@ -544,7 +544,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Span as ParserSpan, StyleRule};
 
-  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -615,7 +615,7 @@ mod tests {
   fn custom_option_allows_higher_specificity() {
     let opts = serde_json::json!(["0,4,1"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // .a.b.c.d has specificity 0,4,0 -- within "0,4,1"
     let d = rule.check(&style_with_selector(".a.b.c.d"), &c);
     assert!(d.is_empty());
@@ -625,7 +625,7 @@ mod tests {
   fn custom_option_restricts_specificity() {
     let opts = serde_json::json!(["0,1,0"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     // .a.b has specificity 0,2,0 -- exceeds "0,1,0"
     let d = rule.check(&style_with_selector(".a.b"), &c);
     assert_eq!(d.len(), 1);
@@ -643,7 +643,7 @@ mod tests {
     // Only exceeds if a higher bucket is equal and a lower bucket exceeds.
     let opts = serde_json::json!(["0,2,0"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx_with_options(&opts);
+    let c = ctx();
     let d = rule.check(&style_with_selector("span a"), &c);
     assert!(d.is_empty(), "span a should be allowed with max 0,2,0");
   }

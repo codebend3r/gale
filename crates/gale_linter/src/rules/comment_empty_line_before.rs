@@ -98,7 +98,6 @@ impl Check for CommentEmptyLineBeforeCheck {
       }
       diags.push(empty_line_report(
         NAME,
-        CommentEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -171,7 +170,7 @@ mod tests {
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &serde_json::Value::Null);
+    let ctx = context(source, syntax);
     configured(&CommentEmptyLineBefore, options)
       .check_root(&[], &ctx)
       .into_iter()

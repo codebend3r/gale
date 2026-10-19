@@ -22,7 +22,7 @@ use crate::options::Setting;
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
 use crate::registry::{RuleRegistry, resolve_deprecated_alias};
-use crate::rule::{Check, Rule, RuleContext, secondary_options_of};
+use crate::rule::{Check, Rule, RuleContext};
 
 /// The secondary options every Stylelint rule accepts, whatever the rule
 /// itself does with its options, read once from a rule's setting.
@@ -39,10 +39,9 @@ struct CommonOptions {
 }
 
 impl CommonOptions {
-  /// The common options in `options`, a rule's setting as the config wrote
-  /// it.
-  fn of(options: Option<&serde_json::Value>) -> Self {
-    let Some(secondary) = options.and_then(secondary_options_of) else {
+  /// The common options in a rule's setting.
+  fn of(setting: &Setting) -> Self {
+    let Some(secondary) = setting.secondary() else {
       return Self::default();
     };
     let text = |key: &str| {
@@ -240,15 +239,16 @@ struct ActiveRule {
   rule: &'static dyn Rule,
   /// The name the config used, under which problems are reported.
   config_name: String,
-  /// LEGACY: the options as the config wrote them, which legacy rules read
-  /// on every node.
+  /// The options as the config wrote them, scanned for regex literals that
+  /// do not compile.
   options: Option<serde_json::Value>,
+  /// The options as the rule reads them.
+  setting: Setting,
   /// The secondary options every rule accepts.
   common: CommonOptions,
   /// The severity every problem of the rule is given: the config's for the
-  /// rule, else its `defaultSeverity`, else the rule's own default.  `None`
-  /// leaves the severity a legacy rule set itself.
-  severity: Option<Severity>,
+  /// rule, else its `defaultSeverity`, else the rule's own default.
+  severity: Severity,
   /// The rule configured with its options, once for the whole set; `None`
   /// for a rule whose options are invalid, which does not run.
   check: Option<Box<dyn Check>>,
@@ -310,10 +310,12 @@ impl RuleSet {
 
     for setting in settings {
       configured.insert(canonical(&setting.name).to_string());
-      let common = CommonOptions::of(setting.options.as_ref());
-      let forbids = common.report_disables;
       let Some(rule) = registry.get(&setting.name) else {
-        if forbids {
+        // A rule gale does not have still honours `reportDisables`; its
+        // options are read as those of a rule whose primary option is no
+        // list.
+        let unknown_setting = Setting::new("", setting.options.as_ref(), false);
+        if CommonOptions::of(&unknown_setting).report_disables {
           forbids_disable.insert(setting.name.clone());
         }
         // Real Stylelint and plugin rules gale lacks, and rules Stylelint
@@ -324,19 +326,27 @@ impl RuleSet {
         }
         continue;
       };
-      if forbids {
+      let meta = rule.meta();
+      let rule_setting = Setting::new(
+        meta.name,
+        setting.options.as_ref(),
+        meta.primary_option_array,
+      );
+      let common = CommonOptions::of(&rule_setting);
+      if common.report_disables {
         forbids_disable.insert(rule.name().to_string());
         forbids_disable.insert(setting.name.clone());
       }
-      // A legacy rule sets its problems' severity itself; any other is
-      // given its default here.
-      let fallback = (!rule.is_legacy()).then(|| rule.default_severity());
       let active = ActiveRule {
         rule,
         config_name: setting.name,
         options: setting.options,
+        setting: rule_setting,
         common,
-        severity: setting.severity.or(default_severity).or(fallback),
+        severity: setting
+          .severity
+          .or(default_severity)
+          .unwrap_or(meta.default_severity),
         check: None,
       };
       match by_name.get(rule.name()) {
@@ -363,13 +373,7 @@ impl RuleSet {
     for active in &mut rules {
       // Each rule is configured once here, for every file the set lints.  A
       // rule whose options are invalid does not run.
-      let meta = active.rule.meta();
-      let setting = Setting::new(
-        meta.name,
-        active.options.as_ref(),
-        meta.primary_option_array,
-      );
-      match active.rule.configure(&setting, &env) {
+      match active.rule.configure(&active.setting, &env) {
         Ok(check) => active.check = Some(check),
         Err(problems) => problems
           .into_iter()
@@ -379,8 +383,8 @@ impl RuleSet {
       // but only stops the rule when the rule says so: in a list it just
       // matches nothing.
       if let Some(options) = &active.options {
-        for invalid in pattern::invalid_options(meta.name, options) {
-          report(invalid.message);
+        for invalid in pattern::invalid_options(active.rule.name(), options) {
+          report(invalid);
         }
       }
     }
@@ -490,7 +494,6 @@ impl RuleSet {
     let RuleRun {
       mut diagnostics,
       failures,
-      invalid_options,
       ..
     } = run;
 
@@ -514,7 +517,7 @@ impl RuleSet {
 
     let unknown = self.unknown_rule_problems(source, file_path);
     let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
-    result.invalid_option_warnings = invalid_options;
+    result.invalid_option_warnings = self.invalid_options.clone();
     timer.lap("finish");
     result
   }
@@ -532,7 +535,7 @@ impl RuleSet {
       active.common.apply(diag);
     }
     let severity = match active {
-      Some(active) => active.severity,
+      Some(active) => Some(active.severity),
       None => self.default_severity,
     };
     if let Some(severity) = severity {
@@ -730,9 +733,6 @@ struct RuleRun<'a> {
   /// One internal-error problem per rule that panicked.  Kept apart from
   /// `diagnostics` so disables and severity overrides never touch them.
   failures: Vec<Diagnostic>,
-  /// Texts of the invalid-option reports, each once: the set's, and those
-  /// legacy rules return as they check.
-  invalid_options: Vec<String>,
 }
 
 impl<'a> RuleRun<'a> {
@@ -747,7 +747,6 @@ impl<'a> RuleRun<'a> {
       failed: vec![false; set.rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
-      invalid_options: set.invalid_options.clone(),
     }
   }
 
@@ -759,27 +758,15 @@ impl<'a> RuleRun<'a> {
       file_path: self.file_path,
       source: self.source,
       syntax: self.syntax,
-      options: set.rules[index].options.as_ref(),
       cache: Some(self.cache),
       env: set.env,
     }
   }
 
   /// Keep what rule `index` returned, or record its panic and retire it.
-  ///
-  /// Invalid-option reports are set aside: a rule may return the same one
-  /// for every node it sees, and they are not problems in the source.
   fn record(&mut self, index: usize, outcome: Result<Vec<Diagnostic>, Caught>, offset: usize) {
     match outcome {
-      Ok(found) => {
-        for diag in found {
-          if !diag.is_invalid_option() {
-            self.diagnostics.push(diag);
-          } else if !self.invalid_options.contains(&diag.message) {
-            self.invalid_options.push(diag.message);
-          }
-        }
-      }
+      Ok(found) => self.diagnostics.extend(found),
       Err(caught) => {
         self.failed[index] = true;
         let offset = clamp_to_char_boundary(self.source, offset);
@@ -881,10 +868,34 @@ fn clamp_to_char_boundary(source: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  // The test rules here read their options from the context, as legacy
-  // rules do.
+  use crate::options::InvalidOption;
   use crate::registry::RuleRegistry;
-  use crate::rule::LegacyRule as Rule;
+  use crate::rule::RuleMeta;
+
+  /// Implement [`Rule`] for `$rule`, a unit struct that is also its own
+  /// configured form: a test rule that takes no options and warns.
+  macro_rules! test_rule {
+    ($rule:ident, $name:literal, $description:literal) => {
+      impl Rule for $rule {
+        fn meta(&self) -> RuleMeta {
+          RuleMeta {
+            name: $name,
+            description: $description,
+            default_severity: Severity::Warning,
+            primary_option_array: false,
+          }
+        }
+
+        fn configure(
+          &self,
+          _setting: &Setting,
+          _env: &LintEnv,
+        ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>> {
+          Ok(Box::new($rule))
+        }
+      }
+    };
+  }
 
   /// The spec of a set running `rules` with no options.
   fn spec_for(rules: &[&str]) -> RuleSetSpec {
@@ -1119,7 +1130,7 @@ mod tests {
   }
 
   #[test]
-  fn a_rule_with_typed_options_gets_the_common_secondary_options() {
+  fn every_rule_gets_the_common_secondary_options() {
     let set = flags_set(
       RuleSetting::new("test/flags").with_options(serde_json::json!([
         "a",
@@ -1190,19 +1201,9 @@ mod tests {
   /// would.
   struct PanickingRule;
 
-  impl Rule for PanickingRule {
-    fn name(&self) -> &'static str {
-      "test/panics"
-    }
+  test_rule!(PanickingRule, "test/panics", "Panics on every style rule");
 
-    fn description(&self) -> &'static str {
-      "Panics on every style rule"
-    }
-
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for PanickingRule {
     fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
       if let CssNode::Style(rule) = node {
         let _ = &rule.selector[..rule.selector.len() + 1];
@@ -1376,43 +1377,43 @@ mod tests {
     );
   }
 
-  /// A rule that reports the options it was called with, from `check_root`
-  /// and from `check` on each style rule.
-  struct ReportsOptions;
+  /// A rule that reports the primary option it was configured with, from
+  /// `check_root` and from `check` on each style rule.
+  struct ReportsOptionsCheck(Option<serde_json::Value>);
 
-  impl Rule for ReportsOptions {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/reports-options"
+  impl ReportsOptionsCheck {
+    fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+      Ok(Self(setting.primary().cloned()))
     }
+  }
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Reports the options it sees"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
-    /// Reports the options seen at the root.
-    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  impl Check for ReportsOptionsCheck {
+    /// Reports the option at the root.
+    fn check_root(&self, _nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
       vec![Diagnostic::new(
-        self.name(),
-        format!("root {:?}", ctx.options),
+        "test/reports-options",
+        format!("root {:?}", self.0),
       )]
     }
 
-    /// Reports the options seen on a style rule.
-    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+    /// Reports the option on a style rule.
+    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
       match node {
         CssNode::Style(_) => vec![
-          Diagnostic::new(self.name(), format!("node {:?}", ctx.options))
+          Diagnostic::new("test/reports-options", format!("node {:?}", self.0))
             .span(Span::new(node.span().offset, 1)),
         ],
         _ => vec![],
       }
+    }
+  }
+
+  crate::rule::declare_rule! {
+    /// Reports the options it sees.
+    struct ReportsOptions => ReportsOptionsCheck {
+      name: "test/reports-options",
+      description: "Reports the options it sees",
+      default_severity: Warning,
     }
   }
 
@@ -1467,22 +1468,13 @@ mod tests {
   /// its start.
   struct ReportsTreeRules;
 
-  impl Rule for ReportsTreeRules {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/tree-rules"
-    }
+  test_rule!(
+    ReportsTreeRules,
+    "test/tree-rules",
+    "Reports every style rule in the shared statement tree"
+  );
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Reports every style rule in the shared statement tree"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for ReportsTreeRules {
     /// Reports each style rule of the shared tree.
     fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
       let tree = ctx.postcss_tree();
@@ -1490,7 +1482,7 @@ mod tests {
         .nodes
         .iter()
         .filter(|node| node.kind == crate::postcss_tree::NodeKind::Rule)
-        .map(|node| Diagnostic::new(self.name(), "rule").span(Span::new(node.start, 1)))
+        .map(|node| Diagnostic::new("test/tree-rules", "rule").span(Span::new(node.start, 1)))
         .collect()
     }
   }
@@ -1499,22 +1491,13 @@ mod tests {
   /// panics, standing in for a bug in the tree's parser.
   struct BreaksTreeBuild;
 
-  impl Rule for BreaksTreeBuild {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/breaks-tree-build"
-    }
+  test_rule!(
+    BreaksTreeBuild,
+    "test/breaks-tree-build",
+    "Panics while building the shared statement tree"
+  );
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Panics while building the shared statement tree"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for BreaksTreeBuild {
     /// Builds the shared tree with a builder that panics.
     fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
       let cache = ctx.cache.expect("the runner shares a cache");
@@ -1526,22 +1509,13 @@ mod tests {
   /// A rule that panics while it holds the shared tree.
   struct PanicsHoldingTree;
 
-  impl Rule for PanicsHoldingTree {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/panics-holding-tree"
-    }
+  test_rule!(
+    PanicsHoldingTree,
+    "test/panics-holding-tree",
+    "Panics while holding the shared statement tree"
+  );
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Panics while holding the shared statement tree"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for PanicsHoldingTree {
     /// Takes the shared tree, then panics.
     fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
       let tree = ctx.postcss_tree();
@@ -1553,28 +1527,21 @@ mod tests {
   /// through the shared per-node cache, at its property.
   struct ReportsDeclarations;
 
-  impl Rule for ReportsDeclarations {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/declarations"
-    }
+  test_rule!(
+    ReportsDeclarations,
+    "test/declarations",
+    "Reports every declaration of the node it checks"
+  );
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Reports every declaration of the node it checks"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for ReportsDeclarations {
     /// Reports each declaration of `node` by property.
     fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
       ctx
         .written_declarations(node)
         .iter()
-        .map(|decl| Diagnostic::new(self.name(), decl.prop).span(Span::new(decl.prop_start, 1)))
+        .map(|decl| {
+          Diagnostic::new("test/declarations", decl.prop).span(Span::new(decl.prop_start, 1))
+        })
         .collect()
     }
   }
@@ -1582,22 +1549,13 @@ mod tests {
   /// A rule that panics while it holds a node's shared declarations.
   struct PanicsHoldingDeclarations;
 
-  impl Rule for PanicsHoldingDeclarations {
-    /// The rule's test-only name.
-    fn name(&self) -> &'static str {
-      "test/panics-holding-declarations"
-    }
+  test_rule!(
+    PanicsHoldingDeclarations,
+    "test/panics-holding-declarations",
+    "Panics while holding a node's shared declarations"
+  );
 
-    /// What the rule does.
-    fn description(&self) -> &'static str {
-      "Panics while holding a node's shared declarations"
-    }
-
-    /// Warnings, like most rules.
-    fn default_severity(&self) -> Severity {
-      Severity::Warning
-    }
-
+  impl Check for PanicsHoldingDeclarations {
     /// Takes the node's declarations, then panics if there are any.
     fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
       let found = ctx.written_declarations(node);

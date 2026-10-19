@@ -234,7 +234,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, ctx_with_options};
+  use crate::testing::{configured, ctx};
 
   fn make_nodes(decls: Vec<(&str, &str)>) -> Vec<CssNode> {
     vec![CssNode::Style(StyleRule {
@@ -279,7 +279,7 @@ mod tests {
         "allowedProperties": ["--theme-color"]
     }]);
     let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--theme-color)")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(diags.is_empty());
@@ -291,7 +291,7 @@ mod tests {
         "allowedProperties": ["/^--global-/"]
     }]);
     let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--global-text)")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert!(diags.is_empty());
@@ -303,7 +303,7 @@ mod tests {
         "allowedProperties": ["/^--global-/"]
     }]);
     let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
-    let ctx = ctx_with_options(&opts);
+    let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--local-text)")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
