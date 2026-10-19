@@ -1,46 +1,57 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::postcss::{self, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
 
-/// Disallow vendor prefixes in selectors.
-///
-/// Equivalent to Stylelint's `selector-no-vendor-prefix` rule.
-/// Only flags vendor-prefixed pseudo-classes and pseudo-elements that have
-/// standard (unprefixed) equivalents — i.e., ones Autoprefixer can handle.
-/// Browser-specific pseudo-elements/classes (like `::-webkit-slider-thumb`)
-/// that have no standard equivalent are NOT flagged.  The fix strips the
-/// prefix and keeps the rest of the name as written.
-pub struct SelectorNoVendorPrefix;
+const NAME: &str = "selector-no-vendor-prefix";
+
+declare_rule! {
+  /// Disallow vendor prefixes in selectors.
+  ///
+  /// Equivalent to Stylelint's `selector-no-vendor-prefix` rule.
+  /// Only flags vendor-prefixed pseudo-classes and pseudo-elements that have
+  /// standard (unprefixed) equivalents — i.e., ones Autoprefixer can handle.
+  /// Browser-specific pseudo-elements/classes (like `::-webkit-slider-thumb`)
+  /// that have no standard equivalent are NOT flagged.  The fix strips the
+  /// prefix and keeps the rest of the name as written.
+  pub struct SelectorNoVendorPrefix => SelectorNoVendorPrefixCheck {
+    name: NAME,
+    description: "Disallow vendor prefixes for selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-no-vendor-prefix` as configured.
+pub struct SelectorNoVendorPrefixCheck {
+  /// The `ignoreSelectors` option.
+  ignore: Matchers,
+}
+
+impl SelectorNoVendorPrefixCheck {
+  /// Stylelint's options: nothing but `true`, then `ignoreSelectors`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.matchers("ignoreSelectors");
+    options.finish()?;
+    Ok(Self { ignore })
+  }
+}
 
 /// Stylelint's `prefixes`, which a selector must mention to be looked at.
 const PREFIXES: &[&str] = &[
   "-webkit-", "-moz-", "-ms-", "-o-", "-xv-", "-apple-", "-wap-", "-khtml-",
 ];
 
-impl Rule for SelectorNoVendorPrefix {
-  fn name(&self) -> &'static str {
-    "selector-no-vendor-prefix"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow vendor prefixes for selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNoVendorPrefixCheck {
   /// Flags vendor-prefixed pseudos that have a standard equivalent, in every
   /// style rule's selector as written, skipping `ignoreSelectors`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreSelectors"));
     let mut diags = Vec::new();
     for rule in &ctx.scanned_rules().style_rules {
       let lower = rule.prelude.to_ascii_lowercase();
@@ -56,7 +67,7 @@ impl Rule for SelectorNoVendorPrefix {
         let pseudo = visit.node;
         if pseudo.kind != Kind::Pseudo
           || !autoprefixable::selector(&pseudo.value)
-          || pattern::option_matches(ignore, &pseudo.value)
+          || self.ignore.matches(&pseudo.value)
         {
           return;
         }
@@ -64,10 +75,9 @@ impl Rule for SelectorNoVendorPrefix {
         let unprefixed = autoprefixable::unprefix(&pseudo.value);
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected vendor-prefixed selector \"{}\"", pseudo.value),
           )
-          .severity(self.default_severity())
           .span(span)
           .fix(Fix::new(
             format!("Change \"{}\" to \"{unprefixed}\"", pseudo.value),
@@ -84,7 +94,7 @@ impl Rule for SelectorNoVendorPrefix {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-no-vendor-prefix";
 
@@ -161,6 +171,25 @@ mod tests {
     assert_eq!(
       fix(RULE, options, ":-ms-fullscreen {}", Syntax::Css),
       ":-ms-fullscreen {}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, { "ignoreSelectors": ["::-moz-placeholder", "/^:-webkit-/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"selector-no-vendor-prefix\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!([true, { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"selector-no-vendor-prefix\""]
     );
   }
 }

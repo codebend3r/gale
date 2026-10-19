@@ -1,8 +1,10 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::{is_experimental_html_element, is_known_html_element};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::nesting::{resolve_nested, resolve_nested_list};
 use crate::selector::{
   Pseudo, Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
@@ -10,12 +12,33 @@ use crate::selector::{
 };
 use crate::style_rules::RawStyleRule;
 
-/// Disallow unmatchable selectors.
-///
-/// Equivalent to Stylelint's `selector-no-unmatchable` rule. Unmatchable
-/// selectors are valid but can never match anything. Nested selectors are
-/// resolved according to the CSS Nesting specification before checking.
-pub struct SelectorNoUnmatchable;
+const NAME: &str = "selector-no-unmatchable";
+
+declare_rule! {
+  /// Disallow unmatchable selectors.
+  ///
+  /// Equivalent to Stylelint's `selector-no-unmatchable` rule. Unmatchable
+  /// selectors are valid but can never match anything. Nested selectors are
+  /// resolved according to the CSS Nesting specification before checking.
+  pub struct SelectorNoUnmatchable => SelectorNoUnmatchableCheck {
+    name: NAME,
+    description: "Disallow unmatchable selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-no-unmatchable`, whose only option is `true`.
+pub struct SelectorNoUnmatchableCheck;
+
+impl SelectorNoUnmatchableCheck {
+  /// Stylelint's options: `true`, the only one.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Pseudo-classes that take a forgiving selector list.
 const FORGIVING_PSEUDO_CLASSES: &[&str] = &["is", "where"];
@@ -78,19 +101,7 @@ fn applicable_elements(pseudo_class: &str) -> Option<&'static [&'static str]> {
   })
 }
 
-impl Rule for SelectorNoUnmatchable {
-  fn name(&self) -> &'static str {
-    "selector-no-unmatchable"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unmatchable selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNoUnmatchableCheck {
   /// Checks every style rule's selectors, resolving nested selectors against
   /// their ancestors first.
   ///
@@ -111,7 +122,7 @@ impl Rule for SelectorNoUnmatchable {
   }
 }
 
-impl SelectorNoUnmatchable {
+impl SelectorNoUnmatchableCheck {
   /// Checks one rule's selectors and returns them resolved against the
   /// parent, or `None` when the rule or an ancestor cannot be resolved.
   fn check_rule(
@@ -146,15 +157,9 @@ impl SelectorNoUnmatchable {
         None => format!("\"{text}\""),
       };
       diagnostics.push(
-        Diagnostic::new(
-          self.name(),
-          format!("Unmatchable selector {written}, {reason}"),
-        )
-        .severity(self.default_severity())
-        .span(Span::from_range(
-          raw.offset + selector.offset,
-          raw.offset + selector.end,
-        )),
+        Diagnostic::new(NAME, format!("Unmatchable selector {written}, {reason}")).span(
+          Span::from_range(raw.offset + selector.offset, raw.offset + selector.end),
+        ),
       );
     }
 
@@ -490,6 +495,7 @@ fn group_compounds(nodes: &[SelectorNode]) -> (Compounds<'_>, Compounds<'_>) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
   use gale_css_parser::{Syntax, parse};
   use gale_diagnostics::SourceLineIndex;
 
@@ -506,7 +512,7 @@ mod tests {
       cache: None,
     };
     let index = SourceLineIndex::build(css);
-    SelectorNoUnmatchable
+    configured(&SelectorNoUnmatchable, options.clone())
       .check_root(&parsed.nodes, &ctx)
       .into_iter()
       .map(|d| {
@@ -885,6 +891,16 @@ mod tests {
           25
         ),
       ]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The rule validates no secondary options, so it ignores them.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"selector-no-unmatchable\""]
     );
   }
 }

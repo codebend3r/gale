@@ -1,39 +1,55 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::postcss::{self, Kind};
 use crate::standard_syntax::is_standard_syntax_selector;
 use crate::stylelint_version::stylelint_major_version;
 
-/// Enforces a specific colon notation (`::` or `:`) for pseudo-elements that
-/// support both syntaxes (`:before`, `:after`, `:first-line`, `:first-letter`).
-///
-/// Equivalent to Stylelint's `selector-pseudo-element-colon-notation` rule.
-/// Primary option: `"double"` (default) or `"single"`.  The fix rewrites the
-/// colons and keeps the name as written.
-pub struct SelectorPseudoElementColonNotation;
+const NAME: &str = "selector-pseudo-element-colon-notation";
+
+declare_rule! {
+  /// Enforces a specific colon notation (`::` or `:`) for pseudo-elements that
+  /// support both syntaxes (`:before`, `:after`, `:first-line`, `:first-letter`).
+  ///
+  /// Equivalent to Stylelint's `selector-pseudo-element-colon-notation` rule.
+  /// Primary option: `"double"` (default) or `"single"`.  The fix rewrites the
+  /// colons and keeps the name as written.
+  pub struct SelectorPseudoElementColonNotation => SelectorPseudoElementColonNotationCheck {
+    name: NAME,
+    description: "Specify single or double colon notation for applicable pseudo-elements",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-pseudo-element-colon-notation` as configured.
+pub struct SelectorPseudoElementColonNotationCheck {
+  /// Whether the four legacy pseudo-elements take a single colon.
+  single: bool,
+}
+
+impl SelectorPseudoElementColonNotationCheck {
+  /// Stylelint's options: `"single"` or `"double"`.  Gale reads no option as `"double"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["single", "double"]);
+    options.finish()?;
+    Ok(Self {
+      single: option.unwrap_or("double") == "single",
+    })
+  }
+}
 
 /// Stylelint's `levelOneAndTwoPseudoElements`.
 const LEGACY_PSEUDO_ELEMENTS: &[&str] = &["before", "after", "first-line", "first-letter"];
 
-impl Rule for SelectorPseudoElementColonNotation {
-  fn name(&self) -> &'static str {
-    "selector-pseudo-element-colon-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify single or double colon notation for applicable pseudo-elements"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorPseudoElementColonNotationCheck {
   /// Flags the four dual-syntax pseudo-elements written with the colon
   /// notation the option forbids, in every style rule's selector as written.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let single = ctx.primary_option_str() == Some("single");
+    let single = self.single;
     let (colons, message) = if single {
       (":", "Expected single colon pseudo-element notation")
     } else {
@@ -68,8 +84,7 @@ impl Rule for SelectorPseudoElementColonNotation {
           return;
         }
         diags.push(
-          Diagnostic::new(self.name(), message)
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, message)
             .span(if is_double && second_colon {
               Span::new(node.start + 1, 1)
             } else {
@@ -90,7 +105,7 @@ impl Rule for SelectorPseudoElementColonNotation {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-pseudo-element-colon-notation";
 
@@ -168,6 +183,15 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a::after { }", Syntax::Css),
       "a::after { }"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, serde_json::json!("single")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("triple")),
+      ["Invalid option value \"triple\" for rule \"selector-pseudo-element-colon-notation\""]
     );
   }
 }

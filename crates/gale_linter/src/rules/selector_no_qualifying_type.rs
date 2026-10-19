@@ -1,32 +1,56 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow qualifying a selector by type (e.g. `a.foo`, `div#bar`).
-///
-/// Equivalent to Stylelint's `selector-no-qualifying-type` rule.
-pub struct SelectorNoQualifyingType;
+const NAME: &str = "selector-no-qualifying-type";
 
-impl Rule for SelectorNoQualifyingType {
-  fn name(&self) -> &'static str {
-    "selector-no-qualifying-type"
+declare_rule! {
+  /// Disallow qualifying a selector by type (e.g. `a.foo`, `div#bar`).
+  ///
+  /// Equivalent to Stylelint's `selector-no-qualifying-type` rule.
+  pub struct SelectorNoQualifyingType => SelectorNoQualifyingTypeCheck {
+    name: NAME,
+    description: "Disallow qualifying a selector by type",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow qualifying a selector by type"
+/// `selector-no-qualifying-type` as configured.
+pub struct SelectorNoQualifyingTypeCheck {
+  /// `ignore: ["class"]`.
+  ignore_class: bool,
+  /// `ignore: ["attribute"]`.
+  ignore_attribute: bool,
+  /// `ignore: ["id"]`.
+  ignore_id: bool,
+}
+
+impl SelectorNoQualifyingTypeCheck {
+  /// Stylelint's options: `true`, then `ignore` listing `"attribute"`,
+  /// `"class"` and `"id"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    let ignore = options.keywords("ignore", &["attribute", "class", "id"]);
+    options.finish()?;
+    Ok(Self {
+      ignore_class: ignore.contains(&"class"),
+      ignore_attribute: ignore.contains(&"attribute"),
+      ignore_id: ignore.contains(&"id"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNoQualifyingTypeCheck {
   /// Flags selectors qualifying a class, attribute or ID with a type, honouring
   /// the `ignore` options. Runs at root so nesting can be resolved.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_class = has_ignore_option(ctx, "class");
-    let ignore_attribute = has_ignore_option(ctx, "attribute");
-    let ignore_id = has_ignore_option(ctx, "id");
+    let ignore_class = self.ignore_class;
+    let ignore_attribute = self.ignore_attribute;
+    let ignore_id = self.ignore_id;
 
     let is_scss = matches!(
       ctx.syntax,
@@ -35,7 +59,6 @@ impl Rule for SelectorNoQualifyingType {
 
     let mut diags = Vec::new();
     walk_nodes(
-      self,
       nodes,
       ctx,
       is_scss,
@@ -55,7 +78,6 @@ impl Rule for SelectorNoQualifyingType {
 /// selector is non-standard, which includes any rule nested inside a parent
 /// whose selector contains `#{...}`.
 fn walk_nodes(
-  rule_impl: &SelectorNoQualifyingType,
   nodes: &[CssNode],
   ctx: &RuleContext,
   is_scss: bool,
@@ -77,7 +99,6 @@ fn walk_nodes(
         // `isStandardSyntaxRule` skip).
         if !any_interpolation {
           check_selector_list(
-            rule_impl,
             &style.selector,
             style.span.offset,
             ancestor_is_type,
@@ -92,7 +113,6 @@ fn walk_nodes(
 
         // Recurse into children, propagating interpolation flag.
         walk_style_children(
-          rule_impl,
           style,
           ctx,
           is_scss,
@@ -106,7 +126,6 @@ fn walk_nodes(
       }
       CssNode::AtRule(at_rule) => {
         walk_nodes(
-          rule_impl,
           &at_rule.children,
           ctx,
           is_scss,
@@ -126,7 +145,6 @@ fn walk_nodes(
 /// Recurses into nested rules, carrying down whether an ancestor supplied the
 /// type or contained interpolation.
 fn walk_style_children(
-  rule_impl: &SelectorNoQualifyingType,
   style: &gale_css_parser::StyleRule,
   ctx: &RuleContext,
   is_scss: bool,
@@ -143,7 +161,6 @@ fn walk_style_children(
 
     if !any_interpolation {
       check_selector_list(
-        rule_impl,
         &child.selector,
         child.span.offset,
         ancestor_is_type,
@@ -157,7 +174,6 @@ fn walk_style_children(
     let self_is_type = selector_ends_with_type(&child.selector);
 
     walk_style_children(
-      rule_impl,
       child,
       ctx,
       is_scss,
@@ -197,7 +213,6 @@ fn split_selector_list(selector: &str) -> Vec<(usize, &str)> {
 /// Check a comma-separated selector list, emitting diagnostics with correct
 /// byte offsets pointing to each compound selector that violates.
 fn check_selector_list(
-  rule_impl: &SelectorNoQualifyingType,
   selector_list: &str,
   base_offset: usize,
   ancestor_is_type: bool,
@@ -224,45 +239,13 @@ fn check_selector_list(
       let violation_offset = base_offset + sel_byte_offset + compound_offset;
       diags.push(
         Diagnostic::new(
-          rule_impl.name(),
+          NAME,
           format!("Unexpected qualifying type selector in \"{trimmed}\""),
         )
-        .severity(rule_impl.default_severity())
         .span(Span::new(violation_offset, trimmed.len() - compound_offset)),
       );
     }
   }
-}
-
-/// Check if the `ignore` secondary option contains a given value.
-///
-/// Handles both forms of options:
-/// - Direct object: `{"ignore": ["id"]}` (from `[true, {...}]` or `["error", {...}]` configs)
-/// - Array-wrapped: `[primary, {"ignore": ["id"]}]` (from `["always", {...}]` configs)
-fn has_ignore_option(ctx: &RuleContext, value: &str) -> bool {
-  let opts = match ctx.options {
-    Some(v) => v,
-    None => return false,
-  };
-
-  // Try direct object access (for [true, {...}] or ["error", {...}] configs
-  // where the config resolver stores just the secondary options object)
-  if let Some(arr) = opts.get("ignore").and_then(|v| v.as_array())
-    && arr.iter().any(|v| v.as_str() == Some(value))
-  {
-    return true;
-  }
-
-  // Then try via secondary_options (for ["always", {...}] configs where
-  // the entire array is stored as options)
-  if let Some(secondary) = ctx.secondary_options()
-    && let Some(arr) = secondary.get("ignore").and_then(|v| v.as_array())
-    && arr.iter().any(|v| v.as_str() == Some(value))
-  {
-    return true;
-  }
-
-  false
 }
 
 /// Find the byte offset within a single (already comma-split) selector where
@@ -605,7 +588,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options, scss_ctx};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -623,46 +606,55 @@ mod tests {
 
   #[test]
   fn reports_type_with_class() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("a.foo");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("a.foo"));
   }
 
   #[test]
   fn reports_type_with_id() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("div#bar");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_class_only() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector(".foo");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_type_only() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("div");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_type_with_pseudo_then_id() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     // div:hover#thing should be reported
     let node = style_with_selector("div:hover#thing");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     assert_eq!(d.len(), 1, "should report div:hover#thing as qualifying");
   }
 
   #[test]
   fn ignore_option_id() {
+    let rule = configured(
+      &SelectorNoQualifyingType,
+      serde_json::json!({"ignore": ["id"]}),
+    );
     let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["id"]}));
     let node = style_with_selector("div#bar");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
+    let d = rule.check_root(&[node], &ctx_with_ignore);
     assert!(
       d.is_empty(),
       "should ignore id qualifying when ignore: [\"id\"]"
@@ -671,9 +663,13 @@ mod tests {
 
   #[test]
   fn ignore_option_class() {
+    let rule = configured(
+      &SelectorNoQualifyingType,
+      serde_json::json!({"ignore": ["class"]}),
+    );
     let ctx_with_ignore = ctx_with_options(serde_json::json!({"ignore": ["class"]}));
     let node = style_with_selector("ul.list");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx_with_ignore);
+    let d = rule.check_root(&[node], &ctx_with_ignore);
     assert!(
       d.is_empty(),
       "should ignore class qualifying when ignore: [\"class\"]"
@@ -682,6 +678,7 @@ mod tests {
 
   #[test]
   fn reports_nesting_ampersand_with_class() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     // a { &.class {} } — the & resolves to the parent type `a`
     let parent = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -701,7 +698,7 @@ mod tests {
 
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNoQualifyingType.check_root(&[parent], &ctx());
+    let d = rule.check_root(&[parent], &ctx());
     assert_eq!(
       d.len(),
       1,
@@ -711,9 +708,10 @@ mod tests {
 
   #[test]
   fn no_infinite_loop_on_is() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     // Ensure :is(a, b) does not hang
     let node = style_with_selector(":is(a, b):is(c, d)");
-    let d = SelectorNoQualifyingType.check_root(&[node], &ctx());
+    let d = rule.check_root(&[node], &ctx());
     // No qualifying type here
     assert!(d.is_empty());
   }
@@ -729,6 +727,7 @@ mod tests {
 
   #[test]
   fn skips_nested_in_scss_interpolation_parent() {
+    let rule = configured(&SelectorNoQualifyingType, None);
     // a.foo nested inside .#{$var} should be skipped in SCSS mode
     let scss_ctx = scss_ctx();
     let parent = CssNode::Style(StyleRule {
@@ -749,10 +748,29 @@ mod tests {
 
       nested_at_rules: Vec::new(),
     });
-    let d = SelectorNoQualifyingType.check_root(&[parent], &scss_ctx);
+    let d = rule.check_root(&[parent], &scss_ctx);
     assert!(
       d.is_empty(),
       "should skip rules nested inside SCSS interpolation parent"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignore": ["attribute", "class", "id"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"selector-no-qualifying-type\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["type"] }])),
+      ["Invalid value \"type\" for option \"ignore\" of rule \"selector-no-qualifying-type\""]
     );
   }
 }
