@@ -1,29 +1,50 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a newline after the commas of functions.
-///
-/// Primary: "always" | "always-multi-line" | "never-multi-line"
-pub struct StylisticFunctionCommaNewlineAfter;
+const NAME: &str = "@stylistic/function-comma-newline-after";
 
-impl Rule for StylisticFunctionCommaNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/function-comma-newline-after"
+declare_rule! {
+  /// Require or disallow a newline after the commas of functions.
+  ///
+  /// Primary: "always" | "always-multi-line" | "never-multi-line"
+  pub struct StylisticFunctionCommaNewlineAfter => StylisticFunctionCommaNewlineAfterCheck {
+    name: NAME,
+    description: "Require or disallow a newline after the commas of functions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a newline after the commas of functions"
+/// `@stylistic/function-comma-newline-after` as configured.
+pub struct StylisticFunctionCommaNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticFunctionCommaNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`, then `ignoreFunctions`.  Gale reads no option as
+  /// `"always-multi-line"`.  Gale accepts but does not yet apply the secondary
+  /// options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    options.strings("ignoreFunctions");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-multi-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticFunctionCommaNewlineAfterCheck {
   /// Flags a function argument comma whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("always-multi-line");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -255,11 +276,7 @@ impl Rule for StylisticFunctionCommaNewlineAfter {
                 "never-multi-line" => "Unexpected newline after the comma in function",
                 _ => "Expected a newline after the comma in function",
               };
-              diagnostics.push(
-                Diagnostic::new(self.name(), msg)
-                  .severity(self.default_severity())
-                  .span(Span::new(comma_pos, 1)),
-              );
+              diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(comma_pos, 1)));
             }
           }
           k += 1;
@@ -278,11 +295,11 @@ impl Rule for StylisticFunctionCommaNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticFunctionCommaNewlineAfter;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticFunctionCommaNewlineAfter, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -338,5 +355,32 @@ mod tests {
   fn ignores_pseudo_class_functions() {
     let d = check("a:not(.foo,\n.bar) { color: red; }", "always");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", {"ignoreFunctions": ["/^my-/", "url"]}])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/function-comma-newline-after\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", {"ignoreFunctionsX": ["url"]}])
+      ),
+      [
+        "Invalid option name \"ignoreFunctionsX\" for rule \"@stylistic/function-comma-newline-after\""
+      ]
+    );
   }
 }

@@ -1,29 +1,47 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a newline inside the parentheses of functions.
-///
-/// Equivalent to `@stylistic/function-parentheses-newline-inside`.
-pub struct StylisticFunctionParenthesesNewlineInside;
+const NAME: &str = "@stylistic/function-parentheses-newline-inside";
 
-impl Rule for StylisticFunctionParenthesesNewlineInside {
-  fn name(&self) -> &'static str {
-    "@stylistic/function-parentheses-newline-inside"
+declare_rule! {
+  /// Require or disallow a newline inside the parentheses of functions.
+  ///
+  /// Equivalent to `@stylistic/function-parentheses-newline-inside`.
+  pub struct StylisticFunctionParenthesesNewlineInside => StylisticFunctionParenthesesNewlineInsideCheck {
+    name: NAME,
+    description: "Require or disallow a newline inside the parentheses of functions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a newline inside the parentheses of functions"
+/// `@stylistic/function-parentheses-newline-inside` as configured.
+pub struct StylisticFunctionParenthesesNewlineInsideCheck {
+  /// The primary option: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticFunctionParenthesesNewlineInsideCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale reads no option as `"always-multi-line"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-multi-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticFunctionParenthesesNewlineInsideCheck {
   /// Flags function parentheses whose inner newlines do not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always-multi-line");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -99,8 +117,7 @@ impl Rule for StylisticFunctionParenthesesNewlineInside {
             }
             if j < len && bytes[j] != b'\n' {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected newline after \"(\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected newline after \"(\"")
                   .span(Span::new(open_paren, 1)),
               );
             }
@@ -113,8 +130,7 @@ impl Rule for StylisticFunctionParenthesesNewlineInside {
               }
               if bytes[k] != b'\n' {
                 diagnostics.push(
-                  Diagnostic::new(self.name(), "Expected newline before \")\"")
-                    .severity(self.default_severity())
+                  Diagnostic::new(NAME, "Expected newline before \")\"")
                     .span(Span::new(close_paren, 1)),
                 );
               }
@@ -129,8 +145,7 @@ impl Rule for StylisticFunctionParenthesesNewlineInside {
             }
             if j < len && bytes[j] == b'\n' {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected newline after \"(\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected newline after \"(\"")
                   .span(Span::new(open_paren, 1)),
               );
             }
@@ -194,13 +209,13 @@ fn find_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_multi_line_allows_newlines_inside_parens() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"\n); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
@@ -213,7 +228,7 @@ mod tests {
   fn always_multi_line_reports_missing_newline_after_open() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"\n); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline after \"(\""));
@@ -223,7 +238,7 @@ mod tests {
   fn always_multi_line_reports_missing_newline_before_close() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(
@@ -238,7 +253,7 @@ mod tests {
   fn always_multi_line_ignores_single_line() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -247,7 +262,7 @@ mod tests {
   fn never_multi_line_reports_newline_after_open() {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(\n  1px,\n  2px); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline after \"(\""));
@@ -257,12 +272,25 @@ mod tests {
   fn never_multi_line_allows_no_newline_after_open() {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(1px,\n  2px); }";
-    let d = StylisticFunctionParenthesesNewlineInside
+    let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
       d.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/function-parentheses-newline-inside\""
+      ]
     );
   }
 }

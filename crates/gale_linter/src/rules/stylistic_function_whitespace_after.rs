@@ -1,30 +1,47 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow whitespace after functions.
-///
-/// Primary: "always" | "never"
-pub struct StylisticFunctionWhitespaceAfter;
+const NAME: &str = "@stylistic/function-whitespace-after";
 
-impl Rule for StylisticFunctionWhitespaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/function-whitespace-after"
+declare_rule! {
+  /// Require or disallow whitespace after functions.
+  ///
+  /// Primary: "always" | "never"
+  pub struct StylisticFunctionWhitespaceAfter => StylisticFunctionWhitespaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow whitespace after functions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow whitespace after functions"
+/// `@stylistic/function-whitespace-after` as configured.
+pub struct StylisticFunctionWhitespaceAfterCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticFunctionWhitespaceAfterCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticFunctionWhitespaceAfterCheck {
   /// Flags a closing function parenthesis whose trailing whitespace does not
   /// match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -148,11 +165,7 @@ impl Rule for StylisticFunctionWhitespaceAfter {
                 "never" => "Unexpected whitespace after function",
                 _ => "Expected whitespace after function",
               };
-              diagnostics.push(
-                Diagnostic::new(self.name(), msg)
-                  .severity(self.default_severity())
-                  .span(Span::new(close_paren, 1)),
-              );
+              diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(close_paren, 1)));
             }
           }
         }
@@ -171,11 +184,11 @@ impl Rule for StylisticFunctionWhitespaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticFunctionWhitespaceAfter;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticFunctionWhitespaceAfter, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -218,6 +231,16 @@ mod tests {
     assert!(
       d.is_empty(),
       "a comment between function close and semicolon should not require whitespace"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/function-whitespace-after\""]
     );
   }
 }

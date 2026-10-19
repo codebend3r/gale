@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline after the colon if the value is multi-line.
-///
-/// Equivalent to `@stylistic/declaration-colon-newline-after`.
-pub struct StylisticDeclarationColonNewlineAfter;
+const NAME: &str = "@stylistic/declaration-colon-newline-after";
 
-impl Rule for StylisticDeclarationColonNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-colon-newline-after"
+declare_rule! {
+  /// Require a newline after the colon if the value is multi-line.
+  ///
+  /// Equivalent to `@stylistic/declaration-colon-newline-after`.
+  pub struct StylisticDeclarationColonNewlineAfter => StylisticDeclarationColonNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline after the colon if the value is multi-line",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline after the colon if the value is multi-line"
+/// `@stylistic/declaration-colon-newline-after` as configured.
+pub struct StylisticDeclarationColonNewlineAfterCheck {
+  /// The primary option: `"always"` or `"always-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticDeclarationColonNewlineAfterCheck {
+  /// The plugin's options: `"always"` or `"always-multi-line"`.  Gale reads no
+  /// option as `"always-multi-line"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-multi-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationColonNewlineAfterCheck {
   /// Flags a declaration colon whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always-multi-line");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -235,8 +252,7 @@ impl Rule for StylisticDeclarationColonNewlineAfter {
               }
               if j < len && bytes[j] != b'\n' {
                 diagnostics.push(
-                  Diagnostic::new(self.name(), "Expected newline after \":\"")
-                    .severity(self.default_severity())
+                  Diagnostic::new(NAME, "Expected newline after \":\"")
                     .span(Span::new(colon_pos, 1)),
                 );
               }
@@ -256,13 +272,13 @@ impl Rule for StylisticDeclarationColonNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_multi_line_allows_single_line_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; }";
-    let d = StylisticDeclarationColonNewlineAfter
+    let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -271,7 +287,7 @@ mod tests {
   fn always_multi_line_reports_multiline_value_without_newline_after_colon() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url()\n    no-repeat; }";
-    let d = StylisticDeclarationColonNewlineAfter
+    let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
@@ -281,7 +297,7 @@ mod tests {
   fn always_multi_line_allows_newline_after_colon_for_multiline_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background:\n    url() no-repeat; }";
-    let d = StylisticDeclarationColonNewlineAfter
+    let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -290,7 +306,7 @@ mod tests {
   fn always_reports_missing_newline() {
     let opt = serde_json::json!("always");
     let source = "a { color: red; }";
-    let d = StylisticDeclarationColonNewlineAfter
+    let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
   }
@@ -299,8 +315,20 @@ mod tests {
   fn always_allows_newline_after_colon() {
     let opt = serde_json::json!("always");
     let source = "a { color:\n  red; }";
-    let d = StylisticDeclarationColonNewlineAfter
+    let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/declaration-colon-newline-after\""
+      ]
+    );
   }
 }

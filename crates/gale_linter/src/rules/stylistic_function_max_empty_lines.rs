@@ -1,32 +1,47 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of adjacent empty lines within functions.
-///
-/// Equivalent to `@stylistic/function-max-empty-lines`.
-pub struct StylisticFunctionMaxEmptyLines;
+const NAME: &str = "@stylistic/function-max-empty-lines";
 
-impl Rule for StylisticFunctionMaxEmptyLines {
-  fn name(&self) -> &'static str {
-    "@stylistic/function-max-empty-lines"
+declare_rule! {
+  /// Limit the number of adjacent empty lines within functions.
+  ///
+  /// Equivalent to `@stylistic/function-max-empty-lines`.
+  pub struct StylisticFunctionMaxEmptyLines => StylisticFunctionMaxEmptyLinesCheck {
+    name: NAME,
+    description: "Limit the number of adjacent empty lines within functions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Limit the number of adjacent empty lines within functions"
+/// `@stylistic/function-max-empty-lines` as configured.
+pub struct StylisticFunctionMaxEmptyLinesCheck {
+  /// The most empty lines allowed in a row.
+  max: usize,
+}
+
+impl StylisticFunctionMaxEmptyLinesCheck {
+  /// The plugin's options: a number (`possible: isNumber`).  Gale reads no
+  /// number as 0, and a number that is not a whole number of zero or more as 0
+  /// too, as it always has.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(serde_json::Value::is_number);
+    options.finish()?;
+    Ok(Self {
+      max: max.and_then(serde_json::Value::as_u64).unwrap_or(0) as usize,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticFunctionMaxEmptyLinesCheck {
   /// Flags runs of blank lines inside function arguments longer than the maximum.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let max = context
-      .primary_option()
-      .and_then(|v| v.as_u64())
-      .unwrap_or(0) as usize;
+    let max = self.max;
 
     let source = context.source;
     let bytes = source.as_bytes();
@@ -113,12 +128,8 @@ impl Rule for StylisticFunctionMaxEmptyLines {
 
             if consecutive_empty > max {
               diagnostics.push(
-                Diagnostic::new(
-                  self.name(),
-                  format!("Expected no more than {} empty line(s)", max),
-                )
-                .severity(self.default_severity())
-                .span(Span::new(line_start, k - line_start)),
+                Diagnostic::new(NAME, format!("Expected no more than {} empty line(s)", max))
+                  .span(Span::new(line_start, k - line_start)),
               );
             }
             continue;
@@ -141,11 +152,11 @@ impl Rule for StylisticFunctionMaxEmptyLines {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, max: u64) -> Vec<Diagnostic> {
-    let rule = StylisticFunctionMaxEmptyLines;
     let opts = serde_json::json!(max);
+    let rule = configured(&StylisticFunctionMaxEmptyLines, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -173,5 +184,15 @@ mod tests {
   fn reports_two_empty_lines_when_max_one() {
     let d = check("a { transform: translate(\n1px,\n\n\n2px\n); }", 1);
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(0)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!(2)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("2")),
+      ["Invalid option \"2\" for rule \"@stylistic/function-max-empty-lines\""]
+    );
   }
 }

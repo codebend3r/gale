@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space inside the parentheses of functions.
-///
-/// Primary: "always" | "never" | "always-single-line"
-pub struct StylisticFunctionParenthesesSpaceInside;
+const NAME: &str = "@stylistic/function-parentheses-space-inside";
 
-impl Rule for StylisticFunctionParenthesesSpaceInside {
-  fn name(&self) -> &'static str {
-    "@stylistic/function-parentheses-space-inside"
+declare_rule! {
+  /// Require or disallow a space inside the parentheses of functions.
+  ///
+  /// Primary: "always" | "never" | "always-single-line"
+  pub struct StylisticFunctionParenthesesSpaceInside => StylisticFunctionParenthesesSpaceInsideCheck {
+    name: NAME,
+    description: "Require or disallow a space inside the parentheses of functions",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space inside the parentheses of functions"
+/// `@stylistic/function-parentheses-space-inside` as configured.
+pub struct StylisticFunctionParenthesesSpaceInsideCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.
+  option: &'static str,
+}
+
+impl StylisticFunctionParenthesesSpaceInsideCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.  Gale reads no option as `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "never", "always-single-line", "never-single-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticFunctionParenthesesSpaceInsideCheck {
   /// Flags function parentheses whose inner spaces do not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -203,28 +222,24 @@ impl Rule for StylisticFunctionParenthesesSpaceInside {
 
           if expect_space && !has_space_after_open {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Expected a space after \"(\" in function")
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Expected a space after \"(\" in function")
                 .span(Span::new(open_paren, 1)),
             );
           } else if !expect_space && has_space_after_open {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Unexpected space after \"(\" in function")
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Unexpected space after \"(\" in function")
                 .span(Span::new(open_paren, 1)),
             );
           }
 
           if expect_space && !has_space_before_close {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Expected a space before \")\" in function")
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Expected a space before \")\" in function")
                 .span(Span::new(close_paren, 1)),
             );
           } else if !expect_space && has_space_before_close {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Unexpected space before \")\" in function")
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Unexpected space before \")\" in function")
                 .span(Span::new(close_paren, 1)),
             );
           }
@@ -244,11 +259,11 @@ impl Rule for StylisticFunctionParenthesesSpaceInside {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticFunctionParenthesesSpaceInside;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticFunctionParenthesesSpaceInside, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -294,5 +309,19 @@ mod tests {
     // #{...} should be skipped entirely
     let d = check("a { color: #{fn( $a )}; }", "never");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-single-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-single-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/function-parentheses-space-inside\""
+      ]
+    );
   }
 }
