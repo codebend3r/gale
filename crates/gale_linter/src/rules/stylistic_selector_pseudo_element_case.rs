@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify lowercase or uppercase for pseudo-element selectors.
-///
-/// Equivalent to Stylelint's `@stylistic/selector-pseudo-element-case` rule.
-pub struct StylisticSelectorPseudoElementCase;
+const NAME: &str = "@stylistic/selector-pseudo-element-case";
 
-impl Rule for StylisticSelectorPseudoElementCase {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-pseudo-element-case"
+declare_rule! {
+  /// Specify lowercase or uppercase for pseudo-element selectors.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/selector-pseudo-element-case` rule.
+  pub struct StylisticSelectorPseudoElementCase => StylisticSelectorPseudoElementCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for pseudo-element selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for pseudo-element selectors"
+/// `@stylistic/selector-pseudo-element-case` as configured.
+pub struct StylisticSelectorPseudoElementCaseCheck {
+  /// The primary option: `"lower"` or `"upper"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorPseudoElementCaseCheck {
+  /// The plugin's options: `"lower"` or `"upper"`.  Gale reads no option as
+  /// `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["lower", "upper"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("lower"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorPseudoElementCaseCheck {
   /// Flags pseudo-element names not in the configured case.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("lower");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -87,10 +104,9 @@ impl Rule for StylisticSelectorPseudoElementCase {
           };
           diagnostics.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Expected \"::{}\" to be \"::{}\"", name, expected),
             )
-            .severity(self.default_severity())
             .span(Span::new(pseudo_start, name_end - pseudo_start)),
           );
         }
@@ -108,13 +124,13 @@ impl Rule for StylisticSelectorPseudoElementCase {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_lowercase_pseudo_element() {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::before { }";
-    let d = StylisticSelectorPseudoElementCase
+    let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -123,7 +139,7 @@ mod tests {
   fn reports_uppercase_pseudo_element() {
     let opt = serde_json::Value::String("lower".to_string());
     let source = "a::Before { }";
-    let d = StylisticSelectorPseudoElementCase
+    let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("before"));
@@ -133,7 +149,7 @@ mod tests {
   fn allows_uppercase_pseudo_element_with_upper() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::AFTER { }";
-    let d = StylisticSelectorPseudoElementCase
+    let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -142,9 +158,19 @@ mod tests {
   fn reports_lowercase_when_upper_expected() {
     let opt = serde_json::Value::String("upper".to_string());
     let source = "a::after { }";
-    let d = StylisticSelectorPseudoElementCase
+    let d = configured(&StylisticSelectorPseudoElementCase, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("AFTER"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("lower")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/selector-pseudo-element-case\""]
+    );
   }
 }

@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space before the commas of media query lists.
-///
-/// Equivalent to Stylelint's `@stylistic/media-query-list-comma-space-before` rule.
-pub struct StylisticMediaQueryListCommaSpaceBefore;
+const NAME: &str = "@stylistic/media-query-list-comma-space-before";
 
-impl Rule for StylisticMediaQueryListCommaSpaceBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/media-query-list-comma-space-before"
+declare_rule! {
+  /// Require or disallow a space before the commas of media query lists.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/media-query-list-comma-space-before` rule.
+  pub struct StylisticMediaQueryListCommaSpaceBefore => StylisticMediaQueryListCommaSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the commas of media query lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the commas of media query lists"
+/// `@stylistic/media-query-list-comma-space-before` as configured.
+pub struct StylisticMediaQueryListCommaSpaceBeforeCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.
+  option: &'static str,
+}
+
+impl StylisticMediaQueryListCommaSpaceBeforeCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.  Gale reads no option as `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "never", "always-single-line", "never-single-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticMediaQueryListCommaSpaceBeforeCheck {
   /// Flags a media query list comma whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -83,8 +102,7 @@ impl Rule for StylisticMediaQueryListCommaSpaceBefore {
               "always" => {
                 if !has_space_before {
                   diagnostics.push(
-                    Diagnostic::new(self.name(), "Expected a space before \",\"".to_string())
-                      .severity(self.default_severity())
+                    Diagnostic::new(NAME, "Expected a space before \",\"".to_string())
                       .span(Span::new(comma_pos, 1)),
                   );
                 }
@@ -92,8 +110,7 @@ impl Rule for StylisticMediaQueryListCommaSpaceBefore {
               "never" => {
                 if has_space_before {
                   diagnostics.push(
-                    Diagnostic::new(self.name(), "Unexpected space before \",\"".to_string())
-                      .severity(self.default_severity())
+                    Diagnostic::new(NAME, "Unexpected space before \",\"".to_string())
                       .span(Span::new(comma_pos, 1)),
                   );
                 }
@@ -117,13 +134,13 @@ impl Rule for StylisticMediaQueryListCommaSpaceBefore {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_no_space_before_comma() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media screen, print { }";
-    let d = StylisticMediaQueryListCommaSpaceBefore
+    let d = configured(&StylisticMediaQueryListCommaSpaceBefore, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -132,7 +149,7 @@ mod tests {
   fn reports_space_before_comma() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media screen , print { }";
-    let d = StylisticMediaQueryListCommaSpaceBefore
+    let d = configured(&StylisticMediaQueryListCommaSpaceBefore, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
@@ -142,9 +159,23 @@ mod tests {
   fn always_requires_space_before_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media screen, print { }";
-    let d = StylisticMediaQueryListCommaSpaceBefore
+    let d = configured(&StylisticMediaQueryListCommaSpaceBefore, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-single-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-single-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/media-query-list-comma-space-before\""
+      ]
+    );
   }
 }

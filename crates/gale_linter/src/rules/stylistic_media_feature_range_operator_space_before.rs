@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space before the range operator in media features.
-///
-/// Equivalent to `@stylistic/media-feature-range-operator-space-before`.
-pub struct StylisticMediaFeatureRangeOperatorSpaceBefore;
+const NAME: &str = "@stylistic/media-feature-range-operator-space-before";
 
-impl Rule for StylisticMediaFeatureRangeOperatorSpaceBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/media-feature-range-operator-space-before"
+declare_rule! {
+  /// Require or disallow a space before the range operator in media features.
+  ///
+  /// Equivalent to `@stylistic/media-feature-range-operator-space-before`.
+  pub struct StylisticMediaFeatureRangeOperatorSpaceBefore => StylisticMediaFeatureRangeOperatorSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the range operator in media features",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the range operator in media features"
+/// `@stylistic/media-feature-range-operator-space-before` as configured.
+pub struct StylisticMediaFeatureRangeOperatorSpaceBeforeCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticMediaFeatureRangeOperatorSpaceBeforeCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticMediaFeatureRangeOperatorSpaceBeforeCheck {
   /// Flags a range operator whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -91,10 +108,9 @@ impl Rule for StylisticMediaFeatureRangeOperatorSpaceBefore {
                 if !has_space_before {
                   diagnostics.push(
                     Diagnostic::new(
-                      self.name(),
+                      NAME,
                       format!("Expected a space before \"{}\"", &source[op_start..op_end]),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(op_start, op_len)),
                   );
                 }
@@ -103,10 +119,9 @@ impl Rule for StylisticMediaFeatureRangeOperatorSpaceBefore {
                 if has_space_before {
                   diagnostics.push(
                     Diagnostic::new(
-                      self.name(),
+                      NAME,
                       format!("Unexpected space before \"{}\"", &source[op_start..op_end]),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(op_start, op_len)),
                   );
                 }
@@ -133,11 +148,11 @@ impl Rule for StylisticMediaFeatureRangeOperatorSpaceBefore {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticMediaFeatureRangeOperatorSpaceBefore;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticMediaFeatureRangeOperatorSpaceBefore, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -166,5 +181,17 @@ mod tests {
   fn never_accepts_no_space_before() {
     let d = check("@media (width>=600px) { }", "never");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/media-feature-range-operator-space-before\""
+      ]
+    );
   }
 }

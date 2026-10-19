@@ -1,32 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline or disallow whitespace after the commas of selector lists.
-///
-/// Equivalent to `@stylistic/selector-list-comma-newline-after`.
-pub struct StylisticSelectorListCommaNewlineAfter;
+const NAME: &str = "@stylistic/selector-list-comma-newline-after";
 
-impl Rule for StylisticSelectorListCommaNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-list-comma-newline-after"
+declare_rule! {
+  /// Require a newline or disallow whitespace after the commas of selector lists.
+  ///
+  /// Equivalent to `@stylistic/selector-list-comma-newline-after`.
+  pub struct StylisticSelectorListCommaNewlineAfter => StylisticSelectorListCommaNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline or disallow whitespace after the commas of selector lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline or disallow whitespace after the commas of selector lists"
+/// `@stylistic/selector-list-comma-newline-after` as configured.
+pub struct StylisticSelectorListCommaNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorListCommaNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale also accepts `"never"`, which the plugin does
+  /// not.  Gale reads no option as `"always-multi-line"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-multi-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorListCommaNewlineAfterCheck {
   /// Flags a selector list comma whose trailing newline does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
-    let option = ctx.primary_option_str().unwrap_or("always-multi-line");
+    let option = self.option;
     let selector = &rule.selector;
 
     // Check if this is a selector list (contains commas)
@@ -160,11 +180,7 @@ impl Rule for StylisticSelectorListCommaNewlineAfter {
             "never" => "Unexpected newline after \",\"",
             _ => continue,
           };
-          diags.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(sel_offset + i, 1)),
-          );
+          diags.push(Diagnostic::new(NAME, msg).span(Span::new(sel_offset + i, 1)));
         }
       }
       i += 1;
@@ -178,7 +194,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -191,7 +207,7 @@ mod tests {
 
   #[test]
   fn reports_missing_newline_after_comma_multiline() {
-    let rule = StylisticSelectorListCommaNewlineAfter;
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a,\nb, c";
     let ctx = ctx_with_source(sel);
     let d = rule.check(&style_with_selector(sel), &ctx);
@@ -202,7 +218,7 @@ mod tests {
 
   #[test]
   fn allows_newline_after_all_commas() {
-    let rule = StylisticSelectorListCommaNewlineAfter;
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a,\nb,\nc";
     let ctx = ctx_with_source(sel);
     let d = rule.check(&style_with_selector(sel), &ctx);
@@ -211,7 +227,7 @@ mod tests {
 
   #[test]
   fn allows_scss_line_comment_after_comma() {
-    let rule = StylisticSelectorListCommaNewlineAfter;
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "&[aria-disabled=\"true\"]:enabled, // This catches a situation\n&[aria-disabled=\"true\"]:active:enabled";
     let ctx = ctx_with_source(sel);
     let d = rule.check(&style_with_selector(sel), &ctx);
@@ -224,7 +240,7 @@ mod tests {
 
   #[test]
   fn allows_block_comment_newline_after_comma() {
-    let rule = StylisticSelectorListCommaNewlineAfter;
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a, /* comment */\nb,\nc";
     let ctx = ctx_with_source(sel);
     let d = rule.check(&style_with_selector(sel), &ctx);
@@ -237,11 +253,25 @@ mod tests {
 
   #[test]
   fn allows_single_line_with_default() {
-    let rule = StylisticSelectorListCommaNewlineAfter;
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a, b, c";
     let ctx = ctx_with_source(sel);
     let d = rule.check(&style_with_selector(sel), &ctx);
     // Default is "always-multi-line", single line is fine
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/selector-list-comma-newline-after\""
+      ]
+    );
   }
 }

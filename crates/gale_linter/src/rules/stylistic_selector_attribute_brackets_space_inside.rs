@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space inside the brackets of attribute selectors.
-///
-/// Equivalent to `@stylistic/selector-attribute-brackets-space-inside`.
-pub struct StylisticSelectorAttributeBracketsSpaceInside;
+const NAME: &str = "@stylistic/selector-attribute-brackets-space-inside";
 
-impl Rule for StylisticSelectorAttributeBracketsSpaceInside {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-attribute-brackets-space-inside"
+declare_rule! {
+  /// Require or disallow a space inside the brackets of attribute selectors.
+  ///
+  /// Equivalent to `@stylistic/selector-attribute-brackets-space-inside`.
+  pub struct StylisticSelectorAttributeBracketsSpaceInside => StylisticSelectorAttributeBracketsSpaceInsideCheck {
+    name: NAME,
+    description: "Require or disallow a space inside the brackets of attribute selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space inside the brackets of attribute selectors"
+/// `@stylistic/selector-attribute-brackets-space-inside` as configured.
+pub struct StylisticSelectorAttributeBracketsSpaceInsideCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorAttributeBracketsSpaceInsideCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorAttributeBracketsSpaceInsideCheck {
   /// Flags attribute selector brackets whose inner spaces do not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -110,15 +127,13 @@ impl Rule for StylisticSelectorAttributeBracketsSpaceInside {
           "always" => {
             if !has_space_after_open {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected a space after \"[\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected a space after \"[\"".to_string())
                   .span(Span::new(open_pos, 1)),
               );
             }
             if !has_space_before_close {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected a space before \"]\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected a space before \"]\"".to_string())
                   .span(Span::new(close_pos, 1)),
               );
             }
@@ -126,15 +141,13 @@ impl Rule for StylisticSelectorAttributeBracketsSpaceInside {
           "never" => {
             if has_space_after_open {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected space after \"[\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected space after \"[\"".to_string())
                   .span(Span::new(open_pos + 1, 1)),
               );
             }
             if has_space_before_close {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected space before \"]\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected space before \"]\"".to_string())
                   .span(Span::new(close_pos - 1, 1)),
               );
             }
@@ -157,19 +170,21 @@ impl Rule for StylisticSelectorAttributeBracketsSpaceInside {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn never_allows_no_space_inside_brackets() {
     let source = "a[href] { }";
-    let d = StylisticSelectorAttributeBracketsSpaceInside.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticSelectorAttributeBracketsSpaceInside, None)
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_space_inside_brackets() {
     let source = "a[ href ] { }";
-    let d = StylisticSelectorAttributeBracketsSpaceInside.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticSelectorAttributeBracketsSpaceInside, None)
+      .check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 2);
   }
 
@@ -177,7 +192,7 @@ mod tests {
   fn always_allows_space_inside_brackets() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a[ href ] { }";
-    let d = StylisticSelectorAttributeBracketsSpaceInside
+    let d = configured(&StylisticSelectorAttributeBracketsSpaceInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -186,7 +201,7 @@ mod tests {
   fn always_reports_missing_space_inside_brackets() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a[href] { }";
-    let d = StylisticSelectorAttributeBracketsSpaceInside
+    let d = configured(&StylisticSelectorAttributeBracketsSpaceInside, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 2);
   }
@@ -194,7 +209,20 @@ mod tests {
   #[test]
   fn skips_brackets_inside_strings() {
     let source = "a::after { content: \"[foo]\"; }";
-    let d = StylisticSelectorAttributeBracketsSpaceInside.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticSelectorAttributeBracketsSpaceInside, None)
+      .check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/selector-attribute-brackets-space-inside\""
+      ]
+    );
   }
 }

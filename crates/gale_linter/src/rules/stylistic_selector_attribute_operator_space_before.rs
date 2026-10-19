@@ -1,35 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space before the operator within attribute selectors.
-///
-/// Equivalent to `@stylistic/selector-attribute-operator-space-before`.
-pub struct StylisticSelectorAttributeOperatorSpaceBefore;
+const NAME: &str = "@stylistic/selector-attribute-operator-space-before";
+
+declare_rule! {
+  /// Require or disallow a space before the operator within attribute selectors.
+  ///
+  /// Equivalent to `@stylistic/selector-attribute-operator-space-before`.
+  pub struct StylisticSelectorAttributeOperatorSpaceBefore => StylisticSelectorAttributeOperatorSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the operator within attribute selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `@stylistic/selector-attribute-operator-space-before` as configured.
+pub struct StylisticSelectorAttributeOperatorSpaceBeforeCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorAttributeOperatorSpaceBeforeCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
+  }
+}
 
 /// CSS attribute selector operators.
 const ATTR_OPERATORS: &[&str] = &["~=", "|=", "^=", "$=", "*=", "="];
 
-impl Rule for StylisticSelectorAttributeOperatorSpaceBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-attribute-operator-space-before"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the operator within attribute selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorAttributeOperatorSpaceBeforeCheck {
   /// Flags an attribute operator whose preceding space does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let selector = &rule.selector;
 
     let mut diags = Vec::new();
@@ -63,7 +80,6 @@ impl Rule for StylisticSelectorAttributeOperatorSpaceBefore {
             attr_content,
             sel_offset + bracket_start + 1,
             option,
-            self,
             &mut diags,
           );
         }
@@ -80,7 +96,6 @@ fn check_attr_operator(
   attr_content: &str,
   base_offset: usize,
   option: &str,
-  rule: &StylisticSelectorAttributeOperatorSpaceBefore,
   diags: &mut Vec<Diagnostic>,
 ) {
   for op in ATTR_OPERATORS {
@@ -103,11 +118,7 @@ fn check_attr_operator(
           "never" => format!("Unexpected whitespace before \"{op}\""),
           _ => return,
         };
-        diags.push(
-          Diagnostic::new(rule.name(), msg)
-            .severity(rule.default_severity())
-            .span(Span::new(base_offset + pos, op.len())),
-        );
+        diags.push(Diagnostic::new(NAME, msg).span(Span::new(base_offset + pos, op.len())));
       }
       return; // Only check the first operator found
     }
@@ -119,7 +130,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -132,7 +143,7 @@ mod tests {
 
   #[test]
   fn reports_space_before_operator_when_never() {
-    let rule = StylisticSelectorAttributeOperatorSpaceBefore;
+    let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
     let d = rule.check(&style_with_selector("[attr =value]"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
@@ -140,15 +151,27 @@ mod tests {
 
   #[test]
   fn allows_no_space_before_operator_when_never() {
-    let rule = StylisticSelectorAttributeOperatorSpaceBefore;
+    let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
     let d = rule.check(&style_with_selector("[attr=value]"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn no_report_for_simple_attribute() {
-    let rule = StylisticSelectorAttributeOperatorSpaceBefore;
+    let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
     let d = rule.check(&style_with_selector("[disabled]"), &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/selector-attribute-operator-space-before\""
+      ]
+    );
   }
 }
