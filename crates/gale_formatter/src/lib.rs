@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use gale_diagnostics::{LintResult, SourceLineIndex, SourceLocation};
+use gale_diagnostics::{LintResult, SourceLineIndex};
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
@@ -131,16 +131,6 @@ pub fn stylelint_results(results: &[LintResult]) -> Vec<StylelintResult> {
       }
     })
     .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Helper: compute_location
-// ---------------------------------------------------------------------------
-
-/// Converts a byte offset into a 1-indexed (line, column) pair.
-pub fn compute_location(source: &str, offset: usize) -> (usize, usize) {
-  let loc = SourceLocation::from_offset(source, offset);
-  (loc.line, loc.column)
 }
 
 // ---------------------------------------------------------------------------
@@ -962,21 +952,6 @@ mod tests {
     assert!(!plain.contains('\x1b'));
     assert!(plain.contains("src/app.css\n"));
     assert!(plain.contains("Unexpected empty block  block-no-empty"));
-  }
-
-  #[test]
-  fn compute_location_basic() {
-    let source = "abc\ndef\nghi";
-    let (line, col) = compute_location(source, 5);
-    assert_eq!(line, 2);
-    assert_eq!(col, 2);
-  }
-
-  #[test]
-  fn compute_location_start_of_file() {
-    let (line, col) = compute_location("hello", 0);
-    assert_eq!(line, 1);
-    assert_eq!(col, 1);
   }
 
   #[test]
