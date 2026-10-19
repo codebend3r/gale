@@ -197,7 +197,7 @@ impl Check for CustomPropertyPatternCheck {
                 // Compute absolute byte offset of the token in the source.
                 let decl_start = decl.span.offset;
                 let decl_end = (decl.span.offset + decl.span.length).min(ctx.source.len());
-                let decl_text = &ctx.source[decl_start..decl_end];
+                let decl_text = ctx.source_slice(decl_start, decl_end).unwrap_or("");
                 let value_pos_in_decl = decl_text.find(&decl.value).unwrap_or(0);
                 let token_abs_offset = decl_start + value_pos_in_decl + token_offset_in_value;
 

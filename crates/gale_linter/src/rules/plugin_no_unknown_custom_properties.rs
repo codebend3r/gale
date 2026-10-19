@@ -55,18 +55,13 @@ impl PluginNoUnknownCustomPropertiesCheck {
 /// Collect all custom property definitions (`--name: value`) from nodes.
 fn collect_definitions(nodes: &[CssNode], defs: &mut HashSet<String>) {
   for node in nodes {
-    match node {
-      CssNode::Declaration(decl) => {
-        if decl.property.starts_with("--") {
-          defs.insert(decl.property.clone());
-        }
+    for decl in node.declarations() {
+      if decl.property.starts_with("--") {
+        defs.insert(decl.property.clone());
       }
+    }
+    match node {
       CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          if decl.property.starts_with("--") {
-            defs.insert(decl.property.clone());
-          }
-        }
         // Recurse into nested children
         let child_nodes: Vec<CssNode> = rule
           .children
@@ -79,7 +74,7 @@ fn collect_definitions(nodes: &[CssNode], defs: &mut HashSet<String>) {
       CssNode::AtRule(at_rule) => {
         collect_definitions(&at_rule.children, defs);
       }
-      CssNode::Comment(_) => {}
+      CssNode::Declaration(_) | CssNode::Comment(_) => {}
     }
   }
 }
@@ -96,14 +91,11 @@ struct VarUsage {
 /// Find all `var(--name)` usages in declarations within nodes.
 fn collect_usages(nodes: &[CssNode], usages: &mut Vec<VarUsage>) {
   for node in nodes {
+    for decl in node.declarations() {
+      collect_var_refs_from_value(&decl.value, decl.span.offset, decl.span.length, usages);
+    }
     match node {
-      CssNode::Declaration(decl) => {
-        collect_var_refs_from_value(&decl.value, decl.span.offset, decl.span.length, usages);
-      }
       CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          collect_var_refs_from_value(&decl.value, decl.span.offset, decl.span.length, usages);
-        }
         let child_nodes: Vec<CssNode> = rule
           .children
           .iter()
@@ -115,7 +107,7 @@ fn collect_usages(nodes: &[CssNode], usages: &mut Vec<VarUsage>) {
       CssNode::AtRule(at_rule) => {
         collect_usages(&at_rule.children, usages);
       }
-      CssNode::Comment(_) => {}
+      CssNode::Declaration(_) | CssNode::Comment(_) => {}
     }
   }
 }

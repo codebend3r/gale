@@ -124,14 +124,9 @@ impl Check for ShorthandPropertyNoRedundantValuesCheck {
   /// Flags shorthand values that repeat parts a shorter form would imply, and
   /// offers the shortened value as a fix.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
     let ignore_four_into_three = self.ignore_four_into_three;
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       let Some((prop, _)) = source_text::declaration_property(ctx.source, decl) else {
         continue;
       };

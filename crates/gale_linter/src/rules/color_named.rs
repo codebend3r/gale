@@ -104,7 +104,7 @@ impl Check for ColorNamedCheck {
       let decl_start = decl.span.offset;
       let decl_end = decl_start + decl.span.length;
       let (value, value_offset) = if decl_end <= ctx.source.len() && decl_start < decl_end {
-        let full = &ctx.source[decl_start..decl_end];
+        let full = ctx.source_slice(decl_start, decl_end).unwrap_or("");
         if let Some(colon_pos) = full.find(':') {
           let after_colon = &full[colon_pos + 1..];
           let trimmed = after_colon.trim_start();
@@ -112,7 +112,10 @@ impl Check for ColorNamedCheck {
           let val = trimmed.trim_end_matches(';').trim_end();
           (val, decl_start + colon_pos + 1 + leading_ws)
         } else {
-          (&ctx.source[decl_start..decl_end], decl_start)
+          (
+            ctx.source_slice(decl_start, decl_end).unwrap_or(""),
+            decl_start,
+          )
         }
       } else {
         (decl.value.as_str(), decl_start)

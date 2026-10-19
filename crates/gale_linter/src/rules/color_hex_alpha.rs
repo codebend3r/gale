@@ -44,17 +44,11 @@ impl Check for ColorHexAlphaCheck {
   /// Flags hex colors whose digit count carries an alpha channel under "never",
   /// or lacks one under "always".
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mode = self.mode;
 
     let mut diags = Vec::new();
 
-    for decl in declarations {
+    for decl in node.declarations() {
       let value = &decl.value;
       let bytes = value.as_bytes();
       let len = bytes.len();

@@ -166,7 +166,10 @@ impl Check for StylisticValueListCommaSpaceAfterCheck {
             while end < len && bytes[end] != b';' && bytes[end] != b'}' {
               end += 1;
             }
-            !ctx.source[start..end.min(len)].contains('\n')
+            !ctx
+              .source_slice(start, end.min(len))
+              .unwrap_or("")
+              .contains('\n')
           } else {
             true
           };

@@ -91,14 +91,8 @@ impl Check for DeclarationPropertyMaxValuesCheck {
       return vec![];
     }
 
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       let prop_lower = decl.property.to_ascii_lowercase();
 
       // v17: check property as-is, no vendor prefix stripping

@@ -71,7 +71,7 @@ impl Check for ScssAtRuleConditionalNoParenthesesCheck {
     if is_wrapped_in_parens(params) {
       // Stylelint points to the `(` of the condition, not the `@if` keyword.
       let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-      let at_src = &ctx.source[at.span.offset..at_src_end];
+      let at_src = ctx.source_slice(at.span.offset, at_src_end).unwrap_or("");
       let paren_off = at_src.find('(').unwrap_or(0);
       vec![
         Diagnostic::new(

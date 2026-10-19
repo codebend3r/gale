@@ -347,9 +347,16 @@ impl Check for TimeMinMillisecondsCheck {
       // Use source text when available for accurate positions.
       let (value_text, value_offset) = if !ctx.source.is_empty() {
         let vo = find_value_offset(ctx.source, decl.span.offset, decl.property.len());
-        let rest = &ctx.source[vo..];
+        let rest = ctx.source_from(vo).unwrap_or("");
         let end = rest.find([';', '}']).unwrap_or(rest.len());
-        (ctx.source[vo..vo + end].trim_end().to_string(), vo)
+        (
+          ctx
+            .source_slice(vo, vo + end)
+            .unwrap_or("")
+            .trim_end()
+            .to_string(),
+          vo,
+        )
       } else {
         let vo = decl.span.offset + decl.property.len() + 2;
         (decl.value.clone(), vo)

@@ -129,7 +129,7 @@ impl Check for StylisticFunctionCommaSpaceAfterCheck {
           } else {
             p + 1
           };
-          let fn_name = &ctx.source[fn_start..=fn_end];
+          let fn_name = ctx.source_slice(fn_start, fn_end + 1).unwrap_or("");
           if fn_name.eq_ignore_ascii_case("url") {
             is_url_fn = true;
           }
@@ -219,7 +219,9 @@ impl Check for StylisticFunctionCommaSpaceAfterCheck {
           continue;
         }
 
-        let func_content = &ctx.source[paren_start..paren_end.min(len)];
+        let func_content = ctx
+          .source_slice(paren_start, paren_end.min(len))
+          .unwrap_or("");
         let is_single_line = !func_content.contains('\n');
 
         // Scan for commas inside this function call (depth 0 only —

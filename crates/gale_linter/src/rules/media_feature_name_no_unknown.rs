@@ -60,7 +60,7 @@ impl Check for MediaFeatureNameNoUnknownCheck {
     ) {
       let at_end = (at.span.offset + at.span.length).min(ctx.source.len());
       let at_source = if at.span.offset < at_end {
-        &ctx.source[at.span.offset..at_end]
+        ctx.source_slice(at.span.offset, at_end).unwrap_or("")
       } else {
         ""
       };

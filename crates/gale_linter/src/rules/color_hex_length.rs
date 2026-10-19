@@ -51,16 +51,10 @@ impl Check for ColorHexLengthCheck {
   /// hex digits inside strings, comments and `url()` are not colors, and the
   /// fix keeps the case of the digits it keeps.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let long = self.long;
 
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       if decl.span.length == 0 {
         continue;
       }

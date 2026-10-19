@@ -74,7 +74,9 @@ impl Check for ScssLoadNoPartialLeadingUnderscoreCheck {
       // matching Stylelint's column positioning (word: pathStripped).
       let path_offset = if at.span.length > 0 && at.span.offset + at.span.length <= ctx.source.len()
       {
-        let at_src = &ctx.source[at.span.offset..at.span.offset + at.span.length];
+        let at_src = ctx
+          .source_slice(at.span.offset, at.span.offset + at.span.length)
+          .unwrap_or("");
         // Find the path string within the at-rule source
         if let Some(pos) = at_src.find(path) {
           at.span.offset + pos

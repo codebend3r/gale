@@ -61,26 +61,17 @@ struct Definition {
 /// Collect all custom property definitions (`--name: value`) from nodes.
 fn collect_definitions(nodes: &[CssNode], defs: &mut Vec<Definition>) {
   for node in nodes {
-    match node {
-      CssNode::Declaration(decl) => {
-        if decl.property.starts_with("--") {
-          defs.push(Definition {
-            name: decl.property.clone(),
-            offset: decl.span.offset,
-            length: decl.span.length,
-          });
-        }
+    for decl in node.declarations() {
+      if decl.property.starts_with("--") {
+        defs.push(Definition {
+          name: decl.property.clone(),
+          offset: decl.span.offset,
+          length: decl.span.length,
+        });
       }
+    }
+    match node {
       CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          if decl.property.starts_with("--") {
-            defs.push(Definition {
-              name: decl.property.clone(),
-              offset: decl.span.offset,
-              length: decl.span.length,
-            });
-          }
-        }
         let child_nodes: Vec<CssNode> = rule
           .children
           .iter()
@@ -92,7 +83,7 @@ fn collect_definitions(nodes: &[CssNode], defs: &mut Vec<Definition>) {
       CssNode::AtRule(at_rule) => {
         collect_definitions(&at_rule.children, defs);
       }
-      CssNode::Comment(_) => {}
+      CssNode::Declaration(_) | CssNode::Comment(_) => {}
     }
   }
 }
@@ -100,14 +91,11 @@ fn collect_definitions(nodes: &[CssNode], defs: &mut Vec<Definition>) {
 /// Collect all var(--name) referenced property names.
 fn collect_var_references(nodes: &[CssNode], refs: &mut HashSet<String>) {
   for node in nodes {
+    for decl in node.declarations() {
+      collect_var_refs_from_value(&decl.value, refs);
+    }
     match node {
-      CssNode::Declaration(decl) => {
-        collect_var_refs_from_value(&decl.value, refs);
-      }
       CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          collect_var_refs_from_value(&decl.value, refs);
-        }
         let child_nodes: Vec<CssNode> = rule
           .children
           .iter()
@@ -119,7 +107,7 @@ fn collect_var_references(nodes: &[CssNode], refs: &mut HashSet<String>) {
       CssNode::AtRule(at_rule) => {
         collect_var_references(&at_rule.children, refs);
       }
-      CssNode::Comment(_) => {}
+      CssNode::Declaration(_) | CssNode::Comment(_) => {}
     }
   }
 }

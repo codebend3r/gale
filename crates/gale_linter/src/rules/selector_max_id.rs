@@ -71,7 +71,7 @@ impl Check for SelectorMaxIdCheck {
     // since the parser may normalize whitespace differently from source.
     let source_selector = {
       if selector_source_start < ctx.source.len() {
-        let rest = &ctx.source[selector_source_start..];
+        let rest = ctx.source_from(selector_source_start).unwrap_or("");
         // Find the opening brace, respecting strings and brackets.
         let end = find_selector_end(rest);
         rest[..end].trim_end()
