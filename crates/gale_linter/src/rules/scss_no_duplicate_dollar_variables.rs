@@ -139,10 +139,10 @@ impl ScssNoDuplicateDollarVariablesCheck {
                 NAME,
                 format!("Unexpected duplicate dollar variable \"{}\"", var_name),
               )
-              .span(Span::new(decl.span.offset, decl.span.length)),
+              .span(decl.span),
             );
           } else {
-            seen.insert(var_name, Span::new(decl.span.offset, decl.span.length));
+            seen.insert(var_name, decl.span);
           }
         }
         CssNode::AtRule(at) => {
@@ -166,7 +166,7 @@ impl ScssNoDuplicateDollarVariablesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan};
+  use gale_css_parser::Declaration;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -174,7 +174,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: name.to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     })
   }
@@ -218,13 +218,13 @@ mod tests {
       CssNode::Declaration(Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         important: false,
       }),
       CssNode::Declaration(Declaration {
         property: "color".to_string(),
         value: "blue".to_string(),
-        span: ParserSpan::new(20, 10),
+        span: Span::new(20, 10),
         important: false,
       }),
     ];

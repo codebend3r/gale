@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -58,7 +58,7 @@ impl Check for BlockNoRedundantNestedStyleRulesCheck {
                          declarations can be placed directly in the parent rule"
               .to_string(),
           )
-          .span(Span::new(child.span.offset, child.span.length)),
+          .span(child.span),
         );
       }
     }
@@ -70,7 +70,8 @@ impl Check for BlockNoRedundantNestedStyleRulesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -79,7 +80,7 @@ mod tests {
       selector: selector.to_string(),
       declarations: vec![],
       children,
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       ..Default::default()
     })
   }
@@ -90,10 +91,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(10, 30),
+      span: Span::new(10, 30),
       ..Default::default()
     }
   }

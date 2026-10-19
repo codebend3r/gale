@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
@@ -79,7 +79,7 @@ impl Check for SelectorMaxClassCheck {
                             "Expected selector \"{sel}\" to have no more than {max} class selector(s), found {count}",
                         ),
                     )
-                    .span(Span::new(rule.span.offset, rule.span.length)),
+                    .span(rule.span),
                 );
       }
     }
@@ -114,7 +114,8 @@ fn count_class_selectors(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -124,10 +125,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

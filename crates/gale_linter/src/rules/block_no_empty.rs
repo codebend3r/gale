@@ -274,7 +274,7 @@ fn is_covering_disable(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx_with_source, invalid_options, lint, scss_ctx_with_source};
 
@@ -285,7 +285,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = ctx_with_source(source);
@@ -305,10 +305,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 10),
+        span: Span::new(4, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = ctx_with_source(source);
@@ -323,7 +323,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = ctx_with_source(source);
@@ -338,7 +338,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = ctx_with_source(source);
@@ -353,7 +353,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: ".btn".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = scss_ctx_with_source(source);
@@ -368,7 +368,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: ".btn".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let ctx = scss_ctx_with_source(source);
@@ -381,7 +381,7 @@ mod tests {
     let rule = configured(&BlockNoEmpty, None);
     let node = CssNode::Comment(gale_css_parser::Comment {
       text: "/* hi */".to_string(),
-      span: ParserSpan::new(0, 8),
+      span: Span::new(0, 8),
       is_line: false,
     });
     let ctx = ctx_with_source("/* hi */");

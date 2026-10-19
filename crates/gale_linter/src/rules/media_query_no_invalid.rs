@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -54,10 +54,7 @@ impl Check for MediaQueryNoInvalidCheck {
 
     // Empty media query
     if params.is_empty() {
-      return vec![
-        Diagnostic::new(NAME, "Unexpected empty media query")
-          .span(Span::new(at.span.offset, at.span.length)),
-      ];
+      return vec![Diagnostic::new(NAME, "Unexpected empty media query").span(at.span)];
     }
 
     // Check for unbalanced parentheses
@@ -70,7 +67,7 @@ impl Check for MediaQueryNoInvalidCheck {
           if depth < 0 {
             return vec![
               Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
-                .span(Span::new(at.span.offset, at.span.length)),
+                .span(at.span),
             ];
           }
         }
@@ -79,16 +76,14 @@ impl Check for MediaQueryNoInvalidCheck {
     }
     if depth != 0 {
       return vec![
-        Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
-          .span(Span::new(at.span.offset, at.span.length)),
+        Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query").span(at.span),
       ];
     }
 
     // Check for empty parentheses ()
     if params.contains("()") {
       return vec![
-        Diagnostic::new(NAME, "Unexpected empty parentheses in media query")
-          .span(Span::new(at.span.offset, at.span.length)),
+        Diagnostic::new(NAME, "Unexpected empty parentheses in media query").span(at.span),
       ];
     }
 
@@ -99,7 +94,8 @@ impl Check for MediaQueryNoInvalidCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -107,7 +103,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }

@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Declaration, StyleRule};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -337,7 +337,7 @@ impl Check for GaleNoIneffectiveDeclarationsCheck {
               decl.property
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
     }

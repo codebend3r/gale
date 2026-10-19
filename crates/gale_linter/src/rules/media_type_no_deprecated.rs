@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -103,7 +103,7 @@ impl Check for MediaTypeNoDeprecatedCheck {
           NAME,
           format!("Unexpected deprecated media type \"{}\"", media_type),
         )
-        .span(Span::new(at.span.offset, at.span.length))
+        .span(at.span)
       })
       .collect()
   }
@@ -112,7 +112,8 @@ impl Check for MediaTypeNoDeprecatedCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Span};
+  use gale_css_parser::{AtRule, CssNode};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 

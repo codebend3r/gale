@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -79,7 +79,7 @@ impl Check for ScssAtMixinPatternCheck {
             mixin_name, pattern_str
           ),
         )
-        .span(Span::new(at.span.offset, at.span.length)),
+        .span(at.span),
       ]
     } else {
       vec![]
@@ -90,7 +90,8 @@ impl Check for ScssAtMixinPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -98,7 +99,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     })
   }
@@ -123,7 +124,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "function".to_string(),
       params: "MyFunc".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     });
     assert!(rule.check(&node, &scss_ctx()).is_empty());

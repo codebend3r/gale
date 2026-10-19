@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -71,7 +71,7 @@ impl Check for DeclarationBlockNoDuplicateCustomPropertiesCheck {
             NAME,
             format!("Unexpected duplicate custom property \"{}\"", decl.property),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
     }
@@ -83,7 +83,8 @@ impl Check for DeclarationBlockNoDuplicateCustomPropertiesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -96,23 +97,23 @@ mod tests {
         Declaration {
           property: "--color-primary".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(8, 22),
+          span: Span::new(8, 22),
           important: false,
         },
         Declaration {
           property: "--color-secondary".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(31, 24),
+          span: Span::new(31, 24),
           important: false,
         },
         Declaration {
           property: "--color-primary".to_string(),
           value: "green".to_string(),
-          span: ParserSpan::new(56, 24),
+          span: Span::new(56, 24),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 82),
+      span: Span::new(0, 82),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -132,17 +133,17 @@ mod tests {
         Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(4, 10),
+          span: Span::new(4, 10),
           important: false,
         },
         Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(15, 11),
+          span: Span::new(15, 11),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -158,17 +159,17 @@ mod tests {
         Declaration {
           property: "--color-a".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(8, 16),
+          span: Span::new(8, 16),
           important: false,
         },
         Declaration {
           property: "--color-b".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(25, 17),
+          span: Span::new(25, 17),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 44),
+      span: Span::new(0, 44),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -184,13 +185,13 @@ mod tests {
     let decl = |property: &str| Declaration {
       property: property.to_string(),
       value: "1".to_string(),
-      span: ParserSpan::new(0, 4),
+      span: Span::new(0, 4),
       important: false,
     };
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![decl("--x-a"), decl("--x-a"), decl("--y"), decl("--y")],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx());

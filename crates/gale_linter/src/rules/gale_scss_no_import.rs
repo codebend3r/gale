@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -124,17 +124,15 @@ impl Check for GaleScssNoImportCheck {
       return vec![];
     }
 
-    vec![
-      Diagnostic::new(NAME, "Expected @use or @forward instead of @import")
-        .span(Span::new(at.span.offset, at.span.length)),
-    ]
+    vec![Diagnostic::new(NAME, "Expected @use or @forward instead of @import").span(at.span)]
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, scss_ctx};
 
@@ -142,7 +140,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "import".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       children: vec![],
     })
   }
@@ -211,7 +209,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "use".to_string(),
       params: "\"variables\"".to_string(),
-      span: ParserSpan::new(0, 16),
+      span: Span::new(0, 16),
       children: vec![],
     });
     assert!(rule.check(&node, &scss_ctx()).is_empty());

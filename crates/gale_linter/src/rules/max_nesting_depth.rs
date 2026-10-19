@@ -142,10 +142,7 @@ fn check_nodes_depth(
         // A style rule at depth > 0 contributes to nesting.
         // depth 0 is top-level and doesn't count.
         if !is_ignored_pseudo && config.too_deep(effective_depth) && effective_depth > 0 {
-          diags.push(config.problem(
-            effective_depth,
-            Span::new(style.span.offset, style.span.length),
-          ));
+          diags.push(config.problem(effective_depth, style.span));
         }
 
         // Recurse into nested style rule children.
@@ -180,7 +177,7 @@ fn check_nodes_depth(
 
         // If not ignored and nested (depth > 0), check if it exceeds max.
         if !is_blockless_ignored && depth > 0 && config.too_deep(depth) {
-          diags.push(config.problem(depth, Span::new(at_rule.span.offset, at_rule.span.length)));
+          diags.push(config.problem(depth, at_rule.span));
         }
 
         check_nodes_depth(config, &at_rule.children, child_depth, is_scss, diags);
@@ -214,10 +211,7 @@ fn check_style_depth(
     let effective_depth = if is_ignored_pseudo { depth - 1 } else { depth };
 
     if !is_ignored_pseudo && config.too_deep(effective_depth) {
-      diags.push(config.problem(
-        effective_depth,
-        Span::new(child.span.offset, child.span.length),
-      ));
+      diags.push(config.problem(effective_depth, child.span));
     }
 
     let child_depth = if is_ignored_pseudo { depth } else { depth + 1 };
@@ -228,7 +222,7 @@ fn check_style_depth(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{AtRule as CssAtRule, Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -236,7 +230,7 @@ mod tests {
     Declaration {
       property: "color".to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       important: false,
     }
   }
@@ -246,7 +240,7 @@ mod tests {
       return StyleRule {
         selector: ".leaf".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         ..Default::default()
       };
     }
@@ -254,7 +248,7 @@ mod tests {
       selector: format!(".level-{depth}"),
       declarations: vec![make_decl()],
       children: vec![make_nested(depth - 1)],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     }
   }
@@ -286,14 +280,14 @@ mod tests {
     let e = StyleRule {
       selector: ".e".to_string(),
       declarations: vec![make_decl()],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     };
     let d = StyleRule {
       selector: ".d".to_string(),
       declarations: vec![],
       children: vec![e],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     };
@@ -301,7 +295,7 @@ mod tests {
       selector: ".c".to_string(),
       declarations: vec![],
       children: vec![d],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     };
@@ -309,7 +303,7 @@ mod tests {
       selector: ".b".to_string(),
       declarations: vec![],
       children: vec![c],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     };
@@ -317,14 +311,14 @@ mod tests {
       selector: ".a".to_string(),
       declarations: vec![],
       children: vec![b],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     });
     let mixin = CssNode::AtRule(CssAtRule {
       name: "mixin".to_string(),
       params: "my-mixin".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![a],
     });
 
@@ -345,14 +339,14 @@ mod tests {
     let nested = StyleRule {
       selector: ".nested".to_string(),
       declarations: vec![make_decl()],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     };
     let top = CssNode::Style(StyleRule {
       selector: ".top".to_string(),
       declarations: vec![],
       children: vec![nested],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     });
@@ -376,25 +370,25 @@ mod tests {
     let c = CssNode::Style(StyleRule {
       selector: ".c".to_string(),
       declarations: vec![make_decl()],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
     let media = CssNode::AtRule(CssAtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![c],
     });
     let b = CssNode::Style(StyleRule {
       selector: ".b".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
     let a = CssNode::Style(StyleRule {
       selector: ".a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
 
@@ -426,14 +420,14 @@ mod tests {
     let b = StyleRule {
       selector: ".b".to_string(),
       declarations: vec![make_decl()],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     };
     let hover = StyleRule {
       selector: "&:hover".to_string(),
       declarations: vec![],
       children: vec![b],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     };
@@ -441,7 +435,7 @@ mod tests {
       selector: ".a".to_string(),
       declarations: vec![],
       children: vec![hover],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     });

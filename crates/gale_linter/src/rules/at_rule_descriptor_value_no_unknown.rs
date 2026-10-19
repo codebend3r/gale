@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -173,7 +173,7 @@ impl Check for AtRuleDescriptorValueNoUnknownCheck {
       if let CssNode::Declaration(decl) = child
         && let Some(msg) = validate_descriptor_value(&at.name, &decl.property, &decl.value)
       {
-        diags.push(Diagnostic::new(NAME, msg).span(Span::new(decl.span.offset, decl.span.length)));
+        diags.push(Diagnostic::new(NAME, msg).span(decl.span));
       }
     }
     diags
@@ -183,7 +183,8 @@ impl Check for AtRuleDescriptorValueNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
+  use gale_css_parser::{AtRule, Declaration};
+  use gale_diagnostics::Span;
   use serde_json::json;
 
   use crate::testing::{configured, ctx, invalid_options};
@@ -192,14 +193,14 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "font-face".to_string(),
       params: String::new(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: descriptors
         .iter()
         .map(|(p, v)| {
           CssNode::Declaration(Declaration {
             property: p.to_string(),
             value: v.to_string(),
-            span: ParserSpan::new(0, 0),
+            span: Span::new(0, 0),
             important: false,
           })
         })
@@ -211,14 +212,14 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "property".to_string(),
       params: "--my-prop".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: descriptors
         .iter()
         .map(|(p, v)| {
           CssNode::Declaration(Declaration {
             property: p.to_string(),
             value: v.to_string(),
-            span: ParserSpan::new(0, 0),
+            span: Span::new(0, 0),
             important: false,
           })
         })
@@ -322,7 +323,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     });
     assert!(rule.check(&node, &ctx()).is_empty());

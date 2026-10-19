@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -77,7 +77,7 @@ impl Check for NoInvalidPositionAtImportRuleCheck {
             if seen_non_import {
               diagnostics.push(
                 Diagnostic::new(NAME, format!("Unexpected @{name} after other statements"))
-                  .span(Span::new(at_rule.span.offset, at_rule.span.length)),
+                  .span(at_rule.span),
               );
             }
             continue;
@@ -87,7 +87,7 @@ impl Check for NoInvalidPositionAtImportRuleCheck {
             if seen_non_import {
               diagnostics.push(
                 Diagnostic::new(NAME, "Unexpected @import after other statements")
-                  .span(Span::new(at_rule.span.offset, at_rule.span.length)),
+                  .span(at_rule.span),
               );
             }
           } else if !self.ignore_at_rules.matches(name) {
@@ -109,7 +109,8 @@ impl Check for NoInvalidPositionAtImportRuleCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{AtRule, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, scss_ctx};
 
@@ -120,13 +121,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 5),
+        span: Span::new(0, 5),
         ..Default::default()
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "url.css".to_string(),
-        span: ParserSpan::new(10, 20),
+        span: Span::new(10, 20),
         children: vec![],
       }),
     ];
@@ -143,13 +144,13 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(0, 20),
+        span: Span::new(0, 20),
         children: vec![],
       }),
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(25, 5),
+        span: Span::new(25, 5),
         ..Default::default()
       }),
     ];
@@ -166,19 +167,19 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "use".to_string(),
         params: "'sass:math'".to_string(),
-        span: ParserSpan::new(0, 20),
+        span: Span::new(0, 20),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "forward".to_string(),
         params: "'variables'".to_string(),
-        span: ParserSpan::new(21, 25),
+        span: Span::new(21, 25),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(50, 20),
+        span: Span::new(50, 20),
         children: vec![],
       }),
     ];
@@ -195,13 +196,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 5),
+        span: Span::new(0, 5),
         ..Default::default()
       }),
       CssNode::AtRule(AtRule {
         name: "use".to_string(),
         params: "'sass:math'".to_string(),
-        span: ParserSpan::new(10, 20),
+        span: Span::new(10, 20),
         children: vec![],
       }),
     ];
@@ -217,13 +218,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 5),
+        span: Span::new(0, 5),
         ..Default::default()
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "url.css".to_string(),
-        span: ParserSpan::new(10, 20),
+        span: Span::new(10, 20),
         children: vec![],
       }),
     ];
@@ -242,19 +243,19 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "charset".to_string(),
         params: "UTF-8".to_string(),
-        span: ParserSpan::new(0, 15),
+        span: Span::new(0, 15),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "layer".to_string(),
         params: "base".to_string(),
-        span: ParserSpan::new(16, 12),
+        span: Span::new(16, 12),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(30, 20),
+        span: Span::new(30, 20),
         children: vec![],
       }),
     ];

@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
@@ -64,7 +64,7 @@ impl Check for SelectorMaxPseudoClassCheck {
                             "Expected selector \"{sel}\" to have no more than {max} pseudo-class(es), found {count}"
                         ),
                     )
-                    .span(Span::new(rule.span.offset, rule.span.length)),
+                    .span(rule.span),
                 );
       }
     }
@@ -151,7 +151,8 @@ fn count_pseudo_classes(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -161,10 +162,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, sel.len()),
+      span: Span::new(0, sel.len()),
       ..Default::default()
     })
   }

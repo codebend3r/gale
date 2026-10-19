@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -290,7 +290,7 @@ impl Check for FunctionNoUnknownCheck {
         }
         diags.push(
           Diagnostic::new(NAME, format!("Unexpected unknown function \"{func_name}\""))
-            .span(Span::new(decl.span.offset, decl.span.length)),
+            .span(decl.span),
         );
       }
     }
@@ -301,7 +301,8 @@ impl Check for FunctionNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -313,11 +314,11 @@ mod tests {
         .map(|(p, v)| Declaration {
           property: p.to_string(),
           value: v.to_string(),
-          span: ParserSpan::new(0, 0),
+          span: Span::new(0, 0),
           important: false,
         })
         .collect(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

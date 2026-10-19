@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -129,10 +129,8 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
           .any(|family| self.ignore_font_families.matches(&unquoted(family)));
 
       if !has_generic && !ignored {
-        diagnostics.push(
-          Diagnostic::new(NAME, "Unexpected missing generic font family")
-            .span(Span::new(decl.span.offset, decl.span.length)),
-        );
+        diagnostics
+          .push(Diagnostic::new(NAME, "Unexpected missing generic font family").span(decl.span));
       }
     }
 
@@ -143,7 +141,8 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -155,10 +154,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "Arial, Helvetica".to_string(),
-        span: ParserSpan::new(6, 28),
+        span: Span::new(6, 28),
         important: false,
       }],
-      span: ParserSpan::new(0, 36),
+      span: Span::new(0, 36),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -174,10 +173,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "Arial, Helvetica, sans-serif".to_string(),
-        span: ParserSpan::new(6, 40),
+        span: Span::new(6, 40),
         important: false,
       }],
-      span: ParserSpan::new(0, 48),
+      span: Span::new(0, 48),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -192,10 +191,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "system-ui".to_string(),
-        span: ParserSpan::new(6, 20),
+        span: Span::new(6, 20),
         important: false,
       }],
-      span: ParserSpan::new(0, 28),
+      span: Span::new(0, 28),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -214,10 +213,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "font-family".to_string(),
           value: value.to_string(),
-          span: ParserSpan::new(0, 10),
+          span: Span::new(0, 10),
           important: false,
         }],
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         ..Default::default()
       })
     };

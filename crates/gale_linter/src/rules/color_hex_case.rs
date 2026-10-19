@@ -110,7 +110,7 @@ fn find_hex_colors(value: &str) -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -120,10 +120,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

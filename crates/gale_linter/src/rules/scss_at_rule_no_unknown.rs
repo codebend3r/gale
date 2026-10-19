@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::data::is_known_at_rule_for_syntax;
 use crate::lint_env::LintEnv;
@@ -61,8 +61,7 @@ impl Check for ScssAtRuleNoUnknownCheck {
     if !self.ignore_at_rules.matches(&at.name) && !is_known_at_rule_for_syntax(&at.name, ctx.syntax)
     {
       vec![
-        Diagnostic::new(NAME, format!("Unexpected unknown at-rule \"@{}\"", at.name))
-          .span(Span::new(at.span.offset, at.span.length)),
+        Diagnostic::new(NAME, format!("Unexpected unknown at-rule \"@{}\"", at.name)).span(at.span),
       ]
     } else {
       vec![]
@@ -73,7 +72,8 @@ impl Check for ScssAtRuleNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Span};
+  use gale_css_parser::{AtRule, CssNode};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 

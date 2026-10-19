@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -67,7 +67,7 @@ impl Check for ScssPartialNoImportCheck {
         NAME,
         "Unexpected @import in partial SCSS file. Use @use or @forward instead.".to_string(),
       )
-      .span(Span::new(at.span.offset, at.span.length)),
+      .span(at.span),
     ]
   }
 }
@@ -76,7 +76,8 @@ impl Check for ScssPartialNoImportCheck {
 mod tests {
   use super::*;
   use crate::testing::{configured, invalid_options};
-  use gale_css_parser::{AtRule, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Syntax};
+  use gale_diagnostics::Span;
 
   fn partial_ctx() -> RuleContext<'static> {
     RuleContext {
@@ -102,7 +103,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "import".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       children: vec![],
     })
   }
@@ -131,7 +132,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "use".to_string(),
       params: "\"foo\"".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     });
     assert!(rule.check(&node, &partial_ctx()).is_empty());

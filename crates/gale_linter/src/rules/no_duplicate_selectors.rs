@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, SourceLineIndex, Span};
+use gale_diagnostics::{Diagnostic, SourceLineIndex};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -201,7 +201,7 @@ fn collect_selectors(
                   raw, first_line,
                 ),
               )
-              .span(Span::new(style_rule.span.offset, style_rule.span.length)),
+              .span(style_rule.span),
             );
           } else {
             seen.insert(normalized_key, line);
@@ -275,7 +275,8 @@ fn collect_selectors(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, StyleRule, Syntax};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, ctx_with_source, scss_ctx_with_source};
 
@@ -289,10 +290,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(6, 10),
+          span: Span::new(6, 10),
           important: false,
         }],
-        span: ParserSpan::new(0, 20),
+        span: Span::new(0, 20),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
@@ -300,10 +301,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(27, 11),
+          span: Span::new(27, 11),
           important: false,
         }],
-        span: ParserSpan::new(21, 21),
+        span: Span::new(21, 21),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
@@ -311,10 +312,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "display".to_string(),
           value: "block".to_string(),
-          span: ParserSpan::new(49, 14),
+          span: Span::new(49, 14),
           important: false,
         }],
-        span: ParserSpan::new(43, 24),
+        span: Span::new(43, 24),
         ..Default::default()
       }),
     ];
@@ -334,13 +335,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".bar".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(11, 10),
+        span: Span::new(11, 10),
         ..Default::default()
       }),
     ];
@@ -355,17 +356,17 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         ..Default::default()
       }),
       CssNode::AtRule(gale_css_parser::AtRule {
         name: "media".to_string(),
         params: "(min-width: 768px)".to_string(),
-        span: ParserSpan::new(11, 50),
+        span: Span::new(11, 50),
         children: vec![CssNode::Style(StyleRule {
           selector: ".foo".to_string(),
           declarations: vec![],
-          span: ParserSpan::new(30, 10),
+          span: Span::new(30, 10),
           ..Default::default()
         })],
       }),
@@ -412,19 +413,19 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 20),
+        span: Span::new(0, 20),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".bar".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(21, 21),
+        span: Span::new(21, 21),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(43, 24),
+        span: Span::new(43, 24),
         ..Default::default()
       }),
     ];
@@ -445,13 +446,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 20),
+        span: Span::new(0, 20),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".foo".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(21, 24),
+        span: Span::new(21, 24),
         ..Default::default()
       }),
     ];

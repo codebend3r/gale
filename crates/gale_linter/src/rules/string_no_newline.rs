@@ -163,7 +163,7 @@ fn check_value_for_newlines(value: &str, base_offset: usize, diagnostics: &mut V
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -175,10 +175,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "content".to_string(),
         value: "\"hello\nworld\"".to_string(),
-        span: ParserSpan::new(4, 20),
+        span: Span::new(4, 20),
         important: false,
       }],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -194,10 +194,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "content".to_string(),
         value: "\"hello world\"".to_string(),
-        span: ParserSpan::new(4, 20),
+        span: Span::new(4, 20),
         important: false,
       }],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -212,10 +212,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "content".to_string(),
         value: "\"hello\\\nworld\"".to_string(),
-        span: ParserSpan::new(4, 20),
+        span: Span::new(4, 20),
         important: false,
       }],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());

@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -64,7 +64,7 @@ impl Check for AnnotationNoUnknownCheck {
               NAME,
               format!("Unexpected unknown annotation \"/* {prefix}{command} */\""),
             )
-            .span(Span::new(comment.span.offset, comment.span.length)),
+            .span(comment.span),
           ];
         }
       }
@@ -77,7 +77,8 @@ impl Check for AnnotationNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use gale_css_parser::Comment;
+  use gale_diagnostics::Span;
   use serde_json::json;
 
   use crate::testing::{configured, ctx, invalid_options};
@@ -85,7 +86,7 @@ mod tests {
   fn comment(text: &str) -> CssNode {
     CssNode::Comment(Comment {
       text: text.to_string(),
-      span: ParserSpan::new(0, text.len()),
+      span: Span::new(0, text.len()),
       is_line: false,
     })
   }

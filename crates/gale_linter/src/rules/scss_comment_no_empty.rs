@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -53,10 +53,7 @@ impl Check for ScssCommentNoEmptyCheck {
         &comment.text
       };
       return if content.trim().is_empty() {
-        vec![
-          Diagnostic::new(NAME, "Unexpected empty comment")
-            .span(Span::new(comment.span.offset, comment.span.length)),
-        ]
+        vec![Diagnostic::new(NAME, "Unexpected empty comment").span(comment.span)]
       } else {
         vec![]
       };
@@ -64,10 +61,7 @@ impl Check for ScssCommentNoEmptyCheck {
 
     let inner = comment.text.trim_start_matches("/*").trim_end_matches("*/");
     if inner.trim().is_empty() {
-      vec![
-        Diagnostic::new(NAME, "Unexpected empty comment")
-          .span(Span::new(comment.span.offset, comment.span.length)),
-      ]
+      vec![Diagnostic::new(NAME, "Unexpected empty comment").span(comment.span)]
     } else {
       vec![]
     }
@@ -77,7 +71,8 @@ impl Check for ScssCommentNoEmptyCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use gale_css_parser::Comment;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -87,7 +82,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
-      span: ParserSpan::new(0, 5),
+      span: Span::new(0, 5),
     });
     assert!(rule.check(&node, &ctx()).is_empty());
   }
@@ -98,7 +93,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
-      span: ParserSpan::new(0, 5),
+      span: Span::new(0, 5),
     });
     let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
@@ -112,7 +107,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: true,
       text: "".to_string(),
-      span: ParserSpan::new(0, 2),
+      span: Span::new(0, 2),
     });
     let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
@@ -124,7 +119,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: true,
       text: " some text".to_string(),
-      span: ParserSpan::new(0, 12),
+      span: Span::new(0, 12),
     });
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
@@ -135,7 +130,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* hello */".to_string(),
-      span: ParserSpan::new(0, 11),
+      span: Span::new(0, 11),
     });
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
