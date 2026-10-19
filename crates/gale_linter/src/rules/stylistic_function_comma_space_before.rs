@@ -10,7 +10,7 @@ const NAME: &str = "@stylistic/function-comma-space-before";
 declare_rule! {
   /// Require or disallow a space before the commas of functions.
   ///
-  /// Primary: "always" | "never"
+  /// Primary: "always" | "never" | "always-single-line" | "never-single-line"
   pub struct StylisticFunctionCommaSpaceBefore => StylisticFunctionCommaSpaceBeforeCheck {
     name: NAME,
     description: "Require or disallow a space before the commas of functions",
@@ -133,6 +133,7 @@ impl Check for StylisticFunctionCommaSpaceBeforeCheck {
           }
         }
         let paren_end = j;
+        let is_single_line = !bytes[paren_start..paren_end.min(len)].contains(&b'\n');
 
         let mut k = paren_start + 1;
         let mut inner_depth = 0;
@@ -159,6 +160,8 @@ impl Check for StylisticFunctionCommaSpaceBeforeCheck {
             let violation = match option {
               "always" => !has_space_before,
               "never" => has_space_before,
+              "always-single-line" => is_single_line && !has_space_before,
+              "never-single-line" => is_single_line && has_space_before,
               _ => false,
             };
 
@@ -168,6 +171,9 @@ impl Check for StylisticFunctionCommaSpaceBeforeCheck {
                 "never" => "Unexpected whitespace before \",\"",
                 "always-single-line" => {
                   "Expected single space before \",\" in a single-line function"
+                }
+                "never-single-line" => {
+                  "Unexpected whitespace before \",\" in a single-line function"
                 }
                 _ => "Expected single space before \",\"",
               };
@@ -251,5 +257,49 @@ mod tests {
         "Invalid option name \"ignoreFunctionsX\" for rule \"@stylistic/function-comma-space-before\""
       ]
     );
+  }
+
+  #[test]
+  fn single_line_options_check_single_line_functions_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("always-single-line"),
+      "a { color: rgb(0, 0 ,0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Expected single space before \",\" in a single-line function"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("always-single-line"),
+      "a { color: rgb(0,\n  0, 0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { color: rgb(0 , 0,0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Unexpected whitespace before \",\" in a single-line function"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { color: rgb(0 ,\n  0, 0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

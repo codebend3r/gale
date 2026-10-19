@@ -153,6 +153,17 @@ impl Check for StylisticMediaQueryListCommaNewlineAfterCheck {
                   );
                 }
               }
+              "never-multi-line" => {
+                if is_multi_line && (has_newline || has_space) {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Unexpected whitespace after \",\" in a multi-line list",
+                    )
+                    .span(Span::new(comma_pos, 1)),
+                  );
+                }
+              }
               _ => {}
             }
           }
@@ -217,5 +228,33 @@ mod tests {
         "Invalid option value \"sometimes\" for rule \"@stylistic/media-query-list-comma-newline-after\""
       ]
     );
+  }
+
+  #[test]
+  fn never_multi_line_checks_multi_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "@media screen, print,\nprojection {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      [
+        "Unexpected whitespace after \",\" in a multi-line list",
+        "Unexpected whitespace after \",\" in a multi-line list"
+      ] as [&str; 2]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "@media screen, print {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

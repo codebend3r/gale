@@ -87,6 +87,8 @@ impl Check for StylisticMediaQueryListCommaSpaceBeforeCheck {
         }
 
         // Scan for commas in the media query list until { or ;
+        let params_end = source[i..].find(['{', ';']).map_or(len, |end| i + end);
+        let is_single_line = !source[i..params_end].contains('\n');
         let mut paren_depth = 0;
         while i < len && bytes[i] != b'{' && bytes[i] != b';' {
           if bytes[i] == b'(' {
@@ -112,6 +114,28 @@ impl Check for StylisticMediaQueryListCommaSpaceBeforeCheck {
                   diagnostics.push(
                     Diagnostic::new(NAME, "Unexpected space before \",\"".to_string())
                       .span(Span::new(comma_pos, 1)),
+                  );
+                }
+              }
+              "always-single-line" => {
+                if is_single_line && !has_space_before {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Expected single space before \",\" in a single-line list",
+                    )
+                    .span(Span::new(comma_pos, 1)),
+                  );
+                }
+              }
+              "never-single-line" => {
+                if is_single_line && has_space_before {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Unexpected whitespace before \",\" in a single-line list",
+                    )
+                    .span(Span::new(comma_pos, 1)),
                   );
                 }
               }
@@ -177,5 +201,49 @@ mod tests {
         "Invalid option value \"sometimes\" for rule \"@stylistic/media-query-list-comma-space-before\""
       ]
     );
+  }
+
+  #[test]
+  fn single_line_options_check_single_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("always-single-line"),
+      "@media screen, print ,tv {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Expected single space before \",\" in a single-line list"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("always-single-line"),
+      "@media screen, print ,\ntv {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "@media screen , print,tv {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Unexpected whitespace before \",\" in a single-line list"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "@media screen , print,\ntv {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

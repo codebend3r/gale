@@ -141,6 +141,17 @@ impl Check for StylisticMediaQueryListCommaSpaceAfterCheck {
                   );
                 }
               }
+              "never-single-line" => {
+                if is_single_line && has_space_after {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Unexpected whitespace after \",\" in a single-line list",
+                    )
+                    .span(Span::new(comma_pos, 1)),
+                  );
+                }
+              }
               _ => {}
             }
           }
@@ -205,5 +216,30 @@ mod tests {
         "Invalid option value \"sometimes\" for rule \"@stylistic/media-query-list-comma-space-after\""
       ]
     );
+  }
+
+  #[test]
+  fn never_single_line_checks_single_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "@media screen, print {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Unexpected whitespace after \",\" in a single-line list"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "@media screen, print,\nprojection {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

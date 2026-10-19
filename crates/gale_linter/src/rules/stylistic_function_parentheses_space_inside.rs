@@ -10,7 +10,7 @@ const NAME: &str = "@stylistic/function-parentheses-space-inside";
 declare_rule! {
   /// Require or disallow a space inside the parentheses of functions.
   ///
-  /// Primary: "always" | "never" | "always-single-line"
+  /// Primary: "always" | "never" | "always-single-line" | "never-single-line"
   pub struct StylisticFunctionParenthesesSpaceInside => StylisticFunctionParenthesesSpaceInsideCheck {
     name: NAME,
     description: "Require or disallow a space inside the parentheses of functions",
@@ -213,7 +213,7 @@ impl Check for StylisticFunctionParenthesesSpaceInsideCheck {
         let should_check = match option {
           "always" => true,
           "never" => true,
-          "always-single-line" => is_single_line,
+          "always-single-line" | "never-single-line" => is_single_line,
           _ => false,
         };
 
@@ -323,5 +323,33 @@ mod tests {
         "Invalid option value \"sometimes\" for rule \"@stylistic/function-parentheses-space-inside\""
       ]
     );
+  }
+
+  #[test]
+  fn never_single_line_checks_single_line_functions_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { width: calc( 1px + 2px ); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      [
+        "Unexpected space after \"(\" in function",
+        "Unexpected space before \")\" in function"
+      ] as [&str; 2]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { width: calc( 1px +\n 2px ); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

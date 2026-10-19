@@ -226,6 +226,17 @@ impl Check for StylisticValueListCommaNewlineAfterCheck {
               );
             }
           }
+          "never-multi-line" => {
+            if is_multi_line && after < ve && bytes[after].is_ascii_whitespace() {
+              diagnostics.push(
+                Diagnostic::new(
+                  NAME,
+                  "Unexpected whitespace after \",\" in a multi-line list",
+                )
+                .span(Span::new(comma_pos, 1)),
+              );
+            }
+          }
           _ => {}
         }
       }
@@ -340,5 +351,33 @@ mod tests {
       invalid_options(NAME, serde_json::json!("sometimes")),
       ["Invalid option value \"sometimes\" for rule \"@stylistic/value-list-comma-newline-after\""]
     );
+  }
+
+  #[test]
+  fn never_multi_line_checks_multi_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "a { transition: a 1s, b 1s,\n  c 1s; }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      [
+        "Unexpected whitespace after \",\" in a multi-line list",
+        "Unexpected whitespace after \",\" in a multi-line list"
+      ] as [&str; 2]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "a { transition: a 1s, b 1s; }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

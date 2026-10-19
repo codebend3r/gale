@@ -127,7 +127,7 @@ impl Check for StylisticValueListCommaNewlineBeforeCheck {
         };
 
         // For always-multi-line, check if the value list is multi-line
-        let is_multi_line = if option == "always-multi-line" {
+        let is_multi_line = if option.ends_with("-multi-line") {
           let mut ve = comma_pos + 1;
           while ve < len && bytes[ve] != b';' && bytes[ve] != b'}' {
             ve += 1;
@@ -141,6 +141,9 @@ impl Check for StylisticValueListCommaNewlineBeforeCheck {
           "always" => !has_newline_before,
           "never" => has_newline_before,
           "always-multi-line" => is_multi_line && !has_newline_before,
+          "never-multi-line" => {
+            is_multi_line && comma_pos > 0 && bytes[comma_pos - 1].is_ascii_whitespace()
+          }
           _ => false,
         };
 
@@ -148,6 +151,7 @@ impl Check for StylisticValueListCommaNewlineBeforeCheck {
           let msg = match option {
             "always" | "always-multi-line" => "Expected newline before \",\"",
             "never" => "Unexpected whitespace before \",\"",
+            "never-multi-line" => "Unexpected whitespace before \",\" in a multi-line list",
             _ => continue,
           };
           diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(comma_pos, 1)));
@@ -218,5 +222,33 @@ mod tests {
         "Invalid option value \"sometimes\" for rule \"@stylistic/value-list-comma-newline-before\""
       ]
     );
+  }
+
+  #[test]
+  fn never_multi_line_checks_multi_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "a { transition: a 1s ,b 1s\n  , c 1s; }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      [
+        "Unexpected whitespace before \",\" in a multi-line list",
+        "Unexpected whitespace before \",\" in a multi-line list"
+      ] as [&str; 2]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "a { transition: a 1s ,b 1s; }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

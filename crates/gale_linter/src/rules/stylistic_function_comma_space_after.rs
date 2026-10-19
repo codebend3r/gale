@@ -10,7 +10,7 @@ const NAME: &str = "@stylistic/function-comma-space-after";
 declare_rule! {
   /// Require or disallow a space after the commas of functions.
   ///
-  /// Primary: "always" | "never" | "always-single-line"
+  /// Primary: "always" | "never" | "always-single-line" | "never-single-line"
   pub struct StylisticFunctionCommaSpaceAfter => StylisticFunctionCommaSpaceAfterCheck {
     name: NAME,
     description: "Require or disallow a space after the commas of functions",
@@ -289,6 +289,7 @@ impl Check for StylisticFunctionCommaSpaceAfterCheck {
               "always" => !has_space,
               "never" => has_space,
               "always-single-line" => is_single_line && !has_space,
+              "never-single-line" => is_single_line && has_space,
               _ => false,
             };
 
@@ -297,6 +298,9 @@ impl Check for StylisticFunctionCommaSpaceAfterCheck {
                 "always" => "Expected single space after \",\"",
                 "always-single-line" => {
                   "Expected single space after \",\" in a single-line function"
+                }
+                "never-single-line" => {
+                  "Unexpected whitespace after \",\" in a single-line function"
                 }
                 "never" => "Unexpected space after \",\"",
                 _ => "Expected single space after \",\"",
@@ -400,5 +404,30 @@ mod tests {
         "Invalid option name \"ignoreFunctionsX\" for rule \"@stylistic/function-comma-space-after\""
       ]
     );
+  }
+
+  #[test]
+  fn never_single_line_checks_single_line_functions_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { color: rgb(0, 0,0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      ["Unexpected whitespace after \",\" in a single-line function"] as [&str; 1]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-single-line"),
+      "a { color: rgb(0,\n  0, 0); }",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }
