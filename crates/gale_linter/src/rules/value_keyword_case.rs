@@ -1,22 +1,68 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::stylelint_version::{installed_at_least, stylelint_major_version};
 
-/// Enforce consistent case for keyword values.
-///
-/// Equivalent to Stylelint's `value-keyword-case` rule.
-/// Supports `"lower"` (default) and `"upper"` primary options.
-///
-/// Secondary options:
-/// - `ignoreKeywords`: array of keyword strings or regex patterns to ignore
-/// - `ignoreProperties`: array of property strings or regex patterns to ignore
-/// - `ignoreFunctions`: array of function strings or regex patterns to ignore
-/// - `camelCaseSvgKeywords`: bool -- when true, allow SVG camelCase keywords like `currentColor`
-pub struct ValueKeywordCase;
+const NAME: &str = "value-keyword-case";
+
+declare_rule! {
+  /// Enforce consistent case for keyword values.
+  ///
+  /// Equivalent to Stylelint's `value-keyword-case` rule.
+  /// Supports `"lower"` (default) and `"upper"` primary options.
+  ///
+  /// Secondary options:
+  /// - `ignoreKeywords`: array of keyword strings or regex patterns to ignore
+  /// - `ignoreProperties`: array of property strings or regex patterns to ignore
+  /// - `ignoreFunctions`: array of function strings or regex patterns to ignore
+  /// - `camelCaseSvgKeywords`: bool -- when true, allow SVG camelCase keywords like `currentColor`
+  pub struct ValueKeywordCase => ValueKeywordCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for keyword values",
+    default_severity: Warning,
+  }
+}
+
+/// `value-keyword-case` as configured.
+pub struct ValueKeywordCaseCheck {
+  /// Whether keywords are expected in upper case (`"upper"`).
+  expect_upper: bool,
+  /// `ignoreKeywords`, as written: names and `/regex/` literals.
+  ignore_keywords: Vec<String>,
+  /// `ignoreProperties`, as written.
+  ignore_properties: Vec<String>,
+  /// `ignoreFunctions`, as written.
+  ignore_functions: Vec<String>,
+  /// `camelCaseSvgKeywords`.
+  camel_case_svg_keywords: bool,
+}
+
+impl ValueKeywordCaseCheck {
+  /// Stylelint's options: `"lower"` or `"upper"`, then `ignoreProperties`,
+  /// `ignoreKeywords`, `ignoreFunctions` and `camelCaseSvgKeywords`.  Gale
+  /// reads no option as `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let case = options.primary_one_of(&["lower", "upper"]);
+    let ignore_properties = options.strings("ignoreProperties");
+    let ignore_keywords = options.strings("ignoreKeywords");
+    let ignore_functions = options.strings("ignoreFunctions");
+    let camel_case_svg_keywords = options.flag("camelCaseSvgKeywords");
+    options.finish()?;
+    Ok(Self {
+      expect_upper: case == Some("upper"),
+      ignore_keywords,
+      ignore_properties,
+      ignore_functions,
+      camel_case_svg_keywords,
+    })
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Data tables
@@ -856,19 +902,7 @@ fn is_in_ignored_function(value: &str, token_offset: usize, ignore_fns: &[String
 // Rule implementation
 // ---------------------------------------------------------------------------
 
-impl Rule for ValueKeywordCase {
-  fn name(&self) -> &'static str {
-    "value-keyword-case"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for keyword values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ValueKeywordCaseCheck {
   /// Flags keyword values not in the configured case, honouring the ignore
   /// secondaries and the SVG camelCase allowance.
   ///
@@ -878,42 +912,10 @@ impl Rule for ValueKeywordCase {
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let tree = ctx.postcss_tree();
 
-    let expect_upper = ctx.primary_option_str().is_some_and(|s| s == "upper");
-
-    let secondary = ctx.secondary_options();
-
-    let ignore_keywords: Vec<String> = secondary
-      .and_then(|v| v.get("ignoreKeywords"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|i| i.as_str().map(String::from))
-          .collect()
-      })
-      .unwrap_or_default();
-
-    let ignore_properties: Vec<String> = secondary
-      .and_then(|v| v.get("ignoreProperties"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|i| i.as_str().map(String::from))
-          .collect()
-      })
-      .unwrap_or_default();
-
-    let ignore_functions: Vec<String> = secondary
-      .and_then(|v| v.get("ignoreFunctions"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|i| i.as_str().map(String::from))
-          .collect()
-      })
-      .unwrap_or_default();
+    let expect_upper = self.expect_upper;
+    let ignore_keywords = &self.ignore_keywords;
+    let ignore_properties = &self.ignore_properties;
+    let ignore_functions = &self.ignore_functions;
 
     // Stylelint <=13 always treats camelCase SVG keywords (currentColor, etc.) as
     // canonical even without `camelCaseSvgKeywords: true`.  Stylelint 14+ introduced
@@ -921,10 +923,7 @@ impl Rule for ValueKeywordCase {
     let camel_case_svg = if stylelint_major_version() <= 13 {
       true
     } else {
-      secondary
-        .and_then(|v| v.get("camelCaseSvgKeywords"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+      self.camel_case_svg_keywords
     };
 
     let mut diags = Vec::new();
@@ -985,10 +984,9 @@ impl Rule for ValueKeywordCase {
             if *text != **canonical {
               diags.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   format!("Expected \"{}\" to be \"{}\"", text, canonical),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(abs_offset, text.len()))
                 .fix(Fix::new(
                   format!("Convert to \"{}\"", canonical),
@@ -1018,7 +1016,7 @@ impl Rule for ValueKeywordCase {
 
         // ignoreFunctions
         if !ignore_functions.is_empty()
-          && is_in_ignored_function(value_to_tokenize, token.offset, &ignore_functions)
+          && is_in_ignored_function(value_to_tokenize, token.offset, ignore_functions)
         {
           continue;
         }
@@ -1033,10 +1031,9 @@ impl Rule for ValueKeywordCase {
         if *text != expected {
           diags.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Expected \"{}\" to be \"{}\"", text, expected),
             )
-            .severity(self.default_severity())
             .span(Span::new(abs_offset, text.len()))
             .fix(Fix::new(
               format!("Convert to \"{}\"", expected),
@@ -1059,12 +1056,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   /// The diagnostics for `source` in `syntax` with `options`.
   fn lint(source: &str, syntax: Syntax, options: Option<&serde_json::Value>) -> Vec<Diagnostic> {
     let ctx = context(source, syntax, options.cloned());
-    ValueKeywordCase.check_root(&[], &ctx)
+    configured(&ValueKeywordCase, options.cloned()).check_root(&[], &ctx)
   }
 
   /// The diagnostics for `a { <prop>: <value>; }` with no options.
@@ -1208,6 +1205,32 @@ mod tests {
       texts.contains(&"inherit"),
       "inherit after // comment should still be tokenized, got: {:?}",
       texts
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
+    let all = serde_json::json!(["lower", {
+      "ignoreProperties": ["/^my-/"],
+      "ignoreKeywords": ["Block"],
+      "ignoreFunctions": ["url"],
+      "camelCaseSvgKeywords": true
+    }]);
+    assert!(invalid_options(NAME, all).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("Lower")),
+      ["Invalid option value \"Lower\" for rule \"value-keyword-case\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["lower", {"camelCaseSvgKeywords": "yes", "ignoreValues": ["x"]}])
+      ),
+      [
+        "Invalid value \"yes\" for option \"camelCaseSvgKeywords\" of rule \"value-keyword-case\"",
+        "Invalid option name \"ignoreValues\" for rule \"value-keyword-case\""
+      ]
     );
   }
 }

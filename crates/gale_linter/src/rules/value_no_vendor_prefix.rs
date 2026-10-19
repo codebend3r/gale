@@ -1,41 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_property;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Reports vendor-prefixed values (e.g. `-webkit-flex`).
-///
-/// Equivalent to Stylelint's `value-no-vendor-prefix` rule: every keyword
-/// or function name in a value that Autoprefixer would prefix is reported,
-/// and the fix strips the prefix, keeping the rest as written.
-pub struct ValueNoVendorPrefix;
+const NAME: &str = "value-no-vendor-prefix";
+
+declare_rule! {
+  /// Reports vendor-prefixed values (e.g. `-webkit-flex`).
+  ///
+  /// Equivalent to Stylelint's `value-no-vendor-prefix` rule: every keyword
+  /// or function name in a value that Autoprefixer would prefix is reported,
+  /// and the fix strips the prefix, keeping the rest as written.
+  pub struct ValueNoVendorPrefix => ValueNoVendorPrefixCheck {
+    name: NAME,
+    description: "Disallow vendor prefixes for values",
+    default_severity: Warning,
+  }
+}
+
+/// `value-no-vendor-prefix` as configured.
+pub struct ValueNoVendorPrefixCheck {
+  /// `ignoreValues`: values left alone, by name or `/regex/`.
+  ignore_values: Matchers,
+}
+
+impl ValueNoVendorPrefixCheck {
+  /// Stylelint's options: `true`, then `ignoreValues`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_values = options.matchers("ignoreValues");
+    options.finish()?;
+    Ok(Self { ignore_values })
+  }
+}
 
 /// Stylelint's `prefixes`, which a value must mention to be looked at.
 const PREFIXES: &[&str] = &[
   "-webkit-", "-moz-", "-ms-", "-o-", "-xv-", "-apple-", "-wap-", "-khtml-",
 ];
 
-impl Rule for ValueNoVendorPrefix {
-  fn name(&self) -> &'static str {
-    "value-no-vendor-prefix"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow vendor prefixes for values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ValueNoVendorPrefixCheck {
   /// Flags vendor-prefixed values that have a standard equivalent, skipping any
   /// listed in `ignoreValues`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_values = ctx.secondary_options().and_then(|v| v.get("ignoreValues"));
     let mut diags = Vec::new();
     for &decl in ctx.written_declarations(node).iter() {
       let lower = decl.value.to_ascii_lowercase();
@@ -47,9 +60,7 @@ impl Rule for ValueNoVendorPrefix {
       }
       let nodes = value_parser::parse(decl.value);
       value_parser::walk(&nodes, &mut |node: &ValueNode| {
-        if !autoprefixable::property_value(node.value)
-          || pattern::option_matches(ignore_values, node.value)
-        {
+        if !autoprefixable::property_value(node.value) || self.ignore_values.matches(node.value) {
           return true;
         }
         // Where the node's text starts: inside a string's quotes or a
@@ -63,10 +74,9 @@ impl Rule for ValueNoVendorPrefix {
         let text = Span::new(start + text_offset, node.value.len());
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected vendor-prefixed value \"{}\"", node.value),
           )
-          .severity(self.default_severity())
           .span(Span::new(start, node.value.len()))
           .fix(Fix::new(
             format!("Remove the vendor prefix from \"{}\"", node.value),
@@ -84,7 +94,7 @@ impl Rule for ValueNoVendorPrefix {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "value-no-vendor-prefix";
 
@@ -197,6 +207,26 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a { display: -webkit-flex }", Syntax::Css),
       "a { display: -webkit-flex }"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, serde_json::json!(true)).is_empty());
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, {"ignoreValues": ["/^-webkit-/", "-moz-box"]}])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"value-no-vendor-prefix\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!([true, {"ignoreValue": ["grab"]}])),
+      ["Invalid option name \"ignoreValue\" for rule \"value-no-vendor-prefix\""]
     );
   }
 }
