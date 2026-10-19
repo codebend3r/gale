@@ -40,7 +40,7 @@ describe("scss/operator-no-newline-before", () => {
 describe("scss/declaration-nested-properties-no-divided-groups", () => {
   const rules = { "scss/declaration-nested-properties-no-divided-groups": true };
 
-  test.failing("flags each group of a namespace split in two", () => {
+  test("flags each group of a namespace split in two", () => {
     const scss = [
       "a {",
       "  background: url(img.png) center {",
