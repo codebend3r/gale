@@ -34,7 +34,7 @@ impl ScssAtElseClosingBraceNewlineAfterCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     let option = options.primary_one_of(&["always-last-in-chain"]);
-    options.flag("disableFix");
+    options.disable_fix();
     options.finish()?;
     Ok(Self {
       option: option.unwrap_or("always-last-in-chain"),

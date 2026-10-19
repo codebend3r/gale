@@ -2,7 +2,7 @@ use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
+use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/at-if-closing-brace-newline-after";
@@ -38,8 +38,8 @@ impl ScssAtIfClosingBraceNewlineAfterCheck {
       .primary_one_of(&["always-last-in-chain"])
       .unwrap_or("always-last-in-chain");
     // Upstream validates `{ disableFix: isBoolean }`, so any other key is
-    // unknown; `disableFix` itself is applied by the runner.
-    options.value("disableFix", &[Accept::Boolean]);
+    // unknown.
+    options.disable_fix();
     options.finish()?;
     Ok(Self { expectation })
   }

@@ -221,6 +221,46 @@ fn flat(value: &Value) -> impl Iterator<Item = &Value> {
   }
 }
 
+/// JavaScript's `Boolean(value)`, for a rule whose `possible` is `Boolean`.
+pub fn is_truthy(value: &Value) -> bool {
+  match value {
+    Value::Null => false,
+    Value::Bool(flag) => *flag,
+    Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
+    Value::String(text) => !text.is_empty(),
+    Value::Array(_) | Value::Object(_) => true,
+  }
+}
+
+/// Stylelint's `validateObjectWithArrayProps(isString, isRegExp)`: an
+/// object whose every value is a string or a list of strings.
+pub fn is_object_of_string_lists(value: &Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map.values().all(|item| match item {
+      Value::Array(items) => items.iter().all(Value::is_string),
+      other => other.is_string(),
+    })
+  })
+}
+
+/// Stylelint's `validateObjectWithProps(isString)`: an object whose every
+/// value is a string.
+pub fn is_object_of_strings(value: &Value) -> bool {
+  value
+    .as_object()
+    .is_some_and(|map| map.values().all(Value::is_string))
+}
+
+/// Stylelint's `validateObjectWithProps(isNonNegativeInteger)`: an object
+/// whose every value is a whole number of zero or more.
+pub fn is_object_of_non_negative_integers(value: &Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map
+      .values()
+      .all(|item| Accept::NonNegativeInteger.accepts(item))
+  })
+}
+
 /// A rule's setting from the config, normalised the way Stylelint's
 /// `normalizeRuleSettings` does it: a primary option and, perhaps, a
 /// secondary options object.
@@ -546,6 +586,34 @@ impl<'s> Options<'s> {
     self.value(key, possible)?.as_f64()
   }
 
+  /// `disableFix` (`[isBoolean]`), for a rule that validates it as its own
+  /// secondary option, so that every other key is unknown.  The runner
+  /// applies it, as it does for any rule.
+  pub fn disable_fix(&mut self) {
+    self.flag("disableFix");
+  }
+
+  /// The secondary option `key`, a name or `/regex/` entry or a list of
+  /// them, read without taking secondary options: any other key stays
+  /// ignored, as it does for one of gale's own rules that is lenient.  An
+  /// entry that is not a string is reported as Stylelint words it.
+  pub fn lenient_strings(&mut self, key: &str) -> Vec<String> {
+    let Some(value) = self.secondary.and_then(|secondary| secondary.get(key)) else {
+      return Vec::new();
+    };
+    let mut strings = Vec::new();
+    for entry in flat(value) {
+      match entry.as_str() {
+        Some(text) => strings.push(text.to_string()),
+        None => {
+          let problem = InvalidOption::option_value(self.rule(), key, entry);
+          self.problems.push(problem);
+        }
+      }
+    }
+    strings
+  }
+
   /// Report a problem the rule found itself, such as a value that passes
   /// the type check but means nothing to the rule.
   pub fn report(&mut self, problem: InvalidOption) {
@@ -571,9 +639,6 @@ impl<'s> Options<'s> {
         Value::Bool(false) => problems.push(InvalidOption::disabled_with_false(rule)),
         Value::Object(map) => {
           for key in map.keys() {
-            if FRAMEWORK_KEYS.contains(&key.as_str()) {
-              continue;
-            }
             if read_keys.contains(&key.as_str()) {
               let mut index = 0;
               while index < key_problems.len() {
@@ -583,7 +648,7 @@ impl<'s> Options<'s> {
                   index += 1;
                 }
               }
-            } else {
+            } else if !FRAMEWORK_KEYS.contains(&key.as_str()) {
               problems.push(InvalidOption::name(rule, key));
             }
           }
@@ -649,30 +714,51 @@ enum Matcher {
 /// A list of names and `/regex/` literals, compiled once: Stylelint's
 /// `matchesStringOrRegExp` and `optionsMatches`.
 #[derive(Debug, Clone, Default)]
-pub struct Matchers(Vec<Matcher>);
+pub struct Matchers {
+  entries: Vec<Matcher>,
+  /// Whether names match whatever their ASCII case.
+  ignore_case: bool,
+}
 
 impl Matchers {
   /// The matchers for `entries`, each a name or a `/regex/` literal.
   pub fn new<S: AsRef<str>>(entries: &[S]) -> Self {
-    Self(
-      entries
-        .iter()
-        .map(|entry| {
-          let entry = entry.as_ref();
-          if pattern::split_literal(entry).is_none() {
-            Matcher::Exact(entry.to_string())
-          } else {
-            pattern::compile(entry).map_or(Matcher::Broken, Matcher::Regex)
-          }
-        })
-        .collect(),
-    )
+    Self {
+      entries: Self::compile(entries),
+      ignore_case: false,
+    }
   }
 
-  /// Whether any entry matches `text`: a name by equality, a regex by
-  /// search.
+  /// The matchers for `entries`, whose names match whatever their ASCII
+  /// case, for a rule that compares names case-insensitively.  A regex
+  /// matches as written, flags and all.
+  pub fn ignoring_case<S: AsRef<str>>(entries: &[S]) -> Self {
+    Self {
+      entries: Self::compile(entries),
+      ignore_case: true,
+    }
+  }
+
+  /// Each of `entries` compiled.
+  fn compile<S: AsRef<str>>(entries: &[S]) -> Vec<Matcher> {
+    entries
+      .iter()
+      .map(|entry| {
+        let entry = entry.as_ref();
+        if pattern::split_literal(entry).is_none() {
+          Matcher::Exact(entry.to_string())
+        } else {
+          pattern::compile(entry).map_or(Matcher::Broken, Matcher::Regex)
+        }
+      })
+      .collect()
+  }
+
+  /// Whether any entry matches `text`: a name by equality (in any case for
+  /// [`Matchers::ignoring_case`]), a regex by search.
   pub fn matches(&self, text: &str) -> bool {
-    self.0.iter().any(|matcher| match matcher {
+    self.entries.iter().any(|matcher| match matcher {
+      Matcher::Exact(name) if self.ignore_case => name.eq_ignore_ascii_case(text),
       Matcher::Exact(name) => name == text,
       Matcher::Regex(regex) => pattern::is_match(regex, text),
       Matcher::Broken => false,
@@ -681,7 +767,7 @@ impl Matchers {
 
   /// Whether the list has no entries.
   pub fn is_empty(&self) -> bool {
-    self.0.is_empty()
+    self.entries.is_empty()
   }
 }
 
@@ -1039,5 +1125,55 @@ mod tests {
     assert!(list.matches("BORDER-top"));
     assert!(!list.matches("[broken"));
     assert!(Matchers::default().is_empty());
+
+    let any_case = Matchers::ignoring_case(&["My-Fn", "/^theme-/"]);
+    assert!(any_case.matches("my-fn"));
+    assert!(any_case.matches("MY-FN"));
+    assert!(any_case.matches("theme-x"));
+    assert!(!any_case.matches("Theme-x"), "a regex matches as written");
+  }
+
+  #[test]
+  fn object_validators_follow_stylelint() {
+    assert!(is_object_of_string_lists(&json!({ "a": "x", "b": ["y"] })));
+    assert!(!is_object_of_string_lists(&json!({ "a": [1] })));
+    assert!(!is_object_of_string_lists(&json!(["a"])));
+    assert!(is_object_of_strings(&json!({ "a": "x" })));
+    assert!(!is_object_of_strings(&json!({ "a": ["x"] })));
+    assert!(is_object_of_non_negative_integers(
+      &json!({ "a": 0, "b": 2 })
+    ));
+    assert!(!is_object_of_non_negative_integers(&json!({ "a": 1.5 })));
+    assert!(is_truthy(&json!("x")) && is_truthy(&json!([])) && !is_truthy(&json!(0)));
+  }
+
+  #[test]
+  fn lenient_strings_leave_other_keys_alone() {
+    let s = setting(json!([true, { "names": ["a", 1], "other": true }]));
+    let mut options = s.options();
+    assert_eq!(options.lenient_strings("names"), ["a"]);
+    assert_eq!(
+      texts(options.finish()),
+      ["Invalid value \"1\" for option \"names\" of rule \"test-rule\""]
+    );
+  }
+
+  #[test]
+  fn a_rule_that_validates_disable_fix_reports_a_bad_value() {
+    let s = setting(json!(["a", { "disableFix": "yes" }]));
+    let mut options = s.options();
+    options.disable_fix();
+    assert_eq!(
+      texts(options.finish()),
+      ["Invalid value \"yes\" for option \"disableFix\" of rule \"test-rule\""]
+    );
+
+    let s = setting(json!(["a", { "disableFix": true, "other": 1 }]));
+    let mut options = s.options();
+    options.disable_fix();
+    assert_eq!(
+      texts(options.finish()),
+      ["Invalid option name \"other\" for rule \"test-rule\""]
+    );
   }
 }

@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::options::{InvalidOption, Matchers, Setting, is_object_of_non_negative_integers};
 use crate::pattern;
 use crate::rule::{Check, RuleContext, declare_rule};
 
@@ -46,12 +46,14 @@ impl DeclarationPropertyMaxValuesCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     let limits = match options.primary_object() {
-      Some(map) if map.values().all(|v| Accept::NonNegativeInteger.accepts(v)) => {
-        parse_options(map)
-      }
       Some(map) => {
-        options.report(InvalidOption::value(NAME, &Value::Object(map.clone())));
-        Vec::new()
+        let object = Value::Object(map.clone());
+        if is_object_of_non_negative_integers(&object) {
+          parse_options(map)
+        } else {
+          options.report(InvalidOption::value(NAME, &object));
+          Vec::new()
+        }
       }
       None => Vec::new(),
     };
