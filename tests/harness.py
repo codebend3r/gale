@@ -1,20 +1,32 @@
+#!/usr/bin/env python3
 """
 Shared tooling for the test harnesses that run Gale against real repositories.
 
 Loads the repository corpus (tests/differential/repos.json), clones those repos
-and installs their dependencies, and builds Gale. The scripts that use it are
-run directly rather than as a package, so each puts this directory on sys.path
-before importing it:
+and installs their dependencies, builds Gale, and compares Stylelint's JSON
+output with Gale's. The scripts that use it are run directly rather than as a
+package, so each puts this directory on sys.path before importing it:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from harness import ...
+
+benchmarks/benchmark.sh runs it as a script instead:
+
+    python3 tests/harness.py repos [NAME...]        # name|cwd|globs|paths
+    python3 tests/harness.py prepare NAME --clones-dir DIR
+    python3 tests/harness.py compare NAME WORK_DIR STYLELINT_OUT STYLELINT_ERR GALE_OUT GALE_ERR
+    python3 tests/harness.py build
 """
 
+import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+from collections import Counter
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -39,6 +51,14 @@ def run_cmd(cmd: list[str], cwd: str | None = None, timeout: int = 300) -> subpr
 def load_repos() -> list[dict]:
     with open(REPOS_JSON) as f:
         return json.load(f)
+
+
+def repo_globs(repo_config: dict, css_only: bool = False) -> list[str]:
+    """The repo's explicit globs, or "{path}/**/*.{css,scss,less}" per path."""
+    if repo_config.get("globs"):
+        return repo_config["globs"]
+    ext_pattern = "*.css" if css_only else "*.{css,scss,less}"
+    return [f"{p}/**/{ext_pattern}" for p in repo_config["paths"]]
 
 
 def build_gale(skip: bool = False) -> Path | None:
@@ -268,3 +288,271 @@ def find_stylelint_bin(work_dir: Path, clone_dir: Path, search_paths: list[str] 
         if candidate.exists():
             return candidate
     return None
+
+
+# ---------------------------------------------------------------------------
+# Comparison
+# ---------------------------------------------------------------------------
+
+
+def parse_report(*texts: str) -> list[dict] | None:
+    """Return the JSON report from whichever of texts holds it.
+
+    Stylelint 16+ writes the report to stderr, where Node also prints its own
+    warnings, e.g. "(node:123) [DEP0040] DeprecationWarning: ...". A bracket in
+    such a line is not the report, so try each `[` in turn until one decodes to
+    a list of per-file results. Returns None if none does.
+    """
+    decoder = json.JSONDecoder()
+    for text in texts:
+        start = text.find("[")
+        while start != -1:
+            try:
+                data, _ = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, list) and all(
+                isinstance(entry, dict) and "warnings" in entry for entry in data
+            ):
+                return data
+            start = text.find("[", start + 1)
+    return None
+
+
+def normalize_results(results: list[dict], work_dir: Path) -> dict[str, list[dict]]:
+    """Normalize linter output into a comparable structure.
+
+    Returns: { relative_path: [sorted list of {line, column, rule, severity, text}] }
+    """
+    # Stylelint reports absolute source paths and Gale reports paths relative
+    # to the working directory; compare both relative to it or nothing matches.
+    work_dir = Path(work_dir).resolve()
+    normalized = {}
+
+    for entry in results:
+        source = entry.get("source", "")
+        rel_path = os.path.relpath(source, work_dir) if os.path.isabs(source) else source
+
+        warnings = []
+        for w in entry.get("warnings", []):
+            rule = w.get("rule")
+            # Stylelint appends " (rule-name)" to every message; strip it so
+            # comparisons focus on the actual message content.
+            text = w.get("text", "")
+            if rule and text.endswith(f" ({rule})"):
+                text = text[: -(len(rule) + 3)]
+            warnings.append({
+                "line": w.get("line"),
+                "column": w.get("column"),
+                "rule": rule,
+                "severity": w.get("severity"),
+                "text": text,
+            })
+
+        warnings.sort(key=lambda w: (w["line"] or 0, w["column"] or 0, w["rule"] or ""))
+        normalized[rel_path] = warnings
+
+    return normalized
+
+
+def compare_results(
+    stylelint: dict[str, list[dict]],
+    gale: dict[str, list[dict]],
+) -> dict:
+    """Compare normalized results and return a report."""
+    all_files = sorted(set(list(stylelint.keys()) + list(gale.keys())))
+
+    report = {
+        "total_files": len(all_files),
+        "files_match": 0,
+        "files_differ": 0,
+        "stylelint_only_warnings": 0,
+        "gale_only_warnings": 0,
+        "matching_warnings": 0,
+        "diffs": [],
+    }
+
+    for file_path in all_files:
+        s_warnings = stylelint.get(file_path, [])
+        g_warnings = gale.get(file_path, [])
+
+        # Use Counter (multiset) to detect duplicate warnings correctly.
+        # If Gale emits a warning twice and Stylelint once, the extra is a FP.
+        s_counter = Counter(_warning_key(w) for w in s_warnings)
+        g_counter = Counter(_warning_key(w) for w in g_warnings)
+
+        matching = sum((s_counter & g_counter).values())
+        stylelint_only_counter = s_counter - g_counter
+        gale_only_counter = g_counter - s_counter
+        stylelint_only = set(stylelint_only_counter.elements())
+        gale_only = set(gale_only_counter.elements())
+
+        report["matching_warnings"] += matching
+        report["stylelint_only_warnings"] += sum(stylelint_only_counter.values())
+        report["gale_only_warnings"] += sum(gale_only_counter.values())
+
+        if stylelint_only or gale_only:
+            report["files_differ"] += 1
+            report["diffs"].append({
+                "file": file_path,
+                "matching": matching,
+                "stylelint_only": [_key_to_dict(k) for k in sorted(stylelint_only)],
+                "gale_only": [_key_to_dict(k) for k in sorted(gale_only)],
+            })
+        else:
+            report["files_match"] += 1
+
+    return report
+
+
+def _warning_key(w: dict) -> tuple:
+    return (w["line"], w["column"], w["rule"], w["severity"], w["text"])
+
+
+def _key_to_dict(key: tuple) -> dict:
+    return {"line": key[0], "column": key[1], "rule": key[2],
+            "severity": key[3], "text": key[4]}
+
+
+def exclude_expected_diffs(report: dict, expected_diffs: list[dict]) -> int:
+    """Drop the repo's expected diffs from report; returns how many it dropped."""
+    expected_keys = {
+        (d["file"], d["line"], d["column"], d["rule"])
+        for d in expected_diffs
+    }
+    filtered_diffs = []
+    excluded = 0
+    for diff_entry in report["diffs"]:
+        new_s_only = [
+            w for w in diff_entry["stylelint_only"]
+            if (diff_entry["file"], w["line"], w["column"], w["rule"]) not in expected_keys
+        ]
+        new_g_only = [
+            w for w in diff_entry["gale_only"]
+            if (diff_entry["file"], w["line"], w["column"], w["rule"]) not in expected_keys
+        ]
+        s_excluded = len(diff_entry["stylelint_only"]) - len(new_s_only)
+        g_excluded = len(diff_entry["gale_only"]) - len(new_g_only)
+        excluded += s_excluded + g_excluded
+        report["stylelint_only_warnings"] -= s_excluded
+        report["gale_only_warnings"] -= g_excluded
+        report["matching_warnings"] += min(s_excluded, g_excluded)
+        if new_s_only or new_g_only:
+            diff_entry["stylelint_only"] = new_s_only
+            diff_entry["gale_only"] = new_g_only
+            filtered_diffs.append(diff_entry)
+        else:
+            report["files_differ"] -= 1
+            report["files_match"] += 1
+    report["diffs"] = filtered_diffs
+    return excluded
+
+
+def compare(
+    stylelint_results: list[dict],
+    gale_results: list[dict],
+    work_dir: Path,
+    expected_diffs: list[dict] | None = None,
+) -> tuple[dict, int]:
+    """Compare both linters' raw output with no rule filters on either side.
+
+    Returns the report and how many expected diffs were excluded from it.
+    """
+    report = compare_results(
+        normalize_results(stylelint_results, work_dir),
+        normalize_results(gale_results, work_dir),
+    )
+    excluded = exclude_expected_diffs(report, expected_diffs) if expected_diffs else 0
+    return report, excluded
+
+
+# ---------------------------------------------------------------------------
+# Command line (benchmarks/benchmark.sh)
+# ---------------------------------------------------------------------------
+
+
+def _repo_config(name: str) -> dict:
+    for repo in load_repos():
+        if repo["name"] == name:
+            return repo
+    sys.exit(f"Unknown repo: {name}")
+
+
+def cmd_repos(args) -> int:
+    """Print name|cwd|globs|paths per repo, its globs and paths space-separated."""
+    repos = {r["name"]: r for r in load_repos() if not r.get("skip")}
+    unknown = [n for n in args.names if n not in repos]
+    if unknown:
+        print(f"No repos matched: {', '.join(unknown)}. Available: {', '.join(repos)}", file=sys.stderr)
+        return 1
+    for name in args.names or repos:
+        repo = repos[name]
+        print("|".join([name, repo.get("cwd", ""), " ".join(repo_globs(repo)), " ".join(repo["paths"])]))
+    return 0
+
+
+def cmd_prepare(args) -> int:
+    """Clone and install one repo, then print the path of its Stylelint."""
+    repo = _repo_config(args.name)
+    clone_dir = Path(args.clones_dir) / repo["name"]
+    work_dir = clone_dir / repo["cwd"] if repo.get("cwd") else clone_dir
+    # Progress goes to stderr; stdout carries only the binary's path.
+    with contextlib.redirect_stdout(sys.stderr):
+        if not clone_repo(repo["repo"], repo["branch"], clone_dir):
+            return 1
+        if install_deps(clone_dir, work_dir=work_dir, search_paths=repo["paths"]) is not True:
+            return 1
+        stylelint_bin = find_stylelint_bin(work_dir, clone_dir, repo["paths"])
+        if stylelint_bin is None:
+            print("  [error] Stylelint binary not found")
+            return 1
+    print(stylelint_bin)
+    return 0
+
+
+def cmd_compare(args) -> int:
+    """Compare two saved runs; print files|false positives|false negatives."""
+    repo = _repo_config(args.name)
+    results = {}
+    for linter, paths in (("Stylelint", args.stylelint), ("Gale", args.gale)):
+        texts = [Path(p).read_text(errors="replace") for p in paths if Path(p).exists()]
+        results[linter] = parse_report(*texts)
+        if results[linter] is None:
+            # Without a report every warning of the other linter would count
+            # as a mismatch; fail the comparison instead.
+            print(f"no JSON report from {linter}", file=sys.stderr)
+            return 3
+    report, _ = compare(results["Stylelint"], results["Gale"], Path(args.work_dir), repo.get("expected_diffs"))
+    print(f"{report['total_files']}|{report['gale_only_warnings']}|{report['stylelint_only_warnings']}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Shared harness for the repo corpus")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    repos = commands.add_parser("repos", help="List the repos that are not skipped")
+    repos.add_argument("names", nargs="*", help="Only these repos, in this order")
+    repos.set_defaults(func=cmd_repos)
+
+    prepare = commands.add_parser("prepare", help="Clone and install a repo; print its Stylelint")
+    prepare.add_argument("name")
+    prepare.add_argument("--clones-dir", required=True)
+    prepare.set_defaults(func=cmd_prepare)
+
+    compare_cmd = commands.add_parser("compare", help="Compare saved Stylelint and Gale JSON output")
+    compare_cmd.add_argument("name")
+    compare_cmd.add_argument("work_dir", help="The directory both linters ran from")
+    compare_cmd.add_argument("stylelint", nargs=2, metavar=("STYLELINT_OUT", "STYLELINT_ERR"))
+    compare_cmd.add_argument("gale", nargs=2, metavar=("GALE_OUT", "GALE_ERR"))
+    compare_cmd.set_defaults(func=cmd_compare)
+
+    build = commands.add_parser("build", help="Build the release binary")
+    build.set_defaults(func=lambda args: 0 if build_gale() else 1)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

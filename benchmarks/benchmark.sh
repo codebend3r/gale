@@ -8,11 +8,11 @@
 # and produces a markdown results table.
 #
 # Usage:
-#   ./benchmarks/benchmark.sh              # Full benchmark (all 21 repos)
+#   ./benchmarks/benchmark.sh              # Full benchmark (every repo in tests/differential/repos.json)
 #   ./benchmarks/benchmark.sh bootstrap    # Single repo
 #   ./benchmarks/benchmark.sh --help       # Show help
 #
-# Requirements: cargo, node (>=18), hyperfine
+# Requirements: cargo, node (>=18), hyperfine, python3
 # =============================================================================
 
 set -euo pipefail
@@ -22,7 +22,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR/.."
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Lists, clones, installs and compares the repos of the shared corpus,
+# tests/differential/repos.json, the same way the differential harness does.
+HARNESS="$PROJECT_DIR/tests/harness.py"
 # Prefer the differential test clones to avoid re-downloading
 DIFF_CLONES_DIR="$PROJECT_DIR/tests/differential/.clones"
 if [ -d "$DIFF_CLONES_DIR" ]; then
@@ -44,48 +47,6 @@ GALE_BIN="$PROJECT_DIR/target/release/gale"
 WARMUP=3
 MIN_RUNS=10
 
-# The yarn/pnpm shims are corepack. When a repo pins a package manager version
-# corepack has not cached yet, it asks "Do you want to continue? [Y/n]" on
-# stdin. The install output is piped through tail, so that prompt is invisible
-# and the run hangs forever. Never prompt; just download.
-export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-
-# bun's global bin dir holds the corepack shims (yarn/pnpm) that Yarn Berry and
-# pnpm repos need, and it is frequently not on PATH.
-if command -v bun &>/dev/null; then
-  BUN_GLOBAL_BIN="$(bun pm bin -g 2>/dev/null || true)"
-  if [ -n "$BUN_GLOBAL_BIN" ] && [ -d "$BUN_GLOBAL_BIN" ]; then
-    export PATH="$BUN_GLOBAL_BIN:$PATH"
-  fi
-fi
-
-# Test repositories: name|repo|branch|glob_pattern|search_dir[|cwd]
-# cwd (optional) is the directory both linters run from, for monorepos whose
-# package.json and Stylelint config live below the clone root.
-REPOS=(
-  "bootstrap|twbs/bootstrap|main|scss/**/*.scss|scss"
-  "carbon|carbon-design-system/carbon|main|packages/**/*.scss|packages"
-  "freecodecamp|freeCodeCamp/freeCodeCamp|main|client/**/*.css|client"
-  "grafana|grafana/grafana|main|public/**/*.{css,scss}|public"
-  "govuk-frontend|alphagov/govuk-frontend|main|packages/**/*.scss|packages"
-  "gutenberg|wordpress/gutenberg|trunk|packages/**/*.scss|packages"
-  "material-ui|mui/material-ui|master|packages/**/*.css|packages"
-  "patternfly|patternfly/patternfly|main|src/**/*.scss|src"
-  "primer-css|primer/css|main|src/**/*.scss|src"
-  "spectrum-css|adobe/spectrum-css|main|components/**/*.css|components"
-  "angular-components|angular/components|main|src/**/*.scss|src"
-  "docusaurus|facebook/docusaurus|main|packages/**/*.css|packages"
-  "discourse|discourse/discourse|main|app/assets/stylesheets/**/*.scss|app/assets/stylesheets"
-  "wp-calypso|Automattic/wp-calypso|trunk|client/**/*.scss|client"
-  "mattermost|mattermost/mattermost|master|**/*.{css,scss}|webapp/channels|webapp/channels"
-  "mastodon|mastodon/mastodon|main|app/javascript/styles/**/*.scss|app/javascript/styles"
-  "jupyterlab|jupyterlab/jupyterlab|main|packages/**/*.css|packages"
-  "joomla|joomla/joomla-cms|5.4-dev|build/media_source/**/*.{css,scss}|build"
-  "slds|salesforce-ux/design-system|main|ui/**/*.scss|ui"
-  "rsuite|rsuite/rsuite|main|src/**/*.scss|src"
-  "fundamental-styles|SAP/fundamental-styles|main|packages/**/*.scss|packages"
-)
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -102,85 +63,14 @@ success() { echo -e "${GREEN}==>${NC} ${BOLD}$*${NC}"; }
 warn()    { echo -e "${YELLOW}warning:${NC} $*"; }
 error()   { echo -e "${RED}error:${NC} $*"; exit 1; }
 
-# Pick the installer. bun is the project's package manager, so use it wherever
-# it can honour the repo's own lockfile: bun.lock, package-lock.json (bun
-# migrates it), and Yarn v1 lockfiles. pnpm and Yarn Berry lockfiles are not
-# migratable, and bun would silently resolve fresh and drift from the pinned
-# stylelint version, so those repos use their own tool.
-detect_pm() {
-  local dir="$1"
-  if [ -f "$dir/pnpm-lock.yaml" ]; then
-    echo "pnpm"
-  elif [ -f "$dir/yarn.lock" ] && grep -q '^__metadata:' "$dir/yarn.lock"; then
-    echo "yarn"
-  else
-    echo "bun"
-  fi
-}
-
-# Walk up from $1 (stopping at $2) to the nearest directory containing $3.
-find_up() {
-  local dir="$1" stop="$2" target="$3"
-  while :; do
-    if [ -e "$dir/$target" ]; then
-      echo "$dir"
-      return 0
-    fi
-    [ "$dir" = "$stop" ] && return 1
-    dir="$(dirname "$dir")"
-  done
-}
-
-install_deps() {
-  local dir="$1" clone_dir="$2"
-  # Monorepos: install from the nearest package.json at or above the work dir.
-  dir="$(find_up "$dir" "$clone_dir" package.json)" || {
-    warn "No package.json found at or above $1"
-    return 1
-  }
-  if [ -d "$dir/node_modules" ]; then
-    echo "    node_modules already present, skipping install"
-    return 0
-  fi
-
-  local pm
-  pm=$(detect_pm "$dir")
-  echo "    Installing dependencies with $pm..."
-
-  # Yarn Berry defaults to PnP, which leaves no node_modules/.bin/stylelint.
-  if [ "$pm" = "yarn" ] && [ -f "$dir/.yarnrc.yml" ] && ! grep -q nodeLinker "$dir/.yarnrc.yml"; then
-    printf '\nnodeLinker: node-modules\n' >> "$dir/.yarnrc.yml"
-  fi
-
-  local status=0
-  case "$pm" in
-    bun)   (cd "$dir" && bun install --ignore-scripts 2>&1 | tail -1) || status=$? ;;
-    pnpm)  (cd "$dir" && pnpm install --ignore-scripts --no-frozen-lockfile 2>&1 | tail -1) || status=$? ;;
-    yarn)  (cd "$dir" && yarn install --mode skip-build 2>&1 | tail -1) || status=$? ;;
-  esac
-
-  # Some npm lockfiles fail bun's integrity check (Mattermost, whose lockfile
-  # sits at the workspace root above the install dir). npm is the only tool
-  # that can honour those, so fall back to it rather than skip the repo.
-  if [ "$status" -ne 0 ] && [ "$pm" = "bun" ] && command -v npm &>/dev/null; then
-    warn "bun install failed in $dir (exit $status); retrying with npm"
-    rm -rf "$dir/node_modules"
-    status=0
-    (cd "$dir" && npm install --ignore-scripts 2>&1 | tail -1) || status=$?
-    pm=npm
-  fi
-
-  if [ "$status" -ne 0 ]; then
-    warn "$pm install failed in $dir (exit $status)"
-    return 1
-  fi
-}
-
+# Count the CSS/SCSS/Less files under the repo's search paths.
 count_files() {
-  local dir="$1"
-  local search_dir="$2"
-  # Use find to count matching files (portable)
-  { find "$dir/$search_dir" -not -path "*/node_modules/*" -not -path "*/.git/*" \( -name "*.scss" -o -name "*.css" -o -name "*.less" \) 2>/dev/null || true; } | wc -l | tr -d ' '
+  local clone_dir="$1" search_dirs=() path
+  shift
+  for path in "$@"; do
+    search_dirs+=("$clone_dir/$path")
+  done
+  { find "${search_dirs[@]}" -not -path "*/node_modules/*" -not -path "*/.git/*" \( -name "*.scss" -o -name "*.css" -o -name "*.less" \) 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 
 # Both linters exit 0 when clean and 2 when they report problems. Anything
@@ -275,7 +165,7 @@ check_prereqs() {
   fi
 
   if ! command -v python3 &>/dev/null; then
-    warn "python3 not found. Required for result parsing and parity tests."
+    warn "python3 not found. Required for the repo list, installs and parity tests."
     missing=1
   fi
 
@@ -296,74 +186,35 @@ check_prereqs() {
 # ---------------------------------------------------------------------------
 
 build_gale() {
-  if [ -f "$GALE_BIN" ]; then
-    info "Gale release binary already built (use 'cargo build --release' to rebuild)"
-  else
-    info "Building Gale in release mode..."
-    (cd "$PROJECT_DIR" && cargo build --release)
-    success "Build complete"
-  fi
-
+  python3 "$HARNESS" build || error "Gale build failed"
   echo "    Binary: $GALE_BIN"
   echo "    Version: $("$GALE_BIN" --version 2>/dev/null || echo 'unknown')"
-}
-
-# ---------------------------------------------------------------------------
-# Clone repos
-# ---------------------------------------------------------------------------
-
-clone_repo() {
-  local name="$1" repo="$2" branch="$3"
-  local dest="$CLONES_DIR/$name"
-
-  if [ -d "$dest" ]; then
-    echo "    [skip] $name already cloned"
-    return 0
-  fi
-
-  echo "    [clone] $repo @ $branch"
-  if ! git clone --depth 1 --branch "$branch" "https://github.com/$repo.git" "$dest" 2>&1 | tail -1; then
-    rm -rf "$dest"
-    return 1
-  fi
 }
 
 # ---------------------------------------------------------------------------
 # Run benchmarks
 # ---------------------------------------------------------------------------
 
+# Usage: run_benchmark_for_repo <name> <stylelint-bin|""> <cwd> <globs> <paths>
+# An empty Stylelint binary means the repo could not be prepared.
 run_benchmark_for_repo() {
-  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5" cwd="${6:-}"
+  local name="$1" stylelint_bin="$2" cwd="$3" globs paths
+  read -r -a globs <<< "$4"
+  read -r -a paths <<< "$5"
   local clone_dir="$CLONES_DIR/$name"
   local work_dir="$clone_dir${cwd:+/$cwd}"
 
   info "Benchmarking: $name"
 
-  # Clone
-  if ! clone_repo "$name" "$repo" "$branch"; then
-    warn "Could not clone $repo @ $branch. Skipping."
+  if [ -z "$stylelint_bin" ]; then
+    warn "Could not clone $name, install its dependencies, or find its Stylelint. Skipping."
     echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
   fi
-
-  # Install deps
-  if ! install_deps "$work_dir" "$clone_dir"; then
-    warn "Could not install $name's dependencies. Skipping."
-    echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
-    return 0
-  fi
-
-  # Check stylelint is available (workspaces hoist it above the work dir)
-  local stylelint_bin
-  stylelint_bin="$(find_up "$work_dir" "$clone_dir" node_modules/.bin/stylelint)/node_modules/.bin/stylelint" || {
-    warn "Stylelint not found in $name's node_modules. Skipping."
-    echo "$name|0|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.benchmark-results.txt"
-    return 0
-  }
 
   # Count files
   local file_count
-  file_count=$(count_files "$clone_dir" "$search_dir")
+  file_count=$(count_files "$clone_dir" "${paths[@]}")
   echo "    Files matching pattern: $file_count"
 
   # Pre-run validation: run both linters once. A linter that fails is
@@ -378,7 +229,7 @@ run_benchmark_for_repo() {
   gale_cache=$(cache_file "$name" gale)
   local stylelint_status=0 gale_status=0
   run_once "$stylelint_cache" "$check_out" "$check_err" "$work_dir" \
-    "$stylelint_bin" "$glob_pattern" || stylelint_status=$?
+    "$stylelint_bin" "${globs[@]}" || stylelint_status=$?
   if ! lint_ok "$stylelint_status"; then
     warn "Stylelint failed on $name (exit $stylelint_status). Not timing this repo:"
     tail -5 "$check_err" | sed 's/^/    /'
@@ -388,7 +239,7 @@ run_benchmark_for_repo() {
   fi
 
   run_once "$gale_cache" "$check_out" "$check_err" "$work_dir" \
-    "$GALE_BIN" "$glob_pattern" || gale_status=$?
+    "$GALE_BIN" "${globs[@]}" || gale_status=$?
   if ! lint_ok "$gale_status"; then
     warn "Gale failed on $name (exit $gale_status). Not timing this repo:"
     tail -5 "$check_err" | sed 's/^/    /'
@@ -403,14 +254,16 @@ run_benchmark_for_repo() {
   # Run hyperfine, one linter at a time so a failure is attributed.
   info "Running hyperfine ($MIN_RUNS runs, $WARMUP warmup)..."
 
+  local quoted_globs
+  quoted_globs=$(printf " '%s'" "${globs[@]}")
   local stylelint_json="$SCRIPT_DIR/.hyperfine-${name}-stylelint.json"
   local gale_json="$SCRIPT_DIR/.hyperfine-${name}-gale.json"
-  if ! time_linter stylelint "cd $work_dir && $stylelint_bin '$glob_pattern'" "$stylelint_json" "$stylelint_cache"; then
+  if ! time_linter stylelint "cd $work_dir && $stylelint_bin$quoted_globs" "$stylelint_json" "$stylelint_cache"; then
     warn "A timed Stylelint run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
     echo "$name|$file_count|FAIL (timed run)|-|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
   fi
-  if ! time_linter gale "cd $work_dir && $GALE_BIN '$glob_pattern'" "$gale_json" "$gale_cache"; then
+  if ! time_linter gale "cd $work_dir && $GALE_BIN$quoted_globs" "$gale_json" "$gale_cache"; then
     warn "A timed Gale run failed on $name; see $SCRIPT_DIR/.benchmark-stderr.log"
     echo "$name|$file_count|-|FAIL (timed run)|-" >> "$SCRIPT_DIR/.benchmark-results.txt"
     return 0
@@ -436,21 +289,20 @@ run_benchmark_for_repo() {
 # Run parity (differential) test
 # ---------------------------------------------------------------------------
 
+# Usage: run_parity_test <name> <stylelint-bin|""> <cwd> <globs>
 run_parity_test() {
-  local name="$1" repo="$2" branch="$3" glob_pattern="$4" search_dir="$5" cwd="${6:-}"
+  local name="$1" stylelint_bin="$2" cwd="$3" globs
+  read -r -a globs <<< "$4"
   local clone_dir="$CLONES_DIR/$name"
   local work_dir="$clone_dir${cwd:+/$cwd}"
 
-  local stylelint_bin
-  stylelint_bin="$(find_up "$work_dir" "$clone_dir" node_modules/.bin/stylelint)/node_modules/.bin/stylelint" || {
+  if [ -z "$stylelint_bin" ]; then
     echo "$name|SKIP|SKIP|SKIP" >> "$SCRIPT_DIR/.parity-results.txt"
     return 0
-  }
+  fi
 
   info "Parity test: $name"
 
-  # Run both linters with JSON output, save to temp files to avoid
-  # shell quoting issues with embedded JSON
   # Stylelint 16+ prints its report to stderr, so keep both streams.
   local stylelint_tmp="$SCRIPT_DIR/.parity-stylelint-${name}.json"
   local stylelint_err="$SCRIPT_DIR/.parity-stylelint-${name}.stderr"
@@ -459,9 +311,9 @@ run_parity_test() {
 
   local stylelint_status=0 gale_status=0
   run_once "$(cache_file "$name" stylelint)" "$stylelint_tmp" "$stylelint_err" "$work_dir" \
-    "$stylelint_bin" "$glob_pattern" || stylelint_status=$?
+    "$stylelint_bin" "${globs[@]}" || stylelint_status=$?
   run_once "$(cache_file "$name" gale)" "$gale_tmp" "$gale_err" "$work_dir" \
-    "$GALE_BIN" "$glob_pattern" || gale_status=$?
+    "$GALE_BIN" "${globs[@]}" || gale_status=$?
 
   # A failed run has no result to compare; an empty one would count every
   # warning of the other linter as a mismatch.
@@ -475,184 +327,16 @@ run_parity_test() {
     return 0
   fi
 
-  # Compare using Python for robust JSON diffing
+  # The differential harness's comparison: every rule, no filters.
   local parity_result
-  parity_result=$(python3 - "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err" "$work_dir" <<'PYEOF'
-import json, os, sys
+  parity_result=$(python3 "$HARNESS" compare "$name" "$work_dir" \
+    "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err") \
+    || parity_result="FAIL (no JSON report)|-|-"
 
-# Stylelint reports absolute source paths and Gale reports paths relative to
-# the working directory; compare both relative to it or nothing ever matches.
-WORK_DIR = sys.argv[5]
-
-def read_report(stdout_path, stderr_path):
-    """Return the parsed JSON report, whichever stream it was written to.
-
-    Stylelint 16+ writes the report to stderr, where Node also prints its
-    own warnings, e.g. "(node:123) [DEP0040] DeprecationWarning: ...". A
-    bracket in such a line is not the report, so try each `[` in turn until
-    one decodes to a list of per-file results. Returns None if none does.
-    """
-    decoder = json.JSONDecoder()
-    for path in (stdout_path, stderr_path):
-        try:
-            with open(path) as f:
-                text = f.read()
-        except FileNotFoundError:
-            continue
-        start = text.find("[")
-        while start != -1:
-            try:
-                data, _ = decoder.raw_decode(text, start)
-            except json.JSONDecodeError:
-                data = None
-            if isinstance(data, list) and all(
-                isinstance(entry, dict) and "warnings" in entry for entry in data
-            ):
-                return data
-            start = text.find("[", start + 1)
-    return None
-
-def parse_warnings(stdout_path, stderr_path, linter):
-    """Extract (file, line, column, rule) tuples from linter JSON output."""
-    data = read_report(stdout_path, stderr_path)
-    if data is None:
-        # Without a report every warning of the other linter would count
-        # as a mismatch; fail the comparison instead.
-        print(f"no JSON report from {linter}", file=sys.stderr)
-        sys.exit(3)
-    warnings = set()
-    for entry in data:
-        source = entry.get("source", "")
-        if os.path.isabs(source):
-            source = os.path.relpath(source, WORK_DIR)
-        for w in entry.get("warnings", []):
-            rule = w.get("rule", "")
-            line = w.get("line", 0)
-            col = w.get("column", 0)
-            warnings.add((source, line, col, rule))
-    return warnings
-
-stylelint_w = parse_warnings(sys.argv[1], sys.argv[2], "Stylelint")
-gale_w = parse_warnings(sys.argv[3], sys.argv[4], "Gale")
-
-# Only compare rules that Gale implements (all 161 from ALL_RULE_NAMES)
-gale_rules = {
-    "alpha-value-notation", "annotation-no-unknown",
-    "at-rule-allowed-list", "at-rule-descriptor-no-unknown",
-    "at-rule-descriptor-value-no-unknown", "at-rule-disallowed-list",
-    "at-rule-empty-line-before", "at-rule-no-deprecated",
-    "at-rule-no-unknown", "at-rule-no-vendor-prefix",
-    "at-rule-prelude-no-invalid", "at-rule-property-required-list",
-    "block-no-empty", "block-no-redundant-nested-style-rules",
-    "color-function-alias-notation", "color-function-notation",
-    "color-hex-alpha", "color-hex-case", "color-hex-length",
-    "color-named", "color-no-hex", "color-no-invalid-hex",
-    "comment-empty-line-before", "comment-no-empty", "comment-pattern",
-    "comment-whitespace-inside", "comment-word-disallowed-list",
-    "container-name-pattern", "custom-media-pattern",
-    "custom-property-empty-line-before",
-    "custom-property-no-missing-var-function", "custom-property-pattern",
-    "declaration-block-no-duplicate-custom-properties",
-    "declaration-block-no-duplicate-properties",
-    "declaration-block-no-redundant-longhand-properties",
-    "declaration-block-no-shorthand-property-overrides",
-    "declaration-block-single-line-max-declarations",
-    "declaration-empty-line-before", "declaration-no-important",
-    "declaration-property-unit-allowed-list",
-    "declaration-property-unit-disallowed-list",
-    "declaration-property-value-allowed-list",
-    "declaration-property-value-disallowed-list",
-    "declaration-property-value-keyword-no-deprecated",
-    "declaration-property-value-no-unknown",
-    "display-notation", "font-family-name-quotes",
-    "font-family-no-duplicate-names",
-    "font-family-no-missing-generic-family-keyword",
-    "font-weight-notation", "function-allowed-list",
-    "function-calc-no-unspaced-operator", "function-disallowed-list",
-    "function-linear-gradient-no-nonstandard-direction",
-    "function-name-case", "function-no-unknown",
-    "function-url-no-scheme-relative", "function-url-quotes",
-    "function-url-scheme-allowed-list", "function-url-scheme-disallowed-list",
-    "hue-degree-notation", "import-notation",
-    "keyframe-block-no-duplicate-selectors",
-    "keyframe-declaration-no-important", "keyframe-selector-notation",
-    "keyframes-name-pattern", "layer-name-pattern",
-    "length-zero-no-unit", "lightness-notation",
-    "max-line-length", "max-nesting-depth",
-    "media-feature-name-allowed-list", "media-feature-name-disallowed-list",
-    "media-feature-name-no-unknown", "media-feature-name-no-vendor-prefix",
-    "media-feature-name-unit-allowed-list",
-    "media-feature-name-value-allowed-list",
-    "media-feature-name-value-no-unknown", "media-feature-range-notation",
-    "media-query-no-invalid", "media-type-no-deprecated",
-    "named-grid-areas-no-invalid",
-    "nesting-selector-no-missing-scoping-root",
-    "no-descending-specificity", "no-duplicate-at-import-rules",
-    "no-duplicate-selectors", "no-empty-source",
-    "no-invalid-double-slash-comments",
-    "no-invalid-position-at-import-rule",
-    "no-invalid-position-declaration", "no-irregular-whitespace",
-    "no-unknown-animations", "number-leading-zero", "number-max-precision",
-    "order/properties-alphabetical-order", "order/properties-order",
-    "property-allowed-list", "property-disallowed-list",
-    "property-no-deprecated", "property-no-unknown",
-    "property-no-vendor-prefix", "rule-empty-line-before",
-    "rule-nesting-at-rule-required-list",
-    "rule-selector-property-disallowed-list",
-    "scss/at-extend-no-missing-placeholder", "scss/at-if-no-null",
-    "scss/at-rule-no-unknown", "scss/comment-no-empty",
-    "scss/declaration-nested-properties-no-divided-groups",
-    "scss/dollar-variable-no-missing-interpolation",
-    "scss/function-quote-no-quoted-strings-inside",
-    "scss/function-unquote-no-unquoted-strings-inside",
-    "scss/load-no-partial-leading-underscore", "scss/load-partial-extension",
-    "scss/no-duplicate-mixins", "scss/no-global-function-names",
-    "scss/operator-no-newline-after", "scss/operator-no-newline-before",
-    "scss/operator-no-unspaced", "selector-anb-no-unmatchable",
-    "selector-attribute-name-disallowed-list",
-    "selector-attribute-operator-allowed-list",
-    "selector-attribute-operator-disallowed-list",
-    "selector-attribute-quotes", "selector-class-pattern",
-    "selector-combinator-allowed-list", "selector-combinator-disallowed-list",
-    "selector-disallowed-list", "selector-id-pattern",
-    "selector-max-attribute", "selector-max-class",
-    "selector-max-combinators", "selector-max-compound-selectors",
-    "selector-max-id", "selector-max-pseudo-class",
-    "selector-max-specificity", "selector-max-type",
-    "selector-max-universal", "selector-nested-pattern",
-    "selector-no-qualifying-type", "selector-no-vendor-prefix",
-    "selector-not-notation", "selector-pseudo-class-allowed-list",
-    "selector-pseudo-class-disallowed-list",
-    "selector-pseudo-class-no-unknown",
-    "selector-pseudo-element-allowed-list",
-    "selector-pseudo-element-colon-notation",
-    "selector-pseudo-element-disallowed-list",
-    "selector-pseudo-element-no-unknown", "selector-type-case",
-    "selector-type-no-unknown",
-    "shorthand-property-no-redundant-values", "string-no-newline",
-    "string-quotes", "syntax-string-no-invalid", "time-min-milliseconds",
-    "unit-allowed-list", "unit-disallowed-list", "unit-no-unknown",
-    "value-keyword-case", "value-no-vendor-prefix",
-}
-
-stylelint_filtered = {w for w in stylelint_w if w[3] in gale_rules}
-gale_filtered = {w for w in gale_w if w[3] in gale_rules}
-
-false_negatives = stylelint_filtered - gale_filtered
-false_positives = gale_filtered - stylelint_filtered
-
-total_files = len({w[0] for w in stylelint_filtered | gale_filtered})
-
-print(f"{total_files}|{len(false_positives)}|{len(false_negatives)}")
-PYEOF
-  ) || parity_result="FAIL (no JSON report)|-|-"
-
-  rm -f "$stylelint_tmp" "$gale_tmp"
+  rm -f "$stylelint_tmp" "$stylelint_err" "$gale_tmp" "$gale_err"
 
   local total_files fp fn
-  total_files=$(echo "$parity_result" | cut -d'|' -f1)
-  fp=$(echo "$parity_result" | cut -d'|' -f2)
-  fn=$(echo "$parity_result" | cut -d'|' -f3)
+  IFS='|' read -r total_files fp fn <<< "$parity_result"
 
   echo "$name|$total_files|$fp|$fn" >> "$SCRIPT_DIR/.parity-results.txt"
   echo "    Files tested: $total_files | False positives: $fp | False negatives: $fn"
@@ -704,7 +388,7 @@ EOF
 
 *False Positives = Gale reports but Stylelint does not. False Negatives = Stylelint reports but Gale misses.*
 *FAIL = the linter exited with something other than 0 (clean) or 2 (problems found), e.g. 78 for a config it could not load or 101 for a crash. Failed runs are neither timed nor compared.*
-*Only rules implemented in Gale are compared. Plugin-only rules are excluded.*
+*Every rule is compared, plugin rules included, by line, column, rule, severity and message, as in `tests/differential/run.py`.*
 
 Reproduce these results: `./benchmarks/benchmark.sh`
 EOF
@@ -734,10 +418,8 @@ usage() {
   echo ""
   echo "Run Gale vs Stylelint benchmarks on real-world repositories."
   echo ""
-  echo "Repos:    bootstrap, carbon, freecodecamp, grafana, govuk-frontend,"
-  echo "          gutenberg, material-ui, patternfly, primer-css,"
-  echo "          spectrum-css, angular-components, docusaurus,"
-  echo "          discourse, wp-calypso, mattermost (default: all)"
+  echo "Repos (default: all), from tests/differential/repos.json:"
+  python3 "$HARNESS" repos 2>/dev/null | cut -d'|' -f1 | paste -sd ' ' - | fold -s -w 70 | sed 's/^/  /'
   echo ""
   echo "Options:"
   echo "  --help          Show this help"
@@ -802,42 +484,36 @@ main() {
     info "Using existing Gale binary"
   fi
 
-  # Filter repos if specific ones requested
+  # The requested repos, or all of them: name|cwd|globs|paths per line.
+  local listing entry
+  listing=$(python3 "$HARNESS" repos ${selected_repos[@]+"${selected_repos[@]}"}) \
+    || error "No matching repos found."
   local repos_to_run=()
-  if [ ${#selected_repos[@]} -gt 0 ]; then
-    for sel in "${selected_repos[@]}"; do
-      for entry in "${REPOS[@]}"; do
-        local entry_name
-        entry_name=$(echo "$entry" | cut -d'|' -f1)
-        if [ "$entry_name" = "$sel" ]; then
-          repos_to_run+=("$entry")
-        fi
-      done
-    done
-    if [ ${#repos_to_run[@]} -eq 0 ]; then
-      error "No matching repos found. Available: bootstrap, carbon, freecodecamp, grafana, govuk-frontend, gutenberg, material-ui, patternfly, primer-css"
-    fi
-  else
-    repos_to_run=("${REPOS[@]}")
-  fi
+  while IFS= read -r entry; do
+    repos_to_run+=("$entry")
+  done <<< "$listing"
 
   # Clean temp files
   cleanup_temp
 
   echo ""
 
-  # Run benchmarks
-  for entry in "${repos_to_run[@]}"; do
-    IFS='|' read -r name repo branch glob_pattern search_dir cwd <<< "$entry"
-    run_benchmark_for_repo "$name" "$repo" "$branch" "$glob_pattern" "$search_dir" "$cwd"
+  # Run benchmarks, remembering each repo's Stylelint for the parity tests
+  # (empty when the repo could not be cloned or installed).
+  local i name cwd globs paths stylelint_bins=()
+  for i in "${!repos_to_run[@]}"; do
+    IFS='|' read -r name cwd globs paths <<< "${repos_to_run[$i]}"
+    stylelint_bins[i]=$(python3 "$HARNESS" prepare "$name" --clones-dir "$CLONES_DIR") \
+      || stylelint_bins[i]=""
+    run_benchmark_for_repo "$name" "${stylelint_bins[$i]}" "$cwd" "$globs" "$paths"
     echo ""
   done
 
   # Run parity tests
   if [ "$skip_parity" -eq 0 ]; then
-    for entry in "${repos_to_run[@]}"; do
-      IFS='|' read -r name repo branch glob_pattern search_dir cwd <<< "$entry"
-      run_parity_test "$name" "$repo" "$branch" "$glob_pattern" "$search_dir" "$cwd"
+    for i in "${!repos_to_run[@]}"; do
+      IFS='|' read -r name cwd globs paths <<< "${repos_to_run[$i]}"
+      run_parity_test "$name" "${stylelint_bins[$i]}" "$cwd" "$globs"
       echo ""
     done
   fi
