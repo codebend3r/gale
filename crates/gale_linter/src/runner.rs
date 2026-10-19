@@ -9,12 +9,11 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use gale_css_parser::embedded::HostLanguage;
 use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisableReports};
-use crate::embedded::{HostOptions, lint_host};
+use crate::embedded::{HostLanguage, HostOptions, lint_host};
 use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::lint_env::LintEnv;

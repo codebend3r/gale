@@ -8,8 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gale_css_parser::embedded::HostLanguage;
-use gale_linter::embedded::unsupported_blocks;
+use gale_linter::embedded::{HostLanguage, unsupported_blocks};
 
 /// Whether `path` is a file gale reads embedded style sheets from.
 pub(crate) fn is_host_file(path: &Path) -> bool {

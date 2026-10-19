@@ -9,7 +9,6 @@ use thiserror::Error;
 use gale_diagnostics::{SourceLineIndex, Span};
 
 mod decl_spans;
-pub mod embedded;
 mod sass_to_scss;
 
 use decl_spans::{ProtoDeclaration, assign_spans, find_declaration_span, locate_declarations};
