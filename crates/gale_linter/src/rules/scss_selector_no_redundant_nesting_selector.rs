@@ -162,7 +162,7 @@ impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -170,16 +170,16 @@ mod tests {
     CssNode::Style(StyleRule {
       selector: parent_sel.to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       children: vec![StyleRule {
         selector: child_sel.to_string(),
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(10, 10),
+          span: Span::new(10, 10),
           important: false,
         }],
-        span: ParserSpan::new(5, 40),
+        span: Span::new(5, 40),
         ..Default::default()
       }],
 

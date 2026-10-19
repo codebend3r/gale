@@ -49,12 +49,12 @@ fn declaration_end(source: &str, after_prop: usize, to: usize) -> usize {
 pub(crate) fn find_declaration_span(source: &str, from: usize, to: usize, property: &str) -> Span {
   let to = to.min(source.len());
   let Some(area) = source.get(from..to) else {
-    return Span::empty();
+    return Span::default();
   };
   let hay = area.as_bytes();
   let needle = property.as_bytes();
   let Some(&first) = needle.first() else {
-    return Span::empty();
+    return Span::default();
   };
   let first = first.to_ascii_lowercase();
 
@@ -65,7 +65,7 @@ pub(crate) fn find_declaration_span(source: &str, from: usize, to: usize, proper
     let Some(rel_idx) = (search_from..=last_start).find(|&i| {
       hay[i].to_ascii_lowercase() == first && hay[i..i + needle.len()].eq_ignore_ascii_case(needle)
     }) else {
-      return Span::empty();
+      return Span::default();
     };
 
     let after_name = rel_idx + needle.len();
@@ -81,7 +81,7 @@ pub(crate) fn find_declaration_span(source: &str, from: usize, to: usize, proper
     // Resume after this occurrence, not inside it.
     search_from = after_name;
   }
-  Span::empty()
+  Span::default()
 }
 
 /// Remembers the next position of one byte so that repeated searches with a
@@ -255,7 +255,7 @@ fn locate_declarations_by_name(
   let mut spans = Vec::with_capacity(properties.len());
   let mut sf = from;
   while spans.len() < properties.len() && sf < to {
-    let mut best = Span::empty();
+    let mut best = Span::default();
     for name in &sorted {
       let span = find_declaration_span(source, sf, to, name);
       if span.length > 0 && (best.length == 0 || span.offset < best.offset) {
@@ -340,7 +340,7 @@ pub(crate) fn assign_spans(
   declarations.extend(slots.into_iter().flatten().map(|proto| Declaration {
     property: proto.property,
     value: proto.value,
-    span: Span::empty(),
+    span: Span::default(),
     important: proto.important,
   }));
   declarations
@@ -360,7 +360,7 @@ mod tests {
     loop {
       let rel_idx = match lower_area[search_from..].find(&lower_prop) {
         Some(i) => search_from + i,
-        None => return Span::empty(),
+        None => return Span::default(),
       };
       let after_name = rel_idx + lower_prop.len();
       let rest_of_area = &lower_area[after_name..];
@@ -399,7 +399,7 @@ mod tests {
     prop_names.dedup();
     let mut found_count = 0;
     while found_count < total_decls && sf < to {
-      let mut best_span = Span::empty();
+      let mut best_span = Span::default();
       let mut best_offset = usize::MAX;
       for pname in &prop_names {
         let span = legacy_find(source, sf, to, pname);
@@ -675,7 +675,7 @@ mod tests {
         declarations.push(Declaration {
           property: prop.clone(),
           value: value.clone(),
-          span: Span::empty(),
+          span: Span::default(),
           important: *important,
         });
       }

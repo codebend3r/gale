@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -62,8 +62,7 @@ impl Check for ScssFunctionQuoteNoQuotedStringsInsideCheck {
           let trimmed = after.trim_start();
           if trimmed.starts_with('"') || trimmed.starts_with('\'') {
             return vec![
-              Diagnostic::new(NAME, "Unexpected quoted string inside quote()")
-                .span(Span::new(decl.span.offset, decl.span.length)),
+              Diagnostic::new(NAME, "Unexpected quoted string inside quote()").span(decl.span),
             ];
           }
         }
@@ -81,7 +80,8 @@ impl Check for ScssFunctionQuoteNoQuotedStringsInsideCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan};
+  use gale_css_parser::Declaration;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, invalid_options, scss_ctx};
 
@@ -89,7 +89,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: "content".to_string(),
       value: value.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     })
   }

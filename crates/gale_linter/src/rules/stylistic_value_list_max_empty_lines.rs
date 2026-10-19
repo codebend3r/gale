@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -71,7 +71,7 @@ impl Check for StylisticValueListMaxEmptyLinesCheck {
             NAME,
             format!("Expected no more than {max} empty line(s) in value list"),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
     }
@@ -83,7 +83,8 @@ impl Check for StylisticValueListMaxEmptyLinesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -96,10 +97,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: value.to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
     rule.check(&node, &ctx)

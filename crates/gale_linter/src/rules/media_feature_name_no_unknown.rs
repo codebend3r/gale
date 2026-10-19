@@ -361,7 +361,7 @@ fn extract_media_features(params: &str) -> Vec<MediaFeature> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
 
   use crate::testing::{configured, ctx};
 
@@ -369,7 +369,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }

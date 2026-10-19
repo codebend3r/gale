@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -64,7 +64,7 @@ fn collect_important_in_children(children: &[CssNode], diagnostics: &mut Vec<Dia
               decl.property
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
       CssNode::Style(style_rule) => {
@@ -78,7 +78,7 @@ fn collect_important_in_children(children: &[CssNode], diagnostics: &mut Vec<Dia
                   decl.property
                 ),
               )
-              .span(Span::new(decl.span.offset, decl.span.length)),
+              .span(decl.span),
             );
           }
         }
@@ -91,7 +91,8 @@ fn collect_important_in_children(children: &[CssNode], diagnostics: &mut Vec<Dia
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Syntax};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, scss_ctx_with_source};
 
@@ -101,11 +102,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       children: vec![CssNode::Declaration(Declaration {
         property: "opacity".to_string(),
         value: "0".to_string(),
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         important: true,
       })],
     });
@@ -120,11 +121,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       children: vec![CssNode::Declaration(Declaration {
         property: "opacity".to_string(),
         value: "0".to_string(),
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         important: false,
       })],
     });
@@ -138,7 +139,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       children: vec![],
     });
     let diags = rule.check(&node, &ctx());

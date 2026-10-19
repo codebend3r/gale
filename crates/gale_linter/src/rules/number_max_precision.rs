@@ -180,7 +180,7 @@ fn round_to_precision(num: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
 
@@ -190,10 +190,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "width".to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -209,10 +209,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "width".to_string(),
         value: printed_value.to_string(),
-        span: ParserSpan::new(start, end - start),
+        span: Span::new(start, end - start),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     })
   }

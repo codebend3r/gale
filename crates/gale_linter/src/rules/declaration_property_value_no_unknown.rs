@@ -198,7 +198,7 @@ impl DeclarationPropertyValueNoUnknownCheck {
               decl.property
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         ];
       }
       if !keywords.contains(&tokens[0]) {
@@ -276,7 +276,7 @@ fn is_css_wide_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan};
+  use gale_css_parser::Declaration;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -284,7 +284,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: property.to_string(),
       value: value.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       important: false,
     })
   }

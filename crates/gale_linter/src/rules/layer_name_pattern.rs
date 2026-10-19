@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -91,7 +91,7 @@ impl Check for LayerNamePatternCheck {
                 "Expected layer name segment \"{segment}\" to match pattern \"{pattern_str}\""
               ),
             )
-            .span(Span::new(at.span.offset, at.span.length))
+            .span(at.span)
             .message_args([segment, pattern_str]),
           );
         }
@@ -105,7 +105,8 @@ impl Check for LayerNamePatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -113,7 +114,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "layer".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }
@@ -169,7 +170,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     });
     let d = rule.check(&node, &ctx());

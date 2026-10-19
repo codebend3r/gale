@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -41,7 +41,7 @@ impl Check for ColorNoInvalidHexCheck {
         if !is_valid_hex(&hex) {
           diags.push(
             Diagnostic::new(NAME, format!("Unexpected invalid hex color \"{hex}\""))
-              .span(Span::new(decl.span.offset, decl.span.length)),
+              .span(decl.span),
           );
         }
       }
@@ -134,7 +134,8 @@ fn is_valid_hex(hex: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{CssNode, Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -144,10 +145,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

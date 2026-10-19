@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -157,7 +157,7 @@ impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
                 NAME,
                 format!("Unexpected shorthand \"{}\" after \"{}\"", prop, longhand,),
               )
-              .span(Span::new(decl.span.offset, decl.span.length)),
+              .span(decl.span),
             );
             // Only report the first overridden longhand per shorthand occurrence.
             break;
@@ -183,7 +183,8 @@ impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -196,17 +197,17 @@ mod tests {
         Declaration {
           property: "border-color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(4, 16),
+          span: Span::new(4, 16),
           important: false,
         },
         Declaration {
           property: "border".to_string(),
           value: "1px solid".to_string(),
-          span: ParserSpan::new(22, 18),
+          span: Span::new(22, 18),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 42),
+      span: Span::new(0, 42),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -224,17 +225,17 @@ mod tests {
         Declaration {
           property: "margin".to_string(),
           value: "10px".to_string(),
-          span: ParserSpan::new(4, 14),
+          span: Span::new(4, 14),
           important: false,
         },
         Declaration {
           property: "margin-top".to_string(),
           value: "20px".to_string(),
-          span: ParserSpan::new(20, 16),
+          span: Span::new(20, 16),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 38),
+      span: Span::new(0, 38),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -250,17 +251,17 @@ mod tests {
         Declaration {
           property: "font-weight".to_string(),
           value: "bold".to_string(),
-          span: ParserSpan::new(4, 16),
+          span: Span::new(4, 16),
           important: false,
         },
         Declaration {
           property: "font".to_string(),
           value: "16px/1.5 Arial".to_string(),
-          span: ParserSpan::new(22, 22),
+          span: Span::new(22, 22),
           important: false,
         },
       ],
-      span: ParserSpan::new(0, 46),
+      span: Span::new(0, 46),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());

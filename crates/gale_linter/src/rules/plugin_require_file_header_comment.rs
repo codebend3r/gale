@@ -105,7 +105,7 @@ impl Check for PluginRequireFileHeaderCommentCheck {
               NAME,
               "File header comment does not match the required pattern",
             )
-            .span(Span::new(comment.span.offset, comment.span.length)),
+            .span(comment.span),
           ]
         }
       }
@@ -137,7 +137,7 @@ impl Check for PluginRequireFileHeaderCommentCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Comment, StyleRule};
   use serde_json::json;
 
   use crate::testing::{configured, ctx};
@@ -151,7 +151,7 @@ mod tests {
     let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 Acme Corp ".to_string(),
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       is_line: false,
     })];
     let diags = rule.check_root(&nodes, &ctx);
@@ -167,7 +167,7 @@ mod tests {
     let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " MIT License ".to_string(),
-      span: ParserSpan::new(0, 16),
+      span: Span::new(0, 16),
       is_line: false,
     })];
     let diags = rule.check_root(&nodes, &ctx);
@@ -183,7 +183,7 @@ mod tests {
     let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " This is just a comment ".to_string(),
-      span: ParserSpan::new(0, 28),
+      span: Span::new(0, 28),
       is_line: false,
     })];
     let diags = rule.check_root(&nodes, &ctx);
@@ -201,7 +201,7 @@ mod tests {
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
       nested_at_rules: vec![],
     })];
@@ -242,7 +242,7 @@ mod tests {
     let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 ".to_string(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       is_line: false,
     })];
     let diags = rule.check_root(&nodes, &ctx);
@@ -258,7 +258,7 @@ mod tests {
     let ctx = ctx();
     let nodes = vec![CssNode::Comment(Comment {
       text: " COPYRIGHT 2024 ".to_string(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       is_line: false,
     })];
     let diags = rule.check_root(&nodes, &ctx);
@@ -275,7 +275,7 @@ mod tests {
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
       nested_at_rules: vec![],
     })];

@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -93,7 +93,7 @@ impl Check for ScssPercentPlaceholderPatternCheck {
                   placeholder_name, pattern_str
                 ),
               )
-              .span(Span::new(rule.span.offset, rule.span.length)),
+              .span(rule.span),
             );
           }
         }
@@ -107,7 +107,8 @@ impl Check for ScssPercentPlaceholderPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Span as ParserSpan, StyleRule};
+  use gale_css_parser::StyleRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -115,7 +116,7 @@ mod tests {
     CssNode::Style(StyleRule {
       selector: selector.to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       ..Default::default()
     })
   }

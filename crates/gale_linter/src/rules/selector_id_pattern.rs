@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -74,7 +74,7 @@ impl Check for SelectorIdPatternCheck {
             NAME,
             format!("Expected ID selector \"#{id}\" to match pattern \"{pattern_str}\""),
           )
-          .span(Span::new(rule.span.offset, rule.span.length))
+          .span(rule.span)
           .message_args([format!("#{id}"), pattern_str.to_string()]),
         );
       }
@@ -141,7 +141,8 @@ fn extract_id_selectors(selector: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -151,10 +152,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -210,7 +211,7 @@ mod tests {
     let node = CssNode::AtRule(gale_css_parser::AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     });
     let d = rule.check(&node, &ctx());

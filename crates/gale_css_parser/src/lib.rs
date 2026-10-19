@@ -6,6 +6,8 @@ use raffia::pos::Spanned as RaffiaSpanned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use gale_diagnostics::Span;
+
 mod decl_spans;
 pub mod embedded;
 mod sass_to_scss;
@@ -45,35 +47,6 @@ pub fn detect_syntax(file_path: &str) -> Syntax {
 // ---------------------------------------------------------------------------
 // Simplified AST types (owned, lifetime-free)
 // ---------------------------------------------------------------------------
-
-/// A source span with byte offsets into the source text.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Span {
-  /// Byte offset from the start of the source.
-  pub offset: usize,
-  /// Length in bytes (0 when unknown).
-  pub length: usize,
-}
-
-impl Span {
-  /// Builds a span from a byte offset and a byte length.
-  pub fn new(offset: usize, length: usize) -> Self {
-    Self { offset, length }
-  }
-
-  /// The exclusive end byte offset.
-  pub fn end(&self) -> usize {
-    self.offset + self.length
-  }
-
-  /// A zero-length span at offset 0, for nodes with no known position.
-  fn empty() -> Self {
-    Self {
-      offset: 0,
-      length: 0,
-    }
-  }
-}
 
 /// A CSS declaration (`property: value`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -372,7 +345,7 @@ fn convert_rules(rules: &[LcssRule], source: &str, idx: &LineIndex) -> Vec<CssNo
             children.push(CssNode::Declaration(Declaration {
               property: name.trim().to_owned(),
               value: value.trim().to_owned(),
-              span: Span::empty(),
+              span: Span::default(),
               important: false,
             }));
           }
@@ -618,7 +591,7 @@ fn convert_keyframes(
       };
       Span::new(abs_start, length)
     } else {
-      Span::empty()
+      Span::default()
     };
 
     // STEP 2: Search for declarations WITHIN this keyframe block only.

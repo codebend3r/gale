@@ -75,7 +75,7 @@ impl Check for CommentNoEmptyCheck {
 
           vec![
             Diagnostic::new(NAME, "Unexpected empty comment")
-              .span(Span::new(comment.span.offset, comment.span.length))
+              .span(comment.span)
               .fix(fix),
           ]
         } else {
@@ -90,7 +90,7 @@ impl Check for CommentNoEmptyCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use gale_css_parser::Comment;
 
   use crate::testing::{configured, ctx, ctx_with_source, scss_ctx_with_source};
 
@@ -100,7 +100,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
-      span: ParserSpan::new(0, 5),
+      span: Span::new(0, 5),
     });
     let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
@@ -113,7 +113,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/**/".to_string(),
-      span: ParserSpan::new(0, 4),
+      span: Span::new(0, 4),
     });
     let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
@@ -125,7 +125,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* hello */".to_string(),
-      span: ParserSpan::new(0, 11),
+      span: Span::new(0, 11),
     });
     let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
@@ -139,7 +139,7 @@ mod tests {
     let node = CssNode::Comment(gale_css_parser::Comment {
       is_line: true,
       text: "".to_string(),
-      span: ParserSpan::new(0, 2),
+      span: Span::new(0, 2),
     });
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
@@ -148,7 +148,7 @@ mod tests {
     let node2 = CssNode::Comment(gale_css_parser::Comment {
       is_line: true,
       text: " ".to_string(),
-      span: ParserSpan::new(3, 3),
+      span: Span::new(3, 3),
     });
     let diags2 = rule.check(&node2, &ctx);
     assert!(diags2.is_empty());
@@ -162,7 +162,7 @@ mod tests {
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
-      span: ParserSpan::new(0, 5),
+      span: Span::new(0, 5),
     });
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);

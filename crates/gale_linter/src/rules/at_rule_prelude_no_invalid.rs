@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -59,10 +59,7 @@ impl Check for AtRulePreludeNoInvalidCheck {
     match name.as_str() {
       "media" => {
         if params.is_empty() {
-          return vec![
-            Diagnostic::new(NAME, "Unexpected empty prelude for @media")
-              .span(Span::new(at.span.offset, at.span.length)),
-          ];
+          return vec![Diagnostic::new(NAME, "Unexpected empty prelude for @media").span(at.span)];
         }
         // Check for unbalanced parentheses
         let mut depth: i32 = 0;
@@ -74,7 +71,7 @@ impl Check for AtRulePreludeNoInvalidCheck {
               if depth < 0 {
                 return vec![
                   Diagnostic::new(NAME, "Unexpected unbalanced parentheses in @media prelude")
-                    .span(Span::new(at.span.offset, at.span.length)),
+                    .span(at.span),
                 ];
               }
             }
@@ -84,24 +81,20 @@ impl Check for AtRulePreludeNoInvalidCheck {
         if depth != 0 {
           return vec![
             Diagnostic::new(NAME, "Unexpected unbalanced parentheses in @media prelude")
-              .span(Span::new(at.span.offset, at.span.length)),
+              .span(at.span),
           ];
         }
         // Check for empty parentheses
         if params.contains("()") {
           return vec![
-            Diagnostic::new(NAME, "Unexpected empty parentheses in @media prelude")
-              .span(Span::new(at.span.offset, at.span.length)),
+            Diagnostic::new(NAME, "Unexpected empty parentheses in @media prelude").span(at.span),
           ];
         }
         vec![]
       }
       "import" => {
         if params.is_empty() {
-          return vec![
-            Diagnostic::new(NAME, "Unexpected empty prelude for @import")
-              .span(Span::new(at.span.offset, at.span.length)),
-          ];
+          return vec![Diagnostic::new(NAME, "Unexpected empty prelude for @import").span(at.span)];
         }
         // @import prelude must start with a string or url().
         // Note: lightningcss (and raffia) parse @import rules specially and
@@ -114,8 +107,7 @@ impl Check for AtRulePreludeNoInvalidCheck {
       "keyframes" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(NAME, "Unexpected empty prelude for @keyframes")
-              .span(Span::new(at.span.offset, at.span.length)),
+            Diagnostic::new(NAME, "Unexpected empty prelude for @keyframes").span(at.span),
           ];
         }
         vec![]
@@ -132,7 +124,7 @@ impl Check for AtRulePreludeNoInvalidCheck {
             if layer_name.is_empty() {
               return vec![
                 Diagnostic::new(NAME, "Unexpected empty layer name in @layer prelude")
-                  .span(Span::new(at.span.offset, at.span.length)),
+                  .span(at.span),
               ];
             }
           }
@@ -142,8 +134,7 @@ impl Check for AtRulePreludeNoInvalidCheck {
       "supports" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(NAME, "Unexpected empty prelude for @supports")
-              .span(Span::new(at.span.offset, at.span.length)),
+            Diagnostic::new(NAME, "Unexpected empty prelude for @supports").span(at.span),
           ];
         }
         vec![]
@@ -156,7 +147,8 @@ impl Check for AtRulePreludeNoInvalidCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -164,7 +156,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: name.to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }

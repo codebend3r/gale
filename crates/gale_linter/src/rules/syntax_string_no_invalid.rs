@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -129,15 +129,12 @@ impl Check for SyntaxStringNoInvalidCheck {
         let inner = &value[1..value.len() - 1];
         if let Some(reason) = validate_syntax_string(inner) {
           diags.push(
-            Diagnostic::new(NAME, format!("Invalid syntax string: {reason}"))
-              .span(Span::new(decl.span.offset, decl.span.length)),
+            Diagnostic::new(NAME, format!("Invalid syntax string: {reason}")).span(decl.span),
           );
         }
       } else {
-        diags.push(
-          Diagnostic::new(NAME, "Syntax string must be quoted".to_string())
-            .span(Span::new(decl.span.offset, decl.span.length)),
-        );
+        diags
+          .push(Diagnostic::new(NAME, "Syntax string must be quoted".to_string()).span(decl.span));
       }
     }
 
@@ -148,7 +145,8 @@ impl Check for SyntaxStringNoInvalidCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan};
+  use gale_css_parser::{AtRule, CssNode, Declaration};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -156,11 +154,11 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "property".to_string(),
       params: "--my-color".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Declaration(Declaration {
         property: "syntax".to_string(),
         value: syntax_value.to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       })],
     })
@@ -247,11 +245,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "screen".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Declaration(Declaration {
         property: "syntax".to_string(),
         value: "\"<bogus>\"".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       })],
     });

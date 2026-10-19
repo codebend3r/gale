@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -51,7 +51,7 @@ impl Check for NoDuplicateAtImportRulesCheck {
               NAME,
               format!("Unexpected duplicate @import rule \"{}\"", url),
             )
-            .span(Span::new(at_rule.span.offset, at_rule.span.length)),
+            .span(at_rule.span),
           );
         }
       }
@@ -64,7 +64,8 @@ impl Check for NoDuplicateAtImportRulesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -75,19 +76,19 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(0, 22),
+        span: Span::new(0, 22),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "normalize.css".to_string(),
-        span: ParserSpan::new(23, 26),
+        span: Span::new(23, 26),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(50, 22),
+        span: Span::new(50, 22),
         children: vec![],
       }),
     ];
@@ -106,13 +107,13 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "reset.css".to_string(),
-        span: ParserSpan::new(0, 22),
+        span: Span::new(0, 22),
         children: vec![],
       }),
       CssNode::AtRule(AtRule {
         name: "import".to_string(),
         params: "normalize.css".to_string(),
-        span: ParserSpan::new(23, 26),
+        span: Span::new(23, 26),
         children: vec![],
       }),
     ];

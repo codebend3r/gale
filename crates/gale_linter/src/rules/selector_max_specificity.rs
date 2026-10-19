@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
@@ -201,7 +201,7 @@ impl Check for SelectorMaxSpecificityCheck {
                             config.max_id, config.max_class, config.max_type,
                         ),
                     )
-                    .span(Span::new(rule.span.offset, rule.span.length)),
+                    .span(rule.span),
                 );
       }
     }
@@ -542,7 +542,8 @@ fn is_ident_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Span as ParserSpan, StyleRule};
+  use gale_css_parser::StyleRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -550,7 +551,7 @@ mod tests {
     CssNode::Style(StyleRule {
       selector: sel.to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, sel.len()),
+      span: Span::new(0, sel.len()),
       ..Default::default()
     })
   }

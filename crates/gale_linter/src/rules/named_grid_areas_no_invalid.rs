@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -78,7 +78,7 @@ impl Check for NamedGridAreasNoInvalidCheck {
               row.len()
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
         // If row counts don't match, skip rectangle check
         return diagnostics;
@@ -103,7 +103,7 @@ impl Check for NamedGridAreasNoInvalidCheck {
             NAME,
             format!("Named grid area \"{}\" does not form a rectangle", name),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
     }
@@ -172,7 +172,8 @@ fn is_rectangle(positions: &[(usize, usize)]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan};
+  use gale_css_parser::Declaration;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -180,7 +181,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: property.to_string(),
       value: value.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       important: false,
     })
   }

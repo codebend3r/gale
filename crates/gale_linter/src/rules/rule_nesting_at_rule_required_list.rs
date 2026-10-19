@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -89,7 +89,7 @@ impl Check for RuleNestingAtRuleRequiredListCheck {
                 name = at_rule.name,
               ),
             )
-            .span(Span::new(at_rule.span.offset, at_rule.span.length)),
+            .span(at_rule.span),
           );
         }
       }
@@ -102,7 +102,8 @@ impl Check for RuleNestingAtRuleRequiredListCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{AtRule, Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -110,7 +111,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: name.to_string(),
       params: String::new(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       children: vec![],
     })
   }
@@ -121,10 +122,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     })
   }

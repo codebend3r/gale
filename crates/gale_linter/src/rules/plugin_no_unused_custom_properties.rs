@@ -216,7 +216,7 @@ impl Check for PluginNoUnusedCustomPropertiesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
   use serde_json::json;
 
   use crate::testing::{configured, ctx};
@@ -229,11 +229,11 @@ mod tests {
         .map(|(p, v)| Declaration {
           property: p.to_string(),
           value: v.to_string(),
-          span: ParserSpan::new(0, 10),
+          span: Span::new(0, 10),
           important: false,
         })
         .collect(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
       nested_at_rules: vec![],
     })]

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
@@ -118,7 +118,7 @@ impl Check for DeclarationPropertyMaxValuesCheck {
               decl.property,
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
     }
@@ -175,7 +175,8 @@ fn count_values(value: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -185,10 +186,10 @@ mod tests {
       declarations: vec![Declaration {
         property: prop.to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, prop.len() + val.len() + 2),
+        span: Span::new(0, prop.len() + val.len() + 2),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

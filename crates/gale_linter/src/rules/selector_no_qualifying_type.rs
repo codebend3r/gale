@@ -586,7 +586,7 @@ fn is_ident_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -596,10 +596,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -688,13 +688,13 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(4, 15),
+          span: Span::new(4, 15),
           important: false,
         }],
-        span: ParserSpan::new(4, 15),
+        span: Span::new(4, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
 
       nested_at_rules: Vec::new(),
     });
@@ -738,13 +738,13 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(0, 0),
+          span: Span::new(0, 0),
           important: false,
         }],
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
 
       nested_at_rules: Vec::new(),
     });

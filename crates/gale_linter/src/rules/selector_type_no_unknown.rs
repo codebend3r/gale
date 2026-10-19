@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::data::is_known_html_element;
 use crate::lint_env::LintEnv;
@@ -76,7 +76,7 @@ impl Check for SelectorTypeNoUnknownCheck {
       if !is_known_html_element(&name) {
         diags.push(
           Diagnostic::new(NAME, format!("Unexpected unknown type selector \"{name}\""))
-            .span(Span::new(rule.span.offset, rule.span.length)),
+            .span(rule.span),
         );
       }
     }
@@ -262,7 +262,8 @@ fn strip_scss_line_comments(selector: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -272,10 +273,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

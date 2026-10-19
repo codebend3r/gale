@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -82,7 +82,7 @@ impl Check for FontFamilyNoDuplicateNamesCheck {
               NAME,
               format!("Unexpected duplicate font family name \"{}\"", normalized),
             )
-            .span(Span::new(decl.span.offset, decl.span.length)),
+            .span(decl.span),
           );
         }
       }
@@ -95,7 +95,8 @@ impl Check for FontFamilyNoDuplicateNamesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -107,10 +108,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "Arial, Helvetica, Arial".to_string(),
-        span: ParserSpan::new(4, 36),
+        span: Span::new(4, 36),
         important: false,
       }],
-      span: ParserSpan::new(0, 42),
+      span: Span::new(0, 42),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -129,10 +130,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "Arial, Helvetica, sans-serif".to_string(),
-        span: ParserSpan::new(4, 41),
+        span: Span::new(4, 41),
         important: false,
       }],
-      span: ParserSpan::new(0, 47),
+      span: Span::new(0, 47),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -147,10 +148,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "\"Arial\", Arial, sans-serif".to_string(),
-        span: ParserSpan::new(4, 39),
+        span: Span::new(4, 39),
         important: false,
       }],
-      span: ParserSpan::new(0, 45),
+      span: Span::new(0, 45),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -168,10 +169,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "font-family".to_string(),
         value: "\"My Font\", My Font, monospace, monospace, serif, serif".to_string(),
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx());

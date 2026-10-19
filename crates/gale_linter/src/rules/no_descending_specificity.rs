@@ -634,7 +634,7 @@ fn check_specificity_walk(
         if !skip_preprocessor || !has_preprocessor_constructs(&style.selector) {
           check_one_selector(
             &style.selector,
-            gale_diagnostics::Span::new(style.span.offset, style.span.length),
+            style.span,
             comparison_ctx,
             diagnostics,
             ignore_selectors_within_list,
@@ -646,7 +646,7 @@ fn check_specificity_walk(
           for child in &style.children {
             check_one_selector(
               &child.selector,
-              gale_diagnostics::Span::new(child.span.offset, child.span.length),
+              child.span,
               comparison_ctx,
               diagnostics,
               ignore_selectors_within_list,
@@ -804,7 +804,7 @@ impl Check for NoDescendingSpecificityCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, StyleRule, Syntax};
 
   use crate::testing::{configured, ctx, ctx_with_source, scss_ctx};
 
@@ -818,10 +818,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(6, 10),
+          span: Span::new(6, 10),
           important: false,
         }],
-        span: ParserSpan::new(0, 22),
+        span: Span::new(0, 22),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
@@ -829,10 +829,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(26, 11),
+          span: Span::new(26, 11),
           important: false,
         }],
-        span: ParserSpan::new(23, 16),
+        span: Span::new(23, 16),
         ..Default::default()
       }),
     ];
@@ -849,13 +849,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 18),
+        span: Span::new(0, 18),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(19, 16),
+        span: Span::new(19, 16),
         ..Default::default()
       }),
     ];
@@ -893,19 +893,19 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "a".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 5),
+        span: Span::new(0, 5),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".cls".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(6, 8),
+        span: Span::new(6, 8),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(15, 7),
+        span: Span::new(15, 7),
         ..Default::default()
       }),
     ];
@@ -962,10 +962,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(6, 10),
+          span: Span::new(6, 10),
           important: false,
         }],
-        span: ParserSpan::new(0, 22),
+        span: Span::new(0, 22),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
@@ -973,10 +973,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(26, 11),
+          span: Span::new(26, 11),
           important: false,
         }],
-        span: ParserSpan::new(23, 16),
+        span: Span::new(23, 16),
         ..Default::default()
       }),
     ];
@@ -1001,13 +1001,13 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(12, 11),
+          span: Span::new(12, 11),
           important: false,
         }],
-        span: ParserSpan::new(8, 17),
+        span: Span::new(8, 17),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 27),
+      span: Span::new(0, 27),
 
       nested_at_rules: Vec::new(),
     })];
@@ -1030,13 +1030,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: ".#{$var}".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(11, 15),
+        span: Span::new(11, 15),
         ..Default::default()
       }),
     ];
@@ -1054,13 +1054,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: "&:hover".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(11, 15),
+        span: Span::new(11, 15),
         ..Default::default()
       }),
     ];
@@ -1075,13 +1075,13 @@ mod tests {
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
         selector: "%placeholder".to_string(),
         declarations: vec![],
-        span: ParserSpan::new(11, 20),
+        span: Span::new(11, 20),
         ..Default::default()
       }),
     ];
@@ -1103,10 +1103,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(12, 10),
+          span: Span::new(12, 10),
           important: false,
         }],
-        span: ParserSpan::new(0, 25),
+        span: Span::new(0, 25),
         ..Default::default()
       }),
       CssNode::Style(StyleRule {
@@ -1114,10 +1114,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(33, 11),
+          span: Span::new(33, 11),
           important: false,
         }],
-        span: ParserSpan::new(26, 21),
+        span: Span::new(26, 21),
         ..Default::default()
       }),
     ];

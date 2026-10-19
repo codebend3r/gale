@@ -76,7 +76,7 @@ impl Check for CustomMediaPatternCheck {
       .source_slice(at.span.offset, at.span.end())
       .and_then(|text| text.find(full_name))
       .map(|at_name| Span::new(at.span.offset + at_name, full_name.len()))
-      .unwrap_or(Span::new(at.span.offset, at.span.length));
+      .unwrap_or(at.span);
 
     vec![
       Diagnostic::new(
@@ -92,7 +92,7 @@ impl Check for CustomMediaPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
 
   use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
 
@@ -100,7 +100,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "custom-media".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }
@@ -124,7 +124,7 @@ mod tests {
     let ctx = ctx_with_source(source);
     let mut node = custom_media("--bp-small (max-width: 30em)");
     if let CssNode::AtRule(at) = &mut node {
-      at.span = ParserSpan::new(0, source.len());
+      at.span = Span::new(0, source.len());
     }
     let d = rule.check(&node, &ctx);
     assert_eq!(d.len(), 1);
@@ -152,7 +152,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     });
     let d = rule.check(&node, &ctx());

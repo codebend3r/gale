@@ -192,7 +192,7 @@ impl Check for StylisticSelectorListCommaNewlineAfterCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Span as ParserSpan, StyleRule};
+  use gale_css_parser::StyleRule;
 
   use crate::testing::{configured, ctx_with_source, invalid_options};
 
@@ -200,7 +200,7 @@ mod tests {
     CssNode::Style(StyleRule {
       selector: sel.to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, sel.len()),
+      span: Span::new(0, sel.len()),
       ..Default::default()
     })
   }
