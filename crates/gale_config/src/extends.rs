@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use crate::discovery::load_config_file;
+
 use crate::raw::UNEVALUATED_EXTENDS;
-use crate::{ConfigFile, ConfigOverride, RuleConfig, RuleConfigValue, Severity, resolve_preset};
+use crate::{
+  ConfigError, ConfigFile, ConfigOverride, RuleConfig, RuleConfigValue, Severity, resolve_preset,
+};
 
 /// Walk upward from `start_dir` looking for a `node_modules` directory.
 fn find_node_modules(start_dir: &Path) -> Option<PathBuf> {
@@ -112,7 +115,7 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile>
     {
       let export_path = pkg_dir.join(&resolved);
       if export_path.is_file()
-        && let Ok(config) = load_config_file(&export_path)
+        && let Some(config) = load_candidate(&export_path)
       {
         return Some(config);
       }
@@ -121,7 +124,7 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile>
     for ext in &["", ".js", ".json", ".cjs", ".mjs"] {
       let path = pkg_dir.join(format!("{sub}{ext}"));
       if path.is_file()
-        && let Ok(config) = load_config_file(&path)
+        && let Some(config) = load_candidate(&path)
       {
         return Some(config);
       }
@@ -139,7 +142,7 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile>
     if let Some(resolved) = resolve_package_exports(&pkg, ".") {
       let export_path = pkg_dir.join(&resolved);
       if export_path.is_file()
-        && let Ok(config) = load_config_file(&export_path)
+        && let Some(config) = load_candidate(&export_path)
       {
         return Some(config);
       }
@@ -147,7 +150,7 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile>
     // Try `main` field
     if let Some(main) = pkg.get("main").and_then(|m| m.as_str()) {
       let main_path = pkg_dir.join(main);
-      if let Ok(config) = load_config_file(&main_path) {
+      if let Some(config) = load_candidate(&main_path) {
         return Some(config);
       }
     }
@@ -164,7 +167,7 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile>
     ".stylelintrc",
   ] {
     let path = pkg_dir.join(name);
-    if let Ok(config) = load_config_file(&path) {
+    if let Some(config) = load_candidate(&path) {
       return Some(config);
     }
   }
@@ -210,7 +213,7 @@ fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile
   let path = base_dir.join(rel_path);
 
   // Try exact path first.
-  if let Ok(config) = load_config_file(&path) {
+  if let Some(config) = load_candidate(&path) {
     return Some(config);
   }
 
@@ -218,7 +221,7 @@ fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile
   for ext in &[".js", ".json", ".cjs", ".mjs"] {
     let with_ext = base_dir.join(format!("{rel_path}{ext}"));
     if with_ext.is_file()
-      && let Ok(config) = load_config_file(&with_ext)
+      && let Some(config) = load_candidate(&with_ext)
     {
       return Some(config);
     }
@@ -228,13 +231,32 @@ fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile
   if path.is_dir() {
     for name in &["index.js", "index.json"] {
       let index_path = path.join(name);
-      if let Ok(config) = load_config_file(&index_path) {
+      if let Some(config) = load_candidate(&index_path) {
         return Some(config);
       }
     }
   }
 
   None
+}
+
+/// Load the config at `path`, one of the files an `extends` entry may name.
+///
+/// Most candidates simply do not exist, so failing to load one is not worth
+/// mentioning; a JavaScript config that exists but throws is, since its
+/// rules are about to be skipped for a reason the user can fix.
+fn load_candidate(path: &Path) -> Option<ConfigFile> {
+  match load_config_file(path) {
+    Ok(config) => Some(config),
+    Err(ConfigError::JavaScript(message)) => {
+      warn_once(format!(
+        "warning: could not load {}: {message}",
+        path.display()
+      ));
+      None
+    }
+    Err(_) => None,
+  }
 }
 
 /// Warnings already printed this run, so a config that every directory
@@ -253,8 +275,8 @@ fn warn_once(message: String) {
 fn unresolved_extends_warning(entry: &str, base_dir: &Path) -> String {
   if entry == UNEVALUATED_EXTENDS {
     format!(
-      "warning: could not resolve an extends entry in {}: it is not a string \
-       (gale reads JavaScript configs statically), so its rules were skipped",
+      "warning: could not resolve an extends entry in {}: it is not a string, \
+       so its rules were skipped",
       base_dir.display()
     )
   } else {
@@ -297,14 +319,19 @@ pub(crate) fn collect_rules_from_extends(
       // For non-gale presets: try npm/file first, fall back to built-in.
       // This ensures the real npm package (with exact options) wins over
       // our approximate built-in presets.
-      let config = if preset_name.starts_with("./") || preset_name.starts_with("../") {
+      // A path: relative, or absolute as `require.resolve` and
+      // `path.resolve` give it when the config runs under Node.js.
+      let is_path = preset_name.starts_with("./")
+        || preset_name.starts_with("../")
+        || Path::new(preset_name).is_absolute();
+      let config = if is_path {
         resolve_relative_config(preset_name, base_dir)
       } else {
         resolve_npm_config(preset_name, base_dir)
       };
 
       if let Some(config) = config {
-        let sub_base = if preset_name.starts_with("./") || preset_name.starts_with("../") {
+        let sub_base = if is_path {
           // If the path is a directory (resolved via index.js), use
           // the directory itself as the base so that relative extends
           // inside it resolve correctly.
