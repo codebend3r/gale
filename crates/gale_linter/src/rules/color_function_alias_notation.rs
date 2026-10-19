@@ -1,17 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_color_function;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Specify alias notation for color functions.
-///
-/// Equivalent to Stylelint's `color-function-alias-notation` rule, including
-/// its autofix.  Primary option `"with-alpha"` wants `rgba()`/`hsla()`;
-/// `"without-alpha"` wants `rgb()`/`hsl()`.  The fix adds or drops the `a`,
-/// keeping the name's case.
-pub struct ColorFunctionAliasNotation;
+const NAME: &str = "color-function-alias-notation";
+
+declare_rule! {
+  /// Specify alias notation for color functions.
+  ///
+  /// Equivalent to Stylelint's `color-function-alias-notation` rule, including
+  /// its autofix.  Primary option `"with-alpha"` wants `rgba()`/`hsla()`;
+  /// `"without-alpha"` wants `rgb()`/`hsl()`.  The fix adds or drops the `a`,
+  /// keeping the name's case.
+  pub struct ColorFunctionAliasNotation => ColorFunctionAliasNotationCheck {
+    name: NAME,
+    description: "Specify modern or legacy notation for color function aliases",
+    default_severity: Warning,
+  }
+}
+
+/// `color-function-alias-notation` as configured.
+pub struct ColorFunctionAliasNotationCheck {
+  /// `Some(true)` for `"with-alpha"`, `Some(false)` for `"without-alpha"`;
+  /// `None` when the config names neither, and the rule checks nothing.
+  with_alpha: Option<bool>,
+}
+
+impl ColorFunctionAliasNotationCheck {
+  /// Stylelint's option: `"with-alpha"` or `"without-alpha"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["with-alpha", "without-alpha"]);
+    options.finish()?;
+    Ok(Self {
+      with_alpha: notation.map(|notation| notation == "with-alpha"),
+    })
+  }
+}
 
 /// Names written without the alpha alias.
 const WITHOUT_ALPHA: &[&str] = &["rgb", "hsl"];
@@ -19,26 +48,12 @@ const WITHOUT_ALPHA: &[&str] = &["rgb", "hsl"];
 /// Names written with the alpha alias.
 const WITH_ALPHA: &[&str] = &["rgba", "hsla"];
 
-impl Rule for ColorFunctionAliasNotation {
-  fn name(&self) -> &'static str {
-    "color-function-alias-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify modern or legacy notation for color function aliases"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ColorFunctionAliasNotationCheck {
   /// Reports the name of every color function written in the other alias,
   /// with a fix that renames it.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let with_alpha = match ctx.primary_option_str() {
-      Some("with-alpha") => true,
-      Some("without-alpha") => false,
-      _ => return Vec::new(),
+    let Some(with_alpha) = self.with_alpha else {
+      return Vec::new();
     };
     // The names to report: the ones in the other notation.
     let targets = if with_alpha {
@@ -72,16 +87,12 @@ impl Rule for ColorFunctionAliasNotation {
         };
         let span = Span::new(decl.value_span.start + node.source_index, name.len());
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{name}\" to be \"{fixed}\""),
-          )
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("Rename \"{name}\" to \"{fixed}\""),
-            vec![Edit::new(span, fixed.clone())],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{name}\" to be \"{fixed}\""))
+            .span(span)
+            .fix(Fix::new(
+              format!("Rename \"{name}\" to \"{fixed}\""),
+              vec![Edit::new(span, fixed.clone())],
+            )),
         );
       };
       value_parser::walk(&parsed, &mut |node| {
@@ -115,7 +126,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "color-function-alias-notation";
 
@@ -164,5 +175,16 @@ mod tests {
     let source = "a { color: rgba(0 0 0) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, json!("with-alpha")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("alpha")),
+      ["Invalid option value \"alpha\" for rule \"color-function-alias-notation\""]
+    );
+    // The rule validates no secondary options, so it ignores them.
+    assert!(invalid_options(RULE, json!(["without-alpha", { "ignore": ["x"] }])).is_empty());
   }
 }
