@@ -2,7 +2,7 @@ use gale_css_parser::{CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
+use crate::options::{Accept, InvalidOption, Setting, is_object_of_non_negative_integers};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "number-max-precision";
@@ -36,22 +36,15 @@ impl NumberMaxPrecisionCheck {
     let max = options.primary_number(&[Accept::NonNegativeInteger]);
     options.strings("ignoreProperties");
     options.strings("ignoreUnits");
-    options.value("insideFunctions", &[Accept::Test(precisions_by_function)]);
+    options.value(
+      "insideFunctions",
+      &[Accept::Test(is_object_of_non_negative_integers)],
+    );
     options.finish()?;
     Ok(Self {
       max: max.map_or(MAX_PRECISION, |max| max as usize),
     })
   }
-}
-
-/// Stylelint's `validateObjectWithProps(isNonNegativeInteger)`: an object
-/// whose every value is a whole number of zero or more.
-fn precisions_by_function(value: &serde_json::Value) -> bool {
-  value.as_object().is_some_and(|map| {
-    map
-      .values()
-      .all(|precision| Accept::NonNegativeInteger.accepts(precision))
-  })
 }
 
 impl Check for NumberMaxPrecisionCheck {

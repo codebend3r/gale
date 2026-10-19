@@ -1,9 +1,9 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
-use serde_json::Value;
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::list_rules::{Entries, KeyedList, keyed_option};
+use crate::options::{Accept, InvalidOption, Setting, is_object_of_strings};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "declaration-property-value-no-unknown";
@@ -30,7 +30,7 @@ declare_rule! {
 pub struct DeclarationPropertyValueNoUnknownCheck {
   /// `ignoreProperties`: for each property name (or `/regex/`), the values
   /// (names or `/regex/` entries) that are not checked.
-  ignore_properties: Vec<(Matchers, Matchers)>,
+  ignore_properties: KeyedList,
 }
 
 impl DeclarationPropertyValueNoUnknownCheck {
@@ -40,27 +40,9 @@ impl DeclarationPropertyValueNoUnknownCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     options.no_primary();
-    let ignore_properties = options.value(
-      "ignoreProperties",
-      &[Accept::Test(is_object_of_string_lists)],
-    );
+    let ignore_properties = keyed_option(&mut options, "ignoreProperties", Entries::Patterns);
     options.value("propertiesSyntax", &[Accept::Test(is_object_of_strings)]);
     options.value("typesSyntax", &[Accept::Test(is_object_of_strings)]);
-    let ignore_properties = ignore_properties
-      .and_then(Value::as_object)
-      .map(|map| {
-        map
-          .iter()
-          .map(|(prop, values)| {
-            let values: Vec<&str> = match values {
-              Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
-              other => other.as_str().into_iter().collect(),
-            };
-            (Matchers::new(&[prop]), Matchers::new(&values))
-          })
-          .collect()
-      })
-      .unwrap_or_default();
     options.finish()?;
     Ok(Self { ignore_properties })
   }
@@ -68,30 +50,8 @@ impl DeclarationPropertyValueNoUnknownCheck {
   /// Stylelint's `optionsMatchesEntry`: the first `ignoreProperties` entry
   /// naming the property decides whether its value is ignored.
   fn is_ignored(&self, prop: &str, value: &str) -> bool {
-    self
-      .ignore_properties
-      .iter()
-      .find(|(names, _)| names.matches(prop))
-      .is_some_and(|(_, values)| values.matches(value))
+    self.ignore_properties.first_matches(prop, value)
   }
-}
-
-/// `validateObjectWithArrayProps(isString, isRegExp)`: an object whose
-/// values are each a string or a list of strings.
-fn is_object_of_string_lists(value: &Value) -> bool {
-  value.as_object().is_some_and(|map| {
-    map.values().all(|item| match item {
-      Value::Array(items) => items.iter().all(Value::is_string),
-      other => other.is_string(),
-    })
-  })
-}
-
-/// `validateObjectWithProps(isString)`: an object whose values are strings.
-fn is_object_of_strings(value: &Value) -> bool {
-  value
-    .as_object()
-    .is_some_and(|map| map.values().all(Value::is_string))
 }
 
 /// CSS-wide keywords valid for any property.

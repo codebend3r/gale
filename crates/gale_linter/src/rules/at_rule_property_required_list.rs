@@ -5,7 +5,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, Setting, is_object_of_string_lists};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "at-rule-property-required-list";
@@ -42,24 +42,20 @@ impl AtRulePropertyRequiredListCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     let required = match options.primary_object() {
-      Some(map) if is_object_of_string_lists(map) => parse_options(map),
       Some(map) => {
-        options.report(InvalidOption::value(NAME, &Value::Object(map.clone())));
-        HashMap::new()
+        let object = Value::Object(map.clone());
+        if is_object_of_string_lists(&object) {
+          parse_options(map)
+        } else {
+          options.report(InvalidOption::value(NAME, &object));
+          HashMap::new()
+        }
       }
       None => HashMap::new(),
     };
     options.finish()?;
     Ok(Self { required })
   }
-}
-
-/// Whether every value of `map` is a string or a list of strings.
-fn is_object_of_string_lists(map: &Map<String, Value>) -> bool {
-  map.values().all(|value| match value {
-    Value::Array(items) => items.iter().all(Value::is_string),
-    other => other.is_string(),
-  })
 }
 
 impl Check for AtRulePropertyRequiredListCheck {

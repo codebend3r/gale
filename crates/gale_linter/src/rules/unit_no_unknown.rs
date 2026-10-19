@@ -3,8 +3,7 @@ use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_unit;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
-use crate::pattern;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "unit-no-unknown";
@@ -29,8 +28,8 @@ impl UnitNoUnknownCheck {
   fn from_setting(setting: &Setting, env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     options.no_primary();
-    let ignore_units = options.strings("ignoreUnits");
-    let ignore_functions = options.strings("ignoreFunctions");
+    let ignore_units = Matchers::ignoring_case(&options.strings("ignoreUnits"));
+    let ignore_functions = Matchers::ignoring_case(&options.strings("ignoreFunctions"));
     options.finish()?;
     let additional_unknown_units = if env.stylelint_older_than(15) {
       UNITS_UNKNOWN_BEFORE_STYLELINT_15
@@ -272,19 +271,16 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Matches `value` against a `/…/` or `/…/i` regex pattern, else an exact name.
-fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
-  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
-}
-
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
 /// The rule's options, with what the project's Stylelint knows.
 struct Options {
-  ignore_units: Vec<String>,
-  ignore_functions: Vec<String>,
+  /// `ignoreUnits`: names in any case and `/regex/` entries.
+  ignore_units: Matchers,
+  /// `ignoreFunctions`: names in any case and `/regex/` entries.
+  ignore_functions: Matchers,
   /// Units gale knows but the project's Stylelint does not, which it
   /// reports as unknown (see [`UNITS_UNKNOWN_BEFORE_STYLELINT_15`]).
   additional_unknown_units: &'static [&'static str],
@@ -298,16 +294,6 @@ const UNITS_UNKNOWN_BEFORE_STYLELINT_15: &[&str] = &[
   "svh", "svw", "svb", "svi", "svmax", "svmin", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
   "cap", "ic", "rcap", "rch", "rex", "ric", "vb", "vi",
 ];
-
-/// Whether any `ignoreUnits` pattern matches this unit.
-fn unit_is_ignored(unit: &str, patterns: &[String]) -> bool {
-  patterns.iter().any(|p| matches_pattern_ci(unit, p))
-}
-
-/// Whether any `ignoreFunctions` pattern matches this function name.
-fn function_is_ignored(func_name: &str, patterns: &[String]) -> bool {
-  patterns.iter().any(|p| matches_pattern_ci(func_name, p))
-}
 
 /// `x` unit is only valid inside `image-set()` and `@media (resolution: ...)`.
 fn is_x_unit_valid_in_context(func: Option<&str>, in_media_resolution: bool) -> bool {
@@ -468,12 +454,12 @@ fn check_value(
       }
     }
 
-    if unit_is_ignored(&occ.unit, &opts.ignore_units) {
+    if opts.ignore_units.matches(&occ.unit) {
       continue;
     }
 
     if let Some(ref func) = occ.function
-      && function_is_ignored(func, &opts.ignore_functions)
+      && opts.ignore_functions.matches(func)
     {
       continue;
     }

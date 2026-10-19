@@ -2,7 +2,8 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::list_rules::{Entries, KeyedList, keyed_option};
+use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "media-feature-name-value-no-unknown";
@@ -22,7 +23,7 @@ declare_rule! {
 pub struct MediaFeatureNameValueNoUnknownCheck {
   /// `ignoreMediaFeatureNameValues`: media feature names (or `/regex/`
   /// entries), each with the values (or `/regex/` entries) it may take.
-  ignore_media_feature_name_values: Vec<(Matchers, Matchers)>,
+  ignore_media_feature_name_values: KeyedList,
 }
 
 impl MediaFeatureNameValueNoUnknownCheck {
@@ -31,28 +32,12 @@ impl MediaFeatureNameValueNoUnknownCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     options.no_primary();
-    let ignore = options.value(
+    let ignore_media_feature_name_values = keyed_option(
+      &mut options,
       "ignoreMediaFeatureNameValues",
-      &[Accept::Test(is_object_of_string_lists)],
+      Entries::Patterns,
     );
     options.finish()?;
-    let ignore_media_feature_name_values = ignore
-      .and_then(serde_json::Value::as_object)
-      .map(|map| {
-        map
-          .iter()
-          .map(|(name, values)| {
-            let values: Vec<&str> = match values {
-              serde_json::Value::Array(items) => {
-                items.iter().filter_map(serde_json::Value::as_str).collect()
-              }
-              other => other.as_str().into_iter().collect(),
-            };
-            (Matchers::new(&[name]), Matchers::new(&values))
-          })
-          .collect()
-      })
-      .unwrap_or_default();
     Ok(Self {
       ignore_media_feature_name_values,
     })
@@ -64,21 +49,8 @@ impl MediaFeatureNameValueNoUnknownCheck {
   fn is_ignored(&self, feature: &str, value: &str) -> bool {
     self
       .ignore_media_feature_name_values
-      .iter()
-      .find(|(name, _)| name.matches(feature))
-      .is_some_and(|(_, values)| values.matches(value))
+      .first_matches(feature, value)
   }
-}
-
-/// Stylelint's `validateObjectWithArrayProps(isString, isRegExp)`: an
-/// object whose every property is a string or a list of strings.
-fn is_object_of_string_lists(value: &serde_json::Value) -> bool {
-  value.as_object().is_some_and(|map| {
-    map.values().all(|item| match item {
-      serde_json::Value::Array(items) => items.iter().all(serde_json::Value::is_string),
-      other => other.is_string(),
-    })
-  })
 }
 
 /// Returns the set of valid keyword values for a known discrete media feature,

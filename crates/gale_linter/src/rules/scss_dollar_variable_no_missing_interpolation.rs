@@ -4,6 +4,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
+use crate::data;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
@@ -307,152 +308,13 @@ fn interpolation_ranges<'v>(
 fn sass_function_to_interpolate<'v>(functions: &[&'v ValueNode<'v>]) -> Option<&'v ValueNode<'v>> {
   let inner = functions
     .iter()
-    .rposition(|f| is_native_css_function(f.value))
+    .rposition(|f| data::is_native_css_function(f.value))
     .map_or(0, |boundary| boundary + 1);
   functions[inner..]
     .iter()
-    .find(|f| !is_native_css_function(f.value))
+    .find(|f| !data::is_native_css_function(f.value))
     .copied()
 }
-
-/// stylelint-scss's `isNativeCssFunction`, matched exactly.
-fn is_native_css_function(name: &str) -> bool {
-  NATIVE_CSS_FUNCTIONS.contains(&name)
-}
-
-/// The function names stylelint-scss's `isNativeCssFunction` knows.
-const NATIVE_CSS_FUNCTIONS: &[&str] = &[
-  "abs",
-  "acos",
-  "anchor",
-  "anchor-size",
-  "annotation",
-  "asin",
-  "atan",
-  "atan2",
-  "attr",
-  "blur",
-  "brightness",
-  "calc",
-  "character-variant",
-  "calc-size",
-  "circle",
-  "clamp",
-  "color",
-  "color-contrast",
-  "color-mix",
-  "conic-gradient",
-  "contrast",
-  "cos",
-  "counter",
-  "counters",
-  "cross-fade",
-  "cubic-bezier",
-  "device-cmyk",
-  "drop-shadow",
-  "element",
-  "ellipse",
-  "env",
-  "exp",
-  "fit-content",
-  "format",
-  "frames",
-  "grayscale",
-  "hsl",
-  "hsla",
-  "hue-rotate",
-  "hwb",
-  "hypot",
-  "image",
-  "image-set",
-  "inset",
-  "invert",
-  "lab",
-  "layer",
-  "lch",
-  "leader",
-  "light-dark",
-  "linear",
-  "linear-gradient",
-  "local",
-  "log",
-  "matrix",
-  "matrix3d",
-  "max",
-  "min",
-  "minmax",
-  "mod",
-  "oklab",
-  "oklch",
-  "opacity",
-  "ornaments",
-  "paint",
-  "palette-mix",
-  "path",
-  "perspective",
-  "polygon",
-  "pow",
-  "radial-gradient",
-  "ray",
-  "rect",
-  "rem",
-  "repeat",
-  "repeating-conic-gradient",
-  "repeating-linear-gradient",
-  "repeating-radial-gradient",
-  "rgb",
-  "rgba",
-  "rotate",
-  "rotate3d",
-  "rotateX",
-  "rotatex",
-  "rotateY",
-  "rotatey",
-  "rotateZ",
-  "rotatez",
-  "round",
-  "saturate",
-  "scale",
-  "scale3d",
-  "scaleX",
-  "scalex",
-  "scaleY",
-  "scaley",
-  "scaleZ",
-  "scalez",
-  "scroll",
-  "sepia",
-  "shape",
-  "sign",
-  "sin",
-  "skew",
-  "skewX",
-  "skewx",
-  "skewY",
-  "skewy",
-  "sqrt",
-  "steps",
-  "styleset",
-  "stylistic",
-  "swash",
-  "symbols",
-  "tan",
-  "target-counter",
-  "target-counters",
-  "target-text",
-  "translate",
-  "translate3d",
-  "translateX",
-  "translatex",
-  "translateY",
-  "translatey",
-  "translateZ",
-  "translatez",
-  "url",
-  "var",
-  "view",
-  "xywh",
-];
 
 #[cfg(test)]
 mod tests {

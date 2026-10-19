@@ -3,7 +3,6 @@ use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
-use crate::pattern;
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/function-no-unknown";
@@ -25,10 +24,9 @@ declare_rule! {
 
 /// `scss/function-no-unknown` as configured.
 pub struct ScssFunctionNoUnknownCheck {
-  /// `ignoreFunctions` names, lowercased: compared case-insensitively.
-  ignore_names: Vec<String>,
-  /// `ignoreFunctions` `/regex/` entries, matched by search.
-  ignore_patterns: Matchers,
+  /// `ignoreFunctions`: names, compared case-insensitively, and `/regex/`
+  /// entries, matched by search.
+  ignore_functions: Matchers,
 }
 
 impl ScssFunctionNoUnknownCheck {
@@ -37,21 +35,14 @@ impl ScssFunctionNoUnknownCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     options.no_primary();
-    let ignore_functions = options.strings("ignoreFunctions");
+    let ignore_functions = Matchers::ignoring_case(&options.strings("ignoreFunctions"));
     options.finish()?;
-    let (patterns, names): (Vec<String>, Vec<String>) = ignore_functions
-      .into_iter()
-      .partition(|entry| pattern::split_literal(entry).is_some());
-    Ok(Self {
-      ignore_names: names.iter().map(|name| name.to_ascii_lowercase()).collect(),
-      ignore_patterns: Matchers::new(&patterns),
-    })
+    Ok(Self { ignore_functions })
   }
 
   /// Whether `ignoreFunctions` lists `name`.
   fn is_ignored(&self, name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    self.ignore_names.iter().any(|ignored| ignored == &lower) || self.ignore_patterns.matches(name)
+    self.ignore_functions.matches(name)
   }
 }
 
