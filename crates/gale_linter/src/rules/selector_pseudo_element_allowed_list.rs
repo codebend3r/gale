@@ -1,153 +1,70 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "selector-pseudo-element-allowed-list";
 
-/// Only allow specified pseudo-element selectors.
-///
-/// Equivalent to Stylelint's `selector-pseudo-element-allowed-list` rule.
-pub struct SelectorPseudoElementAllowedList;
-
-impl Rule for SelectorPseudoElementAllowedList {
-  fn name(&self) -> &'static str {
-    "selector-pseudo-element-allowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of allowed pseudo-element selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags pseudo-elements outside the configured allow list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let allowed: Vec<String> = ctx
-      .options
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|item| item.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
-
-    if allowed.is_empty() {
-      return vec![];
-    }
-
-    let mut diags = Vec::new();
-    for name in extract_pseudo_elements(&rule.selector) {
-      if !allowed.iter().any(|a| a == &name) {
-        diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected pseudo-element \"::{name}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(rule.span.offset, rule.span.length)),
-        );
-      }
-    }
-    diags
+declare_rule! {
+  /// Only allow the pseudo-elements listed.
+  ///
+  /// Options: a pseudo-element name (without the colons) or `/regex/`, or
+  /// a list of them, matched exactly as written.  Only the double-colon
+  /// form is checked: `a:before` is a pseudo-class to Stylelint.
+  ///
+  /// Equivalent to Stylelint's `selector-pseudo-element-allowed-list` rule.
+  pub struct SelectorPseudoElementAllowedList => ListCheck<SelectorPseudoElementAllowedList> {
+    name: NAME,
+    description: "Specify a list of allowed pseudo-element selectors",
+    default_severity: Warning,
+    primary_option_array: true,
   }
 }
 
-/// Extract pseudo-element names from a selector string (::name patterns).
-fn extract_pseudo_elements(selector: &str) -> Vec<String> {
-  let mut elements = Vec::new();
-  let chars: Vec<char> = selector.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
+impl ListRule for SelectorPseudoElementAllowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Allowed;
+  type Options = ();
 
-  while i < len {
-    if i + 1 < len && chars[i] == ':' && chars[i + 1] == ':' {
-      i += 2;
-      let start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
-        i += 1;
-      }
-      if i > start {
-        let name: String = chars[start..i].iter().collect();
-        elements.push(name);
-      }
-    } else {
-      i += 1;
-    }
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::pseudo_elements(tree, found);
   }
 
-  elements
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected pseudo-element \"::{}\"", found.name)
+  }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
-
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
-        important: false,
-      }],
-      span: ParserSpan::new(0, sel.len()),
-      ..Default::default()
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
   #[test]
-  fn reports_pseudo_element_not_in_allowed_list() {
-    let ctx = ctx_with_options(serde_json::json!(["before"]));
-    let d = SelectorPseudoElementAllowedList.check(&style_with_selector("a::after"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("::after"));
-  }
-
-  #[test]
-  fn allows_pseudo_element_in_list() {
-    let ctx = ctx_with_options(serde_json::json!(["before", "after"]));
-    let d = SelectorPseudoElementAllowedList.check(&style_with_selector("a::before"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_all_when_no_options() {
-    let d = SelectorPseudoElementAllowedList.check(&style_with_selector("a::before"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn case_sensitive() {
-    let ctx = ctx_with_options(serde_json::json!(["before"]));
-    let d = SelectorPseudoElementAllowedList.check(&style_with_selector("a::Before"), &ctx);
-    // "before" does not match "Before" -- strict matching
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn vendor_prefixed_not_matched_by_unprefixed() {
-    let ctx = ctx_with_options(serde_json::json!(["placeholder"]));
-    let d = SelectorPseudoElementAllowedList
-      .check(&style_with_selector("input::-webkit-placeholder"), &ctx);
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(
-      SelectorPseudoElementAllowedList.name(),
-      "selector-pseudo-element-allowed-list"
+  fn reports_pseudo_elements_missing_from_the_list() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["before"]),
+          "a::before, a::after {}",
+          &["1:13 Unexpected pseudo-element \"::after\""],
+        ),
+        (json!(["before"]), "a:after {}", &[]),
+        (json!(["/^-moz-/"]), "input::-moz-placeholder {}", &[]),
+        (
+          json!(["before"]),
+          "a::BEFORE {}",
+          &["1:2 Unexpected pseudo-element \"::BEFORE\""],
+        ),
+      ],
     );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, json!(["before"])).is_empty());
   }
 }
