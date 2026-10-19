@@ -1,112 +1,84 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "at-rule-disallowed-list";
 
-/// Disallow specified at-rules.
-///
-/// Options: an array of at-rule names (without the `@` prefix) that are disallowed.
-/// By default, no at-rules are disallowed.
-///
-/// Equivalent to Stylelint's `at-rule-disallowed-list` rule.
-pub struct AtRuleDisallowedList;
+declare_rule! {
+  /// Disallow the at-rules listed.
+  ///
+  /// Options: an at-rule name (without the `@`) or `/regex/`, or a list of
+  /// them, matched exactly as written, as Stylelint 17 does.  At-rules that
+  /// are not standard syntax (`@charset`, Less mixins, SCSS `@content`)
+  /// are not checked.
+  ///
+  /// Equivalent to Stylelint's `at-rule-disallowed-list` rule.
+  pub struct AtRuleDisallowedList => ListCheck<AtRuleDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed at-rules",
+    default_severity: Warning,
+    primary_option_array: true,
+  }
+}
 
-impl Rule for AtRuleDisallowedList {
-  fn name(&self) -> &'static str {
-    "at-rule-disallowed-list"
+impl ListRule for AtRuleDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = ();
+
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::at_rule_names(tree, found);
   }
 
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed at-rules"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags any at-rule named in the configured list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
-    };
-
-    let disallowed: Vec<String> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect(),
-      _ => return vec![],
-    };
-
-    if disallowed.iter().any(|d| d == &at_rule.name) {
-      vec![
-        Diagnostic::new(
-          self.name(),
-          format!("Unexpected at-rule \"@{}\"", at_rule.name),
-        )
-        .severity(self.default_severity())
-        .span(Span::new(at_rule.span.offset, at_rule.span.length)),
-      ]
-    } else {
-      vec![]
-    }
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected at-rule \"@{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use super::NAME;
+  use crate::list_rules::testing::{check, check_css};
+  use crate::testing::invalid_options;
 
-  fn at_rule_node(name: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: name.to_string(),
-      params: String::new(),
-      span: ParserSpan::new(0, 10),
-      children: vec![],
-    })
+  #[test]
+  fn reports_listed_at_rules() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["extend", "media"]),
+          "@media print {}\n@supports (a: b) {}",
+          &["1:1 Unexpected at-rule \"@media\""],
+        ),
+        (json!(["media"]), "@MEDIA print {}", &[]),
+        (json!(["keyframes"]), "@-webkit-keyframes a {}", &[]),
+        (
+          json!("/keyframes$/"),
+          "@-webkit-keyframes a {}",
+          &["1:1 Unexpected at-rule \"@-webkit-keyframes\""],
+        ),
+      ],
+    );
+    check(
+      NAME,
+      gale_css_parser::Syntax::Scss,
+      &[(
+        json!(["extend"]),
+        "a {\n  @extend %b;\n}",
+        &["2:3 Unexpected at-rule \"@extend\""],
+      )],
+    );
   }
 
   #[test]
-  fn allows_all_when_no_options() {
-    let ctx = ctx_with_options(None);
-    let d = AtRuleDisallowedList.check(&at_rule_node("media"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn reports_disallowed_at_rule() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["extend", "debug"])));
-    let d = AtRuleDisallowedList.check(&at_rule_node("extend"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("@extend"));
-  }
-
-  #[test]
-  fn allows_at_rule_not_in_list() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["extend"])));
-    let d = AtRuleDisallowedList.check(&at_rule_node("media"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn case_sensitive() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["extend"])));
-    let d = AtRuleDisallowedList.check(&at_rule_node("Extend"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn vendor_prefixed_not_matched_by_unprefixed() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["keyframes"])));
-    let d = AtRuleDisallowedList.check(&at_rule_node("-webkit-keyframes"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(AtRuleDisallowedList.name(), "at-rule-disallowed-list");
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(NAME, json!([["extend", false]])),
+      ["Invalid option value \"false\" for rule \"at-rule-disallowed-list\""]
+    );
+    assert!(invalid_options(NAME, json!("extend")).is_empty());
   }
 }

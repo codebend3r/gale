@@ -1,173 +1,89 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "function-url-scheme-disallowed-list";
 
-/// Disallow specified URL schemes inside `url()` functions.
-///
-/// Options: an array of disallowed scheme names (e.g., `["http", "ftp"]`).
-///
-/// Equivalent to Stylelint's `function-url-scheme-disallowed-list` rule.
-pub struct FunctionUrlSchemeDisallowedList;
-
-impl Rule for FunctionUrlSchemeDisallowedList {
-  fn name(&self) -> &'static str {
-    "function-url-scheme-disallowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed URL schemes"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags `url()` schemes named in the configured disallow list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let disallowed: Vec<String> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-        .collect(),
-      _ => return vec![],
-    };
-
-    let mut diags = Vec::new();
-
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
-    for decl in declarations {
-      check_url_schemes(&decl.value, decl.span.offset, &disallowed, self, &mut diags);
-    }
-
-    diags
+declare_rule! {
+  /// Disallow the URL schemes listed in `url()`.
+  ///
+  /// Options: a scheme or `/regex/`, or a list of them, matched against the
+  /// lowercased scheme.  A URL has a scheme when it is absolute and the
+  /// scheme is followed by `//`, or is `data:`.
+  ///
+  /// Equivalent to Stylelint's `function-url-scheme-disallowed-list` rule.
+  pub struct FunctionUrlSchemeDisallowedList => ListCheck<FunctionUrlSchemeDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed URL schemes",
+    default_severity: Warning,
+    primary_option_array: true,
   }
 }
 
-/// Reports each `url()` whose scheme appears in `disallowed`.
-fn check_url_schemes(
-  value: &str,
-  base_offset: usize,
-  disallowed: &[String],
-  rule: &FunctionUrlSchemeDisallowedList,
-  diags: &mut Vec<Diagnostic>,
-) {
-  let lower = value.to_ascii_lowercase();
+impl ListRule for FunctionUrlSchemeDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = ();
 
-  let mut search_from = 0;
-  while let Some(url_start) = lower[search_from..].find("url(") {
-    let abs_start = search_from + url_start;
-    let after_paren = abs_start + 4;
-    if after_paren >= lower.len() {
-      break;
-    }
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::url_schemes(tree, found);
+  }
 
-    let content_start = after_paren;
-    let content_end = match lower[content_start..].find(')') {
-      Some(pos) => content_start + pos,
-      None => break,
-    };
-
-    let mut content = lower[content_start..content_end].trim();
-
-    // Strip quotes
-    // A lone quote (`url(")`) both starts and ends with it: needs two.
-    if content.len() >= 2
-      && ((content.starts_with('"') && content.ends_with('"'))
-        || (content.starts_with('\'') && content.ends_with('\'')))
-    {
-      content = &content[1..content.len() - 1];
-    }
-
-    if let Some(scheme_end) = content.find("://") {
-      let scheme = &content[..scheme_end];
-      if disallowed.contains(&scheme.to_string()) {
-        diags.push(
-          Diagnostic::new(rule.name(), format!("Unexpected URL scheme \"{scheme}\""))
-            .severity(rule.default_severity())
-            .span(Span::new(
-              base_offset + abs_start,
-              content_end - abs_start + 1,
-            )),
-        );
-      }
-    }
-
-    search_from = content_end + 1;
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected URL scheme \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, val.len()),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  #[test]
+  fn reports_listed_schemes() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["http"]),
+          "a { background: URL(\"HTTP://a.b/c.png\"); }",
+          &["1:21 Unexpected URL scheme \"http\""],
+        ),
+        (
+          json!(["data"]),
+          "a { background: url(data:image/png;base64,AAAA); }",
+          &["1:21 Unexpected URL scheme \"data\""],
+        ),
+        (
+          json!(["http"]),
+          "a { background: url(https://a.b/c.png); }",
+          &[],
+        ),
+        (
+          json!(["localhost"]),
+          "a { background: url(localhost:8080/a); }",
+          &[],
+        ),
+        (
+          json!(["http"]),
+          "a { background: url($base + 'http://a'); }",
+          &[],
+        ),
+      ],
+    );
   }
 
   #[test]
-  fn allows_all_when_no_options() {
-    let ctx = ctx_with_options(None);
-    let d =
-      FunctionUrlSchemeDisallowedList.check(&style_with_value("url(http://example.com)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn flags_disallowed_scheme() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["http", "ftp"])));
-    let d = FunctionUrlSchemeDisallowedList
-      .check(&style_with_value("url(http://example.com/img.png)"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("http"));
-  }
-
-  #[test]
-  fn allows_non_disallowed_scheme() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["http"])));
-    let d = FunctionUrlSchemeDisallowedList
-      .check(&style_with_value("url(https://example.com/img.png)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_relative_urls() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["http"])));
-    let d = FunctionUrlSchemeDisallowedList.check(&style_with_value("url(images/bg.png)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn case_insensitive() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["http"])));
-    let d =
-      FunctionUrlSchemeDisallowedList.check(&style_with_value("url(HTTP://example.com)"), &ctx);
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, json!(["http", "/^ftp/"])).is_empty());
     assert_eq!(
-      FunctionUrlSchemeDisallowedList.name(),
-      "function-url-scheme-disallowed-list"
+      invalid_options(NAME, json!(false)),
+      [
+        "Invalid option value \"false\" for rule \"function-url-scheme-disallowed-list\". Are you trying to disable this rule? If so use \"null\" instead"
+      ]
     );
   }
 }

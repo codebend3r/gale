@@ -1,180 +1,94 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "function-url-scheme-allowed-list";
 
-/// Only allow specified URL schemes inside `url()` functions.
-///
-/// Options: an array of allowed scheme names (e.g., `["https", "data"]`).
-/// Scheme-relative URLs (starting with `//`) and relative URLs (no scheme)
-/// are always allowed.
-///
-/// Equivalent to Stylelint's `function-url-scheme-allowed-list` rule.
-pub struct FunctionUrlSchemeAllowedList;
-
-impl Rule for FunctionUrlSchemeAllowedList {
-  fn name(&self) -> &'static str {
-    "function-url-scheme-allowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of allowed URL schemes"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags `url()` schemes outside the configured allow list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let allowed: Vec<String> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-        .collect(),
-      _ => return vec![],
-    };
-
-    let mut diags = Vec::new();
-
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
-    for decl in declarations {
-      check_url_schemes(&decl.value, decl.span.offset, &allowed, self, &mut diags);
-    }
-
-    diags
+declare_rule! {
+  /// Only allow the URL schemes listed in `url()`.
+  ///
+  /// Options: a scheme or `/regex/`, or a list of them, matched against the
+  /// lowercased scheme.  A URL has a scheme when it is absolute and the
+  /// scheme is followed by `//`, or is `data:`; relative and
+  /// scheme-relative URLs, and URLs built with interpolation, are not
+  /// checked.
+  ///
+  /// Equivalent to Stylelint's `function-url-scheme-allowed-list` rule.
+  pub struct FunctionUrlSchemeAllowedList => ListCheck<FunctionUrlSchemeAllowedList> {
+    name: NAME,
+    description: "Specify a list of allowed URL schemes",
+    default_severity: Warning,
+    primary_option_array: true,
   }
 }
 
-/// Reports each `url()` whose scheme is absent from `allowed`. Scheme-relative
-/// and relative URLs carry no scheme and are always allowed.
-fn check_url_schemes(
-  value: &str,
-  base_offset: usize,
-  allowed: &[String],
-  rule: &FunctionUrlSchemeAllowedList,
-  diags: &mut Vec<Diagnostic>,
-) {
-  let lower = value.to_ascii_lowercase();
+impl ListRule for FunctionUrlSchemeAllowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Allowed;
+  type Options = ();
 
-  // Find all url(...) occurrences
-  let mut search_from = 0;
-  while let Some(url_start) = lower[search_from..].find("url(") {
-    let abs_start = search_from + url_start;
-    let after_paren = abs_start + 4;
-    if after_paren >= lower.len() {
-      break;
-    }
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::url_schemes(tree, found);
+  }
 
-    // Find the closing paren
-    let content_start = after_paren;
-    let content_end = match lower[content_start..].find(')') {
-      Some(pos) => content_start + pos,
-      None => break,
-    };
-
-    let mut content = lower[content_start..content_end].trim();
-
-    // Strip quotes
-    // A lone quote (`url(")`) both starts and ends with it: needs two.
-    if content.len() >= 2
-      && ((content.starts_with('"') && content.ends_with('"'))
-        || (content.starts_with('\'') && content.ends_with('\'')))
-    {
-      content = &content[1..content.len() - 1];
-    }
-
-    // Skip scheme-relative (//...) and relative URLs (no scheme)
-    if !content.starts_with("//")
-      && let Some(scheme_end) = content.find("://")
-    {
-      let scheme = &content[..scheme_end];
-      if !allowed.contains(&scheme.to_string()) {
-        diags.push(
-          Diagnostic::new(rule.name(), format!("Unexpected URL scheme \"{scheme}\""))
-            .severity(rule.default_severity())
-            .span(Span::new(
-              base_offset + abs_start,
-              content_end - abs_start + 1,
-            )),
-        );
-      }
-    }
-
-    search_from = content_end + 1;
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected URL scheme \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, val.len()),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  #[test]
+  fn reports_schemes_missing_from_the_list() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["https"]),
+          "a { background: url(http://example.com/a.png); }",
+          &["1:21 Unexpected URL scheme \"http\""],
+        ),
+        (
+          json!(["https"]),
+          "a { background: url('HTTPS://example.com/a.png'); }",
+          &[],
+        ),
+        (
+          json!(["https"]),
+          "a { background: url(data:image/png;base64,AAAA); }",
+          &["1:21 Unexpected URL scheme \"data\""],
+        ),
+        (
+          json!(["https"]),
+          "a { background: url(//example.com/a.png); }",
+          &[],
+        ),
+        (json!(["https"]), "a { background: url(a/b.png); }", &[]),
+        (
+          json!(["/^http/"]),
+          "a { background: url(\"http://a.b/c\"); }",
+          &[],
+        ),
+        (
+          json!(["https"]),
+          "@font-face { src: local(x), url(ftp://a.b/f.woff); }",
+          &["1:33 Unexpected URL scheme \"ftp\""],
+        ),
+      ],
+    );
   }
 
   #[test]
-  fn allows_all_when_no_options() {
-    let ctx = ctx_with_options(None);
-    let d = FunctionUrlSchemeAllowedList.check(&style_with_value("url(http://example.com)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_listed_scheme() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["https", "data"])));
-    let d = FunctionUrlSchemeAllowedList
-      .check(&style_with_value("url(https://example.com/img.png)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn flags_unlisted_scheme() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["https"])));
-    let d = FunctionUrlSchemeAllowedList
-      .check(&style_with_value("url(http://example.com/img.png)"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("http"));
-  }
-
-  #[test]
-  fn allows_relative_urls() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["https"])));
-    let d = FunctionUrlSchemeAllowedList.check(&style_with_value("url(images/bg.png)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_scheme_relative_urls() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["https"])));
-    let d =
-      FunctionUrlSchemeAllowedList.check(&style_with_value("url(//example.com/img.png)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
+  fn options_are_validated_like_stylelint() {
     assert_eq!(
-      FunctionUrlSchemeAllowedList.name(),
-      "function-url-scheme-allowed-list"
+      invalid_options(NAME, json!([[1]])),
+      ["Invalid option value \"1\" for rule \"function-url-scheme-allowed-list\""]
     );
   }
 }
