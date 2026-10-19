@@ -1,6 +1,7 @@
 use gale_css_parser::{CssNode, Declaration, StyleRule};
 use gale_diagnostics::Diagnostic;
 
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -97,7 +98,7 @@ const OFFSET_PROPERTIES: &[&str] = &[
 
 /// Every `display` keyword the rule understands.  A value with any other
 /// word in it is left alone.
-const DISPLAY_KEYWORDS: &[&str] = &[
+const UNDERSTOOD_DISPLAY_KEYWORDS: &[&str] = &[
   "block",
   "inline",
   "inline-block",
@@ -124,9 +125,6 @@ const DISPLAY_KEYWORDS: &[&str] = &[
   "ruby-base-container",
   "ruby-text-container",
 ];
-
-/// Values that never count as "no effect": the CSS-wide keywords.
-const CSS_WIDE_KEYWORDS: &[&str] = &["inherit", "initial", "unset", "revert", "revert-layer"];
 
 /// The initial value of each property the rule reports, lowercased.  Setting
 /// a property to it is a reset, which is left alone.
@@ -194,7 +192,7 @@ impl<'a> Layout<'a> {
         let known = !keywords.is_empty()
           && keywords
             .iter()
-            .all(|word| DISPLAY_KEYWORDS.contains(&word.as_str()));
+            .all(|word| UNDERSTOOD_DISPLAY_KEYWORDS.contains(&word.as_str()));
         known.then_some((value, keywords))
       });
     let position = winning(declarations, "position")

@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::list_rules::{Entries, KeyedList, keyed_option};
 use crate::options::{Accept, InvalidOption, Setting, is_object_of_strings};
@@ -53,9 +54,6 @@ impl DeclarationPropertyValueNoUnknownCheck {
     self.ignore_properties.first_matches(prop, value)
   }
 }
-
-/// CSS-wide keywords valid for any property.
-const CSS_WIDE_KEYWORDS: &[&str] = &["inherit", "initial", "revert", "revert-layer", "unset"];
 
 /// Valid single keywords for the `display` property: those css-tree, which
 /// Stylelint validates values with, accepts, legacy vendor values included.

@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::data::{is_named_color, named_color_for_rgb};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -49,212 +50,6 @@ impl ColorNamedCheck {
   }
 }
 
-/// Full list of CSS named colors (Level 4).
-const NAMED_COLORS: &[&str] = &[
-  "aliceblue",
-  "antiquewhite",
-  "aqua",
-  "aquamarine",
-  "azure",
-  "beige",
-  "bisque",
-  "black",
-  "blanchedalmond",
-  "blue",
-  "blueviolet",
-  "brown",
-  "burlywood",
-  "cadetblue",
-  "chartreuse",
-  "chocolate",
-  "coral",
-  "cornflowerblue",
-  "cornsilk",
-  "crimson",
-  "cyan",
-  "darkblue",
-  "darkcyan",
-  "darkgoldenrod",
-  "darkgray",
-  "darkgreen",
-  "darkgrey",
-  "darkkhaki",
-  "darkmagenta",
-  "darkolivegreen",
-  "darkorange",
-  "darkorchid",
-  "darkred",
-  "darksalmon",
-  "darkseagreen",
-  "darkslateblue",
-  "darkslategray",
-  "darkslategrey",
-  "darkturquoise",
-  "darkviolet",
-  "deeppink",
-  "deepskyblue",
-  "dimgray",
-  "dimgrey",
-  "dodgerblue",
-  "firebrick",
-  "floralwhite",
-  "forestgreen",
-  "fuchsia",
-  "gainsboro",
-  "ghostwhite",
-  "gold",
-  "goldenrod",
-  "gray",
-  "green",
-  "greenyellow",
-  "grey",
-  "honeydew",
-  "hotpink",
-  "indianred",
-  "indigo",
-  "ivory",
-  "khaki",
-  "lavender",
-  "lavenderblush",
-  "lawngreen",
-  "lemonchiffon",
-  "lightblue",
-  "lightcoral",
-  "lightcyan",
-  "lightgoldenrodyellow",
-  "lightgray",
-  "lightgreen",
-  "lightgrey",
-  "lightpink",
-  "lightsalmon",
-  "lightseagreen",
-  "lightskyblue",
-  "lightslategray",
-  "lightslategrey",
-  "lightsteelblue",
-  "lightyellow",
-  "lime",
-  "limegreen",
-  "linen",
-  "magenta",
-  "maroon",
-  "mediumaquamarine",
-  "mediumblue",
-  "mediumorchid",
-  "mediumpurple",
-  "mediumseagreen",
-  "mediumslateblue",
-  "mediumspringgreen",
-  "mediumturquoise",
-  "mediumvioletred",
-  "midnightblue",
-  "mintcream",
-  "mistyrose",
-  "moccasin",
-  "navajowhite",
-  "navy",
-  "oldlace",
-  "olive",
-  "olivedrab",
-  "orange",
-  "orangered",
-  "orchid",
-  "palegoldenrod",
-  "palegreen",
-  "paleturquoise",
-  "palevioletred",
-  "papayawhip",
-  "peachpuff",
-  "peru",
-  "pink",
-  "plum",
-  "powderblue",
-  "purple",
-  "rebeccapurple",
-  "red",
-  "rosybrown",
-  "royalblue",
-  "saddlebrown",
-  "salmon",
-  "sandybrown",
-  "seagreen",
-  "seashell",
-  "sienna",
-  "silver",
-  "skyblue",
-  "slateblue",
-  "slategray",
-  "slategrey",
-  "snow",
-  "springgreen",
-  "steelblue",
-  "tan",
-  "teal",
-  "thistle",
-  "tomato",
-  "turquoise",
-  "violet",
-  "wheat",
-  "white",
-  "whitesmoke",
-  "yellow",
-  "yellowgreen",
-];
-
-/// CSS system colors and special keywords that look like named colors but aren't.
-const SYSTEM_COLORS: &[&str] = &[
-  "transparent",
-  "currentcolor",
-  "inherit",
-  "initial",
-  "unset",
-  "revert",
-  "revert-layer",
-  // CSS system colors
-  "activeborder",
-  "activecaption",
-  "appworkspace",
-  "background",
-  "buttonface",
-  "buttonhighlight",
-  "buttonshadow",
-  "buttontext",
-  "captiontext",
-  "graytext",
-  "greytext",
-  "highlight",
-  "highlighttext",
-  "inactiveborder",
-  "inactivecaption",
-  "inactivecaptiontext",
-  "infobackground",
-  "infotext",
-  "menu",
-  "menutext",
-  "scrollbar",
-  "threeddarkshadow",
-  "threedface",
-  "threedhighlight",
-  "threedlightshadow",
-  "threedshadow",
-  "window",
-  "windowframe",
-  "windowtext",
-  "canvas",
-  "canvastext",
-  "linktext",
-  "visitedtext",
-  "activetext",
-  "field",
-  "fieldtext",
-  "mark",
-  "marktext",
-  "selecteditem",
-  "selecteditemtext",
-  "accentcolor",
-  "accentcolortext",
-];
-
 /// Properties that DO NOT accept color values and should be skipped.
 const NON_COLOR_PROPERTIES: &[&str] = &[
   "animation",
@@ -283,166 +78,6 @@ const NON_COLOR_PROPERTIES: &[&str] = &[
   "contain",
   "content",
 ];
-
-/// Named color → hex mapping for "always-where-possible" mode.
-/// Only includes colors that can be represented as standard hex (#RRGGBB).
-fn named_color_to_rgb(name: &str) -> Option<(u8, u8, u8)> {
-  match name {
-    "black" => Some((0, 0, 0)),
-    "silver" => Some((192, 192, 192)),
-    "gray" | "grey" => Some((128, 128, 128)),
-    "white" => Some((255, 255, 255)),
-    "maroon" => Some((128, 0, 0)),
-    "red" => Some((255, 0, 0)),
-    "purple" => Some((128, 0, 128)),
-    "fuchsia" | "magenta" => Some((255, 0, 255)),
-    "green" => Some((0, 128, 0)),
-    "lime" => Some((0, 255, 0)),
-    "olive" => Some((128, 128, 0)),
-    "yellow" => Some((255, 255, 0)),
-    "navy" => Some((0, 0, 128)),
-    "blue" => Some((0, 0, 255)),
-    "teal" => Some((0, 128, 128)),
-    "aqua" | "cyan" => Some((0, 255, 255)),
-    "aliceblue" => Some((240, 248, 255)),
-    "antiquewhite" => Some((250, 235, 215)),
-    "aquamarine" => Some((127, 255, 212)),
-    "azure" => Some((240, 255, 255)),
-    "beige" => Some((245, 245, 220)),
-    "bisque" => Some((255, 228, 196)),
-    "blanchedalmond" => Some((255, 235, 205)),
-    "blueviolet" => Some((138, 43, 226)),
-    "brown" => Some((165, 42, 42)),
-    "burlywood" => Some((222, 184, 135)),
-    "cadetblue" => Some((95, 158, 160)),
-    "chartreuse" => Some((127, 255, 0)),
-    "chocolate" => Some((210, 105, 30)),
-    "coral" => Some((255, 127, 80)),
-    "cornflowerblue" => Some((100, 149, 237)),
-    "cornsilk" => Some((255, 248, 220)),
-    "crimson" => Some((220, 20, 60)),
-    "darkblue" => Some((0, 0, 139)),
-    "darkcyan" => Some((0, 139, 139)),
-    "darkgoldenrod" => Some((184, 134, 11)),
-    "darkgray" | "darkgrey" => Some((169, 169, 169)),
-    "darkgreen" => Some((0, 100, 0)),
-    "darkkhaki" => Some((189, 183, 107)),
-    "darkmagenta" => Some((139, 0, 139)),
-    "darkolivegreen" => Some((85, 107, 47)),
-    "darkorange" => Some((255, 140, 0)),
-    "darkorchid" => Some((153, 50, 204)),
-    "darkred" => Some((139, 0, 0)),
-    "darksalmon" => Some((233, 150, 122)),
-    "darkseagreen" => Some((143, 188, 143)),
-    "darkslateblue" => Some((72, 61, 139)),
-    "darkslategray" | "darkslategrey" => Some((47, 79, 79)),
-    "darkturquoise" => Some((0, 206, 209)),
-    "darkviolet" => Some((148, 0, 211)),
-    "deeppink" => Some((255, 20, 147)),
-    "deepskyblue" => Some((0, 191, 255)),
-    "dimgray" | "dimgrey" => Some((105, 105, 105)),
-    "dodgerblue" => Some((30, 144, 255)),
-    "firebrick" => Some((178, 34, 34)),
-    "floralwhite" => Some((255, 250, 240)),
-    "forestgreen" => Some((34, 139, 34)),
-    "gainsboro" => Some((220, 220, 220)),
-    "ghostwhite" => Some((248, 248, 255)),
-    "gold" => Some((255, 215, 0)),
-    "goldenrod" => Some((218, 165, 32)),
-    "greenyellow" => Some((173, 255, 47)),
-    "honeydew" => Some((240, 255, 240)),
-    "hotpink" => Some((255, 105, 180)),
-    "indianred" => Some((205, 92, 92)),
-    "indigo" => Some((75, 0, 130)),
-    "ivory" => Some((255, 255, 240)),
-    "khaki" => Some((240, 230, 140)),
-    "lavender" => Some((230, 230, 250)),
-    "lavenderblush" => Some((255, 240, 245)),
-    "lawngreen" => Some((124, 252, 0)),
-    "lemonchiffon" => Some((255, 250, 205)),
-    "lightblue" => Some((173, 216, 230)),
-    "lightcoral" => Some((240, 128, 128)),
-    "lightcyan" => Some((224, 255, 255)),
-    "lightgoldenrodyellow" => Some((250, 250, 210)),
-    "lightgray" | "lightgrey" => Some((211, 211, 211)),
-    "lightgreen" => Some((144, 238, 144)),
-    "lightpink" => Some((255, 182, 193)),
-    "lightsalmon" => Some((255, 160, 122)),
-    "lightseagreen" => Some((32, 178, 170)),
-    "lightskyblue" => Some((135, 206, 250)),
-    "lightslategray" | "lightslategrey" => Some((119, 136, 153)),
-    "lightsteelblue" => Some((176, 196, 222)),
-    "lightyellow" => Some((255, 255, 224)),
-    "limegreen" => Some((50, 205, 50)),
-    "linen" => Some((250, 240, 230)),
-    "mediumaquamarine" => Some((102, 205, 170)),
-    "mediumblue" => Some((0, 0, 205)),
-    "mediumorchid" => Some((186, 85, 211)),
-    "mediumpurple" => Some((147, 111, 219)),
-    "mediumseagreen" => Some((60, 179, 113)),
-    "mediumslateblue" => Some((123, 104, 238)),
-    "mediumspringgreen" => Some((0, 250, 154)),
-    "mediumturquoise" => Some((72, 209, 204)),
-    "mediumvioletred" => Some((199, 21, 133)),
-    "midnightblue" => Some((25, 25, 112)),
-    "mintcream" => Some((245, 255, 250)),
-    "mistyrose" => Some((255, 228, 225)),
-    "moccasin" => Some((255, 228, 181)),
-    "navajowhite" => Some((255, 222, 173)),
-    "oldlace" => Some((253, 245, 230)),
-    "olivedrab" => Some((107, 142, 35)),
-    "orange" => Some((255, 165, 0)),
-    "orangered" => Some((255, 69, 0)),
-    "orchid" => Some((218, 112, 214)),
-    "palegoldenrod" => Some((238, 232, 170)),
-    "palegreen" => Some((152, 251, 152)),
-    "paleturquoise" => Some((175, 238, 238)),
-    "palevioletred" => Some((219, 112, 147)),
-    "papayawhip" => Some((255, 239, 213)),
-    "peachpuff" => Some((255, 218, 185)),
-    "peru" => Some((205, 133, 63)),
-    "pink" => Some((255, 192, 203)),
-    "plum" => Some((221, 160, 221)),
-    "powderblue" => Some((176, 224, 230)),
-    "rebeccapurple" => Some((102, 51, 153)),
-    "rosybrown" => Some((188, 143, 143)),
-    "royalblue" => Some((65, 105, 225)),
-    "saddlebrown" => Some((139, 69, 19)),
-    "salmon" => Some((250, 128, 114)),
-    "sandybrown" => Some((244, 164, 96)),
-    "seagreen" => Some((46, 139, 87)),
-    "seashell" => Some((255, 245, 238)),
-    "sienna" => Some((160, 82, 45)),
-    "skyblue" => Some((135, 206, 235)),
-    "slateblue" => Some((106, 90, 205)),
-    "slategray" | "slategrey" => Some((112, 128, 144)),
-    "snow" => Some((255, 250, 250)),
-    "springgreen" => Some((0, 255, 127)),
-    "steelblue" => Some((70, 130, 180)),
-    "tan" => Some((210, 180, 140)),
-    "thistle" => Some((216, 191, 216)),
-    "tomato" => Some((255, 99, 71)),
-    "turquoise" => Some((64, 224, 208)),
-    "violet" => Some((238, 130, 238)),
-    "wheat" => Some((245, 222, 179)),
-    "whitesmoke" => Some((245, 245, 245)),
-    "yellowgreen" => Some((154, 205, 50)),
-    _ => None,
-  }
-}
-
-/// Reverse lookup: find a named color for (r, g, b), if one exists.
-fn rgb_to_named_color(r: u8, g: u8, b: u8) -> Option<&'static str> {
-  // We iterate named colors and check for a match.
-  for &name in NAMED_COLORS {
-    if let Some((nr, ng, nb)) = named_color_to_rgb(name) {
-      if nr == r && ng == g && nb == b {
-        return Some(name);
-      }
-    }
-  }
-  None
-}
 
 impl Check for ColorNamedCheck {
   /// Flags named colors under "never", or hex/function colors that have an exact
@@ -523,7 +158,7 @@ fn check_never(
     match token {
       ValueToken::Word { text, offset } => {
         let lower = text.to_ascii_lowercase();
-        if is_named_color(&lower) && !is_system_color(&lower) {
+        if is_named_color(&lower) {
           let abs_offset = value_offset + offset;
           diags.push(
             Diagnostic::new(NAME, format!("Unexpected named color \"{}\"", lower))
@@ -568,7 +203,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
       ValueToken::Hash { text, offset } => {
         // Check if this hex color has a named equivalent
         if let Some(rgb) = parse_hex_to_rgb(text) {
-          if let Some(name) = rgb_to_named_color(rgb.0, rgb.1, rgb.2) {
+          if let Some(name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2]) {
             let abs_offset = value_offset + offset;
             diags.push(
               Diagnostic::new(NAME, format!("Expected \"{name}\" instead of \"#{text}\""))
@@ -588,7 +223,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
           "rgb" | "rgba" => {
             if let Some((r, g, b, fully_opaque)) = parse_rgb_args(args) {
               if fully_opaque {
-                if let Some(color_name) = rgb_to_named_color(r, g, b) {
+                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
                   let abs_offset = value_offset + fn_offset - name.len() - 1;
                   // Point to the start of the function name
                   let func_start = value_offset + fn_offset - name.len() - 1;
@@ -609,7 +244,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
           "hsl" | "hsla" => {
             if let Some((r, g, b, fully_opaque)) = parse_hsl_args(args) {
               if fully_opaque {
-                if let Some(color_name) = rgb_to_named_color(r, g, b) {
+                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
@@ -628,7 +263,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
           "hwb" => {
             if let Some((r, g, b, fully_opaque)) = parse_hwb_args(args) {
               if fully_opaque {
-                if let Some(color_name) = rgb_to_named_color(r, g, b) {
+                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
@@ -647,7 +282,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
           "gray" => {
             if let Some((r, g, b, fully_opaque)) = parse_gray_args(args) {
               if fully_opaque {
-                if let Some(color_name) = rgb_to_named_color(r, g, b) {
+                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
                   let func_start = value_offset + fn_offset - name.len() - 1;
                   diags.push(
                     Diagnostic::new(
@@ -669,7 +304,7 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
             for inner in &inner_tokens {
               if let ValueToken::Hash { text, offset: _ } = inner {
                 if let Some(rgb) = parse_hex_to_rgb(text) {
-                  if let Some(color_name) = rgb_to_named_color(rgb.0, rgb.1, rgb.2) {
+                  if let Some(color_name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2]) {
                     let func_start = value_offset + fn_offset - name.len() - 1;
                     diags.push(
                       Diagnostic::new(
@@ -859,16 +494,6 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
-
-/// Whether `word` is a CSS named color.
-fn is_named_color(word: &str) -> bool {
-  NAMED_COLORS.contains(&word)
-}
-
-/// Whether `word` is a CSS system color keyword.
-fn is_system_color(word: &str) -> bool {
-  SYSTEM_COLORS.contains(&word)
-}
 
 /// Whether `prop` never takes a color, so its values can be skipped.
 fn is_non_color_property(prop: &str) -> bool {

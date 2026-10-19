@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::data::MATH_FUNCTIONS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
@@ -69,32 +70,6 @@ const LENGTH_UNITS: &[&str] = &[
   "dvi", "dvmax", "dvmin", "dvw", "lvb", "lvh", "lvi", "lvmax", "lvmin", "lvw", "svb", "svh",
   "svi", "svmax", "svmin", "svw", "vb", "vh", "vi", "vw", "vmin", "vmax", "vm", "px", "mm", "cm",
   "in", "pt", "pc", "q", "mozmm", "fr", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
-];
-
-/// Stylelint's `mathFunctions`.
-const MATH_FUNCTIONS: &[&str] = &[
-  "abs",
-  "acos",
-  "asin",
-  "atan",
-  "calc",
-  "cos",
-  "exp",
-  "sign",
-  "sin",
-  "sqrt",
-  "tan",
-  "atan2",
-  "calc-size",
-  "clamp",
-  "hypot",
-  "log",
-  "max",
-  "min",
-  "mod",
-  "pow",
-  "rem",
-  "round",
 ];
 
 /// Stylelint's `mayIncludeRegexes.zeroLength`: a quick test for a zero

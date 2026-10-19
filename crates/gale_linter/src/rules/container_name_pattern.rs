@@ -1,6 +1,7 @@
 use gale_css_parser::{AtRule, CssNode, Declaration};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::data::is_css_wide_keyword;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
 use crate::pattern::{self, Regex};
@@ -45,9 +46,6 @@ impl ContainerNamePatternCheck {
     Ok(Self { pattern })
   }
 }
-
-/// CSS-wide keywords, never container names (Stylelint's `basicKeywords`).
-const CSS_WIDE_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
 /// Words in `@container` params that are not container names.
 const AT_RULE_KEYWORDS: &[&str] = &["and", "or", "none", "not"];
@@ -146,9 +144,7 @@ impl ContainerNamePatternCheck {
         return false;
       }
       let name = node.value;
-      let keyword = CSS_WIDE_KEYWORDS
-        .iter()
-        .any(|k| k.eq_ignore_ascii_case(name));
+      let keyword = is_css_wide_keyword(name);
       if !keyword && is_standard_syntax_value(name) && !pattern::is_match(re, name) {
         diags.push(self.report(name, pattern, offset + node.source_index));
       }
