@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -57,9 +58,6 @@ impl FontFamilyNameQuotesCheck {
     })
   }
 }
-
-/// Stylelint's `basicKeywords`.
-const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
 /// Stylelint's `fontFamilyKeywords`, without the basic keywords.
 const FONT_FAMILY_KEYWORDS: &[&str] = &[
@@ -174,12 +172,12 @@ const LENGTH_UNITS: &[&str] = &[
 
 /// Whether `lower` is one of Stylelint's `fontFamilyKeywords`.
 fn is_font_family_keyword(lower: &str) -> bool {
-  BASIC_KEYWORDS.contains(&lower) || FONT_FAMILY_KEYWORDS.contains(&lower)
+  CSS_WIDE_KEYWORDS.contains(&lower) || FONT_FAMILY_KEYWORDS.contains(&lower)
 }
 
 /// Whether `word` is one of Stylelint's `fontSizeKeywords`.
 fn is_font_size_keyword(word: &str) -> bool {
-  BASIC_KEYWORDS.contains(&word) || FONT_SIZE_KEYWORDS.contains(&word)
+  CSS_WIDE_KEYWORDS.contains(&word) || FONT_SIZE_KEYWORDS.contains(&word)
 }
 
 /// Whether `lower` is one of Stylelint's `fontShorthandKeywords`.
@@ -309,7 +307,7 @@ fn is_comma(node: &ValueNode) -> bool {
 fn find_font_family(value: &str) -> Vec<Family> {
   let nodes = value_parser::parse(value);
   if let [only] = nodes.as_slice()
-    && BASIC_KEYWORDS.contains(&only.value.to_ascii_lowercase().as_str())
+    && CSS_WIDE_KEYWORDS.contains(&only.value.to_ascii_lowercase().as_str())
   {
     return vec![family_of(only)];
   }

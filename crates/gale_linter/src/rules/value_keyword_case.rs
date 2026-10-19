@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::pattern;
@@ -254,13 +255,10 @@ fn is_generic_font_family(s: &str) -> bool {
   GENERIC_FONT_FAMILIES.iter().any(|f| *f == lower)
 }
 
-/// Global CSS keywords.
-const GLOBAL_KEYWORDS: &[&str] = &["inherit", "initial", "unset", "revert", "revert-layer"];
-
 /// Whether `s` is `inherit`, `initial`, `unset` or similar.
 fn is_global_keyword(s: &str) -> bool {
   let lower = s.to_ascii_lowercase();
-  GLOBAL_KEYWORDS.iter().any(|k| *k == lower)
+  CSS_WIDE_KEYWORDS.iter().any(|k| *k == lower)
 }
 
 /// Known CSS list-style-type keywords (includes predefined counter styles).

@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
+use crate::data::is_css_wide_keyword;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -74,12 +75,7 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
         continue;
       }
 
-      // Skip CSS-wide keywords (inherit, initial, unset, revert, revert-layer)
-      let lower = value.to_ascii_lowercase();
-      if matches!(
-        lower.as_str(),
-        "inherit" | "initial" | "unset" | "revert" | "revert-layer"
-      ) {
+      if is_css_wide_keyword(value) {
         continue;
       }
 

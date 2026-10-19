@@ -2,6 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
+use crate::data::MATH_FUNCTIONS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -39,32 +40,6 @@ impl FunctionCalcNoUnspacedOperatorCheck {
     Ok(Self)
   }
 }
-
-/// Stylelint's `mathFunctions`.
-const MATH_FUNCTIONS: &[&str] = &[
-  "abs",
-  "acos",
-  "asin",
-  "atan",
-  "calc",
-  "cos",
-  "exp",
-  "sign",
-  "sin",
-  "sqrt",
-  "tan",
-  "atan2",
-  "calc-size",
-  "clamp",
-  "hypot",
-  "log",
-  "max",
-  "min",
-  "mod",
-  "pow",
-  "rem",
-  "round",
-];
 
 impl Check for FunctionCalcNoUnspacedOperatorCheck {
   /// Flags `+` and `-` operators in math functions that lack a single space

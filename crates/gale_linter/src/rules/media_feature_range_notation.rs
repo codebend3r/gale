@@ -556,7 +556,7 @@ fn in_parens(token: &Token, features: &mut Vec<Feature>) -> bool {
 /// dimension, identifier or `env()`, or a ratio of two numbers.  Any other
 /// function, such as a Sass one, makes the feature general enclosed.
 fn is_mf_value(tokens: &[&Token]) -> bool {
-  let number = |t: &Token| t.kind == Tok::Number || is_function_in(t, MATH_FUNCTIONS);
+  let number = |t: &Token| t.kind == Tok::Number || is_function_in(t, MEDIA_QUERY_MATH_FUNCTIONS);
   let single = |t: &Token| number(t) || t.kind == Tok::Ident || is_function_in(t, &["env"]);
   match tokens {
     [only] => single(only),
@@ -565,8 +565,9 @@ fn is_mf_value(tokens: &[&Token]) -> bool {
   }
 }
 
-/// The math functions `@csstools/media-query-list-parser` reads as numbers.
-const MATH_FUNCTIONS: &[&str] = &[
+/// The math functions `@csstools/media-query-list-parser` reads as numbers:
+/// Stylelint's `mathFunctions` but for `calc-size`, which it does not know.
+const MEDIA_QUERY_MATH_FUNCTIONS: &[&str] = &[
   "abs", "acos", "asin", "atan", "atan2", "calc", "clamp", "cos", "exp", "hypot", "log", "max",
   "min", "mod", "pow", "rem", "round", "sign", "sin", "sqrt", "tan",
 ];

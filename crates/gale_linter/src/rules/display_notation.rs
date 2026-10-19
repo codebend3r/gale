@@ -54,7 +54,7 @@ const INSIDE: &[&str] = &["flow", "flow-root", "table", "flex", "grid", "ruby"];
 
 /// Keywords whose presence makes a value worth tokenizing (Stylelint's
 /// `displayKeyword` regex: list-item, outside, inside and legacy keywords).
-const DISPLAY_KEYWORDS: &[&str] = &[
+const NOTATION_KEYWORDS: &[&str] = &[
   "list-item",
   "block",
   "inline",
@@ -187,7 +187,7 @@ fn mentions_display_keyword(value: &str) -> bool {
       .get(i)
       .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
   };
-  DISPLAY_KEYWORDS.iter().any(|word| {
+  NOTATION_KEYWORDS.iter().any(|word| {
     lower
       .match_indices(word)
       .any(|(start, _)| (start == 0 || !is_word(start - 1)) && !is_word(start + word.len()))
