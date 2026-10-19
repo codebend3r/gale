@@ -5,6 +5,8 @@ use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern;
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::postcss::{Kind, Node, split_selectors};
+use crate::selector::specificity::{self, Specificity, is_pseudo_element};
 
 const NAME: &str = "selector-max-specificity";
 
@@ -46,10 +48,10 @@ impl SelectorMaxSpecificityCheck {
     let max = options.primary_value(&[Accept::Test(is_specificity)]);
     let ignore_selectors = options.strings("ignoreSelectors");
     options.finish()?;
-    let (max_id, max_class, max_type) = max
+    let max = max
       .and_then(serde_json::Value::as_str)
       .and_then(parse_specificity_option)
-      .unwrap_or((DEFAULT_MAX_ID, DEFAULT_MAX_CLASS, DEFAULT_MAX_TYPE));
+      .unwrap_or(DEFAULT_MAX);
     let ignore_selectors = ignore_selectors
       .iter()
       .map(|s| match pattern::regex_entry(s) {
@@ -59,9 +61,7 @@ impl SelectorMaxSpecificityCheck {
       .collect();
     Ok(Self {
       config: Config {
-        max_id,
-        max_class,
-        max_type,
+        max,
         ignore_selectors,
       },
     })
@@ -80,27 +80,32 @@ fn is_specificity(value: &serde_json::Value) -> bool {
   })
 }
 
-const DEFAULT_MAX_ID: usize = 0;
-const DEFAULT_MAX_CLASS: usize = 2;
-const DEFAULT_MAX_TYPE: usize = 0;
+const DEFAULT_MAX: Specificity = Specificity::new(0, 2, 0);
 
-/// Parse a specificity string like `"0,2,0"` into `(id, class, type)`.
-fn parse_specificity_option(s: &str) -> Option<(usize, usize, usize)> {
+/// Parse a specificity string like `"0,2,0"`.  A count too large for a
+/// `u32` stands for one no selector reaches.
+fn parse_specificity_option(s: &str) -> Option<Specificity> {
   let parts: Vec<&str> = s.split(',').collect();
   if parts.len() != 3 {
     return None;
   }
-  let id = parts[0].trim().parse::<usize>().ok()?;
-  let class = parts[1].trim().parse::<usize>().ok()?;
-  let typ = parts[2].trim().parse::<usize>().ok()?;
-  Some((id, class, typ))
+  let count = |part: &str| {
+    part
+      .trim()
+      .parse::<usize>()
+      .ok()
+      .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+  };
+  Some(Specificity::new(
+    count(parts[0])?,
+    count(parts[1])?,
+    count(parts[2])?,
+  ))
 }
 
 /// Configuration parsed from rule options.
 struct Config {
-  max_id: usize,
-  max_class: usize,
-  max_type: usize,
+  max: Specificity,
   ignore_selectors: Vec<IgnorePattern>,
 }
 
@@ -134,26 +139,30 @@ impl Config {
     false
   }
 
-  /// Whether the specificity tuple sorts above the configured maximum, compared
-  /// component by component from the left.
-  fn exceeds_max(&self, ids: usize, classes: usize, types: usize) -> bool {
-    // Specificity comparison: compare component by component from left to right
-    // A specificity of (1,0,0) exceeds (0,255,255) because id > max_id
-    // But (0,3,0) vs max (0,2,1): 3 > 2 so it exceeds.
-    // Actually Stylelint compares as a tuple: exceeds if any component is higher
-    // when higher components are equal or lower. In practice, Stylelint compares
-    // the specificity as a whole: (a,b,c) > (ma,mb,mc) iff
-    // a > ma || (a == ma && b > mb) || (a == ma && b == mb && c > mc)
-    if ids > self.max_id {
-      return true;
-    }
-    if ids == self.max_id && classes > self.max_class {
-      return true;
-    }
-    if ids == self.max_id && classes == self.max_class && types > self.max_type {
-      return true;
-    }
-    false
+  /// The selector's specificity, with `ignoreSelectors` applied the way
+  /// gale always has: an ignored `:is()`, `:not()`, `:has()` or `:matches()`
+  /// counts nothing, an ignored `:host()` counts as a bare `:host`, and other
+  /// pseudo-classes count whether ignored or not.  Stylelint instead drops
+  /// any ignored node's own share, classes and types included.
+  fn specificity(&self, selector: &str) -> Option<Specificity> {
+    // Gale does not resolve nesting here: `&` and a suffix glued to it
+    // (`&__item`) count nothing.
+    let selector = without_nesting_suffixes(selector);
+    let ignored = |node: &Node| {
+      if node.kind != Kind::Pseudo || node.args.is_none() || is_pseudo_element(node) {
+        return None;
+      }
+      let name = node.value.trim_start_matches(':');
+      if !self.is_pseudo_ignored(name) {
+        return None;
+      }
+      match name.to_ascii_lowercase().as_str() {
+        "is" | "not" | "has" | "matches" => Some(Specificity::default()),
+        "host" => Some(Specificity::new(0, 1, 0)),
+        _ => None,
+      }
+    };
+    specificity::of_text_with(&selector, Some(&ignored))
   }
 }
 
@@ -177,9 +186,7 @@ impl Check for SelectorMaxSpecificityCheck {
     };
 
     let mut diags = Vec::new();
-
-    // Check each comma-separated selector individually
-    for sel in selector.split(',') {
+    for (_, sel) in split_selectors(&selector) {
       let sel = sel.trim();
       if sel.is_empty() {
         continue;
@@ -190,15 +197,20 @@ impl Check for SelectorMaxSpecificityCheck {
         continue;
       }
 
-      let (ids, classes, types) = compute_single_specificity(sel, config);
+      // A selector postcss-selector-parser cannot read is skipped, as in
+      // Stylelint.
+      let Some(specificity) = config.specificity(sel) else {
+        continue;
+      };
 
-      if config.exceeds_max(ids, classes, types) {
+      if specificity > config.max {
+        let Specificity { a, b, c } = specificity;
         diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
-                            "Expected selector \"{sel}\" to have a specificity no more than \"{},{},{}\", but got \"{ids},{classes},{types}\"",
-                            config.max_id, config.max_class, config.max_type,
+                            "Expected selector \"{sel}\" to have a specificity no more than \"{},{},{}\", but got \"{a},{b},{c}\"",
+                            config.max.a, config.max.b, config.max.c,
                         ),
                     )
                     .span(rule.span),
@@ -209,273 +221,24 @@ impl Check for SelectorMaxSpecificityCheck {
   }
 }
 
-/// Extract the content inside balanced parentheses from a byte string,
-/// advancing `i` past the closing `)`.  Assumes `selector.as_bytes()[*i] == b'('`.
-fn extract_paren_content<'a>(selector: &'a str, i: &mut usize) -> &'a str {
-  let bytes = selector.as_bytes();
-  let mut depth = 1;
-  *i += 1; // skip opening '('
-  let start = *i;
-  while *i < bytes.len() && depth > 0 {
-    if bytes[*i] == b'(' {
-      depth += 1;
-    } else if bytes[*i] == b')' {
-      depth -= 1;
-    }
-    if depth > 0 {
-      *i += 1;
+/// `selector` with every `&` kept but any name glued to it (`&__item`,
+/// `&-suffix`) dropped.
+fn without_nesting_suffixes(selector: &str) -> String {
+  let mut out = String::with_capacity(selector.len());
+  let mut chars = selector.chars().peekable();
+  while let Some(ch) = chars.next() {
+    out.push(ch);
+    if ch == '&' {
+      while chars.next_if(|&next| is_suffix_char(next)).is_some() {}
     }
   }
-  let end = *i;
-  if *i < bytes.len() {
-    *i += 1; // skip closing ')'
-  }
-  &selector[start..end]
+  out
 }
 
-/// Counts the id, class and type contributions of one selector.
-fn compute_single_specificity(selector: &str, config: &Config) -> (usize, usize, usize) {
-  let mut ids = 0;
-  let mut classes = 0;
-  let mut types = 0;
-  let bytes = selector.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i < len {
-    match bytes[i] {
-      b'#' => {
-        // Check for SCSS interpolation #{...}
-        if i + 1 < len && bytes[i + 1] == b'{' {
-          // Skip #{...}
-          let mut depth = 1;
-          i += 2;
-          while i < len && depth > 0 {
-            if bytes[i] == b'{' {
-              depth += 1;
-            } else if bytes[i] == b'}' {
-              depth -= 1;
-            }
-            i += 1;
-          }
-        } else {
-          ids += 1;
-          i += 1;
-          while i < len && is_ident_char(bytes[i]) {
-            i += 1;
-          }
-        }
-      }
-      b'.' => {
-        classes += 1;
-        i += 1;
-        while i < len && is_ident_char(bytes[i]) {
-          i += 1;
-        }
-      }
-      b'[' => {
-        // Attribute selector counts as class-level
-        classes += 1;
-        i += 1;
-        while i < len && bytes[i] != b']' {
-          i += 1;
-        }
-        if i < len {
-          i += 1;
-        }
-      }
-      b':' => {
-        i += 1;
-        if i < len && bytes[i] == b':' {
-          // Pseudo-element: counts as type
-          types += 1;
-          i += 1;
-          while i < len && is_ident_char(bytes[i]) {
-            i += 1;
-          }
-          // Skip parenthetical content
-          if i < len && bytes[i] == b'(' {
-            let mut depth = 1;
-            i += 1;
-            while i < len && depth > 0 {
-              if bytes[i] == b'(' {
-                depth += 1;
-              } else if bytes[i] == b')' {
-                depth -= 1;
-              }
-              i += 1;
-            }
-          }
-        } else {
-          // Pseudo-class -- read the name first
-          let name_start = i;
-          while i < len && is_ident_char(bytes[i]) {
-            i += 1;
-          }
-          let name = &selector[name_start..i];
-
-          if name.eq_ignore_ascii_case("where") {
-            // :where() has zero specificity -- skip arguments
-            if i < len && bytes[i] == b'(' {
-              let mut depth = 1;
-              i += 1;
-              while i < len && depth > 0 {
-                if bytes[i] == b'(' {
-                  depth += 1;
-                } else if bytes[i] == b')' {
-                  depth -= 1;
-                }
-                i += 1;
-              }
-            }
-          } else if name.eq_ignore_ascii_case("host") {
-            // :host has specificity (0,0,0) as a pseudo-class itself,
-            // but :host(.selector) adds the argument's specificity
-            // See: https://drafts.csswg.org/css-scoping/#host-selector
-            if i < len && bytes[i] == b'(' {
-              if config.is_pseudo_ignored(name) {
-                // Skip the argument
-                let mut depth = 1;
-                i += 1;
-                while i < len && depth > 0 {
-                  if bytes[i] == b'(' {
-                    depth += 1;
-                  } else if bytes[i] == b')' {
-                    depth -= 1;
-                  }
-                  i += 1;
-                }
-              } else {
-                let inner = extract_paren_content(selector, &mut i);
-                let mut max_i = 0;
-                let mut max_c = 0;
-                let mut max_t = 0;
-                for arg in inner.split(',') {
-                  let (ai, ac, at) = compute_single_specificity(arg.trim(), config);
-                  max_i = max_i.max(ai);
-                  max_c = max_c.max(ac);
-                  max_t = max_t.max(at);
-                }
-                ids += max_i;
-                classes += max_c;
-                types += max_t;
-              }
-            }
-            // :host without parens = (0,0,0) specificity-wise
-            // but it does contribute as a pseudo-class
-            classes += 1;
-          } else if name.eq_ignore_ascii_case("is")
-            || name.eq_ignore_ascii_case("not")
-            || name.eq_ignore_ascii_case("has")
-            || name.eq_ignore_ascii_case("matches")
-          {
-            // :is(), :not(), :has(), :matches() take the specificity of the
-            // most specific argument.
-            if i < len && bytes[i] == b'(' {
-              if config.is_pseudo_ignored(name) {
-                // Skip the argument entirely
-                let mut depth = 1;
-                i += 1;
-                while i < len && depth > 0 {
-                  if bytes[i] == b'(' {
-                    depth += 1;
-                  } else if bytes[i] == b')' {
-                    depth -= 1;
-                  }
-                  i += 1;
-                }
-              } else {
-                let inner = extract_paren_content(selector, &mut i);
-                let mut max_i = 0;
-                let mut max_c = 0;
-                let mut max_t = 0;
-                for arg in inner.split(',') {
-                  let (ai, ac, at) = compute_single_specificity(arg.trim(), config);
-                  max_i = max_i.max(ai);
-                  max_c = max_c.max(ac);
-                  max_t = max_t.max(at);
-                }
-                ids += max_i;
-                classes += max_c;
-                types += max_t;
-              }
-            }
-          } else if name.eq_ignore_ascii_case("nth-child")
-            || name.eq_ignore_ascii_case("nth-last-child")
-          {
-            // :nth-child() counts as a pseudo-class (specificity class-level)
-            classes += 1;
-            // If there's an "of" clause like :nth-child(2n of .foo),
-            // add the specificity of the most specific selector in the of-clause
-            if i < len && bytes[i] == b'(' {
-              let inner = extract_paren_content(selector, &mut i);
-              // Check for "of" keyword
-              if let Some(of_pos) = find_of_clause(inner) {
-                let of_selectors = &inner[of_pos..];
-                let mut max_i = 0;
-                let mut max_c = 0;
-                let mut max_t = 0;
-                for arg in of_selectors.split(',') {
-                  let (ai, ac, at) = compute_single_specificity(arg.trim(), config);
-                  max_i = max_i.max(ai);
-                  max_c = max_c.max(ac);
-                  max_t = max_t.max(at);
-                }
-                ids += max_i;
-                classes += max_c;
-                types += max_t;
-              }
-            }
-          } else {
-            classes += 1;
-            // Skip parenthetical content
-            if i < len && bytes[i] == b'(' {
-              let mut depth = 1;
-              i += 1;
-              while i < len && depth > 0 {
-                if bytes[i] == b'(' {
-                  depth += 1;
-                } else if bytes[i] == b')' {
-                  depth -= 1;
-                }
-                i += 1;
-              }
-            }
-          }
-        }
-      }
-      b'&' => {
-        // Nesting selector — skip
-        i += 1;
-        while i < len && is_ident_char(bytes[i]) {
-          i += 1;
-        }
-      }
-      b' ' | b'>' | b'+' | b'~' | b'*' | b'\n' | b'\r' | b'\t' => {
-        i += 1;
-      }
-      _ if is_ident_start(bytes[i]) => {
-        types += 1;
-        while i < len && is_ident_char(bytes[i]) {
-          i += 1;
-        }
-      }
-      _ => {
-        i += 1;
-      }
-    }
-  }
-
-  (ids, classes, types)
-}
-
-/// Find the "of" clause in a :nth-child() argument, returning the byte
-/// offset right after "of " where selectors start. Returns None if no
-/// "of" clause is found.
-fn find_of_clause(inner: &str) -> Option<usize> {
-  // Look for " of " (case insensitive)
-  let lower = inner.to_ascii_lowercase();
-  lower.find(" of ").map(|pos| pos + 4)
+/// What the old scanner skipped after a `&`: ASCII letters, digits, `-` and
+/// `_`, and anything non-ASCII.
+fn is_suffix_char(ch: char) -> bool {
+  ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || !ch.is_ascii()
 }
 
 /// Strip SCSS/Less interpolation from a selector string.
@@ -527,16 +290,6 @@ fn strip_preprocessor_interpolation(selector: &str, syntax: gale_css_parser::Syn
     }
   }
   result
-}
-
-/// Whether the byte can begin a CSS identifier.
-fn is_ident_start(b: u8) -> bool {
-  b.is_ascii_alphabetic() || b == b'_' || b == b'-' || b > 127
-}
-
-/// Whether the byte can appear inside a CSS identifier.
-fn is_ident_char(b: u8) -> bool {
-  b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b > 127
 }
 
 #[cfg(test)]
@@ -651,8 +404,14 @@ mod tests {
 
   #[test]
   fn parse_specificity_option_valid() {
-    assert_eq!(parse_specificity_option("0,2,0"), Some((0, 2, 0)));
-    assert_eq!(parse_specificity_option("1, 3, 2"), Some((1, 3, 2)));
+    assert_eq!(
+      parse_specificity_option("0,2,0"),
+      Some(Specificity::new(0, 2, 0))
+    );
+    assert_eq!(
+      parse_specificity_option("1, 3, 2"),
+      Some(Specificity::new(1, 3, 2))
+    );
   }
 
   #[test]
