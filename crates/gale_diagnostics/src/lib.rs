@@ -60,42 +60,8 @@ impl Span {
 }
 
 // ---------------------------------------------------------------------------
-// SourceLocation
+// SourceLineIndex
 // ---------------------------------------------------------------------------
-
-/// A human-readable location in a source file (1-indexed line and column).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SourceLocation {
-  /// 1-indexed line number.
-  pub line: usize,
-  /// 1-indexed column number.
-  pub column: usize,
-  /// Byte offset from the start of the source.
-  pub offset: usize,
-}
-
-impl SourceLocation {
-  /// Builds a location from an already-known line, column and offset.
-  pub fn new(line: usize, column: usize, offset: usize) -> Self {
-    Self {
-      line,
-      column,
-      offset,
-    }
-  }
-
-  /// Resolve a byte offset into a `SourceLocation` given the full source
-  /// text, with the column counted the way Stylelint counts it (see
-  /// [`SourceLineIndex::offset_to_location`]).
-  pub fn from_offset(source: &str, offset: usize) -> Self {
-    let (line, column) = SourceLineIndex::build(source).offset_to_location(offset);
-    Self {
-      line,
-      column,
-      offset,
-    }
-  }
-}
 
 /// A character outside ASCII, which takes more bytes than UTF-16 units.
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +82,10 @@ struct WideChar {
 /// units, so a character outside the Basic Multilingual Plane (an emoji)
 /// takes two columns and any other character one, whatever its UTF-8
 /// length.
+///
+/// This is gale's one line index: the parser, the PostCSS-style tree, the
+/// Sass converter, the formatters and the language server all use it.
+#[derive(Debug, Clone)]
 pub struct SourceLineIndex {
   /// `line_starts[i]` is the byte offset where line `i` (0-indexed) begins.
   /// Line 0 always starts at byte 0.
@@ -166,6 +136,36 @@ impl SourceLineIndex {
       Ok(exact) => exact + 1,
       Err(insert) => insert,
     }
+  }
+
+  /// The byte offset where 1-indexed `line` starts, or `None` past the
+  /// last line.
+  pub fn line_start(&self, line: usize) -> Option<usize> {
+    line
+      .checked_sub(1)
+      .and_then(|i| self.line_starts.get(i))
+      .copied()
+  }
+
+  /// The byte offset `column - 1` UTF-16 code units after the start of
+  /// 1-indexed `line`: where the 1-based column lightningcss reports
+  /// points.
+  ///
+  /// A column inside a surrogate pair lands on the next character and one
+  /// past the end of the line runs on into the next lines; a line past the
+  /// last one, or a column past the text, gives `source.len()`.
+  pub fn utf16_column_to_offset(&self, source: &str, line: usize, column: usize) -> usize {
+    let Some(line_start) = self.line_start(line) else {
+      return source.len();
+    };
+    let mut col = 1;
+    for (i, ch) in source[line_start..].char_indices() {
+      if col >= column {
+        return line_start + i;
+      }
+      col += ch.len_utf16();
+    }
+    source.len()
   }
 
   /// Convert a byte offset to the 1-indexed (line, column) Stylelint
@@ -555,11 +555,28 @@ mod tests {
   }
 
   #[test]
-  fn source_location_from_offset() {
+  fn offsets_resolve_to_lines_and_columns() {
     let src = "abc\ndef\nghi";
-    let loc = SourceLocation::from_offset(src, 5); // 'e' in "def"
-    assert_eq!(loc.line, 2);
-    assert_eq!(loc.column, 2);
+    let index = SourceLineIndex::build(src);
+    assert_eq!(index.offset_to_location(0), (1, 1));
+    assert_eq!(index.offset_to_location(5), (2, 2)); // 'e' in "def"
+    assert_eq!(index.line(src.len()), 3);
+    assert_eq!(index.line_start(2), Some(4));
+    assert_eq!(index.line_start(4), None);
+  }
+
+  #[test]
+  fn utf16_columns_resolve_to_offsets() {
+    let src = "abc\nd\u{e9}f\n\u{1F600}x";
+    let index = SourceLineIndex::build(src);
+    assert_eq!(index.utf16_column_to_offset(src, 1, 1), 0);
+    assert_eq!(index.utf16_column_to_offset(src, 1, 3), 2);
+    assert_eq!(index.utf16_column_to_offset(src, 2, 1), 4);
+    // `\u{e9}` is two bytes but one column.
+    assert_eq!(index.utf16_column_to_offset(src, 2, 3), 7);
+    // The emoji takes two columns; `x` is the third.
+    assert_eq!(index.utf16_column_to_offset(src, 3, 3), 13);
+    assert_eq!(index.utf16_column_to_offset(src, 4, 1), src.len());
   }
 
   #[test]
@@ -572,7 +589,6 @@ mod tests {
     assert_eq!(index.offset_to_location(close + 1), (1, 23));
     // Lines after the text keep counting from their own start.
     assert_eq!(index.offset_to_location(src.rfind('{').unwrap()), (2, 3));
-    assert_eq!(SourceLocation::from_offset(src, close).column, 22);
   }
 
   #[test]
