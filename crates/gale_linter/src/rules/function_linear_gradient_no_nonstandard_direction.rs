@@ -63,18 +63,13 @@ const STANDARD_GRADIENT_FUNCTIONS: &[&str] = &["linear-gradient", "repeating-lin
 impl Check for FunctionLinearGradientNoNonstandardDirectionCheck {
   /// Checks declaration values, preferring source text so the original direction
   /// keywords survive parser normalisation.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-    for decl in declarations {
+    for decl in node.declarations() {
       let decl_start = decl.span.offset;
       let decl_end = decl_start + decl.span.length;
-      let search_area = if decl.span.length > 0 && decl_end <= _ctx.source.len() {
-        &_ctx.source[decl_start..decl_end]
+      let search_area = if decl.span.length > 0 && decl_end <= ctx.source.len() {
+        ctx.source_slice(decl_start, decl_end).unwrap_or("")
       } else {
         &decl.value
       };

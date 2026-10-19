@@ -49,7 +49,7 @@ impl Check for ScssAtExtendNoMissingPlaceholderCheck {
     if !params.starts_with('%') {
       // Point to the selector, not the `@extend` keyword.
       let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-      let at_src = &ctx.source[at.span.offset..at_src_end];
+      let at_src = ctx.source_slice(at.span.offset, at_src_end).unwrap_or("");
       let sel_off = at_src.find(params).unwrap_or(0);
       vec![
         Diagnostic::new(

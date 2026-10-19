@@ -236,11 +236,11 @@ fn walk_nodes_for_vars(
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   for node in nodes {
+    for decl in node.declarations() {
+      check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
+    }
     match node {
       CssNode::Style(style_rule) => {
-        for decl in &style_rule.declarations {
-          check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
-        }
         // Recurse into nested style rule children.
         walk_nodes_for_vars(
           &style_rule
@@ -271,10 +271,7 @@ fn walk_nodes_for_vars(
           diagnostics,
         );
       }
-      CssNode::Declaration(decl) => {
-        check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
-      }
-      CssNode::Comment(_) => {}
+      CssNode::Declaration(_) | CssNode::Comment(_) => {}
     }
   }
 }

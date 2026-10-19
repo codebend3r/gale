@@ -195,7 +195,9 @@ impl Check for StylisticFunctionCommaNewlineAfterCheck {
           continue;
         }
 
-        let func_content = &ctx.source[paren_start..paren_end.min(len)];
+        let func_content = ctx
+          .source_slice(paren_start, paren_end.min(len))
+          .unwrap_or("");
         let is_multi_line = func_content.contains('\n');
 
         // Scan for commas inside this function call

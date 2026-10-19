@@ -44,14 +44,8 @@ impl Check for StylisticPropertyCaseCheck {
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = self.expected_case;
 
-    let decls: Vec<_> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       let prop = &decl.property;
       // Skip custom properties (--*) and SCSS variables ($*)
       if prop.starts_with("--") || prop.starts_with('$') {

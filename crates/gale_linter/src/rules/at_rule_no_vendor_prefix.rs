@@ -71,7 +71,7 @@ impl Check for AtRuleNoVendorPrefixCheck {
       let unprefixed_at = format!("@{unprefixed}");
 
       let fix = if rule_end <= ctx.source.len() && rule_start < rule_end {
-        let search_area = &ctx.source[rule_start..rule_end];
+        let search_area = ctx.source_slice(rule_start, rule_end).unwrap_or("");
         // Case-insensitive search for the prefixed at-rule name
         let lower_search = search_area.to_ascii_lowercase();
         let lower_target = prefixed_at.to_ascii_lowercase();

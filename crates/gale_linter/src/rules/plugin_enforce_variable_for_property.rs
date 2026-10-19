@@ -194,14 +194,8 @@ impl Check for PluginEnforceVariableForPropertyCheck {
       return vec![];
     }
 
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
-    for decl in declarations {
+    for decl in node.declarations() {
       let prop_lower = decl.property.to_lowercase();
       if let Some(patterns) = property_map.get(&prop_lower) {
         if !value_matches_patterns(&decl.value, patterns) {

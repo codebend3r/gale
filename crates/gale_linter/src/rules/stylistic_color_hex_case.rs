@@ -54,7 +54,7 @@ impl Check for StylisticColorHexCaseCheck {
       let decl_start = decl.span.offset;
       let decl_end = decl_start + decl.span.length;
       let search_area = if decl_end <= ctx.source.len() && decl_start < decl_end {
-        &ctx.source[decl_start..decl_end]
+        ctx.source_slice(decl_start, decl_end).unwrap_or("")
       } else {
         &decl.value
       };

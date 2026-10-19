@@ -112,13 +112,8 @@ const FLOAT_KEYWORDS: &[&str] = &["inline-end", "inline-start", "left", "none", 
 impl Check for DeclarationPropertyValueNoUnknownCheck {
   /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
     let mut all_diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       if self.is_ignored(&decl.property, decl.value.trim()) {
         continue;
       }

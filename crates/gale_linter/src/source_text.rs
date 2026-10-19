@@ -129,8 +129,9 @@ pub fn written_declarations<'a>(
         None => rule.declarations.iter().filter_map(located).collect(),
       }
     }
-    CssNode::Style(rule) => rule.declarations.iter().filter_map(located).collect(),
-    CssNode::Declaration(decl) => located(decl).into_iter().collect(),
+    CssNode::Style(_) | CssNode::Declaration(_) => {
+      node.declarations().iter().filter_map(located).collect()
+    }
     CssNode::AtRule(at) => {
       let unplaced = at
         .children

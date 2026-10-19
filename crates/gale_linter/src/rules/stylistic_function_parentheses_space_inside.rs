@@ -201,7 +201,9 @@ impl Check for StylisticFunctionParenthesesSpaceInsideCheck {
           continue;
         }
 
-        let func_content = &ctx.source[open_paren..=close_paren.min(len - 1)];
+        let func_content = ctx
+          .source_slice(open_paren, close_paren.min(len - 1) + 1)
+          .unwrap_or("");
         let is_single_line = !func_content.contains('\n');
 
         let after_open = open_paren + 1;

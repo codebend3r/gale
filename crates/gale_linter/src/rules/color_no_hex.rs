@@ -58,15 +58,9 @@ impl ColorNoHexCheck {
 impl Check for ColorNoHexCheck {
   /// Flags every valid hex color (3, 4, 6 or 8 digits) in a declaration value.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
 
-    for decl in declarations {
+    for decl in node.declarations() {
       let value = &decl.value;
       let ignored = self.ignored_ranges(value);
       let bytes = value.as_bytes();

@@ -42,14 +42,8 @@ impl Check for StylisticUnitCaseCheck {
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = self.expected_case;
 
-    let decls: Vec<_> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       let value = &decl.value;
       let base = decl.span.offset;
       // Find units in value: a number followed by letters

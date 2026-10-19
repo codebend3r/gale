@@ -39,12 +39,7 @@ impl Check for FunctionUrlNoSchemeRelativeCheck {
   /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-    for decl in declarations {
+    for decl in node.declarations() {
       check_value(&decl.value, decl.span.offset, &mut diags);
     }
     diags
