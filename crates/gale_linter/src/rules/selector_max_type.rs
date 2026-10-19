@@ -1,9 +1,9 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_ident_char;
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::pattern;
+use crate::options::{Accept, InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "selector-max-type";
@@ -53,13 +53,6 @@ impl SelectorMaxTypeCheck {
     );
     let ignore_types = options.strings("ignoreTypes");
     options.finish()?;
-    let ignore_types = ignore_types
-      .iter()
-      .map(|s| match pattern::regex_entry(s) {
-        Some(re) => IgnorePattern::Regex(re),
-        None => IgnorePattern::Exact(s.to_string()),
-      })
-      .collect();
     Ok(Self {
       config: Config {
         max: max
@@ -70,7 +63,7 @@ impl SelectorMaxTypeCheck {
         ignore_compounded: ignore.contains(&"compounded"),
         ignore_next_sibling: ignore.contains(&"next-sibling"),
         ignore_custom_elements: ignore.contains(&"custom-elements"),
-        ignore_types,
+        ignore_types: Matchers::ignoring_case(&ignore_types),
       },
     })
   }
@@ -86,32 +79,13 @@ struct Config {
   ignore_compounded: bool,
   ignore_next_sibling: bool,
   ignore_custom_elements: bool,
-  ignore_types: Vec<IgnorePattern>,
-}
-
-enum IgnorePattern {
-  Exact(String),
-  Regex(std::sync::Arc<pattern::Regex>),
+  ignore_types: Matchers,
 }
 
 impl Config {
   /// Whether this type selector is covered by `ignoreTypes`.
   fn is_type_ignored(&self, type_name: &str) -> bool {
-    for pat in &self.ignore_types {
-      match pat {
-        IgnorePattern::Exact(s) => {
-          if s.eq_ignore_ascii_case(type_name) {
-            return true;
-          }
-        }
-        IgnorePattern::Regex(re) => {
-          if pattern::is_match(re, type_name) {
-            return true;
-          }
-        }
-      }
-    }
-    false
+    self.ignore_types.matches(type_name)
   }
 }
 
@@ -357,11 +331,6 @@ fn parse_selector_segments(selector: &str) -> Vec<SelectorSegment> {
   }
 
   segments
-}
-
-/// Whether the character can appear inside a CSS identifier.
-fn is_ident_char(c: char) -> bool {
-  c.is_ascii_alphanumeric() || c == '-' || c == '_' || !c.is_ascii()
 }
 
 /// Strip SCSS/Less-specific constructs from a selector string:

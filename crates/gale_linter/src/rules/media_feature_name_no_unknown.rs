@@ -109,12 +109,9 @@ impl Check for MediaFeatureNameNoUnknownCheck {
   }
 }
 
-/// A media feature with its name and byte offset within the params string.
+/// A media feature named in the params.
 struct MediaFeature {
   name: String,
-  /// Byte offset of the feature name within the params string.
-  #[allow(dead_code)]
-  offset_in_params: usize,
 }
 
 /// Find the feature name directly in the source text by searching for it
@@ -231,11 +228,7 @@ fn extract_media_features(params: &str) -> Vec<MediaFeature> {
         if i > feat_start {
           let name: String = chars[feat_start..i].iter().collect();
           if !matches!(name.as_str(), "not" | "and" | "or" | "only") {
-            let byte_offset: usize = chars[..feat_start].iter().map(|c| c.len_utf8()).sum();
-            features.push(MediaFeature {
-              name,
-              offset_in_params: byte_offset,
-            });
+            features.push(MediaFeature { name });
           }
         }
       } else {
@@ -275,11 +268,7 @@ fn extract_media_features(params: &str) -> Vec<MediaFeature> {
               || chars[j] == '=')
             && !matches!(name.as_str(), "not" | "and" | "or" | "only")
           {
-            let byte_offset: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
-            features.push(MediaFeature {
-              name: name.clone(),
-              offset_in_params: byte_offset,
-            });
+            features.push(MediaFeature { name: name.clone() });
           }
 
           // Scan forward for RHS feature names in range syntax
@@ -336,11 +325,7 @@ fn extract_media_features(params: &str) -> Vec<MediaFeature> {
                   if rhs_name.contains(".$") || rhs_name.contains('$') {
                     // SCSS variable, skip
                   } else if !matches!(rhs_name.as_str(), "not" | "and" | "or" | "only") {
-                    let byte_offset: usize = chars[..val_start].iter().map(|c| c.len_utf8()).sum();
-                    features.push(MediaFeature {
-                      name: rhs_name,
-                      offset_in_params: byte_offset,
-                    });
+                    features.push(MediaFeature { name: rhs_name });
                   }
                 }
               }

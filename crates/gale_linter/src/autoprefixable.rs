@@ -2,6 +2,8 @@
 //! selectors, properties and values that Autoprefixer would add back, and
 //! so the ones the `*-no-vendor-prefix` rules report and unprefix.
 
+use crate::chars::is_word_byte;
+
 /// Whether `name` (without the `@`) is a prefixed at-rule Autoprefixer
 /// handles, such as `-webkit-keyframes`.
 pub fn at_rule_name(name: &str) -> bool {
@@ -64,11 +66,6 @@ fn prefix_end(bytes: &[u8], start: usize) -> Option<usize> {
     end += 1;
   }
   (end > start + 1 && bytes.get(end) == Some(&b'-')).then_some(end + 1)
-}
-
-/// Whether `b` is a JavaScript regex word character (`\w`).
-fn is_word_byte(b: u8) -> bool {
-  b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Case-insensitive lookup in a sorted, lowercase table.

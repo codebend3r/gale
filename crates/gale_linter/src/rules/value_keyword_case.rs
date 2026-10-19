@@ -3,8 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
-use crate::pattern;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::stylelint_version::{installed_at_least, stylelint_major_version};
@@ -33,12 +32,12 @@ declare_rule! {
 pub struct ValueKeywordCaseCheck {
   /// Whether keywords are expected in upper case (`"upper"`).
   expect_upper: bool,
-  /// `ignoreKeywords`, as written: names and `/regex/` literals.
-  ignore_keywords: Vec<String>,
-  /// `ignoreProperties`, as written.
-  ignore_properties: Vec<String>,
-  /// `ignoreFunctions`, as written.
-  ignore_functions: Vec<String>,
+  /// `ignoreKeywords`: names and `/regex/` literals.
+  ignore_keywords: Matchers,
+  /// `ignoreProperties`, whose names match in any case.
+  ignore_properties: Matchers,
+  /// `ignoreFunctions`.
+  ignore_functions: Matchers,
   /// `camelCaseSvgKeywords`.
   camel_case_svg_keywords: bool,
 }
@@ -57,9 +56,9 @@ impl ValueKeywordCaseCheck {
     options.finish()?;
     Ok(Self {
       expect_upper: case == Some("upper"),
-      ignore_keywords,
-      ignore_properties,
-      ignore_functions,
+      ignore_keywords: Matchers::new(&ignore_keywords),
+      ignore_properties: Matchers::ignoring_case(&ignore_properties),
+      ignore_functions: Matchers::new(&ignore_functions),
       camel_case_svg_keywords,
     })
   }
@@ -340,29 +339,6 @@ fn is_list_style_type_keyword(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// The string with any vendor prefix removed.
-fn strip_vendor_prefix(s: &str) -> &str {
-  if (s.starts_with("-webkit-")
-    || s.starts_with("-moz-")
-    || s.starts_with("-ms-")
-    || s.starts_with("-o-"))
-    && let Some(pos) = s[1..].find('-')
-  {
-    return &s[pos + 2..];
-  }
-  s
-}
-
-/// Matches `value` against a `/…/` regex pattern, else an exact string.
-fn matches_pattern(value: &str, pattern: &str) -> bool {
-  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value == pattern)
-}
-
-/// As the above, but exact strings compare case-insensitively.
-fn matches_pattern_case_insensitive(value: &str, pattern: &str) -> bool {
-  pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
-}
 
 // ---------------------------------------------------------------------------
 // Value tokenizer
@@ -834,7 +810,7 @@ fn should_check_in_mixed_property(token_text: &str, prop: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Whether the token at `token_offset` sits inside a function on the ignore list.
-fn is_in_ignored_function(value: &str, token_offset: usize, ignore_fns: &[String]) -> bool {
+fn is_in_ignored_function(value: &str, token_offset: usize, ignore_fns: &Matchers) -> bool {
   let bytes = value.as_bytes();
   let mut i = 0;
   let mut func_stack: Vec<(String, usize)> = Vec::new();
@@ -871,9 +847,7 @@ fn is_in_ignored_function(value: &str, token_offset: usize, ignore_fns: &[String
         continue;
       }
       if start == token_offset {
-        return func_stack
-          .iter()
-          .any(|(name, _)| ignore_fns.iter().any(|pat| matches_pattern(name, pat)));
+        return func_stack.iter().any(|(name, _)| ignore_fns.matches(name));
       }
       continue;
     }
@@ -937,11 +911,8 @@ impl Check for ValueKeywordCaseCheck {
 
       // Check ignoreProperties
       if !ignore_properties.is_empty() {
-        let prop_matches = ignore_properties.iter().any(|pat| {
-          matches_pattern(prop, pat)
-            || matches_pattern(original_prop, pat)
-            || matches_pattern_case_insensitive(prop, pat)
-        });
+        let prop_matches =
+          ignore_properties.matches(prop) || ignore_properties.matches(original_prop);
         if prop_matches {
           continue;
         }
@@ -1006,9 +977,7 @@ impl Check for ValueKeywordCaseCheck {
         }
 
         // ignoreKeywords
-        if !ignore_keywords.is_empty()
-          && ignore_keywords.iter().any(|pat| matches_pattern(text, pat))
-        {
+        if !ignore_keywords.is_empty() && ignore_keywords.matches(text) {
           continue;
         }
 

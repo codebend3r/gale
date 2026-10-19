@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
+use crate::autoprefixable::vendor_prefix_len;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting, is_truthy};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -33,19 +34,6 @@ impl OrderPropertiesAlphabeticalOrderCheck {
   }
 }
 
-/// Strip vendor prefix from a property name for sort comparison.
-///
-/// E.g. `-webkit-transform` -> `transform`, `-moz-appearance` -> `appearance`.
-fn strip_vendor_prefix(prop: &str) -> &str {
-  if prop.starts_with('-') {
-    // Find the second '-' after the vendor prefix
-    if let Some(idx) = prop[1..].find('-') {
-      return &prop[idx + 2..];
-    }
-  }
-  prop
-}
-
 impl Check for OrderPropertiesAlphabeticalOrderCheck {
   /// Flags a property that sorts before the one declared above it. SCSS variables
   /// are skipped.
@@ -72,7 +60,7 @@ impl Check for OrderPropertiesAlphabeticalOrderCheck {
       }
 
       // Strip vendor prefix and lowercase for comparison
-      let unprefixed = strip_vendor_prefix(prop);
+      let unprefixed = &prop[vendor_prefix_len(prop)..];
       let sort_key = unprefixed.to_ascii_lowercase();
 
       if let Some(ref prev) = prev_sort_key
@@ -235,14 +223,6 @@ mod tests {
     let diags = rule.check(&node, &ctx());
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("appearance"));
-  }
-
-  #[test]
-  fn strip_vendor_prefix_works() {
-    assert_eq!(strip_vendor_prefix("-webkit-transform"), "transform");
-    assert_eq!(strip_vendor_prefix("-moz-appearance"), "appearance");
-    assert_eq!(strip_vendor_prefix("-ms-flex"), "flex");
-    assert_eq!(strip_vendor_prefix("transform"), "transform");
   }
 
   #[test]

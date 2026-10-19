@@ -1,9 +1,11 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_ident_char;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::postcss::split_selectors;
 
 const NAME: &str = "selector-no-qualifying-type";
 
@@ -187,29 +189,6 @@ fn walk_style_children(
   }
 }
 
-/// Split a selector string by commas at the top level (not inside parens).
-fn split_selector_list(selector: &str) -> Vec<(usize, &str)> {
-  let mut parts = Vec::new();
-  let bytes = selector.as_bytes();
-  let len = bytes.len();
-  let mut depth = 0;
-  let mut start = 0;
-
-  for i in 0..len {
-    match bytes[i] {
-      b'(' => depth += 1,
-      b')' if depth > 0 => depth -= 1,
-      b',' if depth == 0 => {
-        parts.push((start, &selector[start..i]));
-        start = i + 1;
-      }
-      _ => {}
-    }
-  }
-  parts.push((start, &selector[start..]));
-  parts
-}
-
 /// Check a comma-separated selector list, emitting diagnostics with correct
 /// byte offsets pointing to each compound selector that violates.
 fn check_selector_list(
@@ -221,7 +200,7 @@ fn check_selector_list(
   ignore_id: bool,
   diags: &mut Vec<Diagnostic>,
 ) {
-  for (byte_pos, sel_part) in split_selector_list(selector_list) {
+  for (byte_pos, sel_part) in split_selectors(selector_list) {
     let trimmed = sel_part.trim();
     if trimmed.is_empty() {
       continue;
@@ -407,7 +386,7 @@ fn find_qualifying_type_offset(
             let inner: String = chars[args_start..args_end].iter().collect();
 
             // 1) Check inner selector list for standalone qualifying types
-            for (inner_pos, inner_part) in split_selector_list(&inner) {
+            for (inner_pos, inner_part) in split_selectors(&inner) {
               let inner_trimmed = inner_part.trim();
               if inner_trimmed.is_empty() {
                 continue;
@@ -435,7 +414,7 @@ fn find_qualifying_type_offset(
               || (has_id && !ignore_id)
               || (has_attribute && !ignore_attribute);
             if has_qualifier {
-              for (inner_pos, inner_part) in split_selector_list(&inner) {
+              for (inner_pos, inner_part) in split_selectors(&inner) {
                 let inner_trimmed = inner_part.trim();
                 if inner_trimmed.is_empty() {
                   continue;
@@ -502,7 +481,7 @@ fn selector_ends_with_type(selector: &str) -> bool {
     return false;
   }
   // Find the last compound selector (after last combinator at top level)
-  let parts = split_selector_list(trimmed);
+  let parts = split_selectors(trimmed);
   // Use the last comma-separated selector
   if let Some((_pos, last_sel)) = parts.last() {
     let last_sel = last_sel.trim();
@@ -576,11 +555,6 @@ fn is_type_selector_start(chars: &[char], i: usize) -> bool {
     }
   }
   true
-}
-
-/// Whether the character can appear inside a CSS identifier.
-fn is_ident_char(ch: char) -> bool {
-  ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || !ch.is_ascii()
 }
 
 #[cfg(test)]
@@ -718,7 +692,7 @@ mod tests {
 
   #[test]
   fn split_respects_parens() {
-    let parts = split_selector_list("a, :is(b, c), d");
+    let parts = split_selectors("a, :is(b, c), d");
     assert_eq!(parts.len(), 3);
     assert_eq!(parts[0].1, "a");
     assert_eq!(parts[1].1, " :is(b, c)");

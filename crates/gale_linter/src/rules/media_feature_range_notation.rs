@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::{is_ident_byte, is_ident_start_byte};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -218,16 +219,6 @@ struct Token<'a> {
   children: Vec<Token<'a>>,
 }
 
-/// Whether `b` can start an identifier.
-fn is_name_start(b: u8) -> bool {
-  b.is_ascii_alphabetic() || b == b'_' || b >= 0x80
-}
-
-/// Whether `b` can continue an identifier.
-fn is_name_char(b: u8) -> bool {
-  is_name_start(b) || b.is_ascii_digit() || b == b'-'
-}
-
 /// Tokenize `text` into media-query tokens; parenthesised groups nest.
 fn tokenize(text: &str) -> Vec<Token<'_>> {
   let (tokens, _) = tokenize_from(text, 0, false);
@@ -341,11 +332,11 @@ fn starts_ident(bytes: &[u8], pos: usize) -> bool {
   match bytes[pos] {
     b'-' => match bytes.get(pos + 1) {
       Some(b'-') => true,
-      Some(&next) => is_name_start(next) || next == b'\\',
+      Some(&next) => is_ident_start_byte(next) || next == b'\\',
       None => false,
     },
     b'\\' => true,
-    b => is_name_start(b),
+    b => is_ident_start_byte(b),
   }
 }
 
@@ -354,7 +345,7 @@ fn consume_name(bytes: &[u8], mut pos: usize) -> usize {
   while pos < bytes.len() {
     if bytes[pos] == b'\\' {
       pos += 2;
-    } else if is_name_char(bytes[pos]) {
+    } else if is_ident_byte(bytes[pos]) {
       pos += 1;
     } else {
       break;

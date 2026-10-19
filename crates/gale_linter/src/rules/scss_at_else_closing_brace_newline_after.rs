@@ -1,6 +1,7 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::braces::counted_block_close;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -72,7 +73,7 @@ impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
 
         if !is_else_if {
           // This is a plain `@else` — find closing brace
-          if let Some(close_brace) = find_closing_brace(source, i) {
+          if let Some(close_brace) = counted_block_close(source, i) {
             let after = close_brace + 1;
             let mut k = after;
             while k < len && (bytes[k] == b' ' || bytes[k] == b'\t') {
@@ -100,35 +101,6 @@ impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
 
     diagnostics
   }
-}
-
-/// Offset of the brace closing the block that opens at or after `start`.
-fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-  let mut i = start;
-
-  while i < len && bytes[i] != b'{' {
-    i += 1;
-  }
-  if i >= len {
-    return None;
-  }
-
-  let mut depth = 1;
-  i += 1;
-  while i < len && depth > 0 {
-    match bytes[i] {
-      b'{' => depth += 1,
-      b'}' => depth -= 1,
-      _ => {}
-    }
-    if depth > 0 {
-      i += 1;
-    }
-  }
-
-  if depth == 0 { Some(i) } else { None }
 }
 
 #[cfg(test)]

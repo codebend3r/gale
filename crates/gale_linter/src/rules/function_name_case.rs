@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "function-name-case";
@@ -28,7 +28,7 @@ pub struct FunctionNameCaseCheck {
   /// `"lower"` or `"upper"`.
   mode: &'static str,
   /// `ignoreFunctions`: names (any case) and `/regex/` entries.
-  ignore_functions: Vec<String>,
+  ignore_functions: Matchers,
 }
 
 impl FunctionNameCaseCheck {
@@ -41,7 +41,7 @@ impl FunctionNameCaseCheck {
     options.finish()?;
     Ok(Self {
       mode: mode.unwrap_or("lower"),
-      ignore_functions,
+      ignore_functions: Matchers::new(&ignore_functions),
     })
   }
 }
@@ -76,11 +76,6 @@ fn camel_case_canonical(name: &str) -> Option<&'static str> {
     .copied()
 }
 
-/// Check if a string is a Stylelint-style regex pattern like `/pattern/` or `/pattern/i`.
-fn parse_regex_pattern(s: &str) -> Option<std::sync::Arc<crate::pattern::Regex>> {
-  crate::pattern::regex_entry(s)
-}
-
 /// Returns the expected function name given the case mode.
 /// For camelCase CSS functions, lowercase mode uses the canonical form,
 /// and uppercase mode uses the fully uppercased form.
@@ -98,28 +93,11 @@ fn expected_name(name: &str, mode: &str) -> String {
   }
 }
 
-/// Returns true if the function name should be ignored based on the
-/// `ignoreFunctions` option.
-fn is_ignored(name: &str, ignore_fns: &[String]) -> bool {
-  for pattern in ignore_fns {
-    if let Some(re) = parse_regex_pattern(pattern) {
-      if crate::pattern::is_match(&re, name) {
-        return true;
-      }
-    } else {
-      // Exact string match (case-sensitive, matching Stylelint behavior)
-      if pattern == name {
-        return true;
-      }
-    }
-  }
-  false
-}
-
-/// Strip vendor prefix from a function name, returning (prefix, base_name).
-/// E.g. "-webkit-radial-gradient" -> ("-webkit-", "radial-gradient")
-/// If no vendor prefix, returns ("", name).
-fn strip_vendor_prefix(name: &str) -> (&str, &str) {
+/// A function name split after its first `-...-` piece, as
+/// `("-webkit-", "radial-gradient")`, or `("", name)`.  Stylelint cases the
+/// whole name; gale cases the two parts apart, so the camelCase names apply
+/// after a prefix too.
+fn split_vendor_prefix(name: &str) -> (&str, &str) {
   if name.starts_with('-') {
     // Vendor prefixes: -webkit-, -moz-, -ms-, -o-
     // Find the second hyphen which ends the prefix
@@ -177,7 +155,7 @@ impl Check for FunctionNameCaseCheck {
       // Extract function calls from the raw source value
       for (func_name, rel_offset) in extract_function_names_with_offsets(raw_value) {
         // Strip vendor prefix for the purpose of case checking
-        let (vendor_prefix, base_name) = strip_vendor_prefix(&func_name);
+        let (vendor_prefix, base_name) = split_vendor_prefix(&func_name);
 
         // Compute the expected form
         let expected_base = expected_name(base_name, mode);
@@ -193,7 +171,7 @@ impl Check for FunctionNameCaseCheck {
         }
 
         // Check ignoreFunctions against the original function name
-        if is_ignored(&func_name, ignore_fns) {
+        if ignore_fns.matches(&func_name) {
           continue;
         }
 

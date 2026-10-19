@@ -6,6 +6,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::postcss::split_selectors;
 
 const NAME: &str = "no-descending-specificity";
 
@@ -218,8 +219,8 @@ fn has_remaining_preprocessor_constructs(s: &str) -> bool {
   s.contains("#{") || s.trim_start().starts_with('%')
 }
 
-/// Split a CSS selector list by commas, respecting parentheses depth so that
-/// commas inside `:is()`, `:not()`, etc. are not treated as list separators.
+/// The selectors of a list, split as PostCSS splits `rule.selectors`, less a
+/// trailing empty one.
 ///
 /// Parts are **NOT trimmed** — callers that need clean text for display or
 /// key computation must call `.trim()` themselves.  Preserving leading
@@ -228,24 +229,13 @@ fn has_remaining_preprocessor_constructs(s: &str) -> bool {
 /// newlines that `postcss-resolve-nested-selector` produces, matching
 /// Stylelint's stored selector strings.
 fn split_selector_list(selector: &str) -> Vec<&str> {
-  let mut parts = Vec::new();
-  let mut depth: usize = 0;
-  let mut start = 0;
-  let bytes = selector.as_bytes();
-  for (i, &b) in bytes.iter().enumerate() {
-    match b {
-      b'(' => depth += 1,
-      b')' => depth = depth.saturating_sub(1),
-      b',' if depth == 0 => {
-        parts.push(&selector[start..i]); // NOT trimmed
-        start = i + 1;
-      }
-      _ => {}
-    }
-  }
-  let last = &selector[start..]; // NOT trimmed
-  if !last.trim().is_empty() {
-    parts.push(last);
+  let mut parts: Vec<&str> = split_selectors(selector)
+    .into_iter()
+    .map(|(_, part)| part)
+    .collect();
+  // A trailing comma adds no selector.
+  if parts.last().is_some_and(|part| part.trim().is_empty()) {
+    parts.pop();
   }
   parts
 }
