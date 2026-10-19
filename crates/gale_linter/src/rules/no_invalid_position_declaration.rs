@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Declaration};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -123,10 +123,9 @@ impl Walk<'_> {
     }
     // The declaration's own span, so a disable comment for the
     // declaration's line covers the report.
-    self.diags.push(
-      Diagnostic::new(NAME, "Invalid position for declaration")
-        .span(Span::new(decl.span.offset, decl.span.length)),
-    );
+    self
+      .diags
+      .push(Diagnostic::new(NAME, "Invalid position for declaration").span(decl.span));
   }
 }
 
@@ -169,7 +168,8 @@ impl Check for NoInvalidPositionDeclarationCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, Syntax};
+  use gale_css_parser::{AtRule, Declaration, Syntax};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -179,11 +179,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Declaration(Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       })],
     });
@@ -198,16 +198,16 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Style(gale_css_parser::StyleRule {
         selector: "a".to_string(),
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "red".to_string(),
-          span: ParserSpan::new(0, 0),
+          span: Span::new(0, 0),
           important: false,
         }],
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         ..Default::default()
       })],
     });
@@ -221,11 +221,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Declaration(Declaration {
         property: "$sidebar-width".to_string(),
         value: "285px".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       })],
     });
@@ -239,11 +239,11 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "font-face".to_string(),
       params: String::new(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![CssNode::Declaration(Declaration {
         property: "font-family".to_string(),
         value: "MyFont".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       })],
     });
@@ -259,15 +259,15 @@ mod tests {
     let node = CssNode::Style(gale_css_parser::StyleRule {
       selector: ".foo".to_string(),
       declarations: vec![],
-      span: ParserSpan::new(0, 100),
+      span: Span::new(0, 100),
       nested_at_rules: vec![CssNode::AtRule(AtRule {
         name: "media".to_string(),
         params: "(min-width: 600px)".to_string(),
-        span: ParserSpan::new(10, 80),
+        span: Span::new(10, 80),
         children: vec![CssNode::Declaration(Declaration {
           property: "font-size".to_string(),
           value: "14px".to_string(),
-          span: ParserSpan::new(40, 16),
+          span: Span::new(40, 16),
           important: false,
         })],
       })],

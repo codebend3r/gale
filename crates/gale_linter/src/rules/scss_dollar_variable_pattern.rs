@@ -1,5 +1,5 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 use std::collections::HashSet;
 
 use crate::lint_env::LintEnv;
@@ -148,9 +148,7 @@ impl ScssDollarVariablePatternCheck {
             .custom_message
             .clone()
             .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());
-          diagnostics.push(
-            Diagnostic::new(NAME, message).span(Span::new(decl.span.offset, decl.span.length)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, message).span(decl.span));
         }
       }
 
@@ -246,7 +244,8 @@ fn extract_for_var(params: &str, vars: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan};
+  use gale_css_parser::{AtRule as ParserAtRule, Declaration};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -254,7 +253,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: name.to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     })
   }
@@ -281,7 +280,7 @@ mod tests {
     let node = CssNode::Declaration(Declaration {
       property: "color".to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     });
     let nodes = vec![node];
@@ -305,11 +304,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
       params: "$breakpoint-name in $grid-breakpoints".to_string(),
-      span: ParserSpan::new(0, 80),
+      span: Span::new(0, 80),
       children: vec![CssNode::Declaration(Declaration {
         property: "$breakpoint-name".to_string(),
         value: "test".to_string(),
-        span: ParserSpan::new(50, 20),
+        span: Span::new(50, 20),
         important: false,
       })],
     })];
@@ -323,18 +322,18 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
       params: "$name, $value in $map".to_string(),
-      span: ParserSpan::new(0, 100),
+      span: Span::new(0, 100),
       children: vec![
         CssNode::Declaration(Declaration {
           property: "$name".to_string(),
           value: "test".to_string(),
-          span: ParserSpan::new(40, 15),
+          span: Span::new(40, 15),
           important: false,
         }),
         CssNode::Declaration(Declaration {
           property: "$value".to_string(),
           value: "test".to_string(),
-          span: ParserSpan::new(60, 15),
+          span: Span::new(60, 15),
           important: false,
         }),
       ],
@@ -349,11 +348,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "for".to_string(),
       params: "$i from 1 through 10".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![CssNode::Declaration(Declaration {
         property: "$i".to_string(),
         value: "override".to_string(),
-        span: ParserSpan::new(30, 15),
+        span: Span::new(30, 15),
         important: false,
       })],
     })];
@@ -368,11 +367,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
       params: "$name in $list".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![CssNode::Declaration(Declaration {
         property: "$otherBad".to_string(),
         value: "test".to_string(),
-        span: ParserSpan::new(30, 15),
+        span: Span::new(30, 15),
         important: false,
       })],
     })];
@@ -394,11 +393,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "mixin".to_string(),
       params: "my-mixin".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![CssNode::Declaration(Declaration {
         property: "$local-var".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(30, 15),
+        span: Span::new(30, 15),
         important: false,
       })],
     })];
@@ -429,11 +428,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "function".to_string(),
       params: "my-fn()".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![CssNode::Declaration(Declaration {
         property: "$local".to_string(),
         value: "1".to_string(),
-        span: ParserSpan::new(30, 10),
+        span: Span::new(30, 10),
         important: false,
       })],
     })];
@@ -479,18 +478,18 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
       params: "$breakpoint, $breakpoint-value in $pf-v6-map".to_string(),
-      span: ParserSpan::new(0, 120),
+      span: Span::new(0, 120),
       children: vec![
         CssNode::Declaration(Declaration {
           property: "$breakpoint-name".to_string(),
           value: "\"\"".to_string(),
-          span: ParserSpan::new(60, 20),
+          span: Span::new(60, 20),
           important: false,
         }),
         CssNode::Declaration(Declaration {
           property: "$breakpoint".to_string(),
           value: "\"md\"".to_string(),
-          span: ParserSpan::new(85, 18),
+          span: Span::new(85, 18),
           important: false,
         }),
       ],
@@ -509,15 +508,15 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
       params: "$name in $list".to_string(),
-      span: ParserSpan::new(0, 120),
+      span: Span::new(0, 120),
       children: vec![CssNode::AtRule(ParserAtRule {
         name: "if".to_string(),
         params: "$name != \"base\"".to_string(),
-        span: ParserSpan::new(30, 60),
+        span: Span::new(30, 60),
         children: vec![CssNode::Declaration(Declaration {
           property: "$breakpoint-name".to_string(),
           value: "-on-#{$name}".to_string(),
-          span: ParserSpan::new(50, 30),
+          span: Span::new(50, 30),
           important: false,
         })],
       })],
@@ -534,11 +533,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "for".to_string(),
       params: "$i from 1 through 10".to_string(),
-      span: ParserSpan::new(0, 80),
+      span: Span::new(0, 80),
       children: vec![CssNode::Declaration(Declaration {
         property: "$width".to_string(),
         value: "$i * 10%".to_string(),
-        span: ParserSpan::new(40, 18),
+        span: Span::new(40, 18),
         important: false,
       })],
     })];
@@ -555,11 +554,11 @@ mod tests {
       CssNode::AtRule(ParserAtRule {
         name: "each".to_string(),
         params: "$name in $list".to_string(),
-        span: ParserSpan::new(20, 60),
+        span: Span::new(20, 60),
         children: vec![CssNode::Declaration(Declaration {
           property: "$localVar".to_string(),
           value: "test".to_string(),
-          span: ParserSpan::new(50, 15),
+          span: Span::new(50, 15),
           important: false,
         })],
       }),
@@ -576,11 +575,11 @@ mod tests {
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "mixin".to_string(),
       params: "my-mixin".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![CssNode::Declaration(Declaration {
         property: "$myBadVar".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(30, 15),
+        span: Span::new(30, 15),
         important: false,
       })],
     })];

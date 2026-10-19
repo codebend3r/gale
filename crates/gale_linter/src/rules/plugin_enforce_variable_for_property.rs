@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -213,7 +213,7 @@ impl Check for PluginEnforceVariableForPropertyCheck {
                 decl.property, decl.value
               ),
             )
-            .span(Span::new(decl.span.offset, decl.span.length)),
+            .span(decl.span),
           );
         }
       }
@@ -225,7 +225,8 @@ impl Check for PluginEnforceVariableForPropertyCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
   use serde_json::json;
 
   use crate::testing::{configured, ctx};
@@ -236,10 +237,10 @@ mod tests {
       declarations: vec![Declaration {
         property: prop.to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, 10),
+        span: Span::new(0, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
       nested_at_rules: vec![],
     })
@@ -401,7 +402,7 @@ mod tests {
     let node = CssNode::Declaration(Declaration {
       property: "color".to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     });
     let diags = rule.check(&node, &ctx);

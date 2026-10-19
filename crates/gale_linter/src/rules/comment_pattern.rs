@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -56,7 +56,7 @@ impl Check for CommentPatternCheck {
           NAME,
           format!("Expected comment to match pattern \"/{pattern_str}/\""),
         )
-        .span(Span::new(comment.span.offset, comment.span.length)),
+        .span(comment.span),
       ];
     }
     vec![]
@@ -66,14 +66,15 @@ impl Check for CommentPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use gale_css_parser::Comment;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
   fn comment_node(text: &str) -> CssNode {
     CssNode::Comment(Comment {
       text: text.to_string(),
-      span: ParserSpan::new(0, text.len() + 4),
+      span: Span::new(0, text.len() + 4),
       is_line: false,
     })
   }

@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -91,7 +91,7 @@ fn collect_animation_issues(
               if !name.is_empty() && name != "none" && !keyframe_names.contains(&name.to_string()) {
                 diags.push(
                   Diagnostic::new(NAME, format!("Unknown animation name \"{name}\""))
-                    .span(Span::new(decl.span.offset, decl.span.length)),
+                    .span(decl.span),
                 );
               }
             }
@@ -108,8 +108,7 @@ fn collect_animation_issues(
               && !keyframe_names.contains(&name.to_string())
             {
               diags.push(
-                Diagnostic::new(NAME, format!("Unknown animation name \"{name}\""))
-                  .span(Span::new(decl.span.offset, decl.span.length)),
+                Diagnostic::new(NAME, format!("Unknown animation name \"{name}\"")).span(decl.span),
               );
             }
           }
@@ -186,7 +185,8 @@ fn extract_animation_name(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{AtRule, Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -198,10 +198,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "animation-name".to_string(),
         value: "fadeIn".to_string(),
-        span: ParserSpan::new(4, 20),
+        span: Span::new(4, 20),
         important: false,
       }],
-      span: ParserSpan::new(0, 30),
+      span: Span::new(0, 30),
       ..Default::default()
     })];
     let d = rule.check_root(&nodes, &ctx());
@@ -216,7 +216,7 @@ mod tests {
       CssNode::AtRule(AtRule {
         name: "keyframes".to_string(),
         params: "fadeIn".to_string(),
-        span: ParserSpan::new(0, 40),
+        span: Span::new(0, 40),
         children: vec![],
       }),
       CssNode::Style(StyleRule {
@@ -224,10 +224,10 @@ mod tests {
         declarations: vec![Declaration {
           property: "animation-name".to_string(),
           value: "fadeIn".to_string(),
-          span: ParserSpan::new(50, 20),
+          span: Span::new(50, 20),
           important: false,
         }],
-        span: ParserSpan::new(45, 30),
+        span: Span::new(45, 30),
         ..Default::default()
       }),
     ];
@@ -243,10 +243,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "animation".to_string(),
         value: "slideUp 1s ease".to_string(),
-        span: ParserSpan::new(4, 25),
+        span: Span::new(4, 25),
         important: false,
       }],
-      span: ParserSpan::new(0, 35),
+      span: Span::new(0, 35),
       ..Default::default()
     })];
     let d = rule.check_root(&nodes, &ctx());

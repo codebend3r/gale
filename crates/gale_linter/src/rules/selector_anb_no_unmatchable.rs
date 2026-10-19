@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -175,7 +175,7 @@ impl Check for SelectorAnbNoUnmatchableCheck {
             NAME,
             format!("Unexpected unmatchable An+B selector \"{}\"", expr.trim()),
           )
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          .span(rule.span),
         );
       }
     }
@@ -186,7 +186,8 @@ impl Check for SelectorAnbNoUnmatchableCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{CssNode, Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -196,10 +197,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

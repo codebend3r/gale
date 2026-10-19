@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::list_rules::{Entries, KeyedList, keyed_option};
@@ -166,7 +166,7 @@ impl Check for MediaFeatureNameValueNoUnknownCheck {
             NAME,
             format!("Unexpected unknown value \"{value}\" for media feature \"{feature}\""),
           )
-          .span(Span::new(at.span.offset, at.span.length)),
+          .span(at.span),
         );
       }
     }
@@ -177,7 +177,8 @@ impl Check for MediaFeatureNameValueNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -185,7 +186,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }
@@ -265,7 +266,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "(prefers-color-scheme: bogus)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     });
     assert!(rule.check(&node, &ctx()).is_empty());

@@ -67,7 +67,7 @@ impl Check for ScssAtExtendNoMissingPlaceholderCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -75,7 +75,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "extend".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     })
   }
@@ -101,7 +101,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "foo".to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     });
     assert!(rule.check(&node, &scss_ctx()).is_empty());

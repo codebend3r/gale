@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -60,7 +60,7 @@ impl Check for KeyframeBlockNoDuplicateSelectorsCheck {
               NAME,
               format!("Unexpected duplicate keyframe selector \"{}\"", selector),
             )
-            .span(Span::new(style_rule.span.offset, style_rule.span.length)),
+            .span(style_rule.span),
           );
         }
       }
@@ -73,7 +73,8 @@ impl Check for KeyframeBlockNoDuplicateSelectorsCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{AtRule, Declaration, StyleRule, Syntax};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, scss_ctx_with_source};
 
@@ -83,17 +84,17 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, 80),
+      span: Span::new(0, 80),
       children: vec![
         CssNode::Style(StyleRule {
           selector: "from".to_string(),
           declarations: vec![Declaration {
             property: "opacity".to_string(),
             value: "0".to_string(),
-            span: ParserSpan::new(25, 10),
+            span: Span::new(25, 10),
             important: false,
           }],
-          span: ParserSpan::new(19, 20),
+          span: Span::new(19, 20),
           ..Default::default()
         }),
         CssNode::Style(StyleRule {
@@ -101,10 +102,10 @@ mod tests {
           declarations: vec![Declaration {
             property: "opacity".to_string(),
             value: "1".to_string(),
-            span: ParserSpan::new(48, 10),
+            span: Span::new(48, 10),
             important: false,
           }],
-          span: ParserSpan::new(40, 20),
+          span: Span::new(40, 20),
           ..Default::default()
         }),
         CssNode::Style(StyleRule {
@@ -112,10 +113,10 @@ mod tests {
           declarations: vec![Declaration {
             property: "opacity".to_string(),
             value: "0.5".to_string(),
-            span: ParserSpan::new(68, 12),
+            span: Span::new(68, 12),
             important: false,
           }],
-          span: ParserSpan::new(61, 22),
+          span: Span::new(61, 22),
           ..Default::default()
         }),
       ],
@@ -134,18 +135,18 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, 60),
+      span: Span::new(0, 60),
       children: vec![
         CssNode::Style(StyleRule {
           selector: "from".to_string(),
           declarations: vec![],
-          span: ParserSpan::new(19, 15),
+          span: Span::new(19, 15),
           ..Default::default()
         }),
         CssNode::Style(StyleRule {
           selector: "to".to_string(),
           declarations: vec![],
-          span: ParserSpan::new(35, 13),
+          span: Span::new(35, 13),
           ..Default::default()
         }),
       ],
@@ -160,7 +161,7 @@ mod tests {
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       children: vec![],
     });
     let diags = rule.check(&node, &ctx());

@@ -226,7 +226,7 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -236,10 +236,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "background".to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(0, val.len()),
+        span: Span::new(0, val.len()),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -248,7 +248,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: "background".to_string(),
       value: val.to_string(),
-      span: ParserSpan::new(0, val.len()),
+      span: Span::new(0, val.len()),
       important: false,
     })
   }

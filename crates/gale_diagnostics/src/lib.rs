@@ -30,7 +30,7 @@ impl std::fmt::Display for Severity {
 // ---------------------------------------------------------------------------
 
 /// A byte-offset span into the source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
   /// Byte offset from the start of the source.
   pub offset: usize,

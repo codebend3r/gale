@@ -1632,7 +1632,7 @@ fn has_nl_after(b: &[u8], i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx, scss_ctx_with_source};
 
@@ -1642,10 +1642,10 @@ mod tests {
       declarations: vec![Declaration {
         property: property.to_string(),
         value: value.to_string(),
-        span: ParserSpan::new(4, value.len()),
+        span: Span::new(4, value.len()),
         important: false,
       }],
-      span: ParserSpan::new(0, value.len() + 20),
+      span: Span::new(0, value.len() + 20),
       ..Default::default()
     })
   }

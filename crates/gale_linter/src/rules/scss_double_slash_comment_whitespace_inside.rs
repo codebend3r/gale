@@ -160,7 +160,7 @@ impl Check for ScssDoubleSlashCommentWhitespaceInsideCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use gale_css_parser::Comment;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -168,7 +168,7 @@ mod tests {
     CssNode::Comment(Comment {
       is_line: true,
       text: text.to_string(),
-      span: ParserSpan::new(0, text.len()),
+      span: Span::new(0, text.len()),
     })
   }
 
@@ -176,7 +176,7 @@ mod tests {
     CssNode::Comment(Comment {
       is_line: false,
       text: text.to_string(),
-      span: ParserSpan::new(0, text.len()),
+      span: Span::new(0, text.len()),
     })
   }
 

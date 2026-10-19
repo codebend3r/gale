@@ -154,7 +154,7 @@ impl Check for StylisticDeclarationBlockTrailingSemicolonCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
+  use gale_css_parser::{Declaration, StyleRule, Syntax};
 
   use crate::testing::{configured, ctx_with_source, invalid_options};
 
@@ -169,10 +169,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 10),
+        span: Span::new(4, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -190,10 +190,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 11), // includes the ';'
+        span: Span::new(4, 11), // includes the ';'
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -214,17 +214,17 @@ mod tests {
         Declaration {
           property: "position".to_string(),
           value: "absolute".to_string(),
-          span: ParserSpan::new(9, 19), // "position: absolute;"
+          span: Span::new(9, 19), // "position: absolute;"
           important: false,
         },
         Declaration {
           property: "top".to_string(),
           value: "0".to_string(),
-          span: ParserSpan::new(31, 7), // "top: 0;"
+          span: Span::new(31, 7), // "top: 0;"
           important: false,
         },
       ],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -245,10 +245,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 10),
+        span: Span::new(4, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -269,10 +269,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 11), // includes ';'
+        span: Span::new(4, 11), // includes ';'
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);

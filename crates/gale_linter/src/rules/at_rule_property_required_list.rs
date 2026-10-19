@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
@@ -95,7 +95,7 @@ impl Check for AtRulePropertyRequiredListCheck {
               name = at_rule.name,
             ),
           )
-          .span(Span::new(at_rule.span.offset, at_rule.span.length)),
+          .span(at_rule.span),
         );
       }
     }
@@ -128,7 +128,8 @@ fn parse_options(map: &Map<String, Value>) -> HashMap<String, Vec<String>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
+  use gale_css_parser::{AtRule, Declaration};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -139,7 +140,7 @@ mod tests {
         CssNode::Declaration(Declaration {
           property: prop.to_string(),
           value: val.to_string(),
-          span: ParserSpan::new(0, 10),
+          span: Span::new(0, 10),
           important: false,
         })
       })
@@ -147,7 +148,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: name.to_string(),
       params: String::new(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       children,
     })
   }

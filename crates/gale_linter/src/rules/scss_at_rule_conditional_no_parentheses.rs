@@ -115,7 +115,7 @@ fn is_wrapped_in_parens(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -123,7 +123,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: name.to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       children: vec![],
     })
   }

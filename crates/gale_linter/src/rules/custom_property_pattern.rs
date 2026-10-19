@@ -178,7 +178,7 @@ impl Check for CustomPropertyPatternCheck {
           let message = build_message(&full_name, custom_message, pattern_str, stylelint_major);
           diags.push(
             Diagnostic::new(NAME, message)
-              .span(Span::new(decl.span.offset, decl.span.length))
+              .span(decl.span)
               .message_args([full_name.as_str(), pattern_str]),
           );
         }
@@ -221,7 +221,7 @@ impl Check for CustomPropertyPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options};
 
@@ -231,10 +231,10 @@ mod tests {
       declarations: vec![Declaration {
         property: prop.to_string(),
         value: "#fff".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

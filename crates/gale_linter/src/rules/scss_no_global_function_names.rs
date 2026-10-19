@@ -233,7 +233,7 @@ fn module_replacement(name: &str) -> Option<(&'static str, &'static str)> {
 /// re-derived from the source for an exact span.
 fn scan_value_for_global_functions(
   value: &str,
-  decl_span: gale_css_parser::Span,
+  decl_span: gale_diagnostics::Span,
   source: &str,
   calls: &mut Vec<(String, usize)>,
 ) {
@@ -515,7 +515,7 @@ impl Check for ScssNoGlobalFunctionNamesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan};
+  use gale_css_parser::Declaration;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -523,7 +523,7 @@ mod tests {
     CssNode::Declaration(Declaration {
       property: "color".to_string(),
       value: value.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       important: false,
     })
   }

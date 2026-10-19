@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -118,7 +118,7 @@ impl Check for NestingSelectorNoMissingScopingRootCheck {
               rule.selector
             ),
           )
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          .span(rule.span),
         );
       }
       // Also check inside @-rule children (e.g. top-level styles inside @layer),
@@ -139,7 +139,7 @@ impl Check for NestingSelectorNoMissingScopingRootCheck {
                   rule.selector
                 ),
               )
-              .span(Span::new(rule.span.offset, rule.span.length)),
+              .span(rule.span),
             );
           }
         }
@@ -152,7 +152,8 @@ impl Check for NestingSelectorNoMissingScopingRootCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{AtRule, CssNode, Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, scss_ctx};
 
@@ -162,10 +163,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         important: false,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -179,13 +180,13 @@ mod tests {
         declarations: vec![Declaration {
           property: "color".to_string(),
           value: "blue".to_string(),
-          span: ParserSpan::new(0, 0),
+          span: Span::new(0, 0),
           important: false,
         }],
-        span: ParserSpan::new(0, 0),
+        span: Span::new(0, 0),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }
@@ -232,7 +233,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "layer".to_string(),
       params: "utilities".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style("& .child")],
     })];
     let d = rule.check_root(&nodes, &ctx());
@@ -245,7 +246,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "screen".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style(".normal")],
     })];
     let d = rule.check_root(&nodes, &ctx());
@@ -262,7 +263,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "onebox-favicon($class, $image)".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style("&.#{$class} .source")],
     })];
     let d = rule.check_root(&nodes, &scss_ctx());
@@ -278,7 +279,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "layer".to_string(),
       params: "utilities".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style("& .child")],
     })];
     let d = rule.check_root(&nodes, &scss_ctx());
@@ -294,7 +295,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "Mixin".to_string(),
       params: "foo".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style("& .bar")],
     })];
     let d = rule.check_root(&nodes, &scss_ctx());
@@ -329,7 +330,7 @@ mod tests {
     let nodes = vec![CssNode::AtRule(AtRule {
       name: "mixin".to_string(),
       params: "foo".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![style("& .bar")],
     })];
     assert!(rule.check_root(&nodes, &ctx()).is_empty());

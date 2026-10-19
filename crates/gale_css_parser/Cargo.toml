@@ -10,4 +10,5 @@ description = "CSS parser for the Gale CSS linter"
 lightningcss = { workspace = true }
 raffia = { workspace = true }
 thiserror = { workspace = true }
+gale_diagnostics = { workspace = true }
 serde = { workspace = true }

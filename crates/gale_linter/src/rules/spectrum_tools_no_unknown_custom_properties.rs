@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -312,8 +312,7 @@ fn check_declaration(
     // Report at the declaration position (matching Stylelint's behavior
     // which uses `node: decl` in the report call).
     diagnostics.push(
-      Diagnostic::new(NAME, format!("Custom property {} not defined", vr.name))
-        .span(Span::new(decl.span.offset, decl.span.length)),
+      Diagnostic::new(NAME, format!("Custom property {} not defined", vr.name)).span(decl.span),
     );
   }
 }

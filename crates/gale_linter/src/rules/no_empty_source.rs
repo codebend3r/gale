@@ -67,10 +67,10 @@ mod tests {
       declarations: vec![gale_css_parser::Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: gale_css_parser::Span::new(4, 10),
+        span: gale_diagnostics::Span::new(4, 10),
         important: false,
       }],
-      span: gale_css_parser::Span::new(0, 17),
+      span: gale_diagnostics::Span::new(0, 17),
       ..Default::default()
     })];
     let diags = rule.check_root(&nodes, &context);

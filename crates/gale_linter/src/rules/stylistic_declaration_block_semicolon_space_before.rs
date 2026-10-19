@@ -96,7 +96,7 @@ impl Check for StylisticDeclarationBlockSemicolonSpaceBeforeCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx_with_source, invalid_options};
 
@@ -110,10 +110,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 10),
+        span: Span::new(4, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -130,10 +130,10 @@ mod tests {
       declarations: vec![Declaration {
         property: "color".to_string(),
         value: "red".to_string(),
-        span: ParserSpan::new(4, 10),
+        span: Span::new(4, 10),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);

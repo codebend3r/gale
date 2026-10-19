@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::data::is_known_property;
 use crate::lint_env::LintEnv;
@@ -123,8 +123,7 @@ impl Check for PropertyNoUnknownCheck {
       }
       if !is_known_property(prop) {
         diags.push(
-          Diagnostic::new(NAME, format!("Unexpected unknown property \"{prop}\""))
-            .span(Span::new(decl.span.offset, decl.span.length)),
+          Diagnostic::new(NAME, format!("Unexpected unknown property \"{prop}\"")).span(decl.span),
         );
       }
     }
@@ -201,6 +200,7 @@ mod tests {
 
   mod gale_linter_test_helper {
     use gale_css_parser::*;
+    use gale_diagnostics::Span;
     pub fn style_node(sel: &str, props: &[(&str, &str)]) -> CssNode {
       CssNode::Style(StyleRule {
         selector: sel.to_string(),

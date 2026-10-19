@@ -89,7 +89,7 @@ impl Check for AtRuleNoVendorPrefixCheck {
         NAME,
         format!("Unexpected vendor-prefixed at-rule \"@{}\"", rule.name),
       )
-      .span(Span::new(rule.span.offset, rule.span.length));
+      .span(rule.span);
 
       if let Some(f) = fix {
         diag = diag.fix(f);
@@ -105,7 +105,7 @@ impl Check for AtRuleNoVendorPrefixCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule as CssAtRule;
 
   use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
 
@@ -113,7 +113,7 @@ mod tests {
     CssNode::AtRule(CssAtRule {
       name: name.to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       children: vec![],
     })
   }
@@ -141,7 +141,7 @@ mod tests {
     let node = CssNode::AtRule(CssAtRule {
       name: "-webkit-keyframes".to_string(),
       params: "fade".to_string(),
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       children: vec![],
     });
     let d = rule.check(&node, &ctx);

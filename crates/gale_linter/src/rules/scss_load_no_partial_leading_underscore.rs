@@ -161,7 +161,7 @@ fn extract_path(params: &str) -> &str {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::AtRule;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -169,7 +169,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "use".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     })
   }
@@ -178,7 +178,7 @@ mod tests {
     CssNode::AtRule(AtRule {
       name: "import".to_string(),
       params: params.to_string(),
-      span: ParserSpan::new(0, 10),
+      span: Span::new(0, 10),
       children: vec![],
     })
   }

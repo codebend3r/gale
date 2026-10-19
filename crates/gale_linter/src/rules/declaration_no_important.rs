@@ -89,7 +89,7 @@ impl Check for DeclarationNoImportantCheck {
         }) {
           Span::new(pos, "!important".len())
         } else {
-          Span::new(decl.span.offset, decl.span.length)
+          decl.span
         };
 
         let mut diag = Diagnostic::new(
@@ -117,7 +117,7 @@ fn find_important(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx_with_source};
 
@@ -127,10 +127,10 @@ mod tests {
       declarations: vec![Declaration {
         property: prop.to_string(),
         value: val.to_string(),
-        span: ParserSpan::new(offset, len),
+        span: Span::new(offset, len),
         important,
       }],
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       ..Default::default()
     })
   }

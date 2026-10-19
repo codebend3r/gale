@@ -1186,7 +1186,7 @@ fn hwb_to_rgb(h: f64, w: f64, b: f64) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
 
   use crate::testing::{configured, ctx, invalid_options, lint};
 
@@ -1199,10 +1199,10 @@ mod tests {
       declarations: vec![Declaration {
         property: property.to_string(),
         value: value.to_string(),
-        span: ParserSpan::new(prop_start, decl_text.len()),
+        span: Span::new(prop_start, decl_text.len()),
         important: false,
       }],
-      span: ParserSpan::new(0, source.len()),
+      span: Span::new(0, source.len()),
       ..Default::default()
     });
     (node, source)

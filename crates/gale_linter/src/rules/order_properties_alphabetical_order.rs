@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting, is_truthy};
@@ -86,7 +86,7 @@ impl Check for OrderPropertiesAlphabeticalOrderCheck {
               prev_original.as_deref().unwrap_or(prev)
             ),
           )
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          .span(decl.span),
         );
       }
 
@@ -101,7 +101,8 @@ impl Check for OrderPropertiesAlphabeticalOrderCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx};
 
@@ -109,7 +110,7 @@ mod tests {
     Declaration {
       property: property.to_string(),
       value: value.to_string(),
-      span: ParserSpan::new(offset, length),
+      span: Span::new(offset, length),
       important: false,
     }
   }
@@ -124,7 +125,7 @@ mod tests {
         make_decl("display", "block", 15, 14),
         make_decl("font-size", "12px", 30, 15),
       ],
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -140,7 +141,7 @@ mod tests {
         make_decl("display", "block", 4, 14),
         make_decl("color", "red", 19, 10),
       ],
-      span: ParserSpan::new(0, 35),
+      span: Span::new(0, 35),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -159,7 +160,7 @@ mod tests {
         make_decl("$my-var", "10px", 19, 14),
         make_decl("color", "red", 34, 10),
       ],
-      span: ParserSpan::new(0, 50),
+      span: Span::new(0, 50),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -176,7 +177,7 @@ mod tests {
         make_decl("Color", "red", 4, 10),
         make_decl("display", "block", 15, 14),
       ],
-      span: ParserSpan::new(0, 35),
+      span: Span::new(0, 35),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -193,7 +194,7 @@ mod tests {
         make_decl("--my-var", "10px", 19, 16),
         make_decl("font-size", "12px", 36, 15),
       ],
-      span: ParserSpan::new(0, 55),
+      span: Span::new(0, 55),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -211,7 +212,7 @@ mod tests {
         make_decl("-webkit-transform", "scale(1)", 19, 28),
         make_decl("transform", "scale(1)", 48, 21),
       ],
-      span: ParserSpan::new(0, 70),
+      span: Span::new(0, 70),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());
@@ -228,7 +229,7 @@ mod tests {
         make_decl("-webkit-transform", "scale(1)", 4, 28),
         make_decl("appearance", "none", 33, 17),
       ],
-      span: ParserSpan::new(0, 55),
+      span: Span::new(0, 55),
       ..Default::default()
     });
     let diags = rule.check(&node, &ctx());

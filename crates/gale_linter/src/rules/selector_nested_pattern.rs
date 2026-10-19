@@ -1,5 +1,5 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -78,7 +78,7 @@ fn check_nested_selectors(
             NAME,
             format!("Expected nested selector \"{sel}\" to match pattern \"{pattern_str}\""),
           )
-          .span(Span::new(child.span.offset, child.span.length)),
+          .span(child.span),
         );
         // Only report once per selector list, not per individual selector
         break;
@@ -92,7 +92,8 @@ fn check_nested_selectors(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, StyleRule};
+  use gale_diagnostics::Span;
 
   use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
@@ -100,7 +101,7 @@ mod tests {
     Declaration {
       property: "color".to_string(),
       value: "red".to_string(),
-      span: ParserSpan::new(0, 0),
+      span: Span::new(0, 0),
       important: false,
     }
   }
@@ -116,10 +117,10 @@ mod tests {
       children: vec![StyleRule {
         selector: ".child".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d = rule.check(&node, &ctx);
@@ -138,10 +139,10 @@ mod tests {
       children: vec![StyleRule {
         selector: "&:hover".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d = rule.check(&node, &ctx);
@@ -156,7 +157,7 @@ mod tests {
     let node = CssNode::Style(StyleRule {
       selector: ".parent".to_string(),
       declarations: vec![make_decl()],
-      span: ParserSpan::new(0, 20),
+      span: Span::new(0, 20),
       ..Default::default()
     });
     let d = rule.check(&node, &ctx);
@@ -173,10 +174,10 @@ mod tests {
       children: vec![StyleRule {
         selector: ".child".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d = rule.check(&node, &ctx);
@@ -197,10 +198,10 @@ mod tests {
       children: vec![StyleRule {
         selector: "&__child".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d = rule.check(&node, &ctx);
@@ -213,10 +214,10 @@ mod tests {
       children: vec![StyleRule {
         selector: "&:hover".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d2 = rule.check(&node2, &ctx);
@@ -229,10 +230,10 @@ mod tests {
       children: vec![StyleRule {
         selector: ".child".to_string(),
         declarations: vec![make_decl()],
-        span: ParserSpan::new(20, 15),
+        span: Span::new(20, 15),
         ..Default::default()
       }],
-      span: ParserSpan::new(0, 40),
+      span: Span::new(0, 40),
       nested_at_rules: Vec::new(),
     });
     let d3 = rule.check(&node3, &ctx);
