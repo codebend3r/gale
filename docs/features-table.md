@@ -229,6 +229,6 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 |---------|-------------|:----:|:---------:|
 | Parallel linting | Use every CPU core | ✅ | ❌ Single-threaded |
 | Fast file discovery | Ripgrep-style directory walking with ignore support | ✅ | ⚠️ Globby |
-| Per-phase timing output | `GALE_DEBUG_PERF=1` prints phase timings | ✅ | ❌ |
+| Per-phase timing output | `GALE_DEBUG_PERF=1` (or `GALE_LOG=gale_perf=debug`) prints phase timings | ✅ | ❌ |
 | Structured logging | `GALE_LOG=debug` tracing output | ✅ | ❌ |
 | Differential test harness | Compare output against Stylelint on real repos | ✅ 22-repo corpus | n/a |

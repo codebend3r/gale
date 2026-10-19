@@ -18,6 +18,7 @@ use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
 use gale_formatter::{StylelintResult, create_formatter_with_color, strip_ansi};
 use gale_linter::known_rules::{self, RuleSupport};
+use gale_linter::runner::PERF_TARGET;
 use gale_linter::{DisableOptions, LintEnv, RuleRegistry, RuleSet};
 
 use crate::cache::{
@@ -1139,6 +1140,27 @@ fn generate_init_config() -> Result<()> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Send `tracing` output to stderr, filtered by `GALE_LOG` (default
+/// `warn`).  `GALE_DEBUG_PERF=1` adds the per-phase timings
+/// ([`PERF_TARGET`] at debug level) to whatever `GALE_LOG` selects.
+///
+/// Stderr keeps logs out of the report on stdout and out of the language
+/// server's protocol stream.
+fn init_tracing() {
+  let mut filter = tracing_subscriber::EnvFilter::try_from_env("GALE_LOG")
+    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+  if std::env::var("GALE_DEBUG_PERF").as_deref() == Ok("1")
+    && let Ok(directive) = format!("{PERF_TARGET}=debug").parse()
+  {
+    filter = filter.add_directive(directive);
+  }
+  tracing_subscriber::fmt()
+    .with_env_filter(filter)
+    .with_writer(std::io::stderr)
+    .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+    .init();
+}
+
 /// Parses the CLI arguments and runs the requested mode — LSP server, `--init`,
 /// or a lint pass — returning the process exit code's worth of result.
 pub fn run() -> Result<()> {
@@ -1155,13 +1177,7 @@ pub fn run() -> Result<()> {
     }
   };
 
-  // Initialise tracing (controlled via GALE_LOG env var).
-  tracing_subscriber::fmt()
-    .with_env_filter(
-      tracing_subscriber::EnvFilter::try_from_env("GALE_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-    )
-    .init();
+  init_tracing();
 
   // Handle --lsp: start the LSP server and exit early.
   if cli.lsp {
@@ -1760,9 +1776,11 @@ pub fn run() -> Result<()> {
   let t_fmt = std::time::Instant::now();
   let formatter = create_formatter_with_color(&formatter_name, report_color(&cli));
   let output = formatter.format(&gale_formatter::stylelint_results(&results));
-  if std::env::var("GALE_DEBUG_PERF").as_deref() == Ok("1") {
-    eprintln!("[perf] format: {:.3}s", t_fmt.elapsed().as_secs_f64());
-  }
+  tracing::debug!(
+    target: PERF_TARGET,
+    phase = "format",
+    secs = t_fmt.elapsed().as_secs_f64(),
+  );
   if !output.is_empty() {
     print!("{output}");
     if let Some(path) = &cli.output_file

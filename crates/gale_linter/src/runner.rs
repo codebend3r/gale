@@ -60,16 +60,52 @@ fn debug_panic(rule_name: &str, source: &str) {
   }
 }
 
-/// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
+/// The `tracing` target the per-phase timings are emitted under, at debug
+/// level.  The CLI turns it on for `GALE_DEBUG_PERF=1`; `GALE_LOG` can
+/// select it like any other target (`GALE_LOG=gale_perf=debug`).
+pub const PERF_TARGET: &str = "gale_perf";
+
+/// A `check_root` that takes longer than this is timed on its own.
+const SLOW_CHECK_ROOT_SECS: f64 = 0.001;
+
+/// Times the phases of linting one style sheet, when the timings are on.
 ///
-/// Read once per process rather than once per file.
-fn perf_enabled() -> bool {
-  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-  *ENABLED.get_or_init(|| {
-    std::env::var("GALE_DEBUG_PERF")
-      .map(|v| v == "1")
-      .unwrap_or(false)
-  })
+/// Off, it costs one check of the tracing filter per file and no clock
+/// reads.
+struct PhaseTimer<'a> {
+  file_path: &'a str,
+  /// When the current phase started, or `None` with the timings off.
+  started: Option<Instant>,
+}
+
+impl<'a> PhaseTimer<'a> {
+  /// Start timing the first phase of linting `file_path`.
+  fn start(file_path: &'a str) -> Self {
+    let on = tracing::enabled!(target: PERF_TARGET, tracing::Level::DEBUG);
+    Self {
+      file_path,
+      started: on.then(Instant::now),
+    }
+  }
+
+  /// Whether the timings are on.
+  fn on(&self) -> bool {
+    self.started.is_some()
+  }
+
+  /// Report the phase that just ended as `phase`, and start the next.
+  fn lap(&mut self, phase: &'static str) {
+    if let Some(started) = self.started {
+      let now = Instant::now();
+      tracing::debug!(
+        target: PERF_TARGET,
+        file = self.file_path,
+        phase,
+        secs = (now - started).as_secs_f64(),
+      );
+      self.started = Some(now);
+    }
+  }
 }
 
 /// One rule as a config sets it: the name it is listed under, its options
@@ -352,12 +388,7 @@ impl RuleSet {
 
   /// [`Self::lint_sheet`] without the file-level panic guard.
   fn lint_sheet_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
-    let debug = perf_enabled();
-    if debug {
-      eprintln!("[perf] start file: {}", file_path);
-    }
-
-    let t0 = Instant::now();
+    let mut timer = PhaseTimer::start(file_path);
     let mut parse_result = match parse(source, syntax) {
       Ok(result) => result,
       Err(err) => {
@@ -367,9 +398,7 @@ impl RuleSet {
         return LintResult::new(file_path, source, vec![diag]);
       }
     };
-    if debug {
-      eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
-    }
+    timer.lap("parse");
     // The walk below is the tree's last use, so it takes the nodes; `finish`
     // needs only the source map.
     let nodes = std::mem::take(&mut parse_result.nodes);
@@ -380,22 +409,12 @@ impl RuleSet {
     let cache = FileCache::new(text, syntax);
     let mut run = RuleRun::new(self, file_path, &cache);
 
-    let t1 = Instant::now();
-    run.check_root(&nodes, debug);
-    if debug {
-      eprintln!(
-        "[perf] check_root total: {:.3}s",
-        t1.elapsed().as_secs_f64()
-      );
-    }
-
-    let t2 = Instant::now();
+    run.check_root(&nodes, timer.on());
+    timer.lap("check_root");
     for node in nodes {
       run.walk(node);
     }
-    if debug {
-      eprintln!("[perf] walk: {:.3}s", t2.elapsed().as_secs_f64());
-    }
+    timer.lap("walk");
     let RuleRun {
       mut diagnostics,
       failures,
@@ -410,15 +429,12 @@ impl RuleSet {
       self.settle(diag);
     }
 
-    let t3 = Instant::now();
     if let Some(rejected) =
       self.apply_disables(&mut diagnostics, source, &parse_result, &cache, file_path)
     {
       return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
     }
-    if debug {
-      eprintln!("[perf] disable-filter: {:.3}s", t3.elapsed().as_secs_f64());
-    }
+    timer.lap("disables");
 
     // Rule crashes go in last so that disables, severity overrides and the
     // `message` option cannot hide or soften them.
@@ -427,9 +443,7 @@ impl RuleSet {
     let unknown = self.unknown_rule_problems(source, file_path);
     let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
     result.invalid_option_warnings = invalid_options;
-    if debug {
-      eprintln!("[perf] total diagnostics: {}", result.diagnostics.len());
-    }
+    timer.lap("finish");
     result
   }
 
@@ -697,20 +711,28 @@ impl<'a> RuleRun<'a> {
   }
 
   /// Run every rule's document-level `check_root`.
-  fn check_root(&mut self, nodes: &[CssNode], debug: bool) {
+  ///
+  /// With `timed`, a rule whose `check_root` is slow is timed on its own.
+  fn check_root(&mut self, nodes: &[CssNode], timed: bool) {
     for index in 0..self.set.rules.len() {
       let rule = self.set.rules[index].rule;
       let context = self.context(index);
-      let started = Instant::now();
+      let started = timed.then(Instant::now);
       let source = self.source;
       let outcome = panic_guard::catch(|| {
         debug_panic(rule.name(), source);
         rule.check_root(nodes, &context)
       });
-      if debug {
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed > 0.001 {
-          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
+      if let Some(started) = started {
+        let secs = started.elapsed().as_secs_f64();
+        if secs > SLOW_CHECK_ROOT_SECS {
+          tracing::debug!(
+            target: PERF_TARGET,
+            file = self.file_path,
+            rule = rule.name(),
+            secs,
+            "slow check_root"
+          );
         }
       }
       self.record(index, outcome, 0);

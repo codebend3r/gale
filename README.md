@@ -539,7 +539,7 @@ cargo run -- --formatter json src/   # JSON output
 ### Debug and profiling
 
 ```bash
-GALE_DEBUG_PERF=1 cargo run --release -- src/   # Per-phase timings to stderr
+GALE_DEBUG_PERF=1 cargo run --release -- src/   # Per-phase timings to stderr (the gale_perf tracing target)
 GALE_LOG=debug cargo run -- src/                # Tracing/logging output
 GALE_DEBUG_PANIC=color-named cargo run -- src/  # Make a rule panic on files containing `gale-debug-panic`
 ```
