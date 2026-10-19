@@ -33,17 +33,29 @@ impl DeclarationBlockNoShorthandPropertyOverridesCheck {
   }
 }
 
-/// Returns the list of longhand properties that a given shorthand expands to.
-fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
-  match shorthand {
-    "margin" => Some(&["margin-top", "margin-right", "margin-bottom", "margin-left"]),
-    "padding" => Some(&[
+/// The shorthands this rule knows, each with the longhands it resets.
+///
+/// Narrower than Stylelint's `longhandSubPropertiesOfShorthandProperties`
+/// (which `declaration-block-no-redundant-longhand-properties` follows): this
+/// is the subset gale's version of the rule has always checked, so the two
+/// tables are kept apart.
+const SHORTHAND_LONGHANDS: &[(&str, &[&str])] = &[
+  (
+    "margin",
+    &["margin-top", "margin-right", "margin-bottom", "margin-left"],
+  ),
+  (
+    "padding",
+    &[
       "padding-top",
       "padding-right",
       "padding-bottom",
       "padding-left",
-    ]),
-    "border" => Some(&[
+    ],
+  ),
+  (
+    "border",
+    &[
       "border-color",
       "border-style",
       "border-width",
@@ -59,8 +71,11 @@ fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
       "border-left-color",
       "border-left-style",
       "border-left-width",
-    ]),
-    "background" => Some(&[
+    ],
+  ),
+  (
+    "background",
+    &[
       "background-color",
       "background-image",
       "background-position",
@@ -69,33 +84,48 @@ fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
       "background-origin",
       "background-clip",
       "background-attachment",
-    ]),
-    "font" => Some(&[
+    ],
+  ),
+  (
+    "font",
+    &[
       "font-style",
       "font-variant",
       "font-weight",
       "font-size",
       "line-height",
       "font-family",
-    ]),
-    "flex" => Some(&["flex-grow", "flex-shrink", "flex-basis"]),
-    "grid" => Some(&[
+    ],
+  ),
+  ("flex", &["flex-grow", "flex-shrink", "flex-basis"]),
+  (
+    "grid",
+    &[
       "grid-template-rows",
       "grid-template-columns",
       "grid-template-areas",
       "grid-auto-rows",
       "grid-auto-columns",
       "grid-auto-flow",
-    ]),
-    "outline" => Some(&["outline-color", "outline-style", "outline-width"]),
-    "overflow" => Some(&["overflow-x", "overflow-y"]),
-    "transition" => Some(&[
+    ],
+  ),
+  (
+    "outline",
+    &["outline-color", "outline-style", "outline-width"],
+  ),
+  ("overflow", &["overflow-x", "overflow-y"]),
+  (
+    "transition",
+    &[
       "transition-property",
       "transition-duration",
       "transition-timing-function",
       "transition-delay",
-    ]),
-    "animation" => Some(&[
+    ],
+  ),
+  (
+    "animation",
+    &[
       "animation-name",
       "animation-duration",
       "animation-timing-function",
@@ -104,33 +134,29 @@ fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
       "animation-direction",
       "animation-fill-mode",
       "animation-play-state",
-    ]),
-    "list-style" => Some(&["list-style-type", "list-style-position", "list-style-image"]),
-    "text-decoration" => Some(&[
+    ],
+  ),
+  (
+    "list-style",
+    &["list-style-type", "list-style-position", "list-style-image"],
+  ),
+  (
+    "text-decoration",
+    &[
       "text-decoration-color",
       "text-decoration-style",
       "text-decoration-line",
-    ]),
-    _ => None,
-  }
-}
-
-/// All shorthand property names we know about.
-const SHORTHANDS: &[&str] = &[
-  "margin",
-  "padding",
-  "border",
-  "background",
-  "font",
-  "flex",
-  "grid",
-  "outline",
-  "overflow",
-  "transition",
-  "animation",
-  "list-style",
-  "text-decoration",
+    ],
+  ),
 ];
+
+/// The longhands `shorthand` resets, if this rule knows it.
+fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
+  SHORTHAND_LONGHANDS
+    .iter()
+    .find(|(name, _)| *name == shorthand)
+    .map(|(_, longhands)| *longhands)
+}
 
 impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
   /// Flags a shorthand that appears after — and so silently overrides — a
@@ -166,13 +192,12 @@ impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
       }
 
       // Check if this property is a longhand of any shorthand.
-      for &shorthand in SHORTHANDS {
-        if let Some(longhands) = longhands_for(shorthand)
-          && longhands.contains(&prop)
-          && !seen_longhands.contains(&prop)
-        {
-          seen_longhands.push(prop);
-        }
+      if !seen_longhands.contains(&prop)
+        && SHORTHAND_LONGHANDS
+          .iter()
+          .any(|(_, longhands)| longhands.contains(&prop))
+      {
+        seen_longhands.push(prop);
       }
     }
 

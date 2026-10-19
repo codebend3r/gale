@@ -2,6 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -38,9 +39,6 @@ impl PropertyNoVendorPrefixCheck {
     Ok(Self { ignore_properties })
   }
 }
-
-/// Stylelint's `basicKeywords`.
-const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
 impl Check for PropertyNoVendorPrefixCheck {
   /// Flags vendor-prefixed properties that have an unprefixed equivalent,
@@ -103,7 +101,7 @@ fn is_safe_background_size(value: &str) -> bool {
     let words: Vec<&str> = layer.split_whitespace().collect();
     match words.as_slice() {
       [_, _] => true,
-      [first] => *first == "auto" || BASIC_KEYWORDS.contains(first),
+      [first] => *first == "auto" || CSS_WIDE_KEYWORDS.contains(first),
       _ => false,
     }
   })

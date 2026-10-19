@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
@@ -49,9 +50,6 @@ impl DeclarationBlockNoRedundantLonghandPropertiesCheck {
     })
   }
 }
-
-/// CSS-wide keywords, which no shorthand can absorb.
-const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
 
 /// Shorthands whose fix also takes their longhands out of every other
 /// shorthand's tally.
@@ -818,7 +816,7 @@ fn simulate(block: &Block<'_>, options: &Options, fix: bool) -> Simulation {
 
   for (d, &(slot, decl)) in decls.iter().enumerate() {
     let value = decl.value.trim();
-    if BASIC_KEYWORDS.contains(&value) {
+    if CSS_WIDE_KEYWORDS.contains(&value) {
       continue;
     }
     let prop = decl.prop_lower.as_str();
