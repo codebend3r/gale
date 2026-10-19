@@ -1,47 +1,75 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify indentation.
-///
-/// Equivalent to `@stylistic/indentation`.
-pub struct StylisticIndentation;
+const NAME: &str = "@stylistic/indentation";
 
-impl Rule for StylisticIndentation {
-  fn name(&self) -> &'static str {
-    "@stylistic/indentation"
+declare_rule! {
+  /// Specify indentation.
+  ///
+  /// Equivalent to `@stylistic/indentation`.
+  pub struct StylisticIndentation => StylisticIndentationCheck {
+    name: NAME,
+    description: "Specify indentation",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify indentation"
+/// `@stylistic/indentation` as configured.
+pub struct StylisticIndentationCheck {
+  /// Whether lines are indented with tabs (`"tab"`) rather than spaces.
+  use_tab: bool,
+  /// The spaces per level, or 1 for tabs.
+  indent_size: usize,
+  /// `baseIndentLevel` when it is a whole number, for a style sheet
+  /// embedded in HTML; `"auto"` leaves it to the markup.
+  base_indent_level: Option<i64>,
+}
+
+impl StylisticIndentationCheck {
+  /// The plugin's options: a number of spaces or `"tab"`, then
+  /// `baseIndentLevel`, `except`, `ignore`, `indentInsideParens` and
+  /// `indentClosingBrace`.  Gale reads no option as 2 spaces, and accepts but
+  /// does not yet apply the secondary options other than `baseIndentLevel`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let primary = options.primary_value(&[Accept::Number, Accept::Exactly("tab")]);
+    let base_indent_level = options.value(
+      "baseIndentLevel",
+      &[Accept::Number, Accept::Exactly("auto")],
+    );
+    options.keywords("except", &["block", "value", "param"]);
+    options.keywords("ignore", &["value", "param", "inside-parens"]);
+    options.keywords(
+      "indentInsideParens",
+      &["twice", "once-at-root-twice-in-block"],
+    );
+    options.flag("indentClosingBrace");
+    options.finish()?;
+    let (use_tab, indent_size) = match primary {
+      Some(serde_json::Value::String(_)) => (true, 1),
+      // A count gale cannot read as a whole number of spaces (a fraction
+      // or a negative number) falls back on 2, as it always has.
+      Some(serde_json::Value::Number(n)) => (false, n.as_u64().unwrap_or(2) as usize),
+      _ => (false, 2),
+    };
+    Ok(Self {
+      use_tab,
+      indent_size,
+      base_indent_level: base_indent_level.and_then(serde_json::Value::as_i64),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticIndentationCheck {
   /// Flags lines whose leading whitespace does not match the expected depth for
   /// the configured tab or space indent.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let primary = context.primary_option();
-    let use_tab: bool;
-    let indent_size: usize;
-
-    match primary {
-      Some(serde_json::Value::String(s)) if s == "tab" => {
-        use_tab = true;
-        indent_size = 1;
-      }
-      Some(serde_json::Value::Number(n)) => {
-        use_tab = false;
-        indent_size = n.as_u64().unwrap_or(2) as usize;
-      }
-      _ => {
-        use_tab = false;
-        indent_size = 2;
-      }
-    }
+    let use_tab = self.use_tab;
+    let indent_size = self.indent_size;
 
     let source = context.source;
     let bytes = source.as_bytes();
@@ -50,10 +78,7 @@ impl Rule for StylisticIndentation {
 
     // In a style sheet embedded in HTML, everything sits at the root's base
     // indent level, which the plugin infers from the markup around it.
-    let base_indent_level = context
-      .secondary_options()
-      .and_then(|s| s.get("baseIndentLevel"))
-      .and_then(|v| v.as_i64());
+    let base_indent_level = self.base_indent_level;
     let embedded = crate::embedded::indentation_context(
       source,
       (!use_tab).then_some(indent_size),
@@ -340,7 +365,7 @@ impl Rule for StylisticIndentation {
   }
 }
 
-impl StylisticIndentation {
+impl StylisticIndentationCheck {
   /// The problem for a line indented with the wrong character, or by the
   /// wrong amount, reported at its first non-blank character.
   fn indentation_problem(
@@ -358,9 +383,7 @@ impl StylisticIndentation {
       let plural = if expected != 1 { "s" } else { "" };
       format!("Expected indentation of {expected} {unit}{plural}")
     };
-    Diagnostic::new(self.name(), message)
-      .severity(self.default_severity())
-      .span(Span::new(at, 0))
+    Diagnostic::new(NAME, message).span(Span::new(at, 0))
   }
 }
 
@@ -368,13 +391,14 @@ impl StylisticIndentation {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_correct_2_space_indent() {
     let opt = serde_json::json!(2);
     let source = "a {\n  color: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -386,7 +410,8 @@ mod tests {
   fn reports_wrong_indent() {
     let opt = serde_json::json!(2);
     let source = "a {\ncolor: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected indentation"));
   }
@@ -395,7 +420,8 @@ mod tests {
   fn allows_tab_indent() {
     let opt = serde_json::json!("tab");
     let source = "a {\n\tcolor: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -407,7 +433,8 @@ mod tests {
   fn reports_spaces_when_tab_expected() {
     let opt = serde_json::json!("tab");
     let source = "a {\n  color: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("tabs"));
   }
@@ -416,7 +443,8 @@ mod tests {
   fn allows_4_space_indent() {
     let opt = serde_json::json!(4);
     let source = "a {\n    color: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
@@ -425,7 +453,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line value: continuation lines after `src:` should not be checked
     let source = "@font-face {\n  src:\n    url('a.woff2') format('woff2'),\n    url('a.woff') format('woff');\n  font-weight: normal;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -438,7 +467,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line @import: continuation lines should not be checked
     let source = "@import\n  'foo',\n  'bar';";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -451,7 +481,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line value with nested parens (calc, var)
     let source = "a {\n  margin: calc(\n    var(--x) * -1\n  );\n  color: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -464,7 +495,8 @@ mod tests {
     let opt = serde_json::json!(2);
     // Multi-line transition property value
     let source = "a {\n  transition:\n    background-color 0.2s linear,\n    opacity 0.2s linear;\n  color: red;\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -478,11 +510,40 @@ mod tests {
     // multi-byte character when one follows a shorter at-rule name.
     let opt = serde_json::json!(2);
     let source = "a {\n  @media \u{4e2d} {\n    color: red;\n  }\n}";
-    let d = StylisticIndentation.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = configured(&StylisticIndentation, opt.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
       d.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(4)).is_empty());
+    let all = serde_json::json!(["tab", {
+      "baseIndentLevel": "auto",
+      "except": ["block", "value"],
+      "ignore": ["inside-parens"],
+      "indentInsideParens": "twice",
+      "indentClosingBrace": true
+    }]);
+    assert!(invalid_options(NAME, all).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!([2, {"baseIndentLevel": 1}])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("tabs")),
+      ["Invalid option value \"tabs\" for rule \"@stylistic/indentation\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, {"baseIndentLevel": "none", "indentClosingBrace": "yes"}])
+      ),
+      [
+        "Invalid value \"none\" for option \"baseIndentLevel\" of rule \"@stylistic/indentation\"",
+        "Invalid value \"yes\" for option \"indentClosingBrace\" of rule \"@stylistic/indentation\""
+      ]
     );
   }
 }

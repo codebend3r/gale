@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify lowercase or uppercase for properties.
-///
-/// Equivalent to `@stylistic/property-case`.
-pub struct StylisticPropertyCase;
+const NAME: &str = "@stylistic/property-case";
 
-impl Rule for StylisticPropertyCase {
-  fn name(&self) -> &'static str {
-    "@stylistic/property-case"
+declare_rule! {
+  /// Specify lowercase or uppercase for properties.
+  ///
+  /// Equivalent to `@stylistic/property-case`.
+  pub struct StylisticPropertyCase => StylisticPropertyCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for properties"
+/// `@stylistic/property-case` as configured.
+pub struct StylisticPropertyCaseCheck {
+  /// The primary option: `"lower"` or `"upper"`.
+  expected_case: &'static str,
+}
+
+impl StylisticPropertyCaseCheck {
+  /// The plugin's options: `"lower"` or `"upper"`, then
+  /// `ignoreSelectors`.  Gale reads no option as `"lower"`.  Gale accepts but
+  /// does not yet apply the secondary options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    options.strings("ignoreSelectors");
+    options.finish()?;
+    Ok(Self {
+      expected_case: expected_case.unwrap_or("lower"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticPropertyCaseCheck {
   /// Flags property names not in the configured case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = ctx.primary_option_str().unwrap_or("lower");
+    let expected_case = self.expected_case;
 
     let decls: Vec<_> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -63,16 +82,12 @@ impl Rule for StylisticPropertyCase {
           _ => continue,
         };
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{prop}\" to be \"{fixed}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(decl.span.offset, prop.len()))
-          .fix(Fix::new(
-            format!("Convert to {expected_case}case"),
-            vec![Edit::new(Span::new(decl.span.offset, prop.len()), &fixed)],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{prop}\" to be \"{fixed}\""))
+            .span(Span::new(decl.span.offset, prop.len()))
+            .fix(Fix::new(
+              format!("Convert to {expected_case}case"),
+              vec![Edit::new(Span::new(decl.span.offset, prop.len()), &fixed)],
+            )),
         );
       }
     }
@@ -85,7 +100,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_prop(prop: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -103,7 +118,7 @@ mod tests {
 
   #[test]
   fn reports_uppercase_property() {
-    let rule = StylisticPropertyCase;
+    let rule = configured(&StylisticPropertyCase, None);
     let ctx = ctx();
     let d = rule.check(&style_with_prop("Color"), &ctx);
     assert_eq!(d.len(), 1);
@@ -112,7 +127,7 @@ mod tests {
 
   #[test]
   fn allows_lowercase_property() {
-    let rule = StylisticPropertyCase;
+    let rule = configured(&StylisticPropertyCase, None);
     let ctx = ctx();
     let d = rule.check(&style_with_prop("color"), &ctx);
     assert!(d.is_empty());
@@ -120,9 +135,33 @@ mod tests {
 
   #[test]
   fn skips_custom_properties() {
-    let rule = StylisticPropertyCase;
+    let rule = configured(&StylisticPropertyCase, None);
     let ctx = ctx();
     let d = rule.check(&style_with_prop("--myColor"), &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("lower")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["lower", {"ignoreSelectors": ["/^my-/", "url"]}])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/property-case\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["lower", {"ignoreSelectorsX": ["url"]}])
+      ),
+      ["Invalid option name \"ignoreSelectorsX\" for rule \"@stylistic/property-case\""]
+    );
   }
 }

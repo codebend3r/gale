@@ -1,32 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of adjacent empty lines.
-///
-/// Equivalent to Stylelint's `@stylistic/max-empty-lines` rule.
-pub struct StylisticMaxEmptyLines;
+const NAME: &str = "@stylistic/max-empty-lines";
 
-impl Rule for StylisticMaxEmptyLines {
-  fn name(&self) -> &'static str {
-    "@stylistic/max-empty-lines"
+declare_rule! {
+  /// Limit the number of adjacent empty lines.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/max-empty-lines` rule.
+  pub struct StylisticMaxEmptyLines => StylisticMaxEmptyLinesCheck {
+    name: NAME,
+    description: "Limit the number of adjacent empty lines",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Limit the number of adjacent empty lines"
+/// `@stylistic/max-empty-lines` as configured.
+pub struct StylisticMaxEmptyLinesCheck {
+  /// The most empty lines allowed in a row.
+  max: usize,
+}
+
+impl StylisticMaxEmptyLinesCheck {
+  /// The plugin's options: a number (`possible: isNumber`), then
+  /// `ignore: ["comments"]`, which gale accepts but does not yet apply.  Gale
+  /// reads no number as 1, and a number that is not a whole number of zero or
+  /// more as 1 too, as it always has.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(serde_json::Value::is_number);
+    options.keywords("ignore", &["comments"]);
+    options.finish()?;
+    Ok(Self {
+      max: max.and_then(serde_json::Value::as_u64).unwrap_or(1) as usize,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticMaxEmptyLinesCheck {
   /// Flags runs of blank lines longer than the maximum.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let max = context
-      .primary_option()
-      .and_then(|v| v.as_u64())
-      .unwrap_or(1) as usize;
+    let max = self.max;
 
     let source = context.source;
     let bytes = source.as_bytes();
@@ -92,12 +109,8 @@ impl Rule for StylisticMaxEmptyLines {
 
         if consecutive_empty > max {
           diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected no more than {} empty line(s)", max),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(line_start, i - line_start)),
+            Diagnostic::new(NAME, format!("Expected no more than {} empty line(s)", max))
+              .span(Span::new(line_start, i - line_start)),
           );
         }
 
@@ -127,13 +140,14 @@ impl Rule for StylisticMaxEmptyLines {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_single_empty_line() {
     let max = serde_json::json!(1);
     let source = "a { }\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(d.is_empty());
   }
 
@@ -141,7 +155,8 @@ mod tests {
   fn reports_too_many_empty_lines() {
     let max = serde_json::json!(1);
     let source = "a { }\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("no more than 1"));
   }
@@ -150,7 +165,8 @@ mod tests {
   fn allows_two_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(d.is_empty());
   }
 
@@ -158,7 +174,8 @@ mod tests {
   fn reports_three_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\n\nb { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(!d.is_empty());
   }
 
@@ -169,7 +186,8 @@ mod tests {
     // Bootstrap's cover.css starts with exactly this pattern.
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n/* Custom button */\n.foo { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(
       d.is_empty(),
       "two empty lines after a multi-line comment should be allowed with max=2"
@@ -180,10 +198,26 @@ mod tests {
   fn three_empty_lines_after_multiline_comment_is_flagged() {
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n\n/* Custom button */\n.foo { }";
-    let d = StylisticMaxEmptyLines.check_root(&[], &ctx_with_source_and_options(source, &max));
+    let d = configured(&StylisticMaxEmptyLines, max.clone())
+      .check_root(&[], &ctx_with_source_and_options(source, &max));
     assert!(
       !d.is_empty(),
       "three empty lines after a multi-line comment should be flagged with max=2"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(0)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!(2)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!([2, {"ignore": ["comments"]}])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("2")),
+      ["Invalid option \"2\" for rule \"@stylistic/max-empty-lines\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([2, {"ignore": ["selectors"]}])),
+      ["Invalid value \"selectors\" for option \"ignore\" of rule \"@stylistic/max-empty-lines\""]
     );
   }
 }

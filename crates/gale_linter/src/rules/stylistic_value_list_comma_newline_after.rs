@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline or disallow whitespace after the commas of value lists.
-///
-/// Equivalent to Stylelint's `@stylistic/value-list-comma-newline-after` rule.
-pub struct StylisticValueListCommaNewlineAfter;
+const NAME: &str = "@stylistic/value-list-comma-newline-after";
 
-impl Rule for StylisticValueListCommaNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/value-list-comma-newline-after"
+declare_rule! {
+  /// Require a newline or disallow whitespace after the commas of value lists.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/value-list-comma-newline-after` rule.
+  pub struct StylisticValueListCommaNewlineAfter => StylisticValueListCommaNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline or disallow whitespace after the commas of value lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline or disallow whitespace after the commas of value lists"
+/// `@stylistic/value-list-comma-newline-after` as configured.
+pub struct StylisticValueListCommaNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
+  option: &'static str,
+}
+
+impl StylisticValueListCommaNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale also accepts `"never"`, which the plugin does
+  /// not.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticValueListCommaNewlineAfterCheck {
   /// Flags a value list comma whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -182,8 +202,7 @@ impl Rule for StylisticValueListCommaNewlineAfter {
           "always" => {
             if !has_newline {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected newline after \",\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected newline after \",\"".to_string())
                   .span(Span::new(comma_pos, 1)),
               );
             }
@@ -191,8 +210,7 @@ impl Rule for StylisticValueListCommaNewlineAfter {
           "never" => {
             if has_newline || has_space {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected whitespace after \",\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected whitespace after \",\"".to_string())
                   .span(Span::new(comma_pos, 1)),
               );
             }
@@ -201,10 +219,9 @@ impl Rule for StylisticValueListCommaNewlineAfter {
             if is_multi_line && !has_newline {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   "Expected newline after \",\" in a multi-line value list".to_string(),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(comma_pos, 1)),
               );
             }
@@ -224,13 +241,13 @@ impl Rule for StylisticValueListCommaNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_newline_after_value_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png),\n  url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -239,7 +256,7 @@ mod tests {
   fn reports_missing_newline_after_value_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
@@ -249,7 +266,7 @@ mod tests {
   fn never_reports_whitespace_after_comma() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
@@ -259,7 +276,7 @@ mod tests {
   fn allows_space_on_single_line_with_multi_line_option() {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -269,7 +286,7 @@ mod tests {
     // Commas in selectors should not be treated as value list commas
     let opt = serde_json::Value::String("always".to_string());
     let source = "a:hover, a:focus { color: red; }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
@@ -282,7 +299,7 @@ mod tests {
   fn allows_scss_line_comment_after_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), // comment\n  url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
@@ -295,7 +312,7 @@ mod tests {
   fn allows_block_comment_newline_after_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), /* comment */\n  url(bar.png); }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
@@ -308,8 +325,20 @@ mod tests {
   fn ignores_scss_interpolation() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { prop: #{$a, $b}; }";
-    let d = StylisticValueListCommaNewlineAfter
+    let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/value-list-comma-newline-after\""]
+    );
   }
 }
