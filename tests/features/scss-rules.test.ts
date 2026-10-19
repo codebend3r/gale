@@ -22,7 +22,7 @@ function lint(rules: Record<string, unknown>, scss: string): string[] {
 describe("scss/operator-no-newline-before", () => {
   const rules = { "scss/operator-no-newline-before": true };
 
-  test.failing("flags an operator that starts a line", () => {
+  test("flags an operator that starts a line", () => {
     expect(lint(rules, "a {\n  width: 10px\n  + 1;\n}\n")).toEqual([
       '3:3 Unexpected newline before "+" (scss/operator-no-newline-before)',
     ]);
@@ -40,7 +40,7 @@ describe("scss/operator-no-newline-before", () => {
 describe("scss/declaration-nested-properties-no-divided-groups", () => {
   const rules = { "scss/declaration-nested-properties-no-divided-groups": true };
 
-  test.failing("flags each group of a namespace split in two", () => {
+  test("flags each group of a namespace split in two", () => {
     const scss = [
       "a {",
       "  background: url(img.png) center {",
@@ -68,14 +68,14 @@ describe("scss/dollar-variable-no-missing-interpolation", () => {
   const rules = { "scss/dollar-variable-no-missing-interpolation": true };
   const scss = '$var: "my-anim";\n.a {\n  animation-name: $var;\n}\n';
 
-  test.failing("flags a string variable used as a custom identifier", () => {
+  test("flags a string variable used as a custom identifier", () => {
     expect(lint(rules, scss)).toEqual([
       "3:19 Expected variable $var to be interpolated when using it with animation-name " +
         "(scss/dollar-variable-no-missing-interpolation)",
     ]);
   });
 
-  test.failing("--fix interpolates the variable", () => {
+  test("--fix interpolates the variable", () => {
     const project = makeProject({ ".stylelintrc.json": config(rules), "a.scss": scss });
     runGale(["--fix", "a.scss"], { cwd: project.dir });
     expect(project.read("a.scss")).toBe('$var: "my-anim";\n.a {\n  animation-name: #{$var};\n}\n');

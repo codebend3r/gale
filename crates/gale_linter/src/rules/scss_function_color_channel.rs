@@ -1,7 +1,6 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::postcss_tree::{Node, PostcssTree};
 use crate::rule::{Rule, RuleContext};
 use crate::value_parser::{self, ValueNode};
 
@@ -62,7 +61,7 @@ impl Rule for ScssFunctionColorChannel {
       if decl.name == "filter" {
         continue;
       }
-      let Some(value_index) = declaration_value_index(&tree, decl) else {
+      let Some(value_index) = tree.declaration_value_index(decl) else {
         continue;
       };
       let parsed = value_parser::parse(&decl.value);
@@ -85,18 +84,6 @@ impl Rule for ScssFunctionColorChannel {
     }
     diags
   }
-}
-
-/// stylelint-scss's `declarationValueIndex`: where the value starts, counted
-/// from the start of the declaration as the position of the first `:` in
-/// `decl.toString()` plus what follows it in `raws.between`.
-fn declaration_value_index(tree: &PostcssTree<'_>, decl: &Node) -> Option<usize> {
-  let source = tree.source();
-  let prop_and_between = source.get(decl.name_span.start..decl.value_span.start)?;
-  let between = source.get(decl.name_span.end..decl.value_span.start)?;
-  let before_colon = prop_and_between.find(':')?;
-  let after_colon = between.len() - between.find(':')?;
-  Some(before_colon + after_colon)
 }
 
 #[cfg(test)]

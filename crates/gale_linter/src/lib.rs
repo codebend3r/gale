@@ -23,6 +23,7 @@ pub mod registry;
 pub mod rule;
 pub mod rules;
 pub mod runner;
+pub mod sass_operators;
 pub mod selector;
 pub mod source_text;
 pub mod standard_syntax;
