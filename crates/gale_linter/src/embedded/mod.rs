@@ -26,11 +26,14 @@
 use std::cell::RefCell;
 
 use gale_css_parser::Syntax;
-use gale_css_parser::embedded::{HostLanguage, StyleBlock, StyleLang, extract_style_blocks};
 use gale_diagnostics::{Diagnostic, LintResult, SourceLineIndex};
 
 use crate::disables;
 use crate::registry::resolve_deprecated_alias;
+
+mod scanner;
+
+pub use scanner::{HostLanguage, StyleBlock, StyleLang, extract_style_blocks};
 
 /// Rules Stylelint does not apply to any embedded root.
 const SKIPPED_IN_EMBEDDED_ROOTS: &[&str] = &[
