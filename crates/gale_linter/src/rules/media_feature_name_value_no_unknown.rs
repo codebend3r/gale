@@ -1,12 +1,85 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports unknown values for known media feature names in `@media` rules.
-///
-/// Equivalent to Stylelint's `media-feature-name-value-no-unknown` rule.
-pub struct MediaFeatureNameValueNoUnknown;
+const NAME: &str = "media-feature-name-value-no-unknown";
+
+declare_rule! {
+  /// Reports unknown values for known media feature names in `@media` rules.
+  ///
+  /// Equivalent to Stylelint's `media-feature-name-value-no-unknown` rule.
+  pub struct MediaFeatureNameValueNoUnknown => MediaFeatureNameValueNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown values for known media feature names",
+    default_severity: Error,
+  }
+}
+
+/// `media-feature-name-value-no-unknown` as configured.
+pub struct MediaFeatureNameValueNoUnknownCheck {
+  /// `ignoreMediaFeatureNameValues`: media feature names (or `/regex/`
+  /// entries), each with the values (or `/regex/` entries) it may take.
+  ignore_media_feature_name_values: Vec<(Matchers, Matchers)>,
+}
+
+impl MediaFeatureNameValueNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreMediaFeatureNameValues`, an
+  /// object from names to a value or a list of them.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.value(
+      "ignoreMediaFeatureNameValues",
+      &[Accept::Test(is_object_of_string_lists)],
+    );
+    options.finish()?;
+    let ignore_media_feature_name_values = ignore
+      .and_then(serde_json::Value::as_object)
+      .map(|map| {
+        map
+          .iter()
+          .map(|(name, values)| {
+            let values: Vec<&str> = match values {
+              serde_json::Value::Array(items) => {
+                items.iter().filter_map(serde_json::Value::as_str).collect()
+              }
+              other => other.as_str().into_iter().collect(),
+            };
+            (Matchers::new(&[name]), Matchers::new(&values))
+          })
+          .collect()
+      })
+      .unwrap_or_default();
+    Ok(Self {
+      ignore_media_feature_name_values,
+    })
+  }
+
+  /// Stylelint's `optionsMatchesEntry`: whether the first entry of
+  /// `ignoreMediaFeatureNameValues` whose name matches `feature` lists
+  /// `value`.
+  fn is_ignored(&self, feature: &str, value: &str) -> bool {
+    self
+      .ignore_media_feature_name_values
+      .iter()
+      .find(|(name, _)| name.matches(feature))
+      .is_some_and(|(_, values)| values.matches(value))
+  }
+}
+
+/// Stylelint's `validateObjectWithArrayProps(isString, isRegExp)`: an
+/// object whose every property is a string or a list of strings.
+fn is_object_of_string_lists(value: &serde_json::Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map.values().all(|item| match item {
+      serde_json::Value::Array(items) => items.iter().all(serde_json::Value::is_string),
+      other => other.is_string(),
+    })
+  })
+}
 
 /// Returns the set of valid keyword values for a known discrete media feature,
 /// or `None` if the feature is numeric/range-based (width, height, etc.) and
@@ -96,19 +169,7 @@ fn extract_media_feature_values(params: &str) -> Vec<(String, String)> {
   pairs
 }
 
-impl Rule for MediaFeatureNameValueNoUnknown {
-  fn name(&self) -> &'static str {
-    "media-feature-name-value-no-unknown"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown values for known media feature names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for MediaFeatureNameValueNoUnknownCheck {
   /// Flags a value the media feature does not accept, for the features this rule
   /// has a keyword table for.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -126,13 +187,13 @@ impl Rule for MediaFeatureNameValueNoUnknown {
 
       if let Some(valid_values) = known_values_for_feature(&feature_lower)
         && !valid_values.contains(&value_lower.as_str())
+        && !self.is_ignored(&feature_lower, &value_lower)
       {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected unknown value \"{value}\" for media feature \"{feature}\""),
           )
-          .severity(self.default_severity())
           .span(Span::new(at.span.offset, at.span.length)),
         );
       }
@@ -146,7 +207,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -159,7 +220,8 @@ mod tests {
 
   #[test]
   fn reports_unknown_value_for_prefers_color_scheme() {
-    let d = MediaFeatureNameValueNoUnknown.check(&media("(prefers-color-scheme: dimmed)"), &ctx());
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
+    let d = rule.check(&media("(prefers-color-scheme: dimmed)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("dimmed"));
     assert!(d[0].message.contains("prefers-color-scheme"));
@@ -167,13 +229,14 @@ mod tests {
 
   #[test]
   fn allows_valid_prefers_color_scheme() {
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
     assert!(
-      MediaFeatureNameValueNoUnknown
+      rule
         .check(&media("(prefers-color-scheme: dark)"), &ctx())
         .is_empty()
     );
     assert!(
-      MediaFeatureNameValueNoUnknown
+      rule
         .check(&media("(prefers-color-scheme: light)"), &ctx())
         .is_empty()
     );
@@ -181,20 +244,22 @@ mod tests {
 
   #[test]
   fn reports_unknown_orientation_value() {
-    let d = MediaFeatureNameValueNoUnknown.check(&media("(orientation: diagonal)"), &ctx());
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
+    let d = rule.check(&media("(orientation: diagonal)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("diagonal"));
   }
 
   #[test]
   fn allows_valid_orientation() {
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
     assert!(
-      MediaFeatureNameValueNoUnknown
+      rule
         .check(&media("(orientation: portrait)"), &ctx())
         .is_empty()
     );
     assert!(
-      MediaFeatureNameValueNoUnknown
+      rule
         .check(&media("(orientation: landscape)"), &ctx())
         .is_empty()
     );
@@ -202,51 +267,81 @@ mod tests {
 
   #[test]
   fn skips_numeric_features() {
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
     // width, height, resolution etc. should not be checked
-    assert!(
-      MediaFeatureNameValueNoUnknown
-        .check(&media("(min-width: 768px)"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      MediaFeatureNameValueNoUnknown
-        .check(&media("(resolution: 2dppx)"), &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&media("(min-width: 768px)"), &ctx()).is_empty());
+    assert!(rule.check(&media("(resolution: 2dppx)"), &ctx()).is_empty());
   }
 
   #[test]
   fn allows_valid_hover() {
-    assert!(
-      MediaFeatureNameValueNoUnknown
-        .check(&media("(hover: hover)"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      MediaFeatureNameValueNoUnknown
-        .check(&media("(hover: none)"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
+    assert!(rule.check(&media("(hover: hover)"), &ctx()).is_empty());
+    assert!(rule.check(&media("(hover: none)"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_unknown_hover_value() {
-    let d = MediaFeatureNameValueNoUnknown.check(&media("(hover: yes)"), &ctx());
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
+    let d = rule.check(&media("(hover: yes)"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn ignores_non_media_at_rules() {
+    let rule = configured(&MediaFeatureNameValueNoUnknown, None);
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "(prefers-color-scheme: bogus)".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![],
     });
+    assert!(rule.check(&node, &ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    let valid = serde_json::json!([true, {
+      "ignoreMediaFeatureNameValues": { "prefers-color-scheme": ["dimmed", "/^x-/"], "/^hov/": "yes" }
+    }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreMediaFeatureNameValues": ["dimmed"] }])
+      ),
+      [
+        "Invalid value \"dimmed\" for option \"ignoreMediaFeatureNameValues\" of rule \"media-feature-name-value-no-unknown\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"media-feature-name-value-no-unknown\""]
+    );
+  }
+
+  #[test]
+  fn ignore_media_feature_name_values_skips_listed_values() {
+    let options = serde_json::json!([true, {
+      "ignoreMediaFeatureNameValues": { "prefers-color-scheme": ["dimmed"], "/^hov/": "/^y/" }
+    }]);
+    let rule = configured(&MediaFeatureNameValueNoUnknown, options);
     assert!(
-      MediaFeatureNameValueNoUnknown
-        .check(&node, &ctx())
+      rule
+        .check(&media("(prefers-color-scheme: dimmed)"), &ctx())
         .is_empty()
+    );
+    assert!(rule.check(&media("(hover: yes)"), &ctx()).is_empty());
+    assert_eq!(
+      rule
+        .check(&media("(prefers-color-scheme: dim)"), &ctx())
+        .len(),
+      1
+    );
+    assert_eq!(
+      rule.check(&media("(orientation: diagonal)"), &ctx()).len(),
+      1
     );
   }
 }

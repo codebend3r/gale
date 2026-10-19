@@ -1,31 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_media_feature;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports unknown media feature names in `@media` rules.
-///
-/// Equivalent to Stylelint's `media-feature-name-no-unknown` rule.
-///
-/// Secondary options:
-/// - `ignoreMediaFeatureNames`: array of media feature name strings or regex
-///   patterns (e.g. `"/^my-/"`) to ignore.
-pub struct MediaFeatureNameNoUnknown;
+const NAME: &str = "media-feature-name-no-unknown";
 
-impl Rule for MediaFeatureNameNoUnknown {
-  fn name(&self) -> &'static str {
-    "media-feature-name-no-unknown"
+declare_rule! {
+  /// Reports unknown media feature names in `@media` rules.
+  ///
+  /// Equivalent to Stylelint's `media-feature-name-no-unknown` rule.
+  ///
+  /// Secondary options:
+  /// - `ignoreMediaFeatureNames`: array of media feature name strings or regex
+  ///   patterns (e.g. `"/^my-/"`) to ignore.
+  pub struct MediaFeatureNameNoUnknown => MediaFeatureNameNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown media feature names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown media feature names"
+/// `media-feature-name-no-unknown` as configured.
+pub struct MediaFeatureNameNoUnknownCheck {
+  /// `ignoreMediaFeatureNames`: names or `/regex/` entries.
+  ignore_media_feature_names: Matchers,
+}
+
+impl MediaFeatureNameNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreMediaFeatureNames`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_media_feature_names = options.matchers("ignoreMediaFeatureNames");
+    options.finish()?;
+    Ok(Self {
+      ignore_media_feature_names,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MediaFeatureNameNoUnknownCheck {
   /// Flags media feature names that are not standard, skipping any matched by
   /// `ignoreMediaFeatureNames` and any query containing interpolation.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -52,9 +69,6 @@ impl Rule for MediaFeatureNameNoUnknown {
       }
     }
 
-    // Parse ignoreMediaFeatureNames option
-    let ignore_list = parse_ignore_list(ctx.options);
-
     let mut diags = Vec::new();
     for feature in extract_media_features(&at.params) {
       // Skip vendor-prefixed features
@@ -74,7 +88,7 @@ impl Rule for MediaFeatureNameNoUnknown {
         continue;
       }
 
-      if is_ignored(&feature.name, &ignore_list) {
+      if self.ignore_media_feature_names.matches(&feature.name) {
         continue;
       }
 
@@ -84,10 +98,9 @@ impl Rule for MediaFeatureNameNoUnknown {
 
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected unknown media feature name \"{}\"", feature.name),
           )
-          .severity(self.default_severity())
           .span(span),
         );
       }
@@ -142,57 +155,6 @@ fn find_feature_span_in_source(source: &str, at_offset: usize, feature: &MediaFe
   }
 
   Span::new(at_offset, feature.name.len())
-}
-
-/// Parse `ignoreMediaFeatureNames` from the secondary options.
-fn parse_ignore_list(options: Option<&serde_json::Value>) -> Vec<String> {
-  let Some(opts) = options else {
-    return vec![];
-  };
-  let obj = match opts {
-    serde_json::Value::Object(o) => o,
-    serde_json::Value::Array(arr) => {
-      for item in arr {
-        if let serde_json::Value::Object(o) = item
-          && let Some(serde_json::Value::Array(names)) = o.get("ignoreMediaFeatureNames")
-        {
-          return names
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        }
-      }
-      return vec![];
-    }
-    _ => return vec![],
-  };
-  if let Some(serde_json::Value::Array(names)) = obj.get("ignoreMediaFeatureNames") {
-    names
-      .iter()
-      .filter_map(|v| v.as_str().map(String::from))
-      .collect()
-  } else {
-    vec![]
-  }
-}
-
-/// Check if a media feature name matches any ignore pattern.
-fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
-  for pattern in ignore_list {
-    if let Some(re) = parse_regex_pattern(pattern) {
-      if crate::pattern::is_match(&re, name) {
-        return true;
-      }
-    } else if pattern == name {
-      return true;
-    }
-  }
-  false
-}
-
-/// Parse a Stylelint-style regex pattern like `/pattern/` or `/pattern/i`.
-fn parse_regex_pattern(s: &str) -> Option<std::sync::Arc<crate::pattern::Regex>> {
-  crate::pattern::regex_entry(s)
 }
 
 /// Extract media feature names from a @media params string.
@@ -401,7 +363,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -414,25 +376,19 @@ mod tests {
 
   #[test]
   fn reports_unknown_media_feature() {
-    let d = MediaFeatureNameNoUnknown.check(&media("(min-wdith: 768px)"), &ctx());
+    let rule = configured(&MediaFeatureNameNoUnknown, None);
+    let d = rule.check(&media("(min-wdith: 768px)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("min-wdith"));
   }
 
   #[test]
   fn allows_known_media_features() {
+    let rule = configured(&MediaFeatureNameNoUnknown, None);
+    assert!(rule.check(&media("(min-width: 768px)"), &ctx()).is_empty());
+    assert!(rule.check(&media("(hover: hover)"), &ctx()).is_empty());
     assert!(
-      MediaFeatureNameNoUnknown
-        .check(&media("(min-width: 768px)"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      MediaFeatureNameNoUnknown
-        .check(&media("(hover: hover)"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      MediaFeatureNameNoUnknown
+      rule
         .check(&media("(prefers-color-scheme: dark)"), &ctx())
         .is_empty()
     );
@@ -440,8 +396,9 @@ mod tests {
 
   #[test]
   fn allows_vendor_prefixed() {
+    let rule = configured(&MediaFeatureNameNoUnknown, None);
     assert!(
-      MediaFeatureNameNoUnknown
+      rule
         .check(&media("(-webkit-min-device-pixel-ratio: 2)"), &ctx())
         .is_empty()
     );
@@ -458,5 +415,33 @@ mod tests {
   fn extracts_features_after_operator() {
     let features = extract_media_features("($tablet = unknown)");
     assert!(features.iter().any(|f| f.name == "unknown"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreMediaFeatureNames": "/^my-/" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreMediaFeatures": ["a"] }])
+      ),
+      ["Invalid option name \"ignoreMediaFeatures\" for rule \"media-feature-name-no-unknown\""]
+    );
+  }
+
+  #[test]
+  fn ignore_media_feature_names_takes_names_and_regexes() {
+    let options = serde_json::json!([true, { "ignoreMediaFeatureNames": ["min-wdith", "/^my-/"] }]);
+    let rule = configured(&MediaFeatureNameNoUnknown, options);
+    assert!(rule.check(&media("(min-wdith: 768px)"), &ctx()).is_empty());
+    assert!(rule.check(&media("(my-feature: 1)"), &ctx()).is_empty());
+    assert_eq!(rule.check(&media("(max-wdith: 768px)"), &ctx()).len(), 1);
   }
 }
