@@ -1,19 +1,56 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify keyword or percentage notation for keyframe selectors.
-///
-/// Equivalent to Stylelint's `keyframe-selector-notation` rule, including
-/// its autofix.  Primary options:
-///
-/// - `"keyword"`: `0%` and `100%` become `from` and `to`;
-/// - `"percentage"`: `from` and `to` become `0%` and `100%`;
-/// - `"percentage-unless-within-keyword-only-block"`: as `"percentage"`,
-///   except in a `@keyframes` block whose selectors are all keywords.
-pub struct KeyframeSelectorNotation;
+const NAME: &str = "keyframe-selector-notation";
+
+declare_rule! {
+  /// Specify keyword or percentage notation for keyframe selectors.
+  ///
+  /// Equivalent to Stylelint's `keyframe-selector-notation` rule, including
+  /// its autofix.  Primary options:
+  ///
+  /// - `"keyword"`: `0%` and `100%` become `from` and `to`;
+  /// - `"percentage"`: `from` and `to` become `0%` and `100%`;
+  /// - `"percentage-unless-within-keyword-only-block"`: as `"percentage"`,
+  ///   except in a `@keyframes` block whose selectors are all keywords.
+  pub struct KeyframeSelectorNotation => KeyframeSelectorNotationCheck {
+    name: NAME,
+    description: "Specify keyword or percentage notation for keyframe selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `keyframe-selector-notation` as configured.
+pub struct KeyframeSelectorNotationCheck {
+  /// The notation to enforce; the rule checks nothing without one.
+  notation: Option<Notation>,
+}
+
+impl KeyframeSelectorNotationCheck {
+  /// Stylelint's options: `"keyword"`, `"percentage"` or
+  /// `"percentage-unless-within-keyword-only-block"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&[
+      "keyword",
+      "percentage",
+      "percentage-unless-within-keyword-only-block",
+    ]);
+    options.finish()?;
+    Ok(Self {
+      notation: notation.map(|notation| match notation {
+        "keyword" => Notation::Keyword,
+        "percentage" => Notation::Percentage,
+        _ => Notation::PercentageUnlessKeywordOnly,
+      }),
+    })
+  }
+}
 
 /// The notation the rule enforces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,27 +60,12 @@ enum Notation {
   PercentageUnlessKeywordOnly,
 }
 
-impl Rule for KeyframeSelectorNotation {
-  fn name(&self) -> &'static str {
-    "keyframe-selector-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify keyword or percentage notation for keyframe selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for KeyframeSelectorNotationCheck {
   /// Reports keyframe selectors in the other notation, with a fix that
   /// swaps `from`/`to` and `0%`/`100%`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let notation = match ctx.primary_option_str() {
-      Some("keyword") => Notation::Keyword,
-      Some("percentage") => Notation::Percentage,
-      Some("percentage-unless-within-keyword-only-block") => Notation::PercentageUnlessKeywordOnly,
-      _ => return Vec::new(),
+    let Some(notation) = self.notation else {
+      return Vec::new();
     };
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
@@ -91,16 +113,12 @@ impl Rule for KeyframeSelectorNotation {
           };
           let span = Span::new(start + offset, normalized.len());
           diags.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected \"{written}\" to be \"{fixed}\""),
-            )
-            .severity(self.default_severity())
-            .span(span)
-            .fix(Fix::new(
-              format!("Replace \"{written}\" with \"{fixed}\""),
-              vec![Edit::new(span, fixed)],
-            )),
+            Diagnostic::new(NAME, format!("Expected \"{written}\" to be \"{fixed}\""))
+              .span(span)
+              .fix(Fix::new(
+                format!("Replace \"{written}\" with \"{fixed}\""),
+                vec![Edit::new(span, fixed)],
+              )),
           );
         }
       }
@@ -347,5 +365,15 @@ mod tests {
     let source = "@keyframes foo { 0% {} }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(RULE, json!("percentage-unless-within-keyword-only-block")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("keywords")),
+      ["Invalid option value \"keywords\" for rule \"keyframe-selector-notation\""]
+    );
   }
 }

@@ -1,38 +1,53 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind as StatementKind;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, NodeKind};
 
-/// Specify string or URL notation for `@import` rules.
-///
-/// Equivalent to Stylelint's `import-notation` rule, including its autofix.
-/// Primary option `"string"` wants `@import "foo.css"`, `"url"` wants
-/// `@import url(foo.css)`.  The fix rewrites the params up to the end of the
-/// reported URL or string, keeping media queries and conditions after it.
-pub struct ImportNotation;
+const NAME: &str = "import-notation";
 
-impl Rule for ImportNotation {
-  fn name(&self) -> &'static str {
-    "import-notation"
+declare_rule! {
+  /// Specify string or URL notation for `@import` rules.
+  ///
+  /// Equivalent to Stylelint's `import-notation` rule, including its autofix.
+  /// Primary option `"string"` wants `@import "foo.css"`, `"url"` wants
+  /// `@import url(foo.css)`.  The fix rewrites the params up to the end of the
+  /// reported URL or string, keeping media queries and conditions after it.
+  pub struct ImportNotation => ImportNotationCheck {
+    name: NAME,
+    description: "Prefer string notation for @import",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Prefer string notation for @import"
+/// `import-notation` as configured.
+pub struct ImportNotationCheck {
+  /// `Some(true)` for `"string"`, `Some(false)` for `"url"`; the rule
+  /// checks nothing without one.
+  want_string: Option<bool>,
+}
+
+impl ImportNotationCheck {
+  /// Stylelint's options: `"string"` or `"url"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["string", "url"]);
+    options.finish()?;
+    Ok(Self {
+      want_string: notation.map(|notation| notation == "string"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ImportNotationCheck {
   /// Reports the first `@import` URL or string in the other notation, with
   /// a fix that rewrites it.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let want_string = match ctx.primary_option_str() {
-      Some("string") => true,
-      Some("url") => false,
-      _ => return Vec::new(),
+    let Some(want_string) = self.want_string else {
+      return Vec::new();
     };
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
@@ -88,18 +103,13 @@ impl Rule for ImportNotation {
         let end = node.source_end_index.min(params.len());
         let span = Span::from_range(base, base + end);
         let rest = at_rule.params.get(end..).unwrap_or("");
-        diags.push(
-          Diagnostic::new(self.name(), message)
-            .severity(self.default_severity())
-            .span(span)
-            .fix(Fix::new(
-              format!("Replace with {fixed}"),
-              vec![Edit::new(
-                Span::from_range(base, base + params.len()),
-                format!("{fixed}{rest}"),
-              )],
-            )),
-        );
+        diags.push(Diagnostic::new(NAME, message).span(span).fix(Fix::new(
+          format!("Replace with {fixed}"),
+          vec![Edit::new(
+            Span::from_range(base, base + params.len()),
+            format!("{fixed}{rest}"),
+          )],
+        )));
         break;
       }
     }
@@ -181,5 +191,15 @@ mod tests {
     let source = "@import url(foo.css);";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(RULE, json!("url")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("path")),
+      ["Invalid option value \"path\" for rule \"import-notation\""]
+    );
   }
 }

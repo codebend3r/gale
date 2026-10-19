@@ -1,29 +1,41 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow scheme-relative URLs (e.g. `//example.com/path`).
-///
-/// Scheme-relative URLs (starting with `//`) are deprecated and should be
-/// replaced with explicit `https://` or `http://` URLs.
-///
-/// Equivalent to Stylelint's `function-url-no-scheme-relative` rule.
-pub struct FunctionUrlNoSchemeRelative;
+const NAME: &str = "function-url-no-scheme-relative";
 
-impl Rule for FunctionUrlNoSchemeRelative {
-  fn name(&self) -> &'static str {
-    "function-url-no-scheme-relative"
+declare_rule! {
+  /// Disallow scheme-relative URLs (e.g. `//example.com/path`).
+  ///
+  /// Scheme-relative URLs (starting with `//`) are deprecated and should be
+  /// replaced with explicit `https://` or `http://` URLs.
+  ///
+  /// Equivalent to Stylelint's `function-url-no-scheme-relative` rule.
+  pub struct FunctionUrlNoSchemeRelative => FunctionUrlNoSchemeRelativeCheck {
+    name: NAME,
+    description: "Disallow scheme-relative urls",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow scheme-relative urls"
+/// `function-url-no-scheme-relative`, which takes no options.
+pub struct FunctionUrlNoSchemeRelativeCheck;
+
+impl FunctionUrlNoSchemeRelativeCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FunctionUrlNoSchemeRelativeCheck {
   /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
@@ -33,19 +45,14 @@ impl Rule for FunctionUrlNoSchemeRelative {
       _ => return vec![],
     };
     for decl in declarations {
-      check_value(&decl.value, decl.span.offset, self, &mut diags);
+      check_value(&decl.value, decl.span.offset, &mut diags);
     }
     diags
   }
 }
 
 /// Flags `url()` arguments beginning with `//`.
-fn check_value(
-  value: &str,
-  base_offset: usize,
-  rule: &FunctionUrlNoSchemeRelative,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_value(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
   let lower = value.to_ascii_lowercase();
   let bytes = lower.as_bytes();
   let len = bytes.len();
@@ -95,10 +102,9 @@ fn check_value(
         if unquoted.starts_with("//") {
           diags.push(
             Diagnostic::new(
-              rule.name(),
+              NAME,
               format!("Unexpected scheme-relative url \"{}\"", unquoted),
             )
-            .severity(rule.default_severity())
             .span(Span::new(base_offset + start, close + 1 - start)),
           );
         }
@@ -116,7 +122,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -143,22 +149,23 @@ mod tests {
 
   #[test]
   fn reports_scheme_relative_url() {
-    let d =
-      FunctionUrlNoSchemeRelative.check(&style_with_value("url(//example.com/image.png)"), &ctx());
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(&style_with_value("url(//example.com/image.png)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("//example.com"));
   }
 
   #[test]
   fn reports_quoted_scheme_relative_url() {
-    let d = FunctionUrlNoSchemeRelative
-      .check(&style_with_value("url('//example.com/image.png')"), &ctx());
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(&style_with_value("url('//example.com/image.png')"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn accepts_absolute_url() {
-    let d = FunctionUrlNoSchemeRelative.check(
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(
       &style_with_value("url(https://example.com/image.png)"),
       &ctx(),
     );
@@ -167,20 +174,34 @@ mod tests {
 
   #[test]
   fn accepts_relative_url() {
-    let d = FunctionUrlNoSchemeRelative.check(&style_with_value("url(images/bg.png)"), &ctx());
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(&style_with_value("url(images/bg.png)"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_scheme_relative_in_declaration_node() {
-    let d = FunctionUrlNoSchemeRelative
-      .check(&decl_with_value("url(//cdn.example.com/font.woff)"), &ctx());
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(&decl_with_value("url(//cdn.example.com/font.woff)"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn ignores_non_url_function() {
-    let d = FunctionUrlNoSchemeRelative.check(&style_with_value("rgb(0, 0, 0)"), &ctx());
+    let rule = configured(&FunctionUrlNoSchemeRelative, None);
+    let d = rule.check(&style_with_value("rgb(0, 0, 0)"), &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "foo": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"function-url-no-scheme-relative\""]
+    );
   }
 }

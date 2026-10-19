@@ -1,31 +1,43 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow duplicate selectors within keyframe blocks.
-///
-/// Equivalent to Stylelint's `keyframe-block-no-duplicate-selectors` rule.
-///
-/// Checks `@keyframes` at-rules for child `Style` nodes that share the same
-/// selector (e.g. two `from` or two `50%` blocks).
-pub struct KeyframeBlockNoDuplicateSelectors;
+const NAME: &str = "keyframe-block-no-duplicate-selectors";
 
-impl Rule for KeyframeBlockNoDuplicateSelectors {
-  fn name(&self) -> &'static str {
-    "keyframe-block-no-duplicate-selectors"
+declare_rule! {
+  /// Disallow duplicate selectors within keyframe blocks.
+  ///
+  /// Equivalent to Stylelint's `keyframe-block-no-duplicate-selectors` rule.
+  ///
+  /// Checks `@keyframes` at-rules for child `Style` nodes that share the same
+  /// selector (e.g. two `from` or two `50%` blocks).
+  pub struct KeyframeBlockNoDuplicateSelectors => KeyframeBlockNoDuplicateSelectorsCheck {
+    name: NAME,
+    description: "Disallow duplicate selectors within keyframe blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow duplicate selectors within keyframe blocks"
+/// `keyframe-block-no-duplicate-selectors`, which takes no options.
+pub struct KeyframeBlockNoDuplicateSelectorsCheck;
+
+impl KeyframeBlockNoDuplicateSelectorsCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for KeyframeBlockNoDuplicateSelectorsCheck {
   /// Flags two keyframe blocks in one `@keyframes` sharing a selector.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
@@ -45,10 +57,9 @@ impl Rule for KeyframeBlockNoDuplicateSelectors {
         if !seen.insert(selector.clone()) {
           diagnostics.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Unexpected duplicate keyframe selector \"{}\"", selector),
             )
-            .severity(self.default_severity())
             .span(Span::new(style_rule.span.offset, style_rule.span.length)),
           );
         }
@@ -64,11 +75,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{ctx, scss_ctx_with_source};
+  use crate::testing::{configured, ctx, scss_ctx_with_source};
 
   #[test]
   fn reports_duplicate_keyframe_selectors() {
-    let rule = KeyframeBlockNoDuplicateSelectors;
+    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
@@ -119,7 +130,7 @@ mod tests {
 
   #[test]
   fn ignores_unique_keyframe_selectors() {
-    let rule = KeyframeBlockNoDuplicateSelectors;
+    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "fade".to_string(),
@@ -145,7 +156,7 @@ mod tests {
 
   #[test]
   fn ignores_non_keyframes_at_rules() {
-    let rule = KeyframeBlockNoDuplicateSelectors;
+    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
@@ -158,9 +169,9 @@ mod tests {
 
   #[test]
   fn detects_duplicates_in_parsed_css_keyframes() {
+    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
     let css = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
     let result = gale_css_parser::parse(css, Syntax::Css).expect("should parse CSS");
-    let rule = KeyframeBlockNoDuplicateSelectors;
     let ctx = ctx();
     let mut all_diags = Vec::new();
     for node in &result.nodes {
@@ -175,9 +186,9 @@ mod tests {
 
   #[test]
   fn detects_duplicates_in_parsed_scss_keyframes() {
+    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
     let scss = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
     let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
-    let rule = KeyframeBlockNoDuplicateSelectors;
     let ctx = scss_ctx_with_source(scss);
     let mut all_diags = Vec::new();
     for node in &result.nodes {
@@ -187,6 +198,33 @@ mod tests {
       all_diags.len(),
       1,
       "should detect duplicate 'from' in SCSS keyframes"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        "keyframe-block-no-duplicate-selectors",
+        serde_json::json!(true)
+      )
+      .is_empty()
+    );
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "keyframe-block-no-duplicate-selectors",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        "keyframe-block-no-duplicate-selectors",
+        serde_json::json!("always")
+      ),
+      ["Unexpected option value \"always\" for rule \"keyframe-block-no-duplicate-selectors\""]
     );
   }
 }

@@ -1,19 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::js_number::{parse_float, to_js_string, to_precision};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Specify number or percentage notation for lightness.
-///
-/// Equivalent to Stylelint's `lightness-notation` rule, including its
-/// autofix.  Checks the lightness channel of `lab()`, `lch()`, `oklab()` and
-/// `oklch()`, also in relative color syntax.  Primary option: `"percentage"`
-/// or `"number"`.  `oklab()`/`oklch()` lightness runs from 0 to 1 as a
-/// number, so their fixes scale by 100; `lab()`/`lch()` keep the number.
-pub struct LightnessNotation;
+const NAME: &str = "lightness-notation";
+
+declare_rule! {
+  /// Specify number or percentage notation for lightness.
+  ///
+  /// Equivalent to Stylelint's `lightness-notation` rule, including its
+  /// autofix.  Checks the lightness channel of `lab()`, `lch()`, `oklab()` and
+  /// `oklch()`, also in relative color syntax.  Primary option: `"percentage"`
+  /// or `"number"`.  `oklab()`/`oklch()` lightness runs from 0 to 1 as a
+  /// number, so their fixes scale by 100; `lab()`/`lch()` keep the number.
+  pub struct LightnessNotation => LightnessNotationCheck {
+    name: NAME,
+    description: "Specify number or percentage notation for lightness values",
+    default_severity: Warning,
+  }
+}
+
+/// `lightness-notation` as configured.
+pub struct LightnessNotationCheck {
+  /// `Some(true)` for `"percentage"`, `Some(false)` for `"number"`; the
+  /// rule checks nothing without one.
+  want_percentage: Option<bool>,
+}
+
+impl LightnessNotationCheck {
+  /// Stylelint's options: `"percentage"` or `"number"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["percentage", "number"]);
+    options.finish()?;
+    Ok(Self {
+      want_percentage: notation.map(|notation| notation == "percentage"),
+    })
+  }
+}
 
 /// Functions whose numeric lightness runs from 0 to 1.
 const ZERO_TO_ONE: &[&str] = &["oklab", "oklch"];
@@ -21,26 +50,12 @@ const ZERO_TO_ONE: &[&str] = &["oklab", "oklch"];
 /// Functions whose numeric lightness runs from 0 to 100.
 const ZERO_TO_HUNDRED: &[&str] = &["lab", "lch"];
 
-impl Rule for LightnessNotation {
-  fn name(&self) -> &'static str {
-    "lightness-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify number or percentage notation for lightness values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for LightnessNotationCheck {
   /// Reports every lightness in the wrong notation, with a fix that converts
   /// it the way Stylelint does.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let want_percentage = match ctx.primary_option_str() {
-      Some("percentage") => true,
-      Some("number") => false,
-      _ => return Vec::new(),
+    let Some(want_percentage) = self.want_percentage else {
+      return Vec::new();
     };
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
@@ -89,16 +104,12 @@ impl Rule for LightnessNotation {
         let start = decl.value_span.start + lightness.source_index;
         let span = Span::new(start, lightness.source_end_index - lightness.source_index);
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{unfixed}\" to be \"{fixed}\""),
-          )
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("Replace \"{unfixed}\" with \"{fixed}\""),
-            vec![Edit::new(span, fixed.clone())],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{unfixed}\" to be \"{fixed}\""))
+            .span(span)
+            .fix(Fix::new(
+              format!("Replace \"{unfixed}\" with \"{fixed}\""),
+              vec![Edit::new(span, fixed.clone())],
+            )),
         );
       };
       value_parser::walk(&parsed, &mut |node| {
@@ -298,5 +309,15 @@ mod tests {
     let source = "a { color: oklch(0.5 0.2 120) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(RULE, json!("number")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("percent")),
+      ["Invalid option value \"percent\" for rule \"lightness-notation\""]
+    );
   }
 }
