@@ -178,6 +178,26 @@ impl<'a> PostcssTree<'a> {
     self.source.get(node.start..node.end).unwrap_or("")
   }
 
+  /// stylelint-scss's `declarationValueIndex`: where the declaration's value
+  /// starts, counted from the start of the declaration as the position of
+  /// the first `:` in `decl.toString()` plus what follows it in
+  /// `raws.between`.
+  pub fn declaration_value_index(&self, decl: &Node) -> Option<usize> {
+    let prop_and_between = self
+      .source
+      .get(decl.name_span.start..decl.value_span.start)?;
+    let between = self.source.get(decl.name_span.end..decl.value_span.start)?;
+    let before_colon = prop_and_between.find(':')?;
+    let after_colon = between.len() - between.find(':')?;
+    Some(before_colon + after_colon)
+  }
+
+  /// stylelint-scss's `atRuleParamIndex`: where the at-rule's params start,
+  /// counted from its `@`.
+  pub fn at_rule_param_index(&self, at_rule: &Node) -> usize {
+    1 + at_rule.name.len() + at_rule.after_name.len()
+  }
+
   /// Every declaration, in document order.
   pub fn decls(&self) -> impl Iterator<Item = &Node> {
     self.nodes.iter().filter(|n| n.kind == NodeKind::Decl)
