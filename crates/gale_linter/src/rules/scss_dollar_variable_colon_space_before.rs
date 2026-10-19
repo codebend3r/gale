@@ -1,36 +1,52 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow whitespace before the colon in `$variable` declarations.
-///
-/// Default: `"never"` (no space before the colon).
-///
-/// ```scss
-/// // Good (never)
-/// $var: value;
-///
-/// // Bad (never)
-/// $var : value;
-/// ```
-///
-/// Equivalent to `scss/dollar-variable-colon-space-before`.
-pub struct ScssDollarVariableColonSpaceBefore;
+const NAME: &str = "scss/dollar-variable-colon-space-before";
 
-impl Rule for ScssDollarVariableColonSpaceBefore {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-colon-space-before"
+declare_rule! {
+  /// Require or disallow whitespace before the colon in `$variable` declarations.
+  ///
+  /// Default: `"never"` (no space before the colon).
+  ///
+  /// ```scss
+  /// // Good (never)
+  /// $var: value;
+  ///
+  /// // Bad (never)
+  /// $var : value;
+  /// ```
+  ///
+  /// Equivalent to `scss/dollar-variable-colon-space-before`.
+  pub struct ScssDollarVariableColonSpaceBefore => ScssDollarVariableColonSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the colon in $variable declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the colon in $variable declarations"
+/// `scss/dollar-variable-colon-space-before` as configured.
+pub struct ScssDollarVariableColonSpaceBeforeCheck {
+  /// The primary option: `"always"` or `"never"`.
+  expectation: &'static str,
+}
+
+impl ScssDollarVariableColonSpaceBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"`, `"never"` when not given.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&["always", "never"])
+      .unwrap_or("never");
+    options.finish()?;
+    Ok(Self { expectation })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariableColonSpaceBeforeCheck {
   /// Flags a `$variable` declaration whose space before the colon does not match
   /// the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -38,7 +54,7 @@ impl Rule for ScssDollarVariableColonSpaceBefore {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.expectation;
     let mut diagnostics = Vec::new();
 
     let source = ctx.source;
@@ -77,10 +93,9 @@ impl Rule for ScssDollarVariableColonSpaceBefore {
           if spaces > 0 {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Unexpected space before \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, name_end - dollar_pos)),
             );
           }
@@ -89,10 +104,9 @@ impl Rule for ScssDollarVariableColonSpaceBefore {
           if spaces != 1 {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Expected single space before \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, name_end - dollar_pos)),
             );
           }
@@ -111,29 +125,38 @@ impl Rule for ScssDollarVariableColonSpaceBefore {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn allows_no_space_before_colon() {
+    let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = scss_ctx_with_source("$color: red;");
-    let d = ScssDollarVariableColonSpaceBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_space_before_colon() {
+    let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = scss_ctx_with_source("$color : red;");
-    let d = ScssDollarVariableColonSpaceBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = ctx_with_source("$color : red;");
-    assert!(
-      ScssDollarVariableColonSpaceBefore
-        .check_root(&[], &ctx)
-        .is_empty()
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/dollar-variable-colon-space-before\""]
     );
   }
 }

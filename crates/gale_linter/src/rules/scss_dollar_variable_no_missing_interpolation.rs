@@ -1,31 +1,55 @@
 use std::sync::LazyLock;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, ValueNode};
 
-/// Require `#{...}` around a Sass variable used where CSS reads its text
-/// rather than its value.
-///
-/// Equivalent to stylelint-scss's `scss/dollar-variable-no-missing-interpolation`.
-/// It knows the variables the stylesheet assigns (and the `$var` or
-/// `module.$var` a custom property is set to), and reports the first one
-/// left bare in:
-///
-/// - a custom-ident property (`animation-name`, `counter-reset`, ...) or
-///   `@supports`, when the variable holds a quoted string;
-/// - `@keyframes` or `@counter-style` params, whatever it holds;
-/// - a custom property (`--x`), whatever it holds.
-///
-/// The fix wraps every bare variable reference in the value.  In a custom
-/// property a variable inside a Sass function call has the whole call
-/// wrapped (`#{svg.encode($icon)}`), while native CSS functions stay
-/// outside (`calc(#{$size} * 2)`).
-pub struct ScssDollarVariableNoMissingInterpolation;
+const NAME: &str = "scss/dollar-variable-no-missing-interpolation";
+
+declare_rule! {
+  /// Require `#{...}` around a Sass variable used where CSS reads its text
+  /// rather than its value.
+  ///
+  /// Equivalent to stylelint-scss's `scss/dollar-variable-no-missing-interpolation`.
+  /// It knows the variables the stylesheet assigns (and the `$var` or
+  /// `module.$var` a custom property is set to), and reports the first one
+  /// left bare in:
+  ///
+  /// - a custom-ident property (`animation-name`, `counter-reset`, ...) or
+  ///   `@supports`, when the variable holds a quoted string;
+  /// - `@keyframes` or `@counter-style` params, whatever it holds;
+  /// - a custom property (`--x`), whatever it holds.
+  ///
+  /// The fix wraps every bare variable reference in the value.  In a custom
+  /// property a variable inside a Sass function call has the whole call
+  /// wrapped (`#{svg.encode($icon)}`), while native CSS functions stay
+  /// outside (`calc(#{$size} * 2)`).
+  pub struct ScssDollarVariableNoMissingInterpolation => ScssDollarVariableNoMissingInterpolationCheck {
+    name: NAME,
+    description: "Disallow $variables without #{} interpolation in strings",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/dollar-variable-no-missing-interpolation`, which takes no options.
+pub struct ScssDollarVariableNoMissingInterpolationCheck;
+
+impl ScssDollarVariableNoMissingInterpolationCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Properties whose value is a custom identifier.
 const CUSTOM_IDENT_PROPERTIES: &[&str] = &[
@@ -51,19 +75,7 @@ enum Required {
   All,
 }
 
-impl Rule for ScssDollarVariableNoMissingInterpolation {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-no-missing-interpolation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow $variables without #{} interpolation in strings"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariableNoMissingInterpolationCheck {
   /// Reports the first bare variable in each declaration or at-rule that
   /// needs it interpolated.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -115,10 +127,9 @@ impl Rule for ScssDollarVariableNoMissingInterpolation {
         |at| Span::new(node.start + at, variable.len()),
       );
       let mut diag = Diagnostic::new(
-        self.name(),
+        NAME,
         format!("Expected variable {variable} to be interpolated when using it with {node_name}"),
       )
-      .severity(self.default_severity())
       .message_args([node_name.as_str(), variable])
       .span(span);
       if let Some(fix) = value_index.and_then(|index| interpolate(&tree, node, value, index)) {
@@ -445,11 +456,12 @@ const NATIVE_CSS_FUNCTIONS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "scss/dollar-variable-no-missing-interpolation";
 
@@ -730,6 +742,19 @@ mod tests {
     assert_eq!(
       fixed("$a: 1;\n$b: 2;\n:root { --x: $a; --y: f($a, $b); }\n"),
       "$a: 1;\n$b: 2;\n:root { --x: #{$a}; --y: #{f($a, $b)}; }\n"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"scss/dollar-variable-no-missing-interpolation\""
+      ]
     );
   }
 }

@@ -1,32 +1,83 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before `$`-variable declarations.
-///
-/// Primary option: `"always"` or `"never"`.
-///
-/// Secondary options:
-/// - `except: ["after-comment", "after-dollar-variable", "first-nested"]`
-/// - `ignore: ["after-comment", "inside-single-line-block"]`
-///
-/// Equivalent to `scss/dollar-variable-empty-line-before`.
-pub struct ScssDollarVariableEmptyLineBefore;
+const NAME: &str = "scss/dollar-variable-empty-line-before";
 
-impl Rule for ScssDollarVariableEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before `$`-variable declarations.
+  ///
+  /// Primary option: `"always"` or `"never"`.
+  ///
+  /// Secondary options:
+  /// - `except: ["after-comment", "after-dollar-variable", "first-nested"]`
+  /// - `ignore: ["after-comment", "inside-single-line-block"]`
+  ///
+  /// Equivalent to `scss/dollar-variable-empty-line-before`.
+  pub struct ScssDollarVariableEmptyLineBefore => ScssDollarVariableEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before $-variable declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before $-variable declarations"
+/// `scss/dollar-variable-empty-line-before` as configured.
+pub struct ScssDollarVariableEmptyLineBeforeCheck {
+  /// The primary option: `"always"` or `"never"`.
+  expectation: &'static str,
+  /// `except: ["after-comment"]`.
+  except_after_comment: bool,
+  /// `except: ["after-dollar-variable"]`.
+  except_after_dollar_variable: bool,
+  /// `except: ["first-nested"]`.
+  except_first_nested: bool,
+  /// `ignore: ["after-comment"]`.
+  ignore_after_comment: bool,
+  /// `ignore: ["after-dollar-variable"]`.
+  ignore_after_dollar_variable: bool,
+  /// `ignore: ["inside-single-line-block"]`.
+  ignore_inside_single_line_block: bool,
+}
+
+impl ScssDollarVariableEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"` (`"always"` when not
+  /// given), then `except`, `ignore` and `disableFix`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&["always", "never"])
+      .unwrap_or("always");
+    let except = options.keywords(
+      "except",
+      &["first-nested", "after-comment", "after-dollar-variable"],
+    );
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "after-comment",
+        "inside-single-line-block",
+        "after-dollar-variable",
+      ],
+    );
+    // `disableFix` is applied by the runner; reading it keeps it known.
+    options.value("disableFix", &[Accept::Boolean]);
+    options.finish()?;
+    Ok(Self {
+      expectation,
+      except_after_comment: except.contains(&"after-comment"),
+      except_after_dollar_variable: except.contains(&"after-dollar-variable"),
+      except_first_nested: except.contains(&"first-nested"),
+      ignore_after_comment: ignore.contains(&"after-comment"),
+      ignore_after_dollar_variable: ignore.contains(&"after-dollar-variable"),
+      ignore_inside_single_line_block: ignore.contains(&"inside-single-line-block"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariableEmptyLineBeforeCheck {
   /// Flags a `$variable` declaration whose preceding blank line does not match
   /// the option, after applying the `except`/`ignore` secondaries.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -34,16 +85,15 @@ impl Rule for ScssDollarVariableEmptyLineBefore {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("always");
-
-    // Parse secondary options
-    let secondary = ctx.secondary_options();
-    let except_after_comment = has_option(secondary, "except", "after-comment");
-    let except_after_dollar_variable = has_option(secondary, "except", "after-dollar-variable");
-    let except_first_nested = has_option(secondary, "except", "first-nested");
-    let ignore_after_comment = has_option(secondary, "ignore", "after-comment");
-    let ignore_inside_single_line_block =
-      has_option(secondary, "ignore", "inside-single-line-block");
+    let Self {
+      expectation,
+      except_after_comment,
+      except_after_dollar_variable,
+      except_first_nested,
+      ignore_after_comment,
+      ignore_after_dollar_variable,
+      ignore_inside_single_line_block,
+    } = *self;
 
     let source = ctx.source;
     let lines: Vec<&str> = source.lines().collect();
@@ -213,9 +263,12 @@ impl Rule for ScssDollarVariableEmptyLineBefore {
           continue;
         }
       }
+      if ignore_after_dollar_variable && is_after_dollar_variable {
+        continue;
+      }
 
       // Determine expected state
-      let mut expect_empty_line = option == "always";
+      let mut expect_empty_line = expectation == "always";
 
       // Handle except options (they flip the expectation)
       if except_first_nested && (is_first_nested || is_first_line) {
@@ -238,14 +291,12 @@ impl Rule for ScssDollarVariableEmptyLineBefore {
       let leading_ws = line.len() - line.trim_start().len();
       if expect_empty_line && !has_empty_line_before && !is_first_line {
         diagnostics.push(
-          Diagnostic::new(self.name(), "Expected an empty line before $-variable")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Expected an empty line before $-variable")
             .span(Span::new(byte_offset + leading_ws, trimmed.len())),
         );
       } else if !expect_empty_line && has_empty_line_before {
         diagnostics.push(
-          Diagnostic::new(self.name(), "Unexpected empty line before $-variable")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected empty line before $-variable")
             .span(Span::new(byte_offset + leading_ws, trimmed.len())),
         );
       }
@@ -255,27 +306,22 @@ impl Rule for ScssDollarVariableEmptyLineBefore {
   }
 }
 
-/// Check if a secondary options object has a given value in a given array key.
-fn has_option(secondary: Option<&serde_json::Value>, key: &str, value: &str) -> bool {
-  secondary
-    .and_then(|obj| obj.get(key))
-    .and_then(|v| v.as_array())
-    .map(|arr| arr.iter().any(|item| item.as_str() == Some(value)))
-    .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source, scss_ctx_with_source_and_options};
+  use crate::testing::{
+    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+    scss_ctx_with_source_and_options,
+  };
 
   #[test]
   fn always_reports_missing_empty_line() {
     let src = ".foo {\n  color: red;\n  $var: 1;\n}";
     let opts = serde_json::json!(["always"]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected an empty line"));
   }
@@ -284,8 +330,9 @@ mod tests {
   fn always_allows_empty_line_before() {
     let src = ".foo {\n  color: red;\n\n  $var: 1;\n}";
     let opts = serde_json::json!(["always"]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
@@ -293,8 +340,9 @@ mod tests {
   fn never_reports_empty_line() {
     let src = ".foo {\n  color: red;\n\n  $var: 1;\n}";
     let opts = serde_json::json!(["never"]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
     assert!(
       d[0]
@@ -307,8 +355,9 @@ mod tests {
   fn never_allows_no_empty_line() {
     let src = ".foo {\n  color: red;\n  $var: 1;\n}";
     let opts = serde_json::json!(["never"]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
@@ -317,8 +366,9 @@ mod tests {
     // "always" + except after-dollar-variable => no empty line needed between $vars
     let src = ".foo {\n\n  $var1: 1;\n  $var2: 2;\n}";
     let opts = serde_json::json!(["always", { "except": ["after-dollar-variable"] }]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
@@ -327,27 +377,78 @@ mod tests {
     // "always" + except first-nested => no empty line needed for first child
     let src = ".foo {\n  $var: 1;\n}";
     let opts = serde_json::json!(["always", { "except": ["first-nested"] }]);
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, opts.clone());
     let ctx = scss_ctx_with_source_and_options(src, &opts);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, None);
     let ctx = ctx_with_source(".foo {\n  color: red;\n  $var: 1;\n}");
-    assert!(
-      ScssDollarVariableEmptyLineBefore
-        .check_root(&[], &ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&[], &ctx).is_empty());
   }
 
   #[test]
   fn default_is_always() {
+    let rule = configured(&ScssDollarVariableEmptyLineBefore, None);
     // No options => defaults to "always"
     let src = ".foo {\n  color: red;\n  $var: 1;\n}";
     let ctx = scss_ctx_with_source(src);
-    let d = ScssDollarVariableEmptyLineBefore.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/dollar-variable-empty-line-before\""]
+    );
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", {
+          "except": ["first-nested", "after-comment", "after-dollar-variable"],
+          "ignore": ["after-comment", "inside-single-line-block", "after-dollar-variable"],
+          "disableFix": true
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignore": ["first-nested"] }])
+      ),
+      [
+        "Invalid value \"first-nested\" for option \"ignore\" of rule \"scss/dollar-variable-empty-line-before\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignoreProperties": ["x"] }])
+      ),
+      [
+        "Invalid option name \"ignoreProperties\" for rule \"scss/dollar-variable-empty-line-before\""
+      ]
+    );
+  }
+
+  #[test]
+  fn ignore_after_dollar_variable_skips_consecutive_variables() {
+    let source = "a {\n  color: red;\n\n  $a: 1;\n  $b: 2;\n}\n";
+    let lint = |options: serde_json::Value| {
+      crate::testing::lint(NAME, options, source, gale_css_parser::Syntax::Scss).len()
+    };
+    assert_eq!(lint(serde_json::json!("always")), 1);
+    assert_eq!(
+      lint(serde_json::json!(["always", { "ignore": ["after-dollar-variable"] }])),
+      0
+    );
   }
 }

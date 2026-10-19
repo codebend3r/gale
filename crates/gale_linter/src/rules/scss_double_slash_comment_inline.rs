@@ -1,32 +1,56 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow or require double-slash comments to be inline (on the same line as code).
-///
-/// Primary option: `"never"` (default) disallows inline `//` comments.
-/// `"always"` requires that `//` comments be inline.
-///
-/// An inline comment is one where there is non-whitespace content before `//`
-/// on the same line.
-///
-/// Equivalent to `scss/double-slash-comment-inline`.
-pub struct ScssDoubleSlashCommentInline;
+const NAME: &str = "scss/double-slash-comment-inline";
 
-impl Rule for ScssDoubleSlashCommentInline {
-  fn name(&self) -> &'static str {
-    "scss/double-slash-comment-inline"
+declare_rule! {
+  /// Disallow or require double-slash comments to be inline (on the same line as code).
+  ///
+  /// Primary option: `"never"` (default) disallows inline `//` comments.
+  /// `"always"` requires that `//` comments be inline.
+  ///
+  /// An inline comment is one where there is non-whitespace content before `//`
+  /// on the same line.
+  ///
+  /// Equivalent to `scss/double-slash-comment-inline`.
+  pub struct ScssDoubleSlashCommentInline => ScssDoubleSlashCommentInlineCheck {
+    name: NAME,
+    description: "Disallow or require double-slash comments to be inline",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow or require double-slash comments to be inline"
+/// `scss/double-slash-comment-inline` as configured.
+pub struct ScssDoubleSlashCommentInlineCheck {
+  /// The primary option: `"always"` or `"never"`.
+  expectation: &'static str,
+  /// `ignore: ["stylelint-commands"]`: comments starting `stylelint-` are
+  /// left alone.
+  ignore_stylelint_commands: bool,
+}
+
+impl ScssDoubleSlashCommentInlineCheck {
+  /// Stylelint's options: `"always"` or `"never"` (`"never"` when not
+  /// given), then `ignore: ["stylelint-commands"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&["always", "never"])
+      .unwrap_or("never");
+    let ignore = options.keywords("ignore", &["stylelint-commands"]);
+    options.finish()?;
+    Ok(Self {
+      expectation,
+      ignore_stylelint_commands: ignore.contains(&"stylelint-commands"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDoubleSlashCommentInlineCheck {
   /// Flags a `//` comment whose inline placement does not match the option; a
   /// comment counts as inline when code precedes it on the same line.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -34,7 +58,7 @@ impl Rule for ScssDoubleSlashCommentInline {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.expectation;
     let source = ctx.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -85,12 +109,22 @@ impl Rule for ScssDoubleSlashCommentInline {
         let end = source[i..].find('\n').map(|p| i + p).unwrap_or(len);
         let comment_len = end - comment_start;
 
+        // Upstream skips a comment whose text starts `stylelint-` when
+        // asked to ignore stylelint commands.
+        if self.ignore_stylelint_commands
+          && source[comment_start + 2..end]
+            .trim_start()
+            .starts_with("stylelint-")
+        {
+          i = end;
+          continue;
+        }
+
         match option {
           "never" => {
             if is_inline {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected inline double-slash comment")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected inline double-slash comment")
                   .span(Span::new(comment_start, comment_len)),
               );
             }
@@ -98,8 +132,7 @@ impl Rule for ScssDoubleSlashCommentInline {
           "always" => {
             if !is_inline {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected double-slash comment to be inline")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected double-slash comment to be inline")
                   .span(Span::new(comment_start, comment_len)),
               );
             }
@@ -137,19 +170,24 @@ fn has_non_whitespace_before_on_line(source: &str, pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source, scss_ctx_with_source_and_options};
+  use crate::testing::{
+    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+    scss_ctx_with_source_and_options,
+  };
 
   #[test]
   fn never_allows_standalone_comment() {
+    let rule = configured(&ScssDoubleSlashCommentInline, None);
     let src = "// standalone comment\n.foo { color: red; }";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_inline_comment() {
+    let rule = configured(&ScssDoubleSlashCommentInline, None);
     let src = ".foo { color: red; // inline comment\n}";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected inline"));
   }
@@ -157,18 +195,18 @@ mod tests {
   #[test]
   fn always_allows_inline_comment() {
     let opts = serde_json::json!("always");
+    let rule = configured(&ScssDoubleSlashCommentInline, opts.clone());
     let src = ".foo { color: red; // inline comment\n}";
-    let d =
-      ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_reports_standalone_comment() {
     let opts = serde_json::json!("always");
+    let rule = configured(&ScssDoubleSlashCommentInline, opts.clone());
     let src = "// standalone comment\n.foo { color: red; }";
-    let d =
-      ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert_eq!(d.len(), 1);
     assert!(
       d[0]
@@ -179,25 +217,64 @@ mod tests {
 
   #[test]
   fn never_allows_indented_standalone() {
+    let rule = configured(&ScssDoubleSlashCommentInline, None);
     let src = ".foo {\n  // indented standalone\n  color: red;\n}";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssDoubleSlashCommentInline, None);
     let ctx = ctx_with_source(".foo { color: red; } // inline");
-    assert!(
-      ScssDoubleSlashCommentInline
-        .check_root(&[], &ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&[], &ctx).is_empty());
   }
 
   #[test]
   fn skips_double_slash_in_string() {
+    let rule = configured(&ScssDoubleSlashCommentInline, None);
     let src = ".foo { content: \"// not a comment\"; }";
-    let d = ScssDoubleSlashCommentInline.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/double-slash-comment-inline\""]
+    );
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "ignore": ["stylelint-commands"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "ignore": ["comments"] }])
+      ),
+      [
+        "Invalid value \"comments\" for option \"ignore\" of rule \"scss/double-slash-comment-inline\""
+      ]
+    );
+  }
+
+  #[test]
+  fn ignore_stylelint_commands_skips_disable_comments() {
+    let source =
+      "a {\n  color: red; // stylelint-disable-line color-named\n  width: 1px; // note\n}\n";
+    let lint = |options: serde_json::Value| {
+      crate::testing::lint(NAME, options, source, gale_css_parser::Syntax::Scss).len()
+    };
+    assert_eq!(lint(serde_json::json!("never")), 2);
+    assert_eq!(
+      lint(serde_json::json!(["never", { "ignore": ["stylelint-commands"] }])),
+      1
+    );
   }
 }

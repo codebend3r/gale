@@ -1,34 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow nested properties of one namespace split into several groups
-/// in a block (`background: red { ... }` and later `background: { ... }`).
-///
-/// Equivalent to stylelint-scss's
-/// `scss/declaration-nested-properties-no-divided-groups`.  Each child of a
-/// rule or at-rule that opens a nested group is read with upstream's
-/// `parseNestedPropRoot`: a nested declaration (`margin: 0 { ... }`) as
-/// `prop: value`, a rule (`background: { ... }`, or any rule in plain CSS)
-/// by its selector.  When two or more in one block share a namespace, the
-/// namespace is reported in each of them.
-pub struct ScssDeclarationNestedPropertiesNoDividedGroups;
+const NAME: &str = "scss/declaration-nested-properties-no-divided-groups";
 
-impl Rule for ScssDeclarationNestedPropertiesNoDividedGroups {
-  fn name(&self) -> &'static str {
-    "scss/declaration-nested-properties-no-divided-groups"
+declare_rule! {
+  /// Disallow nested properties of one namespace split into several groups
+  /// in a block (`background: red { ... }` and later `background: { ... }`).
+  ///
+  /// Equivalent to stylelint-scss's
+  /// `scss/declaration-nested-properties-no-divided-groups`.  Each child of a
+  /// rule or at-rule that opens a nested group is read with upstream's
+  /// `parseNestedPropRoot`: a nested declaration (`margin: 0 { ... }`) as
+  /// `prop: value`, a rule (`background: { ... }`, or any rule in plain CSS)
+  /// by its selector.  When two or more in one block share a namespace, the
+  /// namespace is reported in each of them.
+  pub struct ScssDeclarationNestedPropertiesNoDividedGroups => ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
+    name: NAME,
+    description: "Disallow divided groups in nested property declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow divided groups in nested property declarations"
+/// `scss/declaration-nested-properties-no-divided-groups`, which takes no options.
+pub struct ScssDeclarationNestedPropertiesNoDividedGroupsCheck;
+
+impl ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
   /// Reports every group of a namespace that has more than one group in
   /// the same block.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -71,12 +83,11 @@ impl Rule for ScssDeclarationNestedPropertiesNoDividedGroups {
           );
           diags.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!(
                 "Expected all nested properties of \"{namespace}\" namespace to be in one nested group"
               ),
             )
-            .severity(self.default_severity())
             .message_args([namespace.as_str()])
             .span(span),
           );
@@ -148,12 +159,13 @@ fn nested_prop_root(text: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
   use super::nested_prop_root;
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/declaration-nested-properties-no-divided-groups";
 
@@ -258,5 +270,18 @@ mod tests {
     assert_eq!(nested_prop_root("#{$a}:hover"), None);
     assert_eq!(nested_prop_root("a[href='x:y']"), None);
     assert_eq!(nested_prop_root(".a"), None);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"scss/declaration-nested-properties-no-divided-groups\""
+      ]
+    );
   }
 }
