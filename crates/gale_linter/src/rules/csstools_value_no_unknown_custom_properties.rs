@@ -3,16 +3,54 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow unknown custom properties referenced via `var()`.
-///
-/// Equivalent to the csstools plugin `csstools/value-no-unknown-custom-properties`.
-/// Checks that every `var(--name)` reference points to a custom property that is
-/// actually defined — either in the same file or in one of the `importFrom` sources.
-pub struct CsstoolsValueNoUnknownCustomProperties;
+const NAME: &str = "csstools/value-no-unknown-custom-properties";
+
+declare_rule! {
+  /// Disallow unknown custom properties referenced via `var()`.
+  ///
+  /// Equivalent to the csstools plugin `csstools/value-no-unknown-custom-properties`.
+  /// Checks that every `var(--name)` reference points to a custom property that is
+  /// actually defined — either in the same file or in one of the `importFrom` sources.
+  pub struct CsstoolsValueNoUnknownCustomProperties => CsstoolsValueNoUnknownCustomPropertiesCheck {
+    name: NAME,
+    description: "Disallow unknown custom properties",
+    default_severity: Warning,
+  }
+}
+
+/// `csstools/value-no-unknown-custom-properties` as configured.
+pub struct CsstoolsValueNoUnknownCustomPropertiesCheck {
+  /// The `importFrom` sources, sorted.
+  import_from: Vec<String>,
+}
+
+impl CsstoolsValueNoUnknownCustomPropertiesCheck {
+  /// The plugin's options: `true` (its `possible` is a function that takes
+  /// `true`, `false` or `null`), then `importFrom`, a path or a list of
+  /// them.  The plugin validates no secondary option, so gale reads
+  /// `importFrom` as written and ignores any other key.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_test(|value| value.is_boolean() || value.is_null());
+    options.finish()?;
+    let mut import_from: Vec<String> = match setting.secondary().and_then(|s| s.get("importFrom")) {
+      Some(serde_json::Value::Array(paths)) => paths
+        .iter()
+        .filter_map(|path| path.as_str().map(str::to_string))
+        .collect(),
+      Some(serde_json::Value::String(path)) => vec![path.clone()],
+      _ => Vec::new(),
+    };
+    import_from.sort();
+    Ok(Self { import_from })
+  }
+}
 
 /// Global cache: maps a canonical sorted key of import paths to the set of
 /// custom property names defined in those files.
@@ -25,26 +63,14 @@ fn import_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
   IMPORT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-impl Rule for CsstoolsValueNoUnknownCustomProperties {
-  fn name(&self) -> &'static str {
-    "csstools/value-no-unknown-custom-properties"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown custom properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CsstoolsValueNoUnknownCustomPropertiesCheck {
   /// Collects custom property definitions from `importFrom` and from this file,
   /// then flags every `var()` reference that resolves to none of them.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
 
     // 1. Collect custom property definitions from importFrom files.
-    let imported_props = load_imported_custom_properties(context);
+    let imported_props = load_imported_custom_properties(&self.import_from, context);
 
     // 2. Collect custom property definitions from the current file.
     let mut known_props: HashSet<String> = imported_props;
@@ -52,7 +78,7 @@ impl Rule for CsstoolsValueNoUnknownCustomProperties {
 
     // 3. Walk all AST declarations, find var() references, report unknown ones.
     let mut diagnostics = Vec::new();
-    walk_nodes_for_vars(nodes, source, &known_props, self, &mut diagnostics);
+    walk_nodes_for_vars(nodes, source, &known_props, &mut diagnostics);
 
     diagnostics
   }
@@ -67,7 +93,6 @@ fn walk_nodes_for_vars(
   nodes: &[CssNode],
   source: &str,
   known_props: &HashSet<String>,
-  rule: &CsstoolsValueNoUnknownCustomProperties,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   for node in nodes {
@@ -75,7 +100,7 @@ fn walk_nodes_for_vars(
       CssNode::Style(style_rule) => {
         // Check declarations in this style rule.
         for decl in &style_rule.declarations {
-          check_declaration(decl, source, known_props, rule, diagnostics);
+          check_declaration(decl, source, known_props, diagnostics);
         }
         // Recurse into nested style rule children.
         walk_nodes_for_vars(
@@ -86,7 +111,6 @@ fn walk_nodes_for_vars(
             .collect::<Vec<_>>(),
           source,
           known_props,
-          rule,
           diagnostics,
         );
         // Recurse into nested at-rules.
@@ -94,16 +118,15 @@ fn walk_nodes_for_vars(
           &style_rule.nested_at_rules,
           source,
           known_props,
-          rule,
           diagnostics,
         );
       }
       CssNode::AtRule(at_rule) => {
         // Recurse into child rules (e.g., @media, @keyframes blocks).
-        walk_nodes_for_vars(&at_rule.children, source, known_props, rule, diagnostics);
+        walk_nodes_for_vars(&at_rule.children, source, known_props, diagnostics);
       }
       CssNode::Declaration(decl) => {
-        check_declaration(decl, source, known_props, rule, diagnostics);
+        check_declaration(decl, source, known_props, diagnostics);
       }
       CssNode::Comment(_) => {}
     }
@@ -115,7 +138,6 @@ fn check_declaration(
   decl: &gale_css_parser::Declaration,
   source: &str,
   known_props: &HashSet<String>,
-  rule: &CsstoolsValueNoUnknownCustomProperties,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   // Only process if the value contains `var(`.
@@ -153,13 +175,12 @@ fn check_declaration(
 
     diagnostics.push(
       Diagnostic::new(
-        rule.name(),
+        NAME,
         format!(
           "Unexpected custom property \"{}\" inside declaration \"{}\".",
           vr.name, decl.property
         ),
       )
-      .severity(rule.default_severity())
       .span(Span::new(name_offset, vr.name.len())),
     );
   }
@@ -247,23 +268,10 @@ fn collect_definitions_from_source(source: &str, props: &mut HashSet<String>) {
 
 /// Reads the `importFrom` sources and returns the custom properties they define,
 /// memoising the result on the sorted path list.
-fn load_imported_custom_properties(context: &RuleContext) -> HashSet<String> {
-  let secondary = match context.secondary_options() {
-    Some(opts) => opts,
-    None => return HashSet::new(),
-  };
-
-  let import_from = match secondary.get("importFrom") {
-    Some(serde_json::Value::Array(arr)) => arr,
-    _ => return HashSet::new(),
-  };
-
-  if import_from.is_empty() {
+fn load_imported_custom_properties(paths: &[String], context: &RuleContext) -> HashSet<String> {
+  if paths.is_empty() {
     return HashSet::new();
   }
-
-  let mut paths: Vec<&str> = import_from.iter().filter_map(|v| v.as_str()).collect();
-  paths.sort();
   let cache_key = paths.join("\n");
 
   {
@@ -278,7 +286,7 @@ fn load_imported_custom_properties(context: &RuleContext) -> HashSet<String> {
 
   let mut props = HashSet::new();
 
-  for path_str in &paths {
+  for path_str in paths {
     let resolved = resolve_import_path(path_str, node_modules.as_deref());
     if let Some(resolved_path) = resolved
       && let Ok(contents) = std::fs::read_to_string(&resolved_path)
@@ -423,10 +431,11 @@ fn is_name_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
   use gale_css_parser::Syntax;
 
   fn lint(source: &str) -> Vec<Diagnostic> {
-    let rule = CsstoolsValueNoUnknownCustomProperties;
+    let rule = configured(&CsstoolsValueNoUnknownCustomProperties, None);
     let parsed = gale_css_parser::parse(source, Syntax::Css).unwrap();
     let context = RuleContext {
       env: Default::default(),
@@ -481,5 +490,20 @@ mod tests {
     let diags = lint(":root { --my-color: var(--base-color); }");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("--base-color"));
+  }
+
+  #[test]
+  fn options_are_validated_like_the_plugin() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "importFrom": "vars.css", "x": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option \"always\" for rule \"csstools/value-no-unknown-custom-properties\""]
+    );
   }
 }

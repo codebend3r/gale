@@ -1,22 +1,46 @@
 use std::collections::HashSet;
 
 use gale_css_parser::{CssNode, Declaration, StyleRule};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 use crate::stylelint_version::stylelint_major_version;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Reports a custom property (e.g. `--my-color`) used as a value without a
-/// `var()` around it.
-///
-/// Equivalent to Stylelint's `custom-property-no-missing-var-function`
-/// rule.  Like it, only names this stylesheet defines (with a `--name:`
-/// declaration or an `@property --name` rule) count as custom properties:
-/// any other dashed ident, an anchor name in `anchor-name: --menu` say, is
-/// left alone, as are properties that take a custom ident.
-pub struct CustomPropertyNoMissingVarFunction;
+const NAME: &str = "custom-property-no-missing-var-function";
+
+declare_rule! {
+  /// Reports a custom property (e.g. `--my-color`) used as a value without a
+  /// `var()` around it.
+  ///
+  /// Equivalent to Stylelint's `custom-property-no-missing-var-function`
+  /// rule.  Like it, only names this stylesheet defines (with a `--name:`
+  /// declaration or an `@property --name` rule) count as custom properties:
+  /// any other dashed ident, an anchor name in `anchor-name: --menu` say, is
+  /// left alone, as are properties that take a custom ident.
+  pub struct CustomPropertyNoMissingVarFunction => CustomPropertyNoMissingVarFunctionCheck {
+    name: NAME,
+    description: "Disallow missing var function for custom properties",
+    default_severity: Warning,
+  }
+}
+
+/// `custom-property-no-missing-var-function`, which takes no options.
+pub struct CustomPropertyNoMissingVarFunctionCheck;
+
+impl CustomPropertyNoMissingVarFunctionCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Properties whose values may hold a dashed ident that is no custom
 /// property reference (Stylelint's `IGNORED_PROPERTIES`).
@@ -80,14 +104,14 @@ fn collect_rule<'a>(
 }
 
 /// The checks for one stylesheet.
-struct Check<'a> {
+struct ValueCheck<'a> {
   /// Custom property names the stylesheet defines.
   known: HashSet<&'a str>,
   /// Where each reported dashed ident starts in the source, and its name.
   found: Vec<(usize, &'a str)>,
 }
 
-impl<'a> Check<'a> {
+impl<'a> ValueCheck<'a> {
   /// Check a value node whose value text starts at `offset` in the source.
   fn node(&mut self, node: &ValueNode<'a>, offset: usize) {
     if node.is_function() {
@@ -131,19 +155,7 @@ impl<'a> Check<'a> {
   }
 }
 
-impl Rule for CustomPropertyNoMissingVarFunction {
-  fn name(&self) -> &'static str {
-    "custom-property-no-missing-var-function"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow missing var function for custom properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CustomPropertyNoMissingVarFunctionCheck {
   /// Flags a custom property this stylesheet defines when a value uses it
   /// bare instead of inside `var()`.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -151,7 +163,7 @@ impl Rule for CustomPropertyNoMissingVarFunction {
     let mut property_rules = Vec::new();
     collect(nodes, &mut decls, &mut property_rules);
 
-    let mut check = Check {
+    let mut check = ValueCheck {
       known: HashSet::new(),
       found: Vec::new(),
     };
@@ -197,9 +209,7 @@ impl Rule for CustomPropertyNoMissingVarFunction {
         } else {
           format!("Unexpected missing var function for \"{name}\"")
         };
-        Diagnostic::new(self.name(), message)
-          .severity(self.default_severity())
-          .span(Span::new(offset, name.len()))
+        Diagnostic::new(NAME, message).span(Span::new(offset, name.len()))
       })
       .collect()
   }
@@ -210,14 +220,14 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   /// Lint `source` with the real parser, returning `(offset, name)` for
   /// each report (the name is the quoted part of the message).
   fn lint(source: &str) -> Vec<(usize, String)> {
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
     let ctx = ctx_with_source(source);
-    CustomPropertyNoMissingVarFunction
+    configured(&CustomPropertyNoMissingVarFunction, None)
       .check_root(&parsed.nodes, &ctx)
       .into_iter()
       .map(|d| {
@@ -235,10 +245,11 @@ mod tests {
 
   #[test]
   fn names_the_property_in_the_message() {
+    let rule = configured(&CustomPropertyNoMissingVarFunction, None);
     let source = ":root { --a: 1px; }\na { margin: 0 --a; }";
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
     let ctx = ctx_with_source(source);
-    let d = CustomPropertyNoMissingVarFunction.check_root(&parsed.nodes, &ctx);
+    let d = rule.check_root(&parsed.nodes, &ctx);
     assert_eq!(d.len(), 1);
     assert!(
       d[0].message.ends_with("var function for \"--a\""),
@@ -264,5 +275,14 @@ mod tests {
   fn properties_taking_custom_idents_are_skipped() {
     let source = ":root { --fade: 1; }\na { animation-name: --fade; transition-property: --fade; }";
     assert!(lint(source).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"custom-property-no-missing-var-function\""]
+    );
   }
 }

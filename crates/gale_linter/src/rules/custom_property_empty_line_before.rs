@@ -1,44 +1,83 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity};
+use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before custom properties (`--*`).
-///
-/// Equivalent to Stylelint's `custom-property-empty-line-before` rule,
-/// autofix included.  Primary option `"always"` or `"never"`; secondary
-/// options:
-///   - `except`: `after-block`, `after-comment`, `after-custom-property`,
-///     `first-nested`
-///   - `ignore`: `after-comment`, `after-custom-property`, `first-nested`,
-///     `inside-single-line-block`
-///
-/// Works on the [`PostcssTree`] of the source, so comments and multi-line
-/// values read as Stylelint reads them.
-pub struct CustomPropertyEmptyLineBefore;
+const NAME: &str = "custom-property-empty-line-before";
 
-impl Rule for CustomPropertyEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "custom-property-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before custom properties (`--*`).
+  ///
+  /// Equivalent to Stylelint's `custom-property-empty-line-before` rule,
+  /// autofix included.  Primary option `"always"` or `"never"`; secondary
+  /// options:
+  ///   - `except`: `after-block`, `after-comment`, `after-custom-property`,
+  ///     `first-nested`
+  ///   - `ignore`: `after-comment`, `after-custom-property`, `first-nested`,
+  ///     `inside-single-line-block`
+  ///
+  /// Works on the [`PostcssTree`] of the source, so comments and multi-line
+  /// values read as Stylelint reads them.
+  pub struct CustomPropertyEmptyLineBefore => CustomPropertyEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before custom properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before custom properties"
+/// `custom-property-empty-line-before` as configured.
+pub struct CustomPropertyEmptyLineBeforeCheck {
+  /// `"always"` rather than `"never"`.
+  always: bool,
+  /// The `except` keywords.
+  except: Vec<&'static str>,
+  /// The `ignore` keywords.
+  ignore: Vec<&'static str>,
+}
+
+impl CustomPropertyEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"`, then `except` and
+  /// `ignore`.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    let except = options.keywords(
+      "except",
+      &[
+        "after-block",
+        "after-comment",
+        "after-custom-property",
+        "first-nested",
+      ],
+    );
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "after-comment",
+        "after-custom-property",
+        "first-nested",
+        "inside-single-line-block",
+      ],
+    );
+    options.finish()?;
+    Ok(Self {
+      always: expectation != Some("never"),
+      except,
+      ignore,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CustomPropertyEmptyLineBeforeCheck {
   /// Checks every custom property in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let always = ctx.primary_option_str() != Some("never");
-    let secondary = ctx.secondary_options();
-    let except = |name: &str| option_matches(secondary.and_then(|s| s.get("except")), name);
-    let ignore = |name: &str| option_matches(secondary.and_then(|s| s.get("ignore")), name);
+    let always = self.always;
+    let except = |name: &str| self.except.contains(&name);
+    let ignore = |name: &str| self.ignore.contains(&name);
     let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
@@ -72,8 +111,8 @@ impl Rule for CustomPropertyEmptyLineBefore {
         continue;
       }
       diags.push(empty_line_report(
-        self.name(),
-        self.default_severity(),
+        NAME,
+        CustomPropertyEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -99,12 +138,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &options);
-    CustomPropertyEmptyLineBefore
+    let ctx = context(source, syntax, &serde_json::Value::Null);
+    configured(&CustomPropertyEmptyLineBefore, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -171,6 +210,33 @@ mod tests {
         Syntax::Scss,
       ),
       "a {\r\n  top: 0;\r\n  --c: 3;\r\n}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", {
+          "except": ["after-block", "after-comment", "after-custom-property", "first-nested"],
+          "ignore": ["after-comment", "after-custom-property", "first-nested", "inside-single-line-block"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"custom-property-empty-line-before\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignore": ["after-block"] }])
+      ),
+      [
+        "Invalid value \"after-block\" for option \"ignore\" of rule \"custom-property-empty-line-before\""
+      ]
     );
   }
 }

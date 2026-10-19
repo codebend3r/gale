@@ -1,46 +1,77 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity};
+use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
-use crate::pattern::{self, option_matches};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::pattern::{self, Regex};
 use crate::postcss_tree::NodeKind;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
+use std::sync::Arc;
 
-/// Require or disallow an empty line before comments.
-///
-/// Equivalent to Stylelint's `comment-empty-line-before` rule, autofix
-/// included.  Primary option `"always"` or `"never"`; secondary options:
-///   - `except`: `first-nested`
-///   - `ignore`: `stylelint-commands`, `after-comment`
-///   - `ignoreComments`: strings or `/regex/` entries matched against the
-///     comment text
-///
-/// Only comment nodes count, as in Stylelint's PostCSS tree: a comment
-/// inside a selector, a declaration value (an SCSS map, say) or at-rule
-/// params is part of that node.  `//` comments, comments sharing a line
-/// with other code and the first node of the stylesheet are never checked.
-pub struct CommentEmptyLineBefore;
+const NAME: &str = "comment-empty-line-before";
 
-impl Rule for CommentEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "comment-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before comments.
+  ///
+  /// Equivalent to Stylelint's `comment-empty-line-before` rule, autofix
+  /// included.  Primary option `"always"` or `"never"`; secondary options:
+  ///   - `except`: `first-nested`
+  ///   - `ignore`: `stylelint-commands`, `after-comment`
+  ///   - `ignoreComments`: strings or `/regex/` entries matched against the
+  ///     comment text
+  ///
+  /// Only comment nodes count, as in Stylelint's PostCSS tree: a comment
+  /// inside a selector, a declaration value (an SCSS map, say) or at-rule
+  /// params is part of that node.  `//` comments, comments sharing a line
+  /// with other code and the first node of the stylesheet are never checked.
+  pub struct CommentEmptyLineBefore => CommentEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before comments",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before comments"
+/// `comment-empty-line-before` as configured.
+pub struct CommentEmptyLineBeforeCheck {
+  /// `"always"` rather than `"never"`.  Gale has read no option as
+  /// `"never"` here.
+  always: bool,
+  /// `except: ["first-nested"]`.
+  except_first_nested: bool,
+  /// The `ignore` keywords.
+  ignore: Vec<&'static str>,
+  /// `ignoreComments`.
+  ignore_comments: Vec<CommentMatcher>,
+}
+
+impl CommentEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"`, then
+  /// `except: ["first-nested"]`, `ignore` and `ignoreComments`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    let except = options.keywords("except", &["first-nested"]);
+    let ignore = options.keywords("ignore", &["stylelint-commands", "after-comment"]);
+    let ignore_comments = options.strings("ignoreComments");
+    options.finish()?;
+    Ok(Self {
+      always: expectation == Some("always"),
+      except_first_nested: except.contains(&"first-nested"),
+      ignore,
+      ignore_comments: ignore_comments
+        .iter()
+        .map(|entry| CommentMatcher::new(entry))
+        .collect(),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CommentEmptyLineBeforeCheck {
   /// Checks every comment node in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let always = ctx.primary_option_str() == Some("always");
-    let secondary = ctx.secondary_options();
-    let option = |name: &str| secondary.and_then(|s| s.get(name));
-    let except = |name: &str| option_matches(option("except"), name);
-    let ignore = |name: &str| option_matches(option("ignore"), name);
+    let always = self.always;
+    let ignore = |name: &str| self.ignore.contains(&name);
     let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
@@ -51,20 +82,23 @@ impl Rule for CommentEmptyLineBefore {
       }
       if (ignore("stylelint-commands") && is_configuration_comment(&node.name))
         || (ignore("after-comment") && tree.is_after_comment(i))
-        || ignores_comment(option("ignoreComments"), &node.name)
+        || self
+          .ignore_comments
+          .iter()
+          .any(|matcher| matcher.matches(&node.name))
         || tree.is_shared_line_comment(i, None)
         || node.inline
       {
         continue;
       }
 
-      let expect_empty_line = always && !(except("first-nested") && tree.is_first_nested(i));
+      let expect_empty_line = always && !(self.except_first_nested && tree.is_first_nested(i));
       if expect_empty_line == has_empty_line(tree.before(i)) {
         continue;
       }
       diags.push(empty_line_report(
-        self.name(),
-        self.default_severity(),
+        NAME,
+        CommentEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -75,26 +109,39 @@ impl Rule for CommentEmptyLineBefore {
   }
 }
 
-/// Whether an `ignoreComments` entry matches the comment text: a
-/// `/regex/` entry as a regex, any other entry exactly, as Stylelint's
+/// One `ignoreComments` entry, compiled once: a `/regex/` entry is a
+/// regex, any other entry must equal the comment text, as Stylelint's
 /// `optionsMatches` does.
 ///
 /// A regex literal in a JavaScript config reaches the rule as its bare
 /// pattern (`/^\s*@todo/` becomes `"^\s*@todo"`), so an entry that is not
 /// an exact match is also tried as a regex.
-fn ignores_comment(option: Option<&serde_json::Value>, text: &str) -> bool {
-  let matches = |entry: &str| {
-    pattern::match_regex_entry(entry, text).unwrap_or_else(|| {
-      entry == text || pattern::compile(entry).is_ok_and(|re| pattern::is_match(&re, text))
-    })
-  };
-  match option {
-    Some(serde_json::Value::String(entry)) => matches(entry),
-    Some(serde_json::Value::Array(entries)) => entries
-      .iter()
-      .filter_map(serde_json::Value::as_str)
-      .any(matches),
-    _ => false,
+enum CommentMatcher {
+  /// A `/regex/` entry; `None` when it does not compile, and it matches
+  /// nothing.
+  Literal(Option<Arc<Regex>>),
+  /// Any other entry, with its compiled form when it compiles as a regex.
+  Text(String, Option<Arc<Regex>>),
+}
+
+impl CommentMatcher {
+  /// The matcher for one entry.
+  fn new(entry: &str) -> Self {
+    if pattern::split_literal(entry).is_some() {
+      Self::Literal(pattern::compile(entry).ok())
+    } else {
+      Self::Text(entry.to_string(), pattern::compile(entry).ok())
+    }
+  }
+
+  /// Whether the entry matches the comment text.
+  fn matches(&self, text: &str) -> bool {
+    match self {
+      Self::Literal(regex) => regex.as_ref().is_some_and(|re| pattern::is_match(re, text)),
+      Self::Text(entry, regex) => {
+        entry == text || regex.as_ref().is_some_and(|re| pattern::is_match(re, text))
+      }
+    }
   }
 }
 
@@ -118,14 +165,14 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   const RULE: &str = "comment-empty-line-before";
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &options);
-    CommentEmptyLineBefore
+    let ctx = context(source, syntax, &serde_json::Value::Null);
+    configured(&CommentEmptyLineBefore, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -286,6 +333,34 @@ mod tests {
         Syntax::Css
       ),
       "a {}\r\n/** c */"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!(["always", {
+          "except": ["first-nested"],
+          "ignore": ["stylelint-commands", "after-comment"],
+          "ignoreComments": ["/^ignore/", "todo"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"comment-empty-line-before\""]
+    );
+    assert_eq!(
+      invalid_options(
+        RULE,
+        serde_json::json!(["always", { "except": ["after-comment"] }])
+      ),
+      [
+        "Invalid value \"after-comment\" for option \"except\" of rule \"comment-empty-line-before\""
+      ]
     );
   }
 }
