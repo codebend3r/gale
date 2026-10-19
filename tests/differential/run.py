@@ -378,6 +378,11 @@ def process_repo(
     if not glob_ok:
         print(f"  [warn] Gale cannot handle some package.json globs — migration would break!")
 
+    # Before saving: the compatibility matrix reads the speedup from the report.
+    if benchmark:
+        report["stylelint_time"] = stylelint_time
+        report["gale_time"] = gale_time
+
     # Save raw results
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     with open(RESULTS_DIR / f"{name}_stylelint.json", "w") as f:
@@ -386,10 +391,6 @@ def process_repo(
         json.dump(gale_results, f, indent=2)
     with open(RESULTS_DIR / f"{name}_report.json", "w") as f:
         json.dump(report, f, indent=2)
-
-    if benchmark:
-        report["stylelint_time"] = stylelint_time
-        report["gale_time"] = gale_time
 
     print_report(name, report)
     return report

@@ -58,17 +58,9 @@ def run_differential_test(repo_name: str, gale_bin: Path) -> dict | None:
         print(f"  [error] No report file found")
         return None
 
+    # With --benchmark, the report carries both linters' times.
     with open(report_file) as f:
-        report = json.load(f)
-
-    # Extract benchmark times from stdout (run.py adds them after saving JSON)
-    stylelint_match = re.search(r"Stylelint:\s+([\d.]+)s", stdout)
-    gale_match = re.search(r"Gale:\s+([\d.]+)s", stdout)
-    if stylelint_match and gale_match:
-        report["stylelint_time"] = float(stylelint_match.group(1))
-        report["gale_time"] = float(gale_match.group(1))
-
-    return report
+        return json.load(f)
 
 
 # ---------------------------------------------------------------------------

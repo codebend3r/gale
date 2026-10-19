@@ -37,7 +37,8 @@ python tests/differential/run.py --list
 
 ## Repo corpus
 
-The repos are defined in `repos.json`. Each entry specifies:
+The repos are defined in `repos.json`, the one corpus shared with
+`benchmarks/benchmark.sh` and the weekly compatibility workflow. Each entry specifies:
 
 | Field | Description |
 |-------|-------------|
@@ -45,6 +46,12 @@ The repos are defined in `repos.json`. Each entry specifies:
 | `repo` | GitHub `owner/repo` |
 | `branch` | Branch to clone |
 | `paths` | Directories to search for CSS files |
+| `globs` | Globs both linters are given (default: `{path}/**/*.{css,scss,less}` per path) |
+| `cwd` | Optional directory, below the clone root, that both linters run from |
+| `skip` | Leave the repo out of every run |
+| `expected_diffs` | Optional `{file, line, column, rule}` diffs excluded from the parity count |
+| `weekly` | Run in the weekly compatibility workflow and list in COMPATIBILITY.md |
+| `stars` | Star count shown in COMPATIBILITY.md |
 | `notes` | Human context about the repo's CSS setup |
 
 Current repos:

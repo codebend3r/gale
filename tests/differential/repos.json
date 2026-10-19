@@ -3,6 +3,8 @@
     "name": "grafana",
     "repo": "grafana/grafana",
     "branch": "main",
+    "stars": "62K",
+    "weekly": true,
     "paths": ["public"],
     "globs": ["public/**/*.{css,scss}"],
     "notes": "Simple config, extends stylelint-config-sass-guidelines."
@@ -11,6 +13,8 @@
     "name": "bootstrap",
     "repo": "twbs/bootstrap",
     "branch": "main",
+    "stars": "168K",
+    "weekly": true,
     "paths": ["scss"],
     "globs": ["scss/**/*.scss"],
     "notes": "Extends stylelint-config-standard + scss. Uses scss, stylistic, order plugins."
@@ -19,6 +23,8 @@
     "name": "gutenberg",
     "repo": "wordpress/gutenberg",
     "branch": "trunk",
+    "stars": "10K",
+    "weekly": true,
     "paths": ["packages"],
     "globs": ["packages/**/*.scss"],
     "notes": "WordPress editor. Extends stylelint-config-recommended + scss."
@@ -27,6 +33,7 @@
     "name": "material-ui",
     "repo": "mui/material-ui",
     "branch": "master",
+    "stars": "94K",
     "paths": ["."],
     "globs": ["**/*.css"],
     "notes": "Pure CSS files. Config hidden in @mui/internal-code-infra."
@@ -35,6 +42,8 @@
     "name": "primer-css",
     "repo": "primer/css",
     "branch": "main",
+    "stars": "12K",
+    "weekly": true,
     "paths": ["src"],
     "globs": ["src/**/*.scss"],
     "notes": "GitHub design system. Heavy use of custom Primer plugins."
@@ -43,6 +52,7 @@
     "name": "carbon",
     "repo": "carbon-design-system/carbon",
     "branch": "main",
+    "stars": "7K",
     "paths": ["packages"],
     "globs": ["packages/**/*.scss"],
     "notes": "IBM design system. Very strict config with many plugins."
