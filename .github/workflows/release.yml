@@ -71,7 +71,8 @@ jobs:
           for name, dep in cargo["workspace"]["dependencies"].items():
               if isinstance(dep, dict) and "path" in dep:
                   internal.add(name)
-                  found[f"Cargo.toml [workspace.dependencies] {name}"] = dep.get("version", "(none)")
+                  if "version" in dep:
+                      found[f"Cargo.toml [workspace.dependencies] {name}"] = dep["version"]
           for member in [".", *cargo["workspace"]["members"]]:
               path = "Cargo.toml" if member == "." else f"{member}/Cargo.toml"
               manifest = toml(path)
@@ -85,8 +86,7 @@ jobs:
           for package in toml("Cargo.lock")["package"]:
               if package["name"] in internal and "source" not in package:
                   found[f"Cargo.lock {package['name']}"] = package["version"]
-          for path in ("package.json", "npm/package.json"):
-              found[f"{path} version"] = json.loads(Path(path).read_text())["version"]
+          found["npm/package.json version"] = json.loads(Path("npm/package.json").read_text())["version"]
 
           errors = []
           if ref_type == "tag":

@@ -5,9 +5,9 @@
  * as `stylelint.lint()`, `stylelint.formatters`, and `stylelint.resolveConfig`.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
-import { join, dirname, relative, resolve, sep } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -43,8 +43,15 @@ function findBinary() {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn helper
+// Spawn helpers
 // ---------------------------------------------------------------------------
+
+function binaryNotFound(bin) {
+  return new Error(
+    `Gale binary not found. Looked for "${bin}". ` +
+      "Install @codebend3r/gale or ensure gale is on your PATH.",
+  );
+}
 
 /**
  * Spawn the gale binary and return { stdout, stderr, exitCode }.
@@ -67,12 +74,7 @@ function runGale(args, { stdinData, cwd } = {}) {
 
     proc.on("error", (err) => {
       if (err.code === "ENOENT") {
-        reject(
-          new Error(
-            `Gale binary not found. Looked for "${bin}". ` +
-              "Install @codebend3r/gale or ensure gale is on your PATH.",
-          ),
-        );
+        reject(binaryNotFound(bin));
       } else {
         reject(err);
       }
@@ -93,6 +95,29 @@ function runGale(args, { stdinData, cwd } = {}) {
       proc.stdin.end();
     }
   });
+}
+
+/**
+ * Format Stylelint-shaped results (a JSON string) with the binary's formatter
+ * `name`, so the report is the one the CLI would print.  Runs in `cwd`
+ * because the string and verbose formatters name files relative to it.
+ */
+function formatReport(name, resultsJson, cwd) {
+  const bin = findBinary();
+  const proc = spawnSync(bin, ["--format-results", name], {
+    cwd,
+    input: resultsJson,
+    encoding: "utf8",
+    maxBuffer: Infinity,
+    env: { ...process.env },
+  });
+  if (proc.error) {
+    throw proc.error.code === "ENOENT" ? binaryNotFound(bin) : proc.error;
+  }
+  if (proc.status !== 0) {
+    throw new Error(proc.stderr.trim() || `gale --format-results ${name} exited ${proc.status}`);
+  }
+  return proc.stdout;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,21 +326,15 @@ export async function lint(options = {}) {
     // Determine if any result had errors
     const errored = results.some((r) => r.errored);
 
-    // Build formatted report if a specific formatter was requested
+    // Build formatted report if a specific formatter was requested, from
+    // the JSON results this run already printed (none when the run failed)
     let report = stdout;
     if (
       options.formatter &&
       typeof options.formatter === "string" &&
       options.formatter !== "json"
     ) {
-      // Re-run with the requested formatter for the report string
-      const reportArgs = [...args];
-      const jsonIdx = reportArgs.indexOf("json");
-      if (jsonIdx !== -1) {
-        reportArgs[jsonIdx] = options.formatter;
-      }
-      const reportResult = await runGale(reportArgs, { stdinData, cwd });
-      report = reportResult.stdout;
+      report = stdout.trim() ? formatReport(options.formatter, stdout, cwd) : "";
     } else if (typeof options.formatter === "function") {
       report = options.formatter(results, { cwd, results, errored });
     }
@@ -376,111 +395,23 @@ export async function lint(options = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a formatter function that calls gale with the given format name.
+ * Create a formatter function that formats with the binary's `formatName`
+ * formatter, the one `gale --formatter <formatName>` uses.
  */
 function createFormatterFn(formatName) {
-  return async (results, returnValue) => {
-    // Build a minimal JSON array to pipe to gale for re-formatting.
-    // Since gale reads files (not a JSON stream), we format client-side
-    // for the simple built-in formats.
-    if (formatName === "json") {
-      return JSON.stringify(
-        results.map((r) => ({
-          source: r.source,
-          warnings: r.warnings,
-        })),
-      );
-    }
-
-    // For other formatters, produce a simple text representation
-    // matching what gale would output.
-    let output = "";
-
-    if (formatName === "compact") {
-      for (const r of results) {
-        for (const w of r.warnings) {
-          output += `${r.source}: line ${w.line}, col ${w.column}, ${w.severity} - ${w.text}\n`;
-        }
-      }
-      return output;
-    }
-
-    if (formatName === "tap") {
-      output += "TAP version 13\n";
-      output += `1..${results.length}\n`;
-      results.forEach((r, i) => {
-        if (r.warnings.length === 0) {
-          output += `ok ${i + 1} - ${r.source}\n`;
-        } else {
-          output += `not ok ${i + 1} - ${r.source}\n`;
-          for (const w of r.warnings) {
-            output += `  ---\n`;
-            output += `  message: "${w.text}"\n`;
-            output += `  severity: ${w.severity}\n`;
-            output += `  data:\n`;
-            output += `    line: ${w.line}\n`;
-            output += `    column: ${w.column}\n`;
-            output += `    ruleId: ${w.rule}\n`;
-            output += `  ...\n`;
-          }
-        }
-      });
-      return output;
-    }
-
-    if (formatName === "unix") {
-      for (const r of results) {
-        for (const w of r.warnings) {
-          output += `${r.source}:${w.line}:${w.column}: ${w.text} [${w.severity}]\n`;
-        }
-      }
-      const total = results.reduce((s, r) => s + r.warnings.length, 0);
-      if (total > 0) {
-        output += `\n${total} problem${total === 1 ? "" : "s"}\n`;
-      }
-      return output;
-    }
-
-    // "string" / "verbose" / default: human-readable.  Like Stylelint's
-    // string formatter, name each file relative to the working directory.
-    const cwd = returnValue?.cwd || process.cwd();
-    for (const r of results) {
-      if (r.warnings.length === 0) continue;
-      output += `${displayPath(r.source, cwd)}\n`;
-      for (const w of r.warnings) {
-        const icon = w.severity === "error" ? "\u2716" : "\u26A0";
-        output += `  ${w.line}:${w.column}  ${icon}  ${w.text}  ${w.rule}\n`;
-      }
-      output += "\n";
-    }
-
-    const totalErrors = results.reduce(
-      (s, r) => s + r.warnings.filter((w) => w.severity === "error").length,
-      0,
-    );
-    const totalWarnings = results.reduce(
-      (s, r) => s + r.warnings.filter((w) => w.severity === "warning").length,
-      0,
-    );
-    const total = totalErrors + totalWarnings;
-    if (total > 0) {
-      const p = total === 1 ? "problem" : "problems";
-      const e = totalErrors === 1 ? "error" : "errors";
-      const w = totalWarnings === 1 ? "warning" : "warnings";
-      output += `\u2716 ${total} ${p} (${totalErrors} ${e}, ${totalWarnings} ${w})\n`;
-    }
-
-    return output;
+  return (results, returnValue) => {
+    // Only the fields of Stylelint's results model; a Stylelint result also
+    // carries internals such as `_postcssResult` that are no JSON.
+    const model = results.map((r) => ({
+      source: r.source,
+      deprecations: r.deprecations,
+      invalidOptionWarnings: r.invalidOptionWarnings,
+      parseErrors: r.parseErrors,
+      errored: r.errored,
+      warnings: r.warnings,
+    }));
+    return formatReport(formatName, JSON.stringify(model), returnValue?.cwd || process.cwd());
   };
-}
-
-/**
- * How Stylelint's string formatter names a source: relative to `cwd`, with
- * `/` separators.  A name in angle brackets is no path and stays as it is.
- */
-function displayPath(source, cwd) {
-  if (!source || source.startsWith("<")) return source;
-  return relative(cwd, source).split(sep).join("/");
 }
 
 /**

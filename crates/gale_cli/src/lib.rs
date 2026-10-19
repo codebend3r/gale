@@ -16,7 +16,7 @@ use tracing::debug;
 use gale_config::{ConfigResolver, GaleConfig};
 use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
-use gale_formatter::{create_formatter_with_color, strip_ansi};
+use gale_formatter::{StylelintResult, create_formatter_with_color, strip_ansi};
 use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::{LintRunner, RuleRegistry};
 
@@ -37,7 +37,7 @@ use crate::cache::{
 )]
 pub struct Cli {
   /// Files or glob patterns to lint
-  #[arg(required_unless_present_any = ["stdin", "init", "lsp", "print_config"])]
+  #[arg(required_unless_present_any = ["stdin", "init", "lsp", "print_config", "format_results"])]
   files: Vec<String>,
 
   /// Resolve and print the effective config for FILE as JSON, then exit
@@ -76,6 +76,19 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(gale_formatter::FORMATTER_NAMES)
     )]
   formatter: Option<String>,
+
+  /// Read a Stylelint-shaped JSON results array from stdin and print it
+  /// with this formatter, then exit.
+  ///
+  /// The npm package formats through this, so each formatter has one
+  /// implementation whether the report comes from the CLI or the API.
+  #[arg(
+        long,
+        hide = true,
+        value_name = "FORMATTER",
+        value_parser = clap::builder::PossibleValuesParser::new(gale_formatter::FORMATTER_NAMES)
+    )]
+  format_results: Option<String>,
 
   /// Maximum number of warnings before erroring
   #[arg(long)]
@@ -292,6 +305,37 @@ fn color_enabled(
     return true;
   }
   stdout_is_tty && env("TERM").as_deref() != Some("dumb")
+}
+
+/// Whether this run's report is coloured: [`color_enabled`] for the real
+/// flags, environment and stdout.
+fn report_color(cli: &Cli) -> bool {
+  color_enabled(
+    cli.color,
+    cli.no_color,
+    std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    |name| std::env::var(name).ok(),
+  )
+}
+
+/// `--format-results`: print the Stylelint-shaped results on stdin with the
+/// formatter `name`, coloured as a lint run's report would be.  Input that is
+/// no results array is a usage error.
+fn format_stdin_results(name: &str, cli: &Cli) -> Result<()> {
+  let mut input = String::new();
+  std::io::stdin().read_to_string(&mut input)?;
+  let results: Vec<StylelintResult> = match serde_json::from_str(&input) {
+    Ok(results) => results,
+    Err(err) => {
+      eprintln!("Error: stdin is not a JSON array of Stylelint results: {err}");
+      process::exit(EXIT_INVALID_USAGE);
+    }
+  };
+  print!(
+    "{}",
+    create_formatter_with_color(name, report_color(cli)).format(&results)
+  );
+  Ok(())
 }
 
 /// Write a report to `path`, creating parent directories and stripping ANSI
@@ -1129,6 +1173,11 @@ pub fn run() -> Result<()> {
   // Handle --init: generate a starter config file and exit early.
   if cli.init {
     return generate_init_config();
+  }
+
+  // Handle --format-results: format results from stdin and exit early.
+  if let Some(name) = &cli.format_results {
+    return format_stdin_results(name, &cli);
   }
 
   // Resolve configuration.
@@ -1980,14 +2029,8 @@ pub fn run() -> Result<()> {
 
   // Format & print.
   let t_fmt = std::time::Instant::now();
-  let color = color_enabled(
-    cli.color,
-    cli.no_color,
-    std::io::IsTerminal::is_terminal(&std::io::stdout()),
-    |name| std::env::var(name).ok(),
-  );
-  let formatter = create_formatter_with_color(&formatter_name, color);
-  let output = gale_formatter::Formatter::format(&*formatter, &results);
+  let formatter = create_formatter_with_color(&formatter_name, report_color(&cli));
+  let output = formatter.format(&gale_formatter::stylelint_results(&results));
   if std::env::var("GALE_DEBUG_PERF").as_deref() == Ok("1") {
     eprintln!("[perf] format: {:.3}s", t_fmt.elapsed().as_secs_f64());
   }

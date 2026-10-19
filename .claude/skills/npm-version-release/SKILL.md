@@ -53,15 +53,14 @@ gh api "repos/{owner}/{repo}/actions/workflows/release.yml" --jq .state   # "act
 
 ### 2. Bump the manifests
 
-`Cargo.toml` pins the workspace version and the seven internal crate versions to the same string, so a single substitution covers all of them. The Cargo version and the npm version can differ if a previous release skipped one, so capture both.
+The version lives in two manifests: `[workspace.package] version` in `Cargo.toml`, which every crate inherits, and `npm/package.json`. The two can differ if a previous release skipped one, so capture both.
 
 ```bash
 OLD_CARGO=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 OLD_NPM=$(bun -p "require('./npm/package.json').version")
 sed -i '' "s/version = \"$OLD_CARGO\"/version = \"$VERSION\"/g" Cargo.toml
-grep -c "version = \"$VERSION\"" Cargo.toml   # must be 8: workspace + 7 internal crates; anything else means a third-party pin matched, so inspect `git diff Cargo.toml`
+grep -c "version = \"$VERSION\"" Cargo.toml   # must be 1; anything else means a third-party pin matched, so inspect `git diff Cargo.toml`
 cargo update --workspace               # rewrites the gale_* entries in Cargo.lock
-bun pm pkg set version="$VERSION"
 (cd npm && bun pm pkg set version="$VERSION")
 ```
 
@@ -73,28 +72,25 @@ The manifests are not the only place the version lives. These files carry it too
 
 | File | What it holds |
 |---|---|
-| `README.md` | `build-npm.sh --version X.Y.Z` example |
-| `scripts/build-npm.sh` | usage comment `--version X.Y.Z` |
-| `tests/differential/open_prs.py` | `GALE_VERSION = "X.Y.Z"`, written into migration PRs |
 | `docs/index.html` | `"@codebend3r/gale": "^X.Y.Z"` in the install snippet |
 
 Rewrite the known files, then run the sweep. The sweep is the real check; the table is only what was true last time.
 
 ```bash
-for f in README.md scripts/build-npm.sh tests/differential/open_prs.py docs/index.html; do
+for f in docs/index.html; do
   perl -pi -e "s/\b(v?)(\Q$OLD_NPM\E|\Q$OLD_CARGO\E)\b/\${1}$VERSION/g" "$f"
 done
 # perl, not sed: BSD sed has no \b and silently matches nothing. \${1} not \$1: "$1" + "0.2.2" is read as group $10.
 # Sweep: any 0.x.y in a tracked file that is not VERSION. Must print nothing.
 git ls-files \
-  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^docs/feature-research\.md$|^benchmarks/|^npm/bin/|^\.claude/skills/' \
+  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^docs/feature-research\.md$|^benchmarks/|^\.claude/skills/' \
   | xargs grep -nE '\bv?0\.[0-9]+\.[0-9]+\b' 2>/dev/null | grep -vF "$VERSION"
 git diff --stat
 ```
 
 Any line the sweep prints is either a gale version that still needs updating (fix it, add the file to the table above) or a third-party version that happens to start with `0.` (leave it, add its path to the exclusion list). Do not proceed with hits you have not classified.
 
-Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `docs/feature-research.md` (a dated research snapshot), `benchmarks/` (cloned repos), `npm/bin/` (binaries), `.claude/skills/` (illustrative semvers in skill docs, not references).
+Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `docs/feature-research.md` (a dated research snapshot), `benchmarks/` (cloned repos), `.claude/skills/` (illustrative semvers in skill docs, not references).
 
 ### 4. Commit and tag on the current branch
 
@@ -105,7 +101,7 @@ git commit -m "$VERSION"
 git tag -a "v$VERSION" -m "$VERSION"
 ```
 
-On the CI path the commit carries no binaries: CI builds every platform from the tag. The `npm/bin/<target>/gale` files tracked in git are not what npm users get, so leave them alone.
+The commit never carries binaries: `npm/bin/<target>/` is ignored by git, and CI builds every platform from the tag.
 
 ### 5. Push the commit and dry-run the release
 
@@ -177,18 +173,17 @@ docker info >/dev/null 2>&1 || echo "Docker is not running; cross cannot build t
 ./scripts/build-npm.sh --all
 node ./npm/bin/gale.cjs --version      # the launcher is gale.cjs, not bin/gale; must print "gale $VERSION"
 ls -l npm/bin/*/gale                   # four files, all freshly mtimed
-git status --short                     # exactly the four npm/bin/*/gale files
 ```
+
+The binaries are ignored by git: they ship in the npm tarball, never in a commit.
 
 If the launcher still prints the old version, the Cargo substitution in step 2 did not land; fix it and rebuild. npm can never reuse a version number once it is published.
 
-Fold the binaries into the release commit, push, and publish. npm 11 satisfies the two-factor check with **web auth**: `npm publish` opens a browser URL and polls until the user approves, so it runs from a non-interactive shell given the 10-minute timeout.
+Push the release commit and publish from the working tree. npm 11 satisfies the two-factor check with **web auth**: `npm publish` opens a browser URL and polls until the user approves, so it runs from a non-interactive shell given the 10-minute timeout.
 
 ```bash
 npm whoami                             # E401 means an expired token: ask the user to run `! npm login`
 npm access list collaborators "$PKG"   # whoami MUST appear with read-write
-git add npm/bin
-git commit --amend --no-edit
 git tag -f -a "v$VERSION" -m "$VERSION"
 git push origin HEAD
 (cd npm && npm publish --access public)   # opens the browser for 2FA approval; wait for it
@@ -203,7 +198,7 @@ Push the tag only if the user wants it on origin: with the workflow disabled it 
 | Treating "npm version patch" as not a release | It is one. Compute `VERSION` from the registry and run every step. |
 | Computing the bump from `package.json` | A half-finished release leaves manifests ahead of the registry; `bun info` is the baseline. |
 | Cutting a `release/X` branch or opening a PR | Commit on the current branch. |
-| Bumping only the four manifests | Docs, `open_prs.py`, and `docs/index.html` carry the version too. Run the sweep; it must print nothing. |
+| Bumping only the two manifests | `docs/index.html` carries the version too. Run the sweep; it must print nothing. |
 | Skipping `cargo update --workspace` | `Cargo.lock` keeps the old gale versions and the version guard rejects the tag. |
 | Pushing the tag before the dry run | A failed tag run needs a moved tag. Dry-run first; push the tag once it is green. |
 | Rebuilding `npm/bin` on the CI path | CI builds every binary from the tag. Local builds are the fallback only. |

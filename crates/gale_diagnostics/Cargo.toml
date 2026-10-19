@@ -3,6 +3,7 @@ name = "gale_diagnostics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Diagnostics and reporting for the Gale CSS linter"
 
 [dependencies]

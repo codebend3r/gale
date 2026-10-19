@@ -15,6 +15,8 @@ version = "0.3.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/codebend3r/gale"
+# The `gale-lint` and `gale_*` names on crates.io belong to an unrelated project.
+publish = false
 description = "An extremely fast CSS linter, written in Rust"
 
 [workspace.dependencies]
@@ -48,20 +50,15 @@ anyhow = "1.0.104"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
-# Internal crates.
-#
-# These versions MUST track `workspace.package.version` above.  Cargo resolves a
-# `version` requirement against crates.io when publishing, so leaving them behind
-# means `cargo publish` builds the released binary against the last *published*
-# member crates rather than this source tree — shipping stale rules under a new
-# version number.  `cargo xtask`-free reminder: bump all of these together.
-gale_css_parser = { path = "crates/gale_css_parser", version = "0.3.1" }
-gale_linter = { path = "crates/gale_linter", version = "0.3.1" }
-gale_config = { path = "crates/gale_config", version = "0.3.1" }
-gale_cli = { path = "crates/gale_cli", version = "0.3.1" }
-gale_formatter = { path = "crates/gale_formatter", version = "0.3.1" }
-gale_diagnostics = { path = "crates/gale_diagnostics", version = "0.3.1" }
-gale_lsp = { path = "crates/gale_lsp", version = "0.3.1" }
+# Internal crates.  Path-only: gale is not published to crates.io, so there is
+# no registry version for these to track.
+gale_css_parser = { path = "crates/gale_css_parser" }
+gale_linter = { path = "crates/gale_linter" }
+gale_config = { path = "crates/gale_config" }
+gale_cli = { path = "crates/gale_cli" }
+gale_formatter = { path = "crates/gale_formatter" }
+gale_diagnostics = { path = "crates/gale_diagnostics" }
+gale_lsp = { path = "crates/gale_lsp" }
 
 [package]
 name = "gale-lint"
@@ -69,9 +66,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description.workspace = true
-# Only what this crate needs. Without a list, cargo packages the whole repo root,
-# npm/bin binaries included, far past crates.io's 10 MB upload limit.
-include = ["/src", "/README.md", "/LICENSE"]
+publish.workspace = true
 
 [[bin]]
 name = "gale"

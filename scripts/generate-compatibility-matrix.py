@@ -2,79 +2,58 @@
 """
 Generate COMPATIBILITY.md from differential test results.
 
+Reads the `<name>_report.json` files that tests/differential/run.py writes
+(with --benchmark, so they carry both linters' times) and takes each repo's
+stars from tests/differential/repos.json. Every repo marked `weekly` there gets
+a row; one without a report is shown as a failed run.
+
 Usage: python3 scripts/generate-compatibility-matrix.py results/
 """
 
-import re
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_META = {
-    "bootstrap": {"full": "twbs/bootstrap", "stars": "168K", "description": "The most popular CSS framework"},
-    "gutenberg": {"full": "wordpress/gutenberg", "stars": "10K", "description": "WordPress block editor"},
-    "grafana": {"full": "grafana/grafana", "stars": "62K", "description": "Observability platform"},
-    "primer-css": {"full": "primer/css", "stars": "12K", "description": "GitHub's design system"},
-    "carbon": {"full": "carbon-design-system/carbon", "stars": "7K", "description": "IBM's design system"},
-    "material-ui": {"full": "mui/material-ui", "stars": "94K", "description": "React UI library"},
-}
+REPOS_JSON = Path(__file__).resolve().parent.parent / "tests" / "differential" / "repos.json"
 
 
-def parse_result(text: str) -> dict:
-    """Extract metrics from a differential test result.
+def load_report(path: Path) -> dict | None:
+    """Return the report, or None when the run left no usable one.
 
-    A run that crashed, timed out, or never linted anything does NOT produce
-    these lines.  Defaulting the counts to 0 in that case would render a broken
-    run as "0 FP, 0 FN" — indistinguishable from perfect parity.  Missing
-    metrics are therefore reported as `None` and the row is marked failed.
+    A run that crashed, timed out, or never linted anything does NOT produce a
+    report over a non-empty file set. Rendering that as "0 FP, 0 FN" would make
+    a broken run indistinguishable from perfect parity, so the row is marked
+    failed instead.
     """
-    metrics = {}
-
-    def number(pattern, cast=int):
-        m = re.search(pattern, text)
-        return cast(m.group(1)) if m else None
-
-    metrics["files_total"] = number(r"Files analyzed:\s+(\d+)")
-    metrics["files_match"] = number(r"Files matching:\s+(\d+)")
-    metrics["fp"] = number(r"Gale-only \(FP\):\s+(\d+)")
-    metrics["fn"] = number(r"Stylelint-only \(FN\):\s+(\d+)")
-    metrics["speedup"] = number(r"Speedup:\s+([\d.]+)x", str)
-    metrics["gale_time"] = number(r"Gale:\s+([\d.]+)s", str)
-    metrics["stylelint_time"] = number(r"Stylelint:\s+([\d.]+)s", str)
-
-    # A usable run reports both comparison counts over a non-empty file set.
-    metrics["ok"] = (
-        metrics["fp"] is not None
-        and metrics["fn"] is not None
-        and metrics["files_total"] is not None
-        and metrics["files_total"] > 0
-    )
-    return metrics
+    try:
+        report = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if report.get("timeout") or not report.get("total_files"):
+        return None
+    return report
 
 
 def main():
     results_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results")
 
+    repos = {r["name"]: r for r in json.loads(REPOS_JSON.read_text())}
+    names = {name for name, r in repos.items() if r.get("weekly")}
+    if results_dir.is_dir():
+        names |= {p.name.removesuffix("_report.json") for p in results_dir.glob("*_report.json")}
+
     rows = []
-    for result_dir in sorted(results_dir.iterdir()):
-        if not result_dir.is_dir():
-            continue
+    for name in sorted(names):
+        meta = repos.get(name, {})
+        full = meta.get("repo", name)
+        stars = meta.get("stars", "?")
+        report = load_report(results_dir / f"{name}_report.json")
 
-        name = result_dir.name.replace("result-", "")
-        result_file = result_dir / "result.txt"
-        if not result_file.exists():
-            continue
-
-        text = result_file.read_text()
-        metrics = parse_result(text)
-        meta = REPO_META.get(name, {"full": name, "stars": "?", "description": ""})
-
-        if not metrics["ok"]:
+        if report is None:
             rows.append({
-                "name": name,
-                "full": meta["full"],
-                "stars": meta["stars"],
-                "description": meta["description"],
+                "full": full,
+                "stars": stars,
                 "files": "—",
                 "pct": "**run failed**",
                 "fp": "—",
@@ -84,22 +63,20 @@ def main():
             })
             continue
 
-        total = metrics["files_total"]
-        match = metrics["files_match"] or 0
-        pct = f"{match/total*100:.0f}%"
+        total = report["total_files"]
+        match = report["files_match"]
+        s_time = report.get("stylelint_time")
+        g_time = report.get("gale_time")
+        speedup = f"{s_time / g_time:.1f}" if s_time and g_time else "?"
 
         rows.append({
-            "name": name,
-            "full": meta["full"],
-            "stars": meta["stars"],
-            "description": meta["description"],
+            "full": full,
+            "stars": stars,
             "files": f"{match}/{total}",
-            "pct": pct,
-            "fp": metrics["fp"],
-            "fn": metrics["fn"],
-            "speedup": metrics["speedup"] or "?",
-            "gale_time": metrics["gale_time"] or "?",
-            "stylelint_time": metrics["stylelint_time"] or "?",
+            "pct": f"{match/total*100:.0f}%",
+            "fp": report["gale_only_warnings"],
+            "fn": report["stylelint_only_warnings"],
+            "speedup": speedup,
             "ok": True,
         })
 

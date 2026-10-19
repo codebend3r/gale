@@ -3,6 +3,7 @@ name = "gale_lsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "LSP server for the Gale CSS linter"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "gale_linter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Core linting engine for the Gale CSS linter"
 
 [dependencies]

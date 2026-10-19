@@ -313,6 +313,7 @@ async function testSourcePaths() {
   section("Test 10: sources are absolute paths");
 
   const dir = mkdtempSync(join(tmpdir(), "gale-api-"));
+  const noColor = process.env.NO_COLOR;
   try {
     // The binary resolves paths from the working directory it runs in,
     // which is the real path of the temporary directory.
@@ -333,12 +334,17 @@ async function testSourcePaths() {
       `a glob reports absolute paths (got ${fromFiles.results[0]?.source})`,
     );
 
+    // The formatters colour as the CLI does, so keep the environment (CI
+    // turns colour on) from underlining the file name.
+    process.env.NO_COLOR = "1";
     const string = await formatters.string;
     const report = await string(fromFiles.results, { cwd: real });
     assert(report.startsWith("src/a.css\n"), `the string formatter names files from cwd (got ${report})`);
   } catch (err) {
     fail(`ERROR: ${err.message}`);
   } finally {
+    if (noColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = noColor;
     rmSync(dir, { recursive: true, force: true });
   }
 }

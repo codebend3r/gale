@@ -7,7 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { GALE_BIN, REPO_ROOT, cleanupProjects } from "./helpers";
+import { GALE_BIN, REPO_ROOT, cleanupProjects, config, makeProject, runGale } from "./helpers";
 
 afterAll(cleanupProjects);
 
@@ -46,14 +46,6 @@ describe("TypeScript declarations", () => {
     expect(pkg.types).toBe("index.d.ts");
     expect(exports["."].types).toBe("./index.d.ts");
     expect(pkg.files as string[]).toContain("index.d.ts");
-  });
-
-  test("the root package.json points at the declarations", () => {
-    const pkg = readJson("package.json");
-    const exports = pkg.exports as Record<string, Record<string, string>>;
-
-    expect(pkg.types).toBe("npm/index.d.ts");
-    expect(exports["."].types).toBe("./npm/index.d.ts");
   });
 });
 
@@ -125,13 +117,6 @@ describe("platform launcher", () => {
     const firstLine = readFileSync(join(NPM_DIR, bin), "utf8").split("\n")[0];
     expect(firstLine).toBe("#!/usr/bin/env node");
   });
-
-  test("the root package.json uses the same launcher", () => {
-    const pkg = readJson("package.json");
-    const bin = (pkg.bin as Record<string, string>).gale;
-
-    expect(bin).toMatch(/^npm\/bin\/gale\.c?js$/);
-  });
 });
 
 describe("release workflow", () => {
@@ -183,10 +168,10 @@ describe("release workflow", () => {
 });
 
 describe("formatters", () => {
-  test.failing("tap escapes quotes in a message the way the CLI does", async () => {
+  test("tap escapes quotes in a message the way the CLI does", async () => {
     const { formatters } = await import("../../npm/index.mjs");
 
-    const output = await formatters.tap([
+    const output = (await formatters.tap)([
       {
         source: "/project/a.css",
         warnings: [
@@ -195,12 +180,45 @@ describe("formatters", () => {
       },
     ]);
 
-    expect(output).toContain('message: "Say \\"no\\" (block-no-empty)"');
+    expect(output).toContain('message: "Say \\"no\\""\n');
+  });
+
+  test("every formatter prints what the CLI prints for the same results", async () => {
+    const { formatters, lint } = await import("../../npm/index.mjs");
+    const project = makeProject({
+      ".stylelintrc.json": config({
+        "block-no-empty": true,
+        "color-hex-length": ["short", { severity: "warning" }],
+        "font-family-name-quotes": "always-where-recommended",
+      }),
+      "a.css": "a { color: #ffffff; }\nb {}\np { font-family: Times New Roman; }\n",
+      "clean.css": "a { color: red; }\n",
+      "sub/c.css": '.x::before { content: "😀"; } i {}\n',
+    });
+    const files = ["a.css", "clean.css", "sub/c.css"];
+    const { results } = await lint({ files, cwd: project.dir });
+
+    // The formatters colour as the CLI does, so keep the environment from
+    // turning colour on.
+    const noColor = process.env.NO_COLOR;
+    process.env.NO_COLOR = "1";
+    try {
+      for (const name of ["json", "string", "compact", "verbose", "tap", "unix"] as const) {
+        const cli = runGale(["--formatter", name, "--no-color", ...files], { cwd: project.dir }).stdout;
+
+        expect(cli, name).not.toBe("");
+        expect((await formatters[name])(results, { cwd: project.dir }), name).toBe(cli);
+        expect((await lint({ files, cwd: project.dir, formatter: name })).report, name).toBe(cli);
+      }
+    } finally {
+      if (noColor === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = noColor;
+    }
   });
 });
 
 describe("repository layout", () => {
-  test.failing("the root package.json is private and publishes nothing", () => {
+  test("the root package.json is private and publishes nothing", () => {
     const pkg = readJson("package.json");
 
     expect(pkg.private).toBe(true);
@@ -209,13 +227,13 @@ describe("repository layout", () => {
     }
   });
 
-  test.failing("no prebuilt binary is tracked in git", () => {
+  test("no prebuilt binary is tracked in git", () => {
     const tracked = Bun.spawnSync(["git", "ls-files", "npm/bin"], { cwd: REPO_ROOT }).stdout.toString();
 
     expect(tracked.trim().split("\n")).toEqual(["npm/bin/gale.cjs"]);
   });
 
-  test.failing("internal crates do not repeat the workspace version", () => {
+  test("internal crates do not repeat the workspace version", () => {
     const cargo = readFileSync(join(REPO_ROOT, "Cargo.toml"), "utf8");
     const internal = cargo.split("\n").filter((line) => /^gale_\w+ = \{ path = /.test(line));
 
