@@ -181,3 +181,47 @@ describe("release workflow", () => {
     }
   });
 });
+
+describe("formatters", () => {
+  test.failing("tap escapes quotes in a message the way the CLI does", async () => {
+    const { formatters } = await import("../../npm/index.mjs");
+
+    const output = await formatters.tap([
+      {
+        source: "/project/a.css",
+        warnings: [
+          { line: 1, column: 3, rule: "block-no-empty", severity: "error", text: 'Say "no" (block-no-empty)' },
+        ],
+      },
+    ]);
+
+    expect(output).toContain('message: "Say \\"no\\" (block-no-empty)"');
+  });
+});
+
+describe("repository layout", () => {
+  test.failing("the root package.json is private and publishes nothing", () => {
+    const pkg = readJson("package.json");
+
+    expect(pkg.private).toBe(true);
+    for (const field of ["version", "main", "exports", "bin", "files", "types"]) {
+      expect(pkg).not.toHaveProperty(field);
+    }
+  });
+
+  test.failing("no prebuilt binary is tracked in git", () => {
+    const tracked = Bun.spawnSync(["git", "ls-files", "npm/bin"], { cwd: REPO_ROOT }).stdout.toString();
+
+    expect(tracked.trim().split("\n")).toEqual(["npm/bin/gale.cjs"]);
+  });
+
+  test.failing("internal crates do not repeat the workspace version", () => {
+    const cargo = readFileSync(join(REPO_ROOT, "Cargo.toml"), "utf8");
+    const internal = cargo.split("\n").filter((line) => /^gale_\w+ = \{ path = /.test(line));
+
+    expect(internal.length).toBeGreaterThan(0);
+    for (const line of internal) {
+      expect(line).not.toContain("version");
+    }
+  });
+});
