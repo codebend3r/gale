@@ -22,7 +22,7 @@ function lint(rules: Record<string, unknown>, scss: string): string[] {
 describe("scss/operator-no-newline-before", () => {
   const rules = { "scss/operator-no-newline-before": true };
 
-  test.failing("flags an operator that starts a line", () => {
+  test("flags an operator that starts a line", () => {
     expect(lint(rules, "a {\n  width: 10px\n  + 1;\n}\n")).toEqual([
       '3:3 Unexpected newline before "+" (scss/operator-no-newline-before)',
     ]);
