@@ -111,6 +111,17 @@ impl CssNode {
     }
   }
 
+  /// The declarations directly in this node: a style rule's own, or the
+  /// node itself when it is a declaration.  None for an at-rule or a
+  /// comment.
+  pub fn declarations(&self) -> &[Declaration] {
+    match self {
+      CssNode::Style(rule) => &rule.declarations,
+      CssNode::Declaration(decl) => std::slice::from_ref(decl),
+      CssNode::AtRule(_) | CssNode::Comment(_) => &[],
+    }
+  }
+
   /// Returns the child nodes of this node.
   pub fn children(&self) -> Vec<&CssNode> {
     match self {

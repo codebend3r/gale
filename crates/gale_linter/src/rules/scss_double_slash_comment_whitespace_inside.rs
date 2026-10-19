@@ -83,7 +83,7 @@ impl Check for ScssDoubleSlashCommentWhitespaceInsideCheck {
     // line ends with `,`). postcss-scss doesn't expose these as comment nodes
     // so Stylelint never checks them.
     if comment.span.offset > 0 {
-      let before = &ctx.source[..comment.span.offset];
+      let before = ctx.source_slice(0, comment.span.offset).unwrap_or("");
       // Find the previous non-empty line
       if let Some(prev_line) = before.lines().rev().find(|l| !l.trim().is_empty()) {
         if prev_line.trim_end().ends_with(',') {

@@ -116,7 +116,10 @@ impl Check for StylisticDeclarationColonSpaceAfterCheck {
             while end < len && bytes[end] != b';' && bytes[end] != b'}' {
               end += 1;
             }
-            !ctx.source[colon_pos..end.min(len)].contains('\n')
+            !ctx
+              .source_slice(colon_pos, end.min(len))
+              .unwrap_or("")
+              .contains('\n')
           };
 
           let violation = match option {

@@ -67,7 +67,7 @@ impl Check for BlockNoEmptyCheck {
         if end > context.source.len() {
           return vec![];
         }
-        let block_src = &context.source[start..end];
+        let block_src = context.source_slice(start, end).unwrap_or("");
         // Only check at-rules that have a block (contain `{`)
         if !block_src.contains('{') {
           return vec![];
@@ -91,7 +91,7 @@ fn check_block_source(
     return vec![];
   }
 
-  let block_src = &context.source[span_start..span_end];
+  let block_src = context.source_slice(span_start, span_end).unwrap_or("");
 
   // Find the opening `{`
   let Some(open_brace_rel) = block_src.find('{') else {

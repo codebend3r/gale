@@ -48,7 +48,7 @@ impl Check for DeclarationNoImportantCheck {
         // Try to find `!important` in the source span to build a precise fix.
         let mut fix_opt = None;
         if decl_end <= ctx.source.len() && decl_start < decl_end {
-          let slice = &ctx.source[decl_start..decl_end];
+          let slice = ctx.source_slice(decl_start, decl_end).unwrap_or("");
           if let Some(pos) = find_important(slice) {
             let abs_pos = decl_start + pos;
             let imp_text = &slice[pos..];
@@ -81,7 +81,7 @@ impl Check for DeclarationNoImportantCheck {
         // the diagnostic.
         let diag_span = if let Some(pos) = fix_opt.as_ref().and_then(|_| {
           if decl_end <= ctx.source.len() && decl_start < decl_end {
-            let slice = &ctx.source[decl_start..decl_end];
+            let slice = ctx.source_slice(decl_start, decl_end).unwrap_or("");
             find_important(slice).map(|p| decl_start + p)
           } else {
             None

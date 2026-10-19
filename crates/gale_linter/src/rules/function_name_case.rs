@@ -136,7 +136,7 @@ impl Check for FunctionNameCaseCheck {
         continue;
       }
 
-      let raw_value_area = &ctx.source[decl_start..decl_end];
+      let raw_value_area = ctx.source_slice(decl_start, decl_end).unwrap_or("");
 
       // In SCSS/Less, skip values with interpolation or SCSS variables,
       // since the actual function name may be dynamic.

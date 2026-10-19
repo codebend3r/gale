@@ -101,7 +101,7 @@ impl Check for KeyframesNamePatternCheck {
       // Compute the offset of the keyframes name in the source.
       // The name starts after `@keyframes ` (or `@-webkit-keyframes `).
       let name_offset = if at.span.offset < ctx.source.len() {
-        let source_slice = &ctx.source[at.span.offset..];
+        let source_slice = ctx.source_from(at.span.offset).unwrap_or("");
         // Find where at.params starts in the source
         let at_keyword = format!("@{}", at.name);
         if let Some(kw_pos) = source_slice.find(&at_keyword) {

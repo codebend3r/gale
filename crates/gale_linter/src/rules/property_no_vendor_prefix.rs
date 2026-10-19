@@ -44,14 +44,8 @@ impl Check for PropertyNoVendorPrefixCheck {
   /// Flags vendor-prefixed properties that have an unprefixed equivalent,
   /// skipping any listed in `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let decls: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
     let mut diags = Vec::new();
-    for decl in decls {
+    for decl in node.declarations() {
       if decl.span.length == 0 {
         continue;
       }
