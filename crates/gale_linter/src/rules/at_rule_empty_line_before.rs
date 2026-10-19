@@ -1,46 +1,91 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity};
+use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before at-rules.
-///
-/// Equivalent to Stylelint's `at-rule-empty-line-before` rule, autofix
-/// included.  Primary option `"always"` or `"never"`; secondary options:
-///   - `except`: `after-same-name`, `inside-block`,
-///     `blockless-after-same-name-blockless`, `blockless-after-blockless`,
-///     `first-nested`
-///   - `ignore`: `after-comment`, `first-nested`, `inside-block`,
-///     `blockless-after-same-name-blockless`, `blockless-after-blockless`
-///   - `ignoreAtRules`: names or `/regex/`es
-///
-/// Works on the [`PostcssTree`] of the source, so at-rules the CSS parser
-/// drops (`@mixin` in plain CSS, `@import` after a rule) and comments count
-/// as Stylelint counts them.
-pub struct AtRuleEmptyLineBefore;
+const NAME: &str = "at-rule-empty-line-before";
 
-impl Rule for AtRuleEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "at-rule-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before at-rules.
+  ///
+  /// Equivalent to Stylelint's `at-rule-empty-line-before` rule, autofix
+  /// included.  Primary option `"always"` or `"never"`; secondary options:
+  ///   - `except`: `after-same-name`, `inside-block`,
+  ///     `blockless-after-same-name-blockless`, `blockless-after-blockless`,
+  ///     `first-nested`
+  ///   - `ignore`: `after-comment`, `first-nested`, `inside-block`,
+  ///     `blockless-after-same-name-blockless`, `blockless-after-blockless`
+  ///   - `ignoreAtRules`: names or `/regex/`es
+  ///
+  /// Works on the [`PostcssTree`] of the source, so at-rules the CSS parser
+  /// drops (`@mixin` in plain CSS, `@import` after a rule) and comments count
+  /// as Stylelint counts them.
+  pub struct AtRuleEmptyLineBefore => AtRuleEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before at-rules",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before at-rules"
+/// `at-rule-empty-line-before` as configured.
+pub struct AtRuleEmptyLineBeforeCheck {
+  /// `"always"` rather than `"never"`.
+  always: bool,
+  /// The `except` keywords.
+  except: Vec<&'static str>,
+  /// The `ignore` keywords.
+  ignore: Vec<&'static str>,
+  /// `ignoreAtRules`.
+  ignore_at_rules: Matchers,
+}
+
+impl AtRuleEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"`, then `except`, `ignore`
+  /// and `ignoreAtRules`.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    let except = options.keywords(
+      "except",
+      &[
+        "after-same-name",
+        "inside-block",
+        "blockless-after-same-name-blockless",
+        "blockless-after-blockless",
+        "first-nested",
+      ],
+    );
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "after-comment",
+        "first-nested",
+        "inside-block",
+        "blockless-after-same-name-blockless",
+        "blockless-after-blockless",
+      ],
+    );
+    let ignore_at_rules = options.matchers("ignoreAtRules");
+    options.finish()?;
+    Ok(Self {
+      always: expectation != Some("never"),
+      except,
+      ignore,
+      ignore_at_rules,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for AtRuleEmptyLineBeforeCheck {
   /// Checks every at-rule in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let always = ctx.primary_option_str() != Some("never");
-    let secondary = ctx.secondary_options();
-    let except = |name: &str| option_matches(secondary.and_then(|s| s.get("except")), name);
-    let ignore = |name: &str| option_matches(secondary.and_then(|s| s.get("ignore")), name);
+    let always = self.always;
+    let except = |name: &str| self.except.contains(&name);
+    let ignore = |name: &str| self.ignore.contains(&name);
     let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
@@ -48,10 +93,7 @@ impl Rule for AtRuleEmptyLineBefore {
       if tree.nodes[i].kind != NodeKind::AtRule
         || tree.is_first_node_of_root(i)
         || !tree.is_standard_syntax_at_rule(i)
-        || option_matches(
-          secondary.and_then(|s| s.get("ignoreAtRules")),
-          &tree.nodes[i].name,
-        )
+        || self.ignore_at_rules.matches(&tree.nodes[i].name)
       {
         continue;
       }
@@ -77,8 +119,8 @@ impl Rule for AtRuleEmptyLineBefore {
         continue;
       }
       diags.push(empty_line_report(
-        self.name(),
-        self.default_severity(),
+        NAME,
+        AtRuleEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -115,12 +157,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{ctx_with_source_and_options, fix};
+  use crate::testing::{configured, ctx_with_source, fix, invalid_options};
 
   /// The messages for `source` with `options`.
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
-    let ctx = ctx_with_source_and_options(source, &options);
-    AtRuleEmptyLineBefore
+    let ctx = ctx_with_source(source);
+    configured(&AtRuleEmptyLineBefore, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -214,6 +256,35 @@ mod tests {
         Syntax::Scss,
       ),
       "a {\n  @include x;\n  // note\n\n  @include y;\n}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", {
+          "except": ["after-same-name", "first-nested"],
+          "ignore": "after-comment",
+          "ignoreAtRules": ["else", "/^my-/"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"at-rule-empty-line-before\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "except": ["after-comment"], "ignoreRules": [] }])
+      ),
+      [
+        "Invalid value \"after-comment\" for option \"except\" of rule \"at-rule-empty-line-before\"",
+        "Invalid option name \"ignoreRules\" for rule \"at-rule-empty-line-before\""
+      ]
     );
   }
 }

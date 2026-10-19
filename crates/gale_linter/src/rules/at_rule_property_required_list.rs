@@ -1,49 +1,75 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
+use serde_json::{Map, Value};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require specific properties for at-rules.
-///
-/// Options: an object mapping at-rule names (lowercase, without `@`) to arrays
-/// of required property names.
-///
-/// Example config:
-/// ```json
-/// { "font-face": ["font-family", "font-style"] }
-/// ```
-///
-/// Equivalent to Stylelint's `at-rule-property-required-list` rule.
-pub struct AtRulePropertyRequiredList;
+const NAME: &str = "at-rule-property-required-list";
 
-impl Rule for AtRulePropertyRequiredList {
-  fn name(&self) -> &'static str {
-    "at-rule-property-required-list"
+declare_rule! {
+  /// Require specific properties for at-rules.
+  ///
+  /// Options: an object mapping at-rule names (lowercase, without `@`) to arrays
+  /// of required property names.
+  ///
+  /// Example config:
+  /// ```json
+  /// { "font-face": ["font-family", "font-style"] }
+  /// ```
+  ///
+  /// Equivalent to Stylelint's `at-rule-property-required-list` rule.
+  pub struct AtRulePropertyRequiredList => AtRulePropertyRequiredListCheck {
+    name: NAME,
+    description: "Specify a list of required properties for at-rules",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a list of required properties for at-rules"
+/// `at-rule-property-required-list` as configured.
+pub struct AtRulePropertyRequiredListCheck {
+  /// Lowercase at-rule names to the lowercase properties each requires.
+  required: HashMap<String, Vec<String>>,
+}
+
+impl AtRulePropertyRequiredListCheck {
+  /// Stylelint's option: an object whose values are each a property name or
+  /// a list of them (`validateObjectWithArrayProps(isString)`).
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let required = match options.primary_object() {
+      Some(map) if is_object_of_string_lists(map) => parse_options(map),
+      Some(map) => {
+        options.report(InvalidOption::value(NAME, &Value::Object(map.clone())));
+        HashMap::new()
+      }
+      None => HashMap::new(),
+    };
+    options.finish()?;
+    Ok(Self { required })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
+/// Whether every value of `map` is a string or a list of strings.
+fn is_object_of_string_lists(map: &Map<String, Value>) -> bool {
+  map.values().all(|value| match value {
+    Value::Array(items) => items.iter().all(Value::is_string),
+    other => other.is_string(),
+  })
+}
 
+impl Check for AtRulePropertyRequiredListCheck {
   /// Flags an at-rule that is missing any property the config requires for it.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at_rule) = node else {
       return vec![];
     };
 
-    let required_map = match parse_options(ctx.options) {
-      Some(m) => m,
-      None => return vec![],
-    };
-
     let name_lower = at_rule.name.to_ascii_lowercase();
-    let required_props = match required_map.get(name_lower.as_str()) {
+    let required_props = match self.required.get(name_lower.as_str()) {
       Some(props) => props,
       None => return vec![],
     };
@@ -66,13 +92,12 @@ impl Rule for AtRulePropertyRequiredList {
       if !declared.iter().any(|d| d == req) {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Expected property \"{req}\" in at-rule \"@{name}\"",
               name = at_rule.name,
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(at_rule.span.offset, at_rule.span.length)),
         );
       }
@@ -81,20 +106,26 @@ impl Rule for AtRulePropertyRequiredList {
   }
 }
 
-/// Parse the rule options as `{ "at-rule-name": ["prop1", "prop2"] }`.
-fn parse_options(options: Option<&serde_json::Value>) -> Option<HashMap<String, Vec<String>>> {
-  let obj = options?.as_object()?;
-  let mut map = HashMap::new();
-  for (key, val) in obj {
-    if let Some(arr) = val.as_array() {
-      let props: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-        .collect();
-      map.insert(key.to_ascii_lowercase(), props);
-    }
-  }
-  Some(map)
+/// The rule's option `{ "at-rule-name": ["prop1", "prop2"] }`, names
+/// lowercased; a single name stands for a list of one.
+fn parse_options(map: &Map<String, Value>) -> HashMap<String, Vec<String>> {
+  map
+    .iter()
+    .map(|(key, value)| {
+      let props = match value {
+        Value::Array(items) => items
+          .iter()
+          .filter_map(|v| v.as_str().map(str::to_ascii_lowercase))
+          .collect(),
+        other => other
+          .as_str()
+          .map(str::to_ascii_lowercase)
+          .into_iter()
+          .collect(),
+      };
+      (key.to_ascii_lowercase(), props)
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -102,7 +133,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn at_rule_with_decls(name: &str, decls: Vec<(&str, &str)>) -> CssNode {
     let children = decls
@@ -127,10 +158,11 @@ mod tests {
   #[test]
   fn reports_missing_required_property() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
+    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
     let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
-    let d = AtRulePropertyRequiredList.check(&node, &c);
+    let d = rule.check(&node, &c);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("font-style"));
   }
@@ -138,31 +170,65 @@ mod tests {
   #[test]
   fn allows_when_all_properties_present() {
     let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
+    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
     let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls(
       "font-face",
       vec![("font-family", "Arial"), ("font-style", "normal")],
     );
-    let d = AtRulePropertyRequiredList.check(&node, &c);
+    let d = rule.check(&node, &c);
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_unmatched_at_rules() {
     let opts = serde_json::json!({ "font-face": ["font-family"] });
+    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
     let c = ctx_with_options(&opts);
 
     let node = at_rule_with_decls("media", vec![]);
-    let d = AtRulePropertyRequiredList.check(&node, &c);
+    let d = rule.check(&node, &c);
     assert!(d.is_empty());
   }
 
   #[test]
   fn returns_empty_when_no_options() {
+    let rule = configured(&AtRulePropertyRequiredList, None);
     let ctx = ctx();
     let node = at_rule_with_decls("font-face", vec![]);
-    let d = AtRulePropertyRequiredList.check(&node, &ctx);
+    let d = rule.check(&node, &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn a_single_name_is_a_list_of_one() {
+    let rule = configured(
+      &AtRulePropertyRequiredList,
+      serde_json::json!({ "font-face": "font-display" }),
+    );
+    let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
+    let d = rule.check(&node, &ctx());
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("font-display"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([{ "font-face": ["font-family"], "page": "margin" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("font-face")),
+      ["Invalid option value \"font-face\" for rule \"at-rule-property-required-list\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!({ "font-face": [1] })),
+      ["Invalid option value \"{\"font-face\":[1]}\" for rule \"at-rule-property-required-list\""]
+    );
   }
 }

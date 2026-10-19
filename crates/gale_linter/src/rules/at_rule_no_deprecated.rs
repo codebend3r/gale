@@ -1,51 +1,63 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::style_rules::RawAtRule;
 
 /// Stylelint's `deprecatedAtKeywords`.
 const DEPRECATED_AT_RULES: &[&str] = &["document", "nest", "viewport"];
 
-/// Disallow deprecated at-rules.
-///
-/// Equivalent to Stylelint's `at-rule-no-deprecated` rule: `@document`,
-/// `@nest` and `@viewport` are reported, anywhere in the stylesheet.  The
-/// fix turns `@nest <selector> { ... }` into the plain nested rule
-/// `<selector> { ... }`; the others have no replacement.
-pub struct AtRuleNoDeprecated;
+const NAME: &str = "at-rule-no-deprecated";
 
-impl Rule for AtRuleNoDeprecated {
-  fn name(&self) -> &'static str {
-    "at-rule-no-deprecated"
+declare_rule! {
+  /// Disallow deprecated at-rules.
+  ///
+  /// Equivalent to Stylelint's `at-rule-no-deprecated` rule: `@document`,
+  /// `@nest` and `@viewport` are reported, anywhere in the stylesheet.  The
+  /// fix turns `@nest <selector> { ... }` into the plain nested rule
+  /// `<selector> { ... }`; the others have no replacement.
+  pub struct AtRuleNoDeprecated => AtRuleNoDeprecatedCheck {
+    name: NAME,
+    description: "Disallow deprecated at-rules",
+    default_severity: Error,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow deprecated at-rules"
+/// `at-rule-no-deprecated` as configured.
+pub struct AtRuleNoDeprecatedCheck {
+  /// `ignoreAtRules`.
+  ignore_at_rules: Matchers,
+}
+
+impl AtRuleNoDeprecatedCheck {
+  /// Stylelint's options: `true`, then `ignoreAtRules`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_at_rules = options.matchers("ignoreAtRules");
+    options.finish()?;
+    Ok(Self { ignore_at_rules })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for AtRuleNoDeprecatedCheck {
   /// Flags deprecated at-rules, skipping `ignoreAtRules`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore = ctx.secondary_options().and_then(|v| v.get("ignoreAtRules"));
     let mut diags = Vec::new();
     for at in &ctx.scanned_rules().at_rules {
       let lower = at.name.to_ascii_lowercase();
       if !DEPRECATED_AT_RULES.contains(&lower.as_str())
         || !is_standard_syntax_at_rule(&at)
-        || pattern::option_matches(ignore, &at.name)
+        || self.ignore_at_rules.matches(&at.name)
       {
         continue;
       }
       let mut diag = Diagnostic::new(
-        self.name(),
+        NAME,
         format!("Unexpected deprecated at-rule \"@{}\"", at.name),
       )
-      .severity(self.default_severity())
       .span(Span::new(at.offset, at.name.len() + 1));
       if lower == "nest" && at.has_block {
         // `@nest .foo & {}` becomes `.foo & {}`.
@@ -76,9 +88,11 @@ fn is_standard_syntax_at_rule(at: &RawAtRule) -> bool {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "at-rule-no-deprecated";
 
@@ -140,5 +154,24 @@ mod tests {
     let css = "a { @nest .foo & {} }";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        json!([true, { "ignoreAtRules": ["viewport", "/^doc/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, json!("always")),
+      ["Unexpected option value \"always\" for rule \"at-rule-no-deprecated\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, json!([true, { "ignoreAtRules": [true] }])),
+      ["Invalid value \"true\" for option \"ignoreAtRules\" of rule \"at-rule-no-deprecated\""]
+    );
   }
 }

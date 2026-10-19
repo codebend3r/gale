@@ -1,9 +1,33 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-pub struct AtRuleDescriptorValueNoUnknown;
+const NAME: &str = "at-rule-descriptor-value-no-unknown";
+
+declare_rule! {
+  pub struct AtRuleDescriptorValueNoUnknown => AtRuleDescriptorValueNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown values for known descriptors in at-rules",
+    default_severity: Error,
+  }
+}
+
+/// `at-rule-descriptor-value-no-unknown`, which takes no options.
+pub struct AtRuleDescriptorValueNoUnknownCheck;
+
+impl AtRuleDescriptorValueNoUnknownCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Known values for `font-display` in `@font-face`.
 static FONT_DISPLAY_VALUES: &[&str] = &["auto", "block", "fallback", "optional", "swap"];
@@ -130,19 +154,7 @@ fn validate_descriptor_value(at_rule_name: &str, descriptor: &str, value: &str) 
   None
 }
 
-impl Rule for AtRuleDescriptorValueNoUnknown {
-  fn name(&self) -> &'static str {
-    "at-rule-descriptor-value-no-unknown"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown values for known descriptors in at-rules"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for AtRuleDescriptorValueNoUnknownCheck {
   /// Validates descriptor values inside `@font-face` and `@property`, the only
   /// at-rules this rule has value knowledge for.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -161,11 +173,7 @@ impl Rule for AtRuleDescriptorValueNoUnknown {
       if let CssNode::Declaration(decl) = child
         && let Some(msg) = validate_descriptor_value(&at.name, &decl.property, &decl.value)
       {
-        diags.push(
-          Diagnostic::new(self.name(), msg)
-            .severity(self.default_severity())
-            .span(Span::new(decl.span.offset, decl.span.length)),
-        );
+        diags.push(Diagnostic::new(NAME, msg).span(Span::new(decl.span.offset, decl.span.length)));
       }
     }
     diags
@@ -176,8 +184,9 @@ impl Rule for AtRuleDescriptorValueNoUnknown {
 mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan};
+  use serde_json::json;
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn font_face_node(descriptors: &[(&str, &str)]) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -219,8 +228,9 @@ mod tests {
 
   #[test]
   fn reports_invalid_font_display() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = font_face_node(&[("font-display", "fast")]);
-    let d = AtRuleDescriptorValueNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("fast"));
     assert!(d[0].message.contains("font-display"));
@@ -228,12 +238,11 @@ mod tests {
 
   #[test]
   fn allows_valid_font_display() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     for val in &["auto", "block", "swap", "fallback", "optional"] {
       let node = font_face_node(&[("font-display", val)]);
       assert!(
-        AtRuleDescriptorValueNoUnknown
-          .check(&node, &ctx())
-          .is_empty(),
+        rule.check(&node, &ctx()).is_empty(),
         "Expected \"{}\" to be valid for font-display",
         val
       );
@@ -242,8 +251,9 @@ mod tests {
 
   #[test]
   fn reports_invalid_property_inherits() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = property_node(&[("inherits", "yes")]);
-    let d = AtRuleDescriptorValueNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("yes"));
     assert!(d[0].message.contains("inherits"));
@@ -251,103 +261,79 @@ mod tests {
 
   #[test]
   fn allows_valid_property_inherits() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = property_node(&[("inherits", "true")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
     let node = property_node(&[("inherits", "false")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn allows_valid_font_style() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = font_face_node(&[("font-style", "normal")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
     let node = font_face_node(&[("font-style", "italic")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
     let node = font_face_node(&[("font-style", "oblique 14deg")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn reports_invalid_font_style() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = font_face_node(&[("font-style", "bold")]);
-    let d = AtRuleDescriptorValueNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("bold"));
   }
 
   #[test]
   fn allows_valid_font_stretch_keywords_and_percentages() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = font_face_node(&[("font-stretch", "condensed")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
     let node = font_face_node(&[("font-stretch", "75%")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
     let node = font_face_node(&[("font-stretch", "75% 100%")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn reports_invalid_font_stretch() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = font_face_node(&[("font-stretch", "wide")]);
-    let d = AtRuleDescriptorValueNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("wide"));
   }
 
   #[test]
   fn ignores_unchecked_descriptors() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     // `src` is a known descriptor but we don't validate its value
     let node = font_face_node(&[("src", "url(anything-goes.woff2)")]);
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn ignores_other_at_rules() {
+    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     let node = CssNode::AtRule(AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![],
     });
-    assert!(
-      AtRuleDescriptorValueNoUnknown
-        .check(&node, &ctx())
-        .is_empty()
+    assert!(rule.check(&node, &ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, json!("always")),
+      ["Unexpected option value \"always\" for rule \"at-rule-descriptor-value-no-unknown\""]
     );
   }
 }
