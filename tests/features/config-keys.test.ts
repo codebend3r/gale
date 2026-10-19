@@ -233,7 +233,7 @@ describe("extends config key", () => {
     const project = makeProject({
       "stylelint.config.js": `module.exports = {
   extends: [
-    require.resolve('@wordpress/stylelint-tools/config'),
+    '@wordpress/stylelint-tools/config',
     'stylelint-config-not-installed',
   ],
   rules: { 'block-no-empty': true },
@@ -254,6 +254,8 @@ describe("extends config key", () => {
   });
 
   test("warns about an entry that is not a string", () => {
+    // Without Node.js the config is read without running it, and an
+    // expression it cannot evaluate is no string.
     const project = makeProject({
       "stylelint.config.js": `module.exports = {
   extends: [ path.join( __dirname, 'base.js' ) ],
@@ -263,9 +265,23 @@ describe("extends config key", () => {
       "a.css": EMPTY_BLOCK,
     });
 
-    const result = runGale(["a.css"], { cwd: project.dir });
+    const result = runGale(["a.css"], { cwd: project.dir, env: { PATH: "/gale-no-node" } });
     expect(result.stderr).toContain("could not resolve an extends entry");
     expect(result.stderr).toContain("it is not a string");
     expect(result.exitCode).toBe(2);
+  });
+
+  test("follows an absolute path, as require.resolve gives it", () => {
+    const project = makeProject({
+      "stylelint.config.js": `module.exports = {
+  extends: [ require.resolve('./base.js') ],
+};
+`,
+      "base.js": `module.exports = { rules: { 'block-no-empty': true } };\n`,
+      "a.css": EMPTY_BLOCK,
+    });
+
+    const result = runGaleJson(["a.css"], { cwd: project.dir });
+    expect(result.warnings().map((w) => w.rule)).toEqual(["block-no-empty"]);
   });
 });

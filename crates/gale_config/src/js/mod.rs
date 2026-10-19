@@ -1,15 +1,22 @@
-//! Reading JavaScript configs (`stylelint.config.js` and friends) without
-//! running them.
+//! Reading JavaScript configs: `stylelint.config.js` and friends, and the
+//! JavaScript files they extend.
 //!
-//! Gale never executes JavaScript.  It finds the exported object literal,
-//! inlines what relative imports and simple constants it can
-//! ([`imports`]), and rewrites the literal into JSON ([`to_json`]) for serde
-//! to read as a [`ConfigFile`].
+//! Stylelint runs these as modules, and so does gale: [`node`] imports the
+//! file under Node.js and reads back the JSON it prints.  Without Node.js,
+//! gale reads the file without running it: it finds the exported object
+//! literal, inlines what relative imports and simple constants it can
+//! ([`imports`]), and rewrites the literal into JSON ([`to_json`]).
 
 mod imports;
+mod node;
 mod to_json;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
+
+use serde_json::Value;
 
 use imports::{
   extract_reexport_require, find_variable_value, resolve_import_path, resolve_js_imports,
@@ -19,6 +26,78 @@ use to_json::js_object_to_json;
 
 use crate::{ConfigError, ConfigFile};
 
+/// What each JavaScript file evaluated to this run, keyed by its path and
+/// modification time.  The same config is loaded more than once (the CLI's
+/// own lookup, then per directory, and as a shared `extends`), and each
+/// load would otherwise start Node again and repeat its warnings; the time
+/// keeps a long-running language server from holding on to an old version.
+type Loaded = HashMap<(PathBuf, Option<SystemTime>), Result<Value, String>>;
+static LOADED: LazyLock<Mutex<Loaded>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Load the JavaScript config at `path`.
+///
+/// Every JavaScript file the config machinery reads, whether the config
+/// itself or a preset it extends, comes through here.
+pub(crate) fn load_js_config(path: &Path) -> Result<ConfigFile, ConfigError> {
+  let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+  let key = (
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    modified,
+  );
+  let cached = LOADED
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .get(&key)
+    .cloned();
+  let value = match cached {
+    Some(value) => value,
+    None => {
+      let value = evaluate(path).map_err(|err| err.to_string());
+      LOADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, value.clone());
+      value
+    }
+  };
+  Ok(serde_json::from_value(
+    value.map_err(ConfigError::JavaScript)?,
+  )?)
+}
+
+/// Evaluate the file at `path` under Node.js, or read it statically when
+/// Node.js is not available.
+fn evaluate(path: &Path) -> Result<Value, ConfigError> {
+  let cwd = std::env::current_dir().unwrap_or_default();
+  let shown = path.strip_prefix(&cwd).unwrap_or(path).display();
+  let value = match node::evaluate(path) {
+    Some(Ok(evaluated)) => {
+      for dropped in &evaluated.dropped {
+        eprintln!(
+          "warning: {shown}: dropped {dropped}, since gale reads the config as JSON, \
+           which cannot hold it"
+        );
+      }
+      evaluated.config
+    }
+    Some(Err(message)) => {
+      return Err(ConfigError::JavaScript(format!(
+        "Node.js could not load it: {message}"
+      )));
+    }
+    None => {
+      let source = std::fs::read_to_string(path)?;
+      serde_json::to_value(parse_js_config(&source, path.parent())?)?
+    }
+  };
+  if !value.is_object() {
+    return Err(ConfigError::JavaScript(
+      "it does not export an object".to_string(),
+    ));
+  }
+  Ok(value)
+}
+
 /// Parse a JavaScript config file that uses `module.exports = { ... }`,
 /// `exports = { ... }`, or `export default { ... }` with a static object literal.
 ///
@@ -27,10 +106,7 @@ use crate::{ConfigError, ConfigFile};
 ///
 /// When `file_dir` is provided, relative imports (`./` or `../`) are resolved
 /// by reading the imported file and inlining the exported value.
-pub(crate) fn parse_js_config(
-  source: &str,
-  file_dir: Option<&Path>,
-) -> Result<ConfigFile, ConfigError> {
+fn parse_js_config(source: &str, file_dir: Option<&Path>) -> Result<ConfigFile, ConfigError> {
   // Handle re-export pattern: `module.exports = require("./relative")`
   // This is common in npm config packages where index.js delegates to another file.
   if let Some(file_dir) = file_dir
