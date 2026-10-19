@@ -3,36 +3,91 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Browser compatibility checker — Rust implementation of
-/// `stylelint-browser-compat` (`plugin/browser-compat`).
-///
-/// Checks that CSS properties, pseudo-elements, and pseudo-classes used in
-/// the stylesheet are supported by the project's target browsers (as defined
-/// by a browserslist configuration).
-///
-/// Browser support data is read at runtime from the
-/// `@mdn/browser-compat-data` npm package in `node_modules/`.
-pub struct PluginBrowserCompat;
+const NAME: &str = "plugin/browser-compat";
+
+declare_rule! {
+  /// Browser compatibility checker — Rust implementation of
+  /// `stylelint-browser-compat` (`plugin/browser-compat`).
+  ///
+  /// Checks that CSS properties, pseudo-elements, and pseudo-classes used in
+  /// the stylesheet are supported by the project's target browsers (as defined
+  /// by a browserslist configuration).
+  ///
+  /// Browser support data is read at runtime from the
+  /// `@mdn/browser-compat-data` npm package in `node_modules/`.
+  pub struct PluginBrowserCompat => PluginBrowserCompatCheck {
+    name: NAME,
+    description: "Disallow CSS features unsupported by target browsers",
+    default_severity: Warning,
+  }
+}
+
+/// `plugin/browser-compat` as configured.
+pub struct PluginBrowserCompatCheck {
+  /// The options, or `None` when the rule is given no secondary options,
+  /// in which case gale checks nothing.
+  options: Option<BrowserCompatOptions>,
+}
+
+impl PluginBrowserCompatCheck {
+  /// The plugin validates its secondary options against a schema (see
+  /// [`is_valid_options`]) through `validateOptions` with a function as
+  /// `possible`, and none of its primary option.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    match setting.secondary() {
+      Some(serde_json::Value::Bool(false)) => {
+        options.report(InvalidOption::disabled_with_false(NAME));
+      }
+      Some(secondary) if !secondary.is_null() && !is_valid_options(secondary) => {
+        options.report(InvalidOption::rejected(NAME, secondary));
+      }
+      _ => {}
+    }
+    options.finish()?;
+    Ok(Self {
+      options: setting.secondary().and_then(parse_options),
+    })
+  }
+}
+
+/// The plugin's `ruleOptionsSchema`: an object whose `allow` is an object
+/// of `features` (a list of strings) and the `flagged`,
+/// `partialImplementation` and `prefix` flags, and whose `browserslist` is
+/// a query or a list of them.  Other keys are left alone.
+fn is_valid_options(value: &serde_json::Value) -> bool {
+  let Some(object) = value.as_object() else {
+    return false;
+  };
+  let is_string_list = |value: &serde_json::Value| {
+    value
+      .as_array()
+      .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+  };
+  let allow_ok = match object.get("allow") {
+    None => true,
+    Some(allow) => allow.as_object().is_some_and(|allow| {
+      allow.get("features").is_none_or(is_string_list)
+        && ["flagged", "partialImplementation", "prefix"]
+          .iter()
+          .all(|key| allow.get(*key).is_none_or(serde_json::Value::is_boolean))
+    }),
+  };
+  let browserslist_ok = object
+    .get("browserslist")
+    .is_none_or(|list| list.is_string() || is_string_list(list));
+  allow_ok && browserslist_ok
+}
 
 // ── Rule implementation ─────────────────────────────────────────────────
 
-impl Rule for PluginBrowserCompat {
-  fn name(&self) -> &'static str {
-    "plugin/browser-compat"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow CSS features unsupported by target browsers"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PluginBrowserCompatCheck {
   /// Unused: the work happens in `check_root`, which needs whole-file context.
   fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
@@ -41,9 +96,8 @@ impl Rule for PluginBrowserCompat {
   /// Resolves the browserslist targets and MDN compat data, then flags properties
   /// and selectors the targets do not support. Missing data disables the rule.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let opts = match parse_options(context) {
-      Some(o) => o,
-      None => return vec![],
+    let Some(opts) = &self.options else {
+      return vec![];
     };
 
     let file_path = Path::new(context.file_path);
@@ -74,7 +128,7 @@ impl Rule for PluginBrowserCompat {
     collect_from_nodes(
       nodes,
       context,
-      &opts,
+      opts,
       &compat_data,
       &targets,
       &mut diagnostics,
@@ -95,20 +149,17 @@ struct BrowserCompatOptions {
 }
 
 /// Reads `browserslist`, `allow` and the flag/partial tolerances.
-fn parse_options(ctx: &RuleContext) -> Option<BrowserCompatOptions> {
-  let opts_val = ctx.secondary_options()?;
+fn parse_options(opts_val: &serde_json::Value) -> Option<BrowserCompatOptions> {
   let obj = opts_val.as_object()?;
 
-  let browserslist: Vec<String> = obj
-    .get("browserslist")
-    .and_then(|v| v.as_array())
-    .map(|arr| {
-      arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect()
-    })
-    .unwrap_or_default();
+  let browserslist: Vec<String> = match obj.get("browserslist") {
+    Some(serde_json::Value::String(query)) => vec![query.clone()],
+    Some(serde_json::Value::Array(arr)) => arr
+      .iter()
+      .filter_map(|v| v.as_str().map(|s| s.to_string()))
+      .collect(),
+    _ => Vec::new(),
+  };
 
   let allow = obj.get("allow").and_then(|v| v.as_object());
 
@@ -973,7 +1024,6 @@ fn check_support_and_report(
 
   diagnostics.push(
     Diagnostic::new("plugin/browser-compat", msg)
-      .severity(Severity::Warning)
       .span(Span::new(offset, 0))
       .file_path(ctx.file_path),
   );
@@ -1051,5 +1101,27 @@ mod tests {
     assert!((parse_version_f64("138") - 138.0).abs() < f64::EPSILON);
     assert!((parse_version_f64("17.0") - 17.0).abs() < f64::EPSILON);
     assert!((parse_version_f64("\u{2264}79") - 79.0).abs() < f64::EPSILON);
+  }
+
+  #[test]
+  fn options_are_validated_like_the_plugin() {
+    use crate::testing::invalid_options;
+    let valid = serde_json::json!([true, {
+      "browserslist": "> 1%",
+      "allow": { "features": ["properties.gap"], "flagged": false, "prefix": true }
+    }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "browserslist": 5 }])),
+      ["Invalid option \"{\"browserslist\":5}\" for rule \"plugin/browser-compat\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "allow": { "prefix": "yes" } }])
+      ),
+      ["Invalid option \"{\"allow\":{\"prefix\":\"yes\"}}\" for rule \"plugin/browser-compat\""]
+    );
   }
 }

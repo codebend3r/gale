@@ -1,37 +1,61 @@
 use gale_css_parser::{CssNode, Declaration, StyleRule};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow declarations that have no effect because another declaration in
-/// the same block switches them off.
-///
-/// Gale's own rule; Stylelint has no equivalent.
-///
-/// ```css
-/// a {
-///   display: block;
-///   justify-content: center; /* no effect: not a flex or grid container */
-/// }
-/// ```
-///
-/// Only what the block itself proves is reported, so there are no false
-/// positives from the cascade: a `justify-content` with no `display` in its
-/// block may sit on a flex container another rule made, and is left alone.
-/// So are values that come from variables, blocks that include a mixin or
-/// extend a selector (which may set `display` or `position`), and
-/// declarations that set a property to its initial value or a CSS-wide
-/// keyword, which are usually deliberate resets.
-///
-/// | Declaration | No effect with |
-/// |---|---|
-/// | Flex and grid container properties | A `display` that is neither flex nor grid |
-/// | `gap`, `row-gap`, `column-gap` | The same, outside a multi-column container |
-/// | `top`, `right`, `bottom`, `left`, `inset*` | `position: static` |
-/// | `float` | `position: absolute` or `fixed` |
-/// | `vertical-align` | A block-level `display` |
-/// | `table-layout` | A `display` that is not a table |
-pub struct GaleNoIneffectiveDeclarations;
+const NAME: &str = "gale/no-ineffective-declarations";
+
+declare_rule! {
+  /// Disallow declarations that have no effect because another declaration in
+  /// the same block switches them off.
+  ///
+  /// Gale's own rule; Stylelint has no equivalent.
+  ///
+  /// ```css
+  /// a {
+  ///   display: block;
+  ///   justify-content: center; /* no effect: not a flex or grid container */
+  /// }
+  /// ```
+  ///
+  /// Only what the block itself proves is reported, so there are no false
+  /// positives from the cascade: a `justify-content` with no `display` in its
+  /// block may sit on a flex container another rule made, and is left alone.
+  /// So are values that come from variables, blocks that include a mixin or
+  /// extend a selector (which may set `display` or `position`), and
+  /// declarations that set a property to its initial value or a CSS-wide
+  /// keyword, which are usually deliberate resets.
+  ///
+  /// | Declaration | No effect with |
+  /// |---|---|
+  /// | Flex and grid container properties | A `display` that is neither flex nor grid |
+  /// | `gap`, `row-gap`, `column-gap` | The same, outside a multi-column container |
+  /// | `top`, `right`, `bottom`, `left`, `inset*` | `position: static` |
+  /// | `float` | `position: absolute` or `fixed` |
+  /// | `vertical-align` | A block-level `display` |
+  /// | `table-layout` | A `display` that is not a table |
+  pub struct GaleNoIneffectiveDeclarations => GaleNoIneffectiveDeclarationsCheck {
+    name: NAME,
+    description: "Disallow declarations that another declaration in the block switches off",
+    default_severity: Warning,
+  }
+}
+
+/// `gale/no-ineffective-declarations`, which takes no options.
+pub struct GaleNoIneffectiveDeclarationsCheck;
+
+impl GaleNoIneffectiveDeclarationsCheck {
+  /// Gale's own rule takes nothing but `true`, like a Stylelint rule
+  /// that validates `{ actual: primary }` with nothing possible.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Container properties that only apply to flex and grid containers.
 /// `justify-content` also applies to multi-column containers.
@@ -285,19 +309,7 @@ fn has_hidden_declarations(rule: &StyleRule, ctx: &RuleContext) -> bool {
     })
 }
 
-impl Rule for GaleNoIneffectiveDeclarations {
-  fn name(&self) -> &'static str {
-    "gale/no-ineffective-declarations"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow declarations that another declaration in the block switches off"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for GaleNoIneffectiveDeclarationsCheck {
   /// Reports each declaration in a style rule's own block that the block's
   /// `display` or `position` switches off.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -319,13 +331,12 @@ impl Rule for GaleNoIneffectiveDeclarations {
       if let Some(cause) = block.switched_off_by(&property) {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected \"{}\", which has no effect with \"{cause}\"",
               decl.property
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -530,5 +541,28 @@ mod tests {
     let less = |source| messages(source, Syntax::Less);
     assert!(less("a { .row(); display: block; justify-content: center; }").is_empty());
     assert!(less("a { display: @display; justify-content: center; }").is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options("gale/no-ineffective-declarations", serde_json::json!(true)).is_empty()
+    );
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "gale/no-ineffective-declarations",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        "gale/no-ineffective-declarations",
+        serde_json::json!("always")
+      ),
+      ["Unexpected option value \"always\" for rule \"gale/no-ineffective-declarations\""]
+    );
   }
 }

@@ -1,70 +1,76 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Options, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Report usage of CSS custom properties (`var(--foo)`) that are not defined
-/// in the current file or a configurable allowlist.
-///
-/// This is a `check_root` rule that needs full file context to collect
-/// definitions before checking usages.
-///
-/// Options (secondary): an object with an `allowedProperties` key containing
-/// an array of allowed property patterns (exact strings or `/regex/`).
-///
-/// Example config:
-/// ```json
-/// ["plugin/no-unknown-custom-properties", [true, {
-///   "allowedProperties": ["--theme-color", "/^--global-/"]
-/// }]]
-/// ```
-pub struct PluginNoUnknownCustomProperties;
+const NAME: &str = "plugin/no-unknown-custom-properties";
 
-/// A compiled pattern — either a literal string match or a regex.
-enum AllowPattern {
-  Exact(String),
-  Regex(std::sync::Arc<crate::pattern::Regex>),
-}
-
-impl AllowPattern {
-  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
-  fn from_str(s: &str) -> Self {
-    // Patterns wrapped in `/` (optionally flagged, like `/…/i`) are regexes.
-    // One that does not compile is reported as an invalid option by the
-    // runner and compared as a literal here.
-    match crate::pattern::regex_entry(s) {
-      Some(re) => AllowPattern::Regex(re),
-      None => AllowPattern::Exact(s.to_string()),
-    }
-  }
-
-  /// Whether the custom property name matches this pattern.
-  fn matches(&self, name: &str) -> bool {
-    match self {
-      AllowPattern::Exact(s) => name == s,
-      AllowPattern::Regex(re) => crate::pattern::is_match(re, name),
-    }
+declare_rule! {
+  /// Report usage of CSS custom properties (`var(--foo)`) that are not defined
+  /// in the current file or a configurable allowlist.
+  ///
+  /// This is a `check_root` rule that needs full file context to collect
+  /// definitions before checking usages.
+  ///
+  /// Options (secondary): an object with an `allowedProperties` key containing
+  /// an array of allowed property patterns (exact strings or `/regex/`).
+  ///
+  /// Example config:
+  /// ```json
+  /// ["plugin/no-unknown-custom-properties", [true, {
+  ///   "allowedProperties": ["--theme-color", "/^--global-/"]
+  /// }]]
+  /// ```
+  pub struct PluginNoUnknownCustomProperties => PluginNoUnknownCustomPropertiesCheck {
+    name: NAME,
+    description: "Disallow usage of unknown custom properties",
+    default_severity: Warning,
   }
 }
 
-/// Reads the `allowedProperties` secondary into patterns.
-fn parse_allowed_properties(context: &RuleContext) -> Vec<AllowPattern> {
-  let secondary = match context.secondary_options() {
-    Some(opts) => opts,
-    None => return vec![],
-  };
+/// `plugin/no-unknown-custom-properties` as configured.
+pub struct PluginNoUnknownCustomPropertiesCheck {
+  /// `allowedProperties`: custom properties that may be used without a definition.
+  allowed_properties: Matchers,
+}
 
-  let allowed = match secondary.get("allowedProperties") {
-    Some(serde_json::Value::Array(arr)) => arr,
-    _ => return vec![],
-  };
+impl PluginNoUnknownCustomPropertiesCheck {
+  /// Gale's own rule, standing in for projects' custom plugins, so it is
+  /// lenient: it reads only `allowedProperties`, a name or `/regex/` entry or a list
+  /// of them, and ignores its primary option and any other key.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let allowed_properties = lenient_strings(setting, &mut options, "allowedProperties");
+    options.finish()?;
+    Ok(Self {
+      allowed_properties: Matchers::new(&allowed_properties),
+    })
+  }
+}
 
-  allowed
-    .iter()
-    .filter_map(|v| v.as_str().map(AllowPattern::from_str))
-    .collect()
+/// The secondary option `key`, a name or `/regex/` entry or a list of them,
+/// read without making other keys unknown.  An entry that is not a string
+/// is reported as Stylelint words it.
+fn lenient_strings(setting: &Setting, options: &mut Options<'_>, key: &str) -> Vec<String> {
+  let Some(value) = setting.secondary().and_then(|secondary| secondary.get(key)) else {
+    return Vec::new();
+  };
+  let entries: Vec<&serde_json::Value> = match value {
+    serde_json::Value::Array(items) => items.iter().collect(),
+    other => vec![other],
+  };
+  let mut strings = Vec::new();
+  for entry in entries {
+    match entry.as_str() {
+      Some(text) => strings.push(text.to_string()),
+      None => options.report(InvalidOption::option_value(NAME, key, entry)),
+    }
+  }
+  strings
 }
 
 /// Collect all custom property definitions (`--name: value`) from nodes.
@@ -187,24 +193,10 @@ fn collect_var_refs_from_value(
   }
 }
 
-impl Rule for PluginNoUnknownCustomProperties {
-  fn name(&self) -> &'static str {
-    "plugin/no-unknown-custom-properties"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow usage of unknown custom properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PluginNoUnknownCustomPropertiesCheck {
   /// Collects the file's custom property definitions, then flags every `var()`
   /// reference that is neither defined nor allowlisted.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let allowed = parse_allowed_properties(context);
-
     // Collect all definitions in the file
     let mut defined: HashSet<String> = HashSet::new();
     collect_definitions(nodes, &mut defined);
@@ -220,15 +212,14 @@ impl Rule for PluginNoUnknownCustomProperties {
         continue;
       }
       // Skip if in allowlist
-      if allowed.iter().any(|p| p.matches(&usage.name)) {
+      if self.allowed_properties.matches(&usage.name) {
         continue;
       }
       diagnostics.push(
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Unexpected unknown custom property \"{}\"", usage.name),
         )
-        .severity(self.default_severity())
         .span(Span::new(usage.decl_offset, usage.decl_length)),
       );
     }
@@ -243,7 +234,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options};
 
   fn make_nodes(decls: Vec<(&str, &str)>) -> Vec<CssNode> {
     vec![CssNode::Style(StyleRule {
@@ -265,7 +256,7 @@ mod tests {
 
   #[test]
   fn no_diagnostic_when_defined() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--my-color", "red"), ("color", "var(--my-color)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -274,7 +265,7 @@ mod tests {
 
   #[test]
   fn reports_unknown_custom_property() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--unknown)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -284,10 +275,10 @@ mod tests {
 
   #[test]
   fn allowed_property_skipped() {
-    let rule = PluginNoUnknownCustomProperties;
     let opts = json!([true, {
         "allowedProperties": ["--theme-color"]
     }]);
+    let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = make_nodes(vec![("color", "var(--theme-color)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -296,10 +287,10 @@ mod tests {
 
   #[test]
   fn allowed_regex_pattern() {
-    let rule = PluginNoUnknownCustomProperties;
     let opts = json!([true, {
         "allowedProperties": ["/^--global-/"]
     }]);
+    let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = make_nodes(vec![("color", "var(--global-text)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -308,10 +299,10 @@ mod tests {
 
   #[test]
   fn regex_does_not_match_reports() {
-    let rule = PluginNoUnknownCustomProperties;
     let opts = json!([true, {
         "allowedProperties": ["/^--global-/"]
     }]);
+    let rule = configured(&PluginNoUnknownCustomProperties, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = make_nodes(vec![("color", "var(--local-text)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -320,7 +311,7 @@ mod tests {
 
   #[test]
   fn multiple_vars_in_one_value() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![
       ("--known", "red"),
@@ -333,7 +324,7 @@ mod tests {
 
   #[test]
   fn nested_var_checked() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--a, var(--b))")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -342,7 +333,7 @@ mod tests {
 
   #[test]
   fn definitions_in_nested_rules() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = vec![CssNode::Style(StyleRule {
       selector: ":root".to_string(),
@@ -373,10 +364,28 @@ mod tests {
 
   #[test]
   fn no_options_works() {
-    let rule = PluginNoUnknownCustomProperties;
+    let rule = configured(&PluginNoUnknownCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("color", "var(--undefined)")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_leniently() {
+    use crate::testing::invalid_options;
+    // Gale's own rule ignores its primary option and keys it does not read.
+    let valid =
+      serde_json::json!(["anything", { "allowedProperties": ["--a", "/^--global-/"], "other": 1 }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "allowedProperties": [1] }])
+      ),
+      [
+        "Invalid value \"1\" for option \"allowedProperties\" of rule \"plugin/no-unknown-custom-properties\""
+      ]
+    );
   }
 }

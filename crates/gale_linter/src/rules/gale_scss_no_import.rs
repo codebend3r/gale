@@ -1,25 +1,49 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow the Sass `@import` rule, which Dart Sass deprecated in 1.80.0
-/// and removes in 3.0.0.
-///
-/// Gale's own rule; Stylelint and stylelint-scss have no equivalent.
-///
-/// Only a Sass import is reported.  The imports Sass passes through as plain
-/// CSS, and keeps after 3.0.0, are left alone: a URL that ends in `.css`,
-/// starts with `http://`, `https://` or `//`, is written as `url()` or
-/// contains interpolation, and an import with media queries or any other
-/// condition after the URL.
-///
-/// ```scss
-/// @import "variables";      // reported: use @use or @forward
-/// @import "theme.css";      // plain CSS, allowed
-/// @import "print" print;    // plain CSS, allowed
-/// ```
-pub struct GaleScssNoImport;
+const NAME: &str = "gale/scss-no-import";
+
+declare_rule! {
+  /// Disallow the Sass `@import` rule, which Dart Sass deprecated in 1.80.0
+  /// and removes in 3.0.0.
+  ///
+  /// Gale's own rule; Stylelint and stylelint-scss have no equivalent.
+  ///
+  /// Only a Sass import is reported.  The imports Sass passes through as plain
+  /// CSS, and keeps after 3.0.0, are left alone: a URL that ends in `.css`,
+  /// starts with `http://`, `https://` or `//`, is written as `url()` or
+  /// contains interpolation, and an import with media queries or any other
+  /// condition after the URL.
+  ///
+  /// ```scss
+  /// @import "variables";      // reported: use @use or @forward
+  /// @import "theme.css";      // plain CSS, allowed
+  /// @import "print" print;    // plain CSS, allowed
+  /// ```
+  pub struct GaleScssNoImport => GaleScssNoImportCheck {
+    name: NAME,
+    description: "Disallow Sass @import, which Dart Sass 3 removes",
+    default_severity: Warning,
+  }
+}
+
+/// `gale/scss-no-import`, which takes no options.
+pub struct GaleScssNoImportCheck;
+
+impl GaleScssNoImportCheck {
+  /// Gale's own rule takes nothing but `true`, like a Stylelint rule
+  /// that validates `{ actual: primary }` with nothing possible.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Splits `params` on the commas between imports, ignoring commas inside
 /// strings and parentheses.
@@ -81,19 +105,7 @@ fn is_plain_css_import(import: &str) -> bool {
     || url.starts_with("//")
 }
 
-impl Rule for GaleScssNoImport {
-  fn name(&self) -> &'static str {
-    "gale/scss-no-import"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow Sass @import, which Dart Sass 3 removes"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for GaleScssNoImportCheck {
   /// Reports an `@import` that loads at least one Sass file.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -113,8 +125,7 @@ impl Rule for GaleScssNoImport {
     }
 
     vec![
-      Diagnostic::new(self.name(), "Expected @use or @forward instead of @import")
-        .severity(self.default_severity())
+      Diagnostic::new(NAME, "Expected @use or @forward instead of @import")
         .span(Span::new(at.span.offset, at.span.length)),
     ]
   }
@@ -125,7 +136,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, scss_ctx};
 
   fn import(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -137,14 +148,15 @@ mod tests {
   }
 
   fn reports(params: &str) -> bool {
-    !GaleScssNoImport
+    !configured(&GaleScssNoImport, None)
       .check(&import(params), &scss_ctx())
       .is_empty()
   }
 
   #[test]
   fn reports_a_sass_import() {
-    let diags = GaleScssNoImport.check(&import("\"variables\""), &scss_ctx());
+    let rule = configured(&GaleScssNoImport, None);
+    let diags = rule.check(&import("\"variables\""), &scss_ctx());
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
@@ -154,14 +166,10 @@ mod tests {
 
   #[test]
   fn reports_a_list_once_when_any_import_is_sass() {
+    let rule = configured(&GaleScssNoImport, None);
     assert!(reports("\"mixins\", \"functions\""));
     assert!(reports("\"theme.css\", \"mixins\""));
-    assert_eq!(
-      GaleScssNoImport
-        .check(&import("\"a\", \"b\""), &scss_ctx())
-        .len(),
-      1
-    );
+    assert_eq!(rule.check(&import("\"a\", \"b\""), &scss_ctx()).len(), 1);
   }
 
   #[test]
@@ -193,21 +201,37 @@ mod tests {
 
   #[test]
   fn skips_css_files() {
-    assert!(
-      GaleScssNoImport
-        .check(&import("\"variables\""), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&GaleScssNoImport, None);
+    assert!(rule.check(&import("\"variables\""), &ctx()).is_empty());
   }
 
   #[test]
   fn ignores_other_at_rules() {
+    let rule = configured(&GaleScssNoImport, None);
     let node = CssNode::AtRule(AtRule {
       name: "use".to_string(),
       params: "\"variables\"".to_string(),
       span: ParserSpan::new(0, 16),
       children: vec![],
     });
-    assert!(GaleScssNoImport.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options("gale/scss-no-import", serde_json::json!(true)).is_empty());
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "gale/scss-no-import",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options("gale/scss-no-import", serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"gale/scss-no-import\""]
+    );
   }
 }

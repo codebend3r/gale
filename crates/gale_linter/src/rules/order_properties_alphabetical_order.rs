@@ -1,12 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Enforce alphabetical ordering of properties within declaration blocks.
-///
-/// Equivalent to stylelint-order's `order/properties-alphabetical-order` rule.
-pub struct OrderPropertiesAlphabeticalOrder;
+const NAME: &str = "order/properties-alphabetical-order";
+
+declare_rule! {
+  /// Enforce alphabetical ordering of properties within declaration blocks.
+  ///
+  /// Equivalent to stylelint-order's `order/properties-alphabetical-order` rule.
+  pub struct OrderPropertiesAlphabeticalOrder => OrderPropertiesAlphabeticalOrderCheck {
+    name: NAME,
+    description: "Require properties within declaration blocks to be in alphabetical order",
+    default_severity: Warning,
+  }
+}
+
+/// `order/properties-alphabetical-order`, which takes no options.
+pub struct OrderPropertiesAlphabeticalOrderCheck;
+
+impl OrderPropertiesAlphabeticalOrderCheck {
+  /// stylelint-order validates the primary option with `possible: Boolean`,
+  /// a function: any truthy value is accepted.  It validates no secondary
+  /// options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_test(is_truthy);
+    options.finish()?;
+    Ok(Self)
+  }
+}
+
+/// JavaScript's `Boolean(value)`.
+fn is_truthy(value: &serde_json::Value) -> bool {
+  match value {
+    serde_json::Value::Null => false,
+    serde_json::Value::Bool(flag) => *flag,
+    serde_json::Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
+    serde_json::Value::String(text) => !text.is_empty(),
+    serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
+  }
+}
 
 /// Strip vendor prefix from a property name for sort comparison.
 ///
@@ -21,19 +57,7 @@ fn strip_vendor_prefix(prop: &str) -> &str {
   prop
 }
 
-impl Rule for OrderPropertiesAlphabeticalOrder {
-  fn name(&self) -> &'static str {
-    "order/properties-alphabetical-order"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require properties within declaration blocks to be in alphabetical order"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for OrderPropertiesAlphabeticalOrderCheck {
   /// Flags a property that sorts before the one declared above it. SCSS variables
   /// are skipped.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
@@ -67,13 +91,12 @@ impl Rule for OrderPropertiesAlphabeticalOrder {
       {
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Expected \"{prop}\" to come before \"{}\"",
               prev_original.as_deref().unwrap_or(prev)
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -91,7 +114,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn make_decl(property: &str, value: &str, offset: usize, length: usize) -> Declaration {
     Declaration {
@@ -104,7 +127,7 @@ mod tests {
 
   #[test]
   fn accepts_alphabetical_order() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -121,7 +144,7 @@ mod tests {
 
   #[test]
   fn reports_non_alphabetical_order() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -139,7 +162,7 @@ mod tests {
 
   #[test]
   fn skips_scss_variables() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -157,7 +180,7 @@ mod tests {
 
   #[test]
   fn case_insensitive_comparison() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -173,7 +196,7 @@ mod tests {
 
   #[test]
   fn skips_custom_properties() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -190,7 +213,7 @@ mod tests {
 
   #[test]
   fn vendor_prefixed_sorts_as_unprefixed() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     // -webkit-transform should sort as "transform", which comes after "display"
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -208,7 +231,7 @@ mod tests {
 
   #[test]
   fn vendor_prefixed_out_of_order() {
-    let rule = OrderPropertiesAlphabeticalOrder;
+    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
     // -webkit-transform sorts as "transform", which should come after "appearance"
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -230,5 +253,17 @@ mod tests {
     assert_eq!(strip_vendor_prefix("-moz-appearance"), "appearance");
     assert_eq!(strip_vendor_prefix("-ms-flex"), "flex");
     assert_eq!(strip_vendor_prefix("transform"), "transform");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint_order() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Any truthy value passes `Boolean`, and secondary options are ignored.
+    assert!(invalid_options(NAME, serde_json::json!(["yes", { "foo": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(0)),
+      ["Invalid option \"0\" for rule \"order/properties-alphabetical-order\""]
+    );
   }
 }
