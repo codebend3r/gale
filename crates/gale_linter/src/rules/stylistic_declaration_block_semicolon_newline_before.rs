@@ -20,19 +20,20 @@ declare_rule! {
 
 /// `@stylistic/declaration-block-semicolon-newline-before` as configured.
 pub struct StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
-  /// The primary option: `"always"`, `"always-multi-line"` or
-  /// `"never-multi-line"`.
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
   option: &'static str,
 }
 
 impl StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
   /// The plugin's options: `"always"`, `"always-multi-line"` or
-  /// `"never-multi-line"`; gale applies only `"always"` so far.  With no option
-  /// gale disallows a newline before the semicolon, its own `"never"`, which the
-  /// plugin does not accept as a value.
+  /// `"never-multi-line"`; gale applies only `"always"` so far.  Gale also
+  /// accepts `"never"`, which the plugin does not: it disallows whitespace before
+  /// the semicolon, and is what gale reads no option as.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
     options.finish()?;
     Ok(Self {
       option: option.unwrap_or("never"),
@@ -122,7 +123,10 @@ mod tests {
 
   #[test]
   fn reports_newline_before_semicolon_when_never() {
-    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineBefore, None);
+    let rule = configured(
+      &StylisticDeclarationBlockSemicolonNewlineBefore,
+      serde_json::json!("never"),
+    );
     let source = "a { color: red\n; }";
     let ctx = ctx_with_source(source);
     let node = CssNode::Style(StyleRule {
@@ -144,10 +148,12 @@ mod tests {
   #[test]
   fn options_are_validated_like_stylelint() {
     assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    // `"never"` is gale's own value; the plugin rejects it.
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
     assert_eq!(
-      invalid_options(NAME, serde_json::json!("never")),
+      invalid_options(NAME, serde_json::json!("sometimes")),
       [
-        "Invalid option value \"never\" for rule \"@stylistic/declaration-block-semicolon-newline-before\""
+        "Invalid option value \"sometimes\" for rule \"@stylistic/declaration-block-semicolon-newline-before\""
       ]
     );
   }

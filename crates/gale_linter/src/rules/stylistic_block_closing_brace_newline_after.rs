@@ -21,15 +21,17 @@ declare_rule! {
 /// `@stylistic/block-closing-brace-newline-after` as configured.
 pub struct StylisticBlockClosingBraceNewlineAfterCheck {
   /// The primary option: `"always"`, `"always-single-line"`,
-  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.
+  /// `"never-single-line"`, `"always-multi-line"`, `"never-multi-line"` or
+  /// gale's own `"never"`.
   option: &'static str,
 }
 
 impl StylisticBlockClosingBraceNewlineAfterCheck {
   /// The plugin's options: `"always"`, `"always-single-line"`,
   /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.  Gale
-  /// reads no option as `"always"`.  `"never-single-line"`, `"never-multi-line"`
-  /// and `ignoreAtRules` are accepted but not yet applied.
+  /// also accepts `"never"`, which the plugin does not.  Gale reads no option as
+  /// `"always"`.  `"never-single-line"`, `"never-multi-line"` and
+  /// `ignoreAtRules` are accepted but not yet applied.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     let option = options.primary_one_of(&[
@@ -38,6 +40,7 @@ impl StylisticBlockClosingBraceNewlineAfterCheck {
       "never-single-line",
       "always-multi-line",
       "never-multi-line",
+      "never",
     ]);
     options.strings("ignoreAtRules");
     options.finish()?;
@@ -158,6 +161,14 @@ impl Check for StylisticBlockClosingBraceNewlineAfterCheck {
             if found_non_ws && !is_next_closing_brace(bytes, after_pos) && !is_followed_by_else {
               diagnostics.push(
                 Diagnostic::new(NAME, "Expected newline after \"}\"".to_string())
+                  .span(Span::new(brace_pos, 1)),
+              );
+            }
+          }
+          "never" => {
+            if found_newline {
+              diagnostics.push(
+                Diagnostic::new(NAME, "Unexpected newline after \"}\"".to_string())
                   .span(Span::new(brace_pos, 1)),
               );
             }
@@ -291,6 +302,16 @@ mod tests {
   }
 
   #[test]
+  fn never_reports_newline_after_brace() {
+    let opt = serde_json::Value::String("never".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
+    let source = "a { color: red; }\nb { }";
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    assert!(!d.is_empty());
+    assert!(d[0].message.contains("Unexpected newline"));
+  }
+
+  #[test]
   fn allows_else_after_closing_brace() {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
@@ -340,9 +361,13 @@ mod tests {
       )
       .is_empty()
     );
+    // `"never"` is gale's own value; the plugin rejects it.
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
     assert_eq!(
-      invalid_options(NAME, serde_json::json!("never")),
-      ["Invalid option value \"never\" for rule \"@stylistic/block-closing-brace-newline-after\""]
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-closing-brace-newline-after\""
+      ]
     );
     assert_eq!(
       invalid_options(NAME, serde_json::json!(["always", { "ignore": ["x"] }])),

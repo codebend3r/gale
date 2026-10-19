@@ -20,18 +20,20 @@ declare_rule! {
 
 /// `@stylistic/block-closing-brace-newline-before` as configured.
 pub struct StylisticBlockClosingBraceNewlineBeforeCheck {
-  /// The primary option: `"always"`, `"always-multi-line"` or
-  /// `"never-multi-line"`.
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
   option: &'static str,
 }
 
 impl StylisticBlockClosingBraceNewlineBeforeCheck {
   /// The plugin's options: `"always"`, `"always-multi-line"` or
-  /// `"never-multi-line"`.  Gale reads no option as `"always-multi-line"`.
-  /// `"never-multi-line"` is accepted but not yet applied.
+  /// `"never-multi-line"`.  Gale also accepts `"never"`, which the plugin does
+  /// not.  Gale reads no option as `"always-multi-line"`.  `"never-multi-line"`
+  /// is accepted but not yet applied.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
     options.finish()?;
     Ok(Self {
       option: option.unwrap_or("always-multi-line"),
@@ -138,6 +140,7 @@ impl Check for StylisticBlockClosingBraceNewlineBeforeCheck {
 
         let violation = match option {
           "always" => !has_newline_before,
+          "never" => has_newline_before,
           "always-multi-line" => !is_single_line && !has_newline_before,
           // `never-multi-line` is accepted but not yet applied.
           _ => false,
@@ -145,10 +148,13 @@ impl Check for StylisticBlockClosingBraceNewlineBeforeCheck {
 
         if violation {
           // Stylelint reports the character before the closing brace
-          diagnostics.push(
-            Diagnostic::new(NAME, "Expected newline before \"}\"")
-              .span(Span::new(brace_pos.saturating_sub(1), 1)),
-          );
+          let msg = if option == "never" {
+            "Unexpected newline before \"}\""
+          } else {
+            "Expected newline before \"}\""
+          };
+          diagnostics
+            .push(Diagnostic::new(NAME, msg).span(Span::new(brace_pos.saturating_sub(1), 1)));
         }
       }
 
@@ -206,6 +212,19 @@ mod tests {
   }
 
   #[test]
+  fn never_accepts_no_newline_before_brace() {
+    let d = check("a { color: red; }", "never");
+    assert!(d.is_empty());
+  }
+
+  #[test]
+  fn never_rejects_newline_before_brace() {
+    let d = check("a {\n  color: red;\n}", "never");
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("Unexpected newline"));
+  }
+
+  #[test]
   fn always_multi_line_allows_single_line() {
     let d = check("a { color: red; }", "always-multi-line");
     assert!(d.is_empty());
@@ -221,9 +240,13 @@ mod tests {
   #[test]
   fn options_are_validated_like_stylelint() {
     assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    // `"never"` is gale's own value; the plugin rejects it.
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
     assert_eq!(
-      invalid_options(NAME, serde_json::json!("never")),
-      ["Invalid option value \"never\" for rule \"@stylistic/block-closing-brace-newline-before\""]
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-closing-brace-newline-before\""
+      ]
     );
   }
 }
