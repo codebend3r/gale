@@ -46,6 +46,15 @@ impl RuleRegistry {
   pub fn all(&self) -> &[Box<dyn Rule>] {
     &self.rules
   }
+
+  /// The built-in rules, registered once per process.  Rule sets borrow
+  /// their rules from here, so a rule set can be built and shared without
+  /// tying it to a registry's lifetime.
+  pub fn global() -> &'static RuleRegistry {
+    static GLOBAL: std::sync::LazyLock<RuleRegistry> =
+      std::sync::LazyLock::new(RuleRegistry::default);
+    &GLOBAL
+  }
 }
 
 impl Default for RuleRegistry {

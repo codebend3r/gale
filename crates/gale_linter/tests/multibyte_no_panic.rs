@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use gale_css_parser::Syntax;
-use gale_linter::{LintRunner, RuleRegistry};
+use gale_linter::{RuleRegistry, RuleSet, RuleSetSpec, RuleSetting};
 
 /// Characters of two, three and four bytes.
 const MULTIBYTE: &[&str] = &["é", "中", "😀"];
@@ -88,21 +88,14 @@ const UNCLOSED: &str = "a { color: red; }\n.z { color: red";
 const SASS: &str = "// héllo wörld\n=mixin($a)\n  width: $a\n\n.foo\n  content: \"→ ✓\"\n  color: RED\n  +mixin(1px)\n  .bar, .baz\n    margin: 0px 0 0 0\n    font: bold 12px serif\n\n@media (min-width: 1px)\n  .q\n    color: #FFF\n";
 
 /// Every registered rule, enabled with its default options.
-fn runner_with_every_rule() -> LintRunner {
-  let registry = RuleRegistry::default();
-  let names = registry
-    .all()
-    .iter()
-    .map(|rule| rule.name().to_string())
-    .collect();
-  LintRunner::new(registry, names)
+fn every_rule() -> RuleSet {
+  RuleSet::of_rules(RuleRegistry::global().all().iter().map(|rule| rule.name()))
 }
 
 /// Every registered rule, with the options that switch on the code paths
 /// the defaults leave alone.
-fn runner_with_options() -> LintRunner {
-  let registry = RuleRegistry::default();
-  let names: Vec<String> = registry
+fn every_rule_with_options() -> RuleSet {
+  let names: Vec<String> = RuleRegistry::global()
     .all()
     .iter()
     .map(|rule| rule.name().to_string())
@@ -123,7 +116,20 @@ fn runner_with_options() -> LintRunner {
     "rule-empty-line-before".into(),
     serde_json::json!(["always", { "except": ["after-single-line-comment"] }]),
   );
-  LintRunner::with_options(registry, names, options)
+  RuleSet::new(RuleSetSpec {
+    rules: names
+      .into_iter()
+      .map(|name| {
+        let options = options.get(&name).cloned();
+        RuleSetting {
+          name,
+          options,
+          severity: None,
+        }
+      })
+      .collect(),
+    ..RuleSetSpec::default()
+  })
 }
 
 /// Byte offsets at which to insert a character into `source`.
@@ -150,7 +156,7 @@ fn insertion_points(source: &str) -> Vec<usize> {
 /// The internal errors from linting `source` with `ch` inserted at byte
 /// `point`.
 fn crashes_at(
-  runner: &LintRunner,
+  runner: &RuleSet,
   source: &str,
   (file, syntax): (&str, Syntax),
   point: usize,
@@ -162,7 +168,7 @@ fn crashes_at(
   text.push_str(&source[point..]);
 
   runner
-    .lint_source(&text, file, syntax)
+    .lint(&text, file, syntax)
     .diagnostics
     .iter()
     .filter(|diag| diag.message.starts_with("Internal error"))
@@ -176,14 +182,14 @@ fn crashes_at(
 }
 
 /// Lint the sampled variants of `source` and collect the internal errors.
-fn crashes(runners: &[LintRunner], source: &str, file: &str, syntax: Syntax) -> Vec<String> {
+fn crashes(sets: &[RuleSet], source: &str, file: &str, syntax: Syntax) -> Vec<String> {
   let mut found = Vec::new();
   for (index, &point) in insertion_points(source).iter().enumerate() {
     let ch = MULTIBYTE[index % MULTIBYTE.len()];
-    let runner = &runners[(index / MULTIBYTE.len()) % runners.len()];
+    let runner = &sets[(index / MULTIBYTE.len()) % sets.len()];
     found.extend(crashes_at(runner, source, (file, syntax), point, ch));
   }
-  for runner in runners {
+  for runner in sets {
     for ch in MULTIBYTE {
       found.extend(crashes_at(runner, source, (file, syntax), source.len(), ch));
     }
@@ -193,7 +199,7 @@ fn crashes(runners: &[LintRunner], source: &str, file: &str, syntax: Syntax) -> 
 
 #[test]
 fn no_rule_panics_on_multibyte_input() {
-  let runners = [runner_with_every_rule(), runner_with_options()];
+  let sets = [every_rule(), every_rule_with_options()];
   let snippets = [
     (CSS, "test.css", Syntax::Css),
     (SCSS, "test.scss", Syntax::Scss),
@@ -205,7 +211,7 @@ fn no_rule_panics_on_multibyte_input() {
 
   let mut found = Vec::new();
   for (source, file, syntax) in snippets {
-    found.extend(crashes(&runners, source, file, syntax));
+    found.extend(crashes(&sets, source, file, syntax));
   }
 
   found.sort();

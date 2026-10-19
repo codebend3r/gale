@@ -2,26 +2,14 @@
 //! (`.vue`, `.svelte`, `.astro`, `.html`, `.htm`, `.xhtml`, `.php`).
 //!
 //! Such a file is linted whatever its `customSyntax`, as Stylelint lints it
-//! with `customSyntax: "postcss-html"`.  Each style block goes through the
-//! same lint call a standalone file would, so the file's config, overrides
-//! and options all apply.
+//! with `customSyntax: "postcss-html"`; the rule set lints each style block
+//! (see `gale_linter::RuleSet::lint`).  What is left here is recognising the
+//! files and warning about the blocks gale cannot parse.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use gale_css_parser::Syntax;
 use gale_css_parser::embedded::HostLanguage;
-use gale_diagnostics::LintResult;
-use gale_linter::embedded::{HostOptions, lint_host, unsupported_blocks};
-
-/// Stylelint's `ignoreDisables` for the run, which also stops a
-/// `stylelint-disable` comment in one block from reaching the next.
-static IGNORE_DISABLES: AtomicBool = AtomicBool::new(false);
-
-/// Record the run's `ignoreDisables` setting.
-pub(crate) fn set_ignore_disables(ignore: bool) {
-  IGNORE_DISABLES.store(ignore, Ordering::Relaxed);
-}
+use gale_linter::embedded::unsupported_blocks;
 
 /// Whether `path` is a file gale reads embedded style sheets from.
 pub(crate) fn is_host_file(path: &Path) -> bool {
@@ -32,26 +20,6 @@ pub(crate) fn is_host_file(path: &Path) -> bool {
 /// these files with.
 pub(crate) fn is_postcss_html(custom_syntax: &str) -> bool {
   custom_syntax.eq_ignore_ascii_case("postcss-html")
-}
-
-/// Lint `source` with `lint_css`: as one style sheet, or, for an HTML-like
-/// file, once per embedded style block with the problems moved to their
-/// place in the file.
-pub(crate) fn lint(
-  source: &str,
-  file_path: &str,
-  syntax: Syntax,
-  mut lint_css: impl FnMut(&str, Syntax) -> LintResult,
-) -> LintResult {
-  match HostLanguage::from_path(file_path) {
-    Some(host) => {
-      let options = HostOptions {
-        ignore_disables: IGNORE_DISABLES.load(Ordering::Relaxed),
-      };
-      lint_host(source, file_path, host, options, lint_css)
-    }
-    None => lint_css(source, syntax),
-  }
 }
 
 /// A style block gale skipped because it cannot parse its language.
@@ -137,29 +105,6 @@ mod tests {
     for other in ["a.css", "b.scss", "c.md", "d.jsx", "vue"] {
       assert!(!is_host_file(Path::new(other)), "{other}");
     }
-  }
-
-  #[test]
-  fn css_files_lint_whole_and_host_files_per_block() {
-    let mut calls = Vec::new();
-    let mut record = |text: &str, syntax: Syntax| {
-      calls.push((text.to_string(), syntax));
-      LintResult::new("x", text, Vec::new())
-    };
-    lint("a {}", "a.less", Syntax::Less, &mut record);
-    lint(
-      "<style lang=\"scss\">b {}</style>",
-      "b.vue",
-      Syntax::Css,
-      &mut record,
-    );
-    assert_eq!(
-      calls,
-      vec![
-        ("a {}".to_string(), Syntax::Less),
-        ("b {}".to_string(), Syntax::Scss),
-      ]
-    );
   }
 
   #[test]

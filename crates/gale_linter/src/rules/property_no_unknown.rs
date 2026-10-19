@@ -153,6 +153,7 @@ mod tests {
     let node = style_node("a", &[("mso-padding-alt", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["mso-padding-alt"] });
     let c = RuleContext {
+      env: Default::default(),
       options: Some(&opts),
       ..ctx()
     };
@@ -165,6 +166,7 @@ mod tests {
     let node = style_node("a", &[("mso-padding-alt", "0"), ("mso-table-lspace", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
     let c = RuleContext {
+      env: Default::default(),
       options: Some(&opts),
       ..ctx()
     };
@@ -177,6 +179,7 @@ mod tests {
     let node = style_node("a", &[("colr", "red")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
     let c = RuleContext {
+      env: Default::default(),
       options: Some(&opts),
       ..ctx()
     };

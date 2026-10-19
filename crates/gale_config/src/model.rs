@@ -1,6 +1,7 @@
 //! The resolved configuration gale lints with, and the error type for
 //! loading one.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -38,6 +39,18 @@ pub enum Severity {
   Error,
   Warning,
   Off,
+}
+
+impl Severity {
+  /// The severity problems are reported at, or `None` for a rule that is
+  /// off.
+  pub fn reported(self) -> Option<gale_diagnostics::Severity> {
+    match self {
+      Severity::Error => Some(gale_diagnostics::Severity::Error),
+      Severity::Warning => Some(gale_diagnostics::Severity::Warning),
+      Severity::Off => None,
+    }
+  }
 }
 
 /// A single rule's resolved configuration.
@@ -206,47 +219,64 @@ pub struct GaleConfig {
 }
 
 impl GaleConfig {
-  /// Return the effective rules for a given file path.
-  ///
-  /// Starts with the base rules, then applies each matching override in order.
-  /// Later overrides win over earlier ones.
-  ///
-  /// Override glob patterns are matched against the file path relative to the
-  /// config directory (if known), matching Stylelint's behaviour.
-  pub fn rules_for_file(&self, file_path: &str) -> HashMap<String, RuleConfig> {
-    if self.overrides.is_empty() {
-      return self.rules.clone();
-    }
-
-    // Compute the file path relative to the config directory for glob
-    // matching.  Fall back to the original path when no config_dir is set.
-    let relative_path: std::borrow::Cow<'_, str> = if let Some(ref config_dir) = self.config_dir {
-      let abs_file = if Path::new(file_path).is_absolute() {
-        PathBuf::from(file_path)
-      } else {
-        std::env::current_dir().unwrap_or_default().join(file_path)
-      };
-      match abs_file.strip_prefix(config_dir) {
-        Ok(rel) => rel.to_string_lossy().into_owned().into(),
-        Err(_) => file_path.into(),
-      }
-    } else {
-      file_path.into()
+  /// `file_path` as override globs are matched against it: relative to the
+  /// config's directory when the file is inside it, as Stylelint matches,
+  /// and as given otherwise.
+  fn relative_path<'p>(&self, file_path: &'p str) -> Cow<'p, str> {
+    let Some(config_dir) = &self.config_dir else {
+      return file_path.into();
     };
+    let abs_file = if Path::new(file_path).is_absolute() {
+      PathBuf::from(file_path)
+    } else {
+      std::env::current_dir().unwrap_or_default().join(file_path)
+    };
+    match abs_file.strip_prefix(config_dir) {
+      Ok(rel) => rel.to_string_lossy().into_owned().into(),
+      Err(_) => file_path.into(),
+    }
+  }
 
+  /// The positions in [`Self::overrides`] of the overrides that apply to
+  /// `file_path`, in order.
+  ///
+  /// Each override's globs are tried against the path relative to the
+  /// config's directory and against the path as given.
+  pub fn matching_overrides(&self, file_path: &str) -> Vec<usize> {
+    if self.overrides.is_empty() {
+      return Vec::new();
+    }
+    let relative_path = self.relative_path(file_path);
+    self
+      .overrides
+      .iter()
+      .enumerate()
+      .filter(|(_, ov)| ov.matches(&relative_path) || ov.matches(file_path))
+      .map(|(index, _)| index)
+      .collect()
+  }
+
+  /// The base rules with the overrides at `indices` (from
+  /// [`Self::matching_overrides`]) applied in order, later ones winning.
+  /// An override that turns a rule off removes it.
+  pub fn rules_with_overrides(&self, indices: &[usize]) -> HashMap<String, RuleConfig> {
     let mut rules = self.rules.clone();
-    for override_entry in &self.overrides {
-      if override_entry.matches(&relative_path) || override_entry.matches(file_path) {
-        for (name, cfg) in &override_entry.rules {
-          if cfg.severity == Some(Severity::Off) {
-            rules.remove(name);
-          } else {
-            rules.insert(name.clone(), cfg.clone());
-          }
+    for &index in indices {
+      for (name, cfg) in &self.overrides[index].rules {
+        if cfg.severity == Some(Severity::Off) {
+          rules.remove(name);
+        } else {
+          rules.insert(name.clone(), cfg.clone());
         }
       }
     }
     rules
+  }
+
+  /// Return the effective rules for a given file path: the base rules with
+  /// every override that matches it applied.
+  pub fn rules_for_file(&self, file_path: &str) -> HashMap<String, RuleConfig> {
+    self.rules_with_overrides(&self.matching_overrides(file_path))
   }
 
   /// Returns `true` if any overrides are configured.
@@ -259,60 +289,28 @@ impl GaleConfig {
   /// files as fully ignored (`"ignored": true`) — no linting at all.
   ///
   /// The check is performed against both the relative path (relative to the
-  /// config directory) and the raw file path, mirroring
-  /// [`rules_for_file`]'s matching logic.
+  /// config directory) and the raw file path, as override matching is.
   pub fn is_file_ignored_by_override(&self, file_path: &str) -> bool {
     if self.overrides.is_empty() {
       return false;
     }
-
-    let relative_path: std::borrow::Cow<'_, str> = if let Some(ref config_dir) = self.config_dir {
-      let abs_file = if Path::new(file_path).is_absolute() {
-        PathBuf::from(file_path)
-      } else {
-        std::env::current_dir().unwrap_or_default().join(file_path)
-      };
-      match abs_file.strip_prefix(config_dir) {
-        Ok(rel) => rel.to_string_lossy().into_owned().into(),
-        Err(_) => file_path.into(),
-      }
-    } else {
-      file_path.into()
-    };
-
-    for ov in &self.overrides {
+    let relative_path = self.relative_path(file_path);
+    self.overrides.iter().any(|ov| {
       let matches_files = ov.matches_files(&relative_path) || ov.matches_files(file_path);
       let excluded = ov.is_excluded(&relative_path) || ov.is_excluded(file_path);
-      if matches_files && excluded {
-        return true;
-      }
-    }
-    false
+      matches_files && excluded
+    })
   }
 
   /// The `customSyntax` that applies to `file_path`, if the config names one.
   ///
   /// The first override whose globs match the file wins; otherwise the
   /// top-level `customSyntax` applies.  Whether Gale can actually parse the
-  /// named syntax is the caller's decision, since the parsers live outside
-  /// this crate.
+  /// named syntax is the caller's decision.
   pub fn custom_syntax_for_file(&self, file_path: &str) -> Option<&str> {
     // Check overrides first — they take precedence over top-level.
     if !self.overrides.is_empty() {
-      let relative_path: std::borrow::Cow<'_, str> = if let Some(ref config_dir) = self.config_dir {
-        let abs_file = if Path::new(file_path).is_absolute() {
-          PathBuf::from(file_path)
-        } else {
-          std::env::current_dir().unwrap_or_default().join(file_path)
-        };
-        match abs_file.strip_prefix(config_dir) {
-          Ok(rel) => rel.to_string_lossy().into_owned().into(),
-          Err(_) => file_path.into(),
-        }
-      } else {
-        file_path.into()
-      };
-
+      let relative_path = self.relative_path(file_path);
       for ov in &self.overrides {
         let matches = ov.matches(&relative_path) || ov.matches(file_path);
         if matches && let Some(ref syntax_name) = ov.custom_syntax {

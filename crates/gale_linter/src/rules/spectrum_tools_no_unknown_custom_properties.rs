@@ -495,6 +495,7 @@ mod tests {
   fn skips_non_index_css() {
     let rule = SpectrumToolsNoUnknownCustomProperties;
     let ctx = RuleContext {
+      env: Default::default(),
       file_path: "components/foo/themes/spectrum.css",
       source: ".a { color: var(--unknown); }",
       syntax: gale_css_parser::Syntax::Css,

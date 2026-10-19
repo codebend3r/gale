@@ -251,6 +251,7 @@ mod tests {
     options: Option<&'a serde_json::Value>,
   ) -> RuleContext<'a> {
     RuleContext {
+      env: Default::default(),
       file_path: "t.css",
       source,
       syntax: Syntax::Css,

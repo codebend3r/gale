@@ -256,19 +256,26 @@ fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
 struct Options {
   ignore_units: Vec<String>,
   ignore_functions: Vec<String>,
-  /// Units that Gale normally considers known but should be treated as unknown.
-  /// Used for Stylelint version compatibility: older Stylelint versions had a
-  /// smaller known-units list (e.g. Stylelint 13 didn't know `dvh`).
-  additional_unknown_units: Vec<String>,
+  /// Units gale knows but the project's Stylelint does not, which it
+  /// reports as unknown (see [`UNITS_UNKNOWN_BEFORE_STYLELINT_15`]).
+  additional_unknown_units: &'static [&'static str],
 }
 
-/// Reads the `ignoreUnits` and `ignoreFunctions` secondaries, plus the extra
-/// unknown units the CLI injects for Stylelint version compatibility.
+/// The units Stylelint 15 added to its list of known units: dynamic
+/// viewport units, container query units and a few newer font-relative
+/// ones.  A project on an older Stylelint has them reported as unknown.
+const UNITS_UNKNOWN_BEFORE_STYLELINT_15: &[&str] = &[
+  "dvh", "dvw", "dvb", "dvi", "dvmax", "dvmin", "lvh", "lvw", "lvb", "lvi", "lvmax", "lvmin",
+  "svh", "svw", "svb", "svi", "svmax", "svmin", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
+  "cap", "ic", "rcap", "rch", "rex", "ric", "vb", "vi",
+];
+
+/// Reads the `ignoreUnits` and `ignoreFunctions` secondaries, and the units
+/// the project's Stylelint version does not know.
 fn parse_options(ctx: &RuleContext) -> Options {
   let secondary = ctx.secondary_options();
   let mut ignore_units = Vec::new();
   let mut ignore_functions = Vec::new();
-  let mut additional_unknown_units = Vec::new();
 
   if let Some(sec) = secondary {
     if let Some(v) = sec.get("ignoreUnits") {
@@ -277,11 +284,13 @@ fn parse_options(ctx: &RuleContext) -> Options {
     if let Some(v) = sec.get("ignoreFunctions") {
       ignore_functions = parse_string_list(v);
     }
-    // Internal option injected by the CLI for Stylelint version compat.
-    if let Some(v) = sec.get("__additionalUnknownUnits") {
-      additional_unknown_units = parse_string_list(v);
-    }
   }
+
+  let additional_unknown_units = if ctx.env.stylelint_older_than(15) {
+    UNITS_UNKNOWN_BEFORE_STYLELINT_15
+  } else {
+    &[]
+  };
 
   Options {
     ignore_units,
@@ -478,7 +487,7 @@ fn check_value(
     let unit_lower = occ.unit.to_ascii_lowercase();
 
     if is_known_unit(&unit_lower) {
-      // Check if this unit is forced-unknown for Stylelint version compat.
+      // A unit the project's Stylelint version does not know yet.
       let forced_unknown = opts
         .additional_unknown_units
         .iter()

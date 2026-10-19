@@ -117,6 +117,7 @@ mod tests {
   fn ignore_pseudo_elements_skips_listed_names() {
     let options = serde_json::json!([true, { "ignorePseudoElements": ["v-deep", "/^my-/"] }]);
     let ctx = RuleContext {
+      env: Default::default(),
       options: Some(&options),
       ..ctx()
     };

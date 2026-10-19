@@ -14,6 +14,7 @@ mod presets;
 mod raw;
 mod resolve;
 mod resolver;
+mod rule_set;
 
 pub use discovery::{find_config, find_config_for_file, load_config};
 pub use model::{ConfigError, FixMode, GaleConfig, ResolvedOverride, RuleConfig, Severity};
@@ -22,3 +23,4 @@ pub use presets::{recommended_rule_names, resolve_preset};
 pub use raw::{ConfigFile, ConfigOverride, RuleConfigValue};
 pub use resolve::{resolve_config, resolve_config_for_file};
 pub use resolver::ConfigResolver;
+pub use rule_set::{RunSettings, WithoutConfig};

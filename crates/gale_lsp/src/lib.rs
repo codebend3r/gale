@@ -7,14 +7,12 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracing::debug;
 
-use gale_config::GaleConfig;
+use gale_config::{GaleConfig, RunSettings, WithoutConfig};
 use gale_css_parser::detect_syntax;
-use gale_css_parser::embedded::HostLanguage;
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
-use gale_linter::embedded::{HostOptions, lint_host};
 use gale_linter::known_rules::{self, RuleSupport};
 use gale_linter::panic_guard;
-use gale_linter::{LintRunner, RuleRegistry};
+use gale_linter::{RuleRegistry, RuleSet};
 
 // ---------------------------------------------------------------------------
 // UTF-16 column conversion
@@ -53,98 +51,38 @@ struct Document {
 
 pub struct GaleLspServer {
   client: Client,
-  runner: RwLock<Option<LintRunner>>,
+  /// The rules documents are linted with, once `initialize` has built them.
+  rules: RwLock<Option<RuleSet>>,
   /// Explicit config path from `gale --lsp --config <path>`, if any.
   config_path: Option<PathBuf>,
   documents: RwLock<HashMap<Url, Document>>,
 }
 
 impl GaleLspServer {
-  /// Starts with no runner; `initialize` builds it from the resolved config.
+  /// Starts with no rules; `initialize` builds them from the resolved config.
   fn new(client: Client, config_path: Option<PathBuf>) -> Self {
     Self {
       client,
-      runner: RwLock::new(None),
+      rules: RwLock::new(None),
       config_path,
       documents: RwLock::new(HashMap::new()),
     }
   }
 
-  /// Build `LintRunner` from the resolved config.
-  ///
-  /// This must configure the runner exactly as the CLI does — enabled rules,
-  /// per-rule options, per-rule severities and the default severity —
-  /// otherwise the editor reports different results than `gale` on the same
-  /// file with the same config.
-  fn build_runner(config: &GaleConfig, has_config_file: bool) -> LintRunner {
-    let registry = RuleRegistry::default();
-
-    let enabled_rules: Vec<String> = if config.rules.is_empty() && !has_config_file {
-      // No config file found — fall back to the recommended preset rather
-      // than every rule.  Enabling all of them (including the whole
-      // @stylistic namespace) buries a config-less project in
-      // formatting warnings it never asked for.
-      gale_config::recommended_rule_names()
-        .iter()
-        .map(|name| name.to_string())
-        .collect()
-    } else {
+  /// The rules for documents: the config's, or the recommended preset's
+  /// when there is no config file, built the way the CLI builds them.
+  fn build_rule_set(config: &GaleConfig, has_config_file: bool) -> RuleSet {
+    let fallback;
+    let config = if has_config_file {
       config
-        .rules
-        .iter()
-        .filter(|(_, cfg)| {
-          cfg
-            .severity
-            .as_ref()
-            .map(|s| !matches!(s, gale_config::Severity::Off))
-            .unwrap_or(true)
-        })
-        .map(|(name, _)| name.clone())
-        .collect()
+    } else {
+      // Enabling every rule (including the whole @stylistic namespace)
+      // would bury a config-less project in formatting warnings it never
+      // asked for.
+      fallback = WithoutConfig::Recommended.config();
+      &fallback
     };
-
-    // Resolve config keys (which may be deprecated aliases) to the
-    // canonical rule names the runner looks options up by.
-    let canonical = |name: &String| {
-      registry
-        .get(name)
-        .map(|r| r.name().to_string())
-        .unwrap_or_else(|| name.clone())
-    };
-
-    let rule_options: HashMap<String, serde_json::Value> = config
-      .rules
-      .iter()
-      .filter_map(|(name, cfg)| {
-        cfg
-          .options
-          .as_ref()
-          .map(|opts| (canonical(name), opts.clone()))
-      })
-      .collect();
-
-    let rule_severities: HashMap<String, Severity> = config
-      .rules
-      .iter()
-      .filter_map(|(name, cfg)| match cfg.severity.as_ref()? {
-        gale_config::Severity::Error => Some((canonical(name), Severity::Error)),
-        gale_config::Severity::Warning => Some((canonical(name), Severity::Warning)),
-        gale_config::Severity::Off => None,
-      })
-      .collect();
-
-    let mut runner = LintRunner::with_options_and_severities(
-      registry,
-      enabled_rules,
-      rule_options,
-      rule_severities,
-    );
-    runner.set_default_severity(config.default_severity.map(|s| match s {
-      gale_config::Severity::Error => Severity::Error,
-      gale_config::Severity::Warning => Severity::Warning,
-      gale_config::Severity::Off => Severity::Warning,
-    }));
-    runner
+    config.rule_set(&[], &RunSettings::default())
   }
 
   /// Convert one of Gale's diagnostics to the LSP shape.
@@ -174,8 +112,8 @@ impl GaleLspServer {
   /// A Vue, Svelte, Astro or HTML document is linted one style block at a
   /// time, with every diagnostic (and fix) placed in the document.
   fn lint(&self, uri: &Url, source: &str) -> Vec<GaleDiagnostic> {
-    let runner_guard = self.runner.read().unwrap_or_else(|e| e.into_inner());
-    let Some(runner) = runner_guard.as_ref() else {
+    let rules_guard = self.rules.read().unwrap_or_else(|e| e.into_inner());
+    let Some(rules) = rules_guard.as_ref() else {
       return Vec::new();
     };
 
@@ -184,16 +122,7 @@ impl GaleLspServer {
       .map(|p| p.display().to_string())
       .unwrap_or_else(|_| uri.to_string());
 
-    let result = match HostLanguage::from_path(&file_path) {
-      Some(host) => lint_host(
-        source,
-        &file_path,
-        host,
-        HostOptions::default(),
-        |text, syntax| runner.lint_source(text, &file_path, syntax),
-      ),
-      None => runner.lint_source(source, &file_path, detect_syntax(&file_path)),
-    };
+    let result = rules.lint(source, &file_path, detect_syntax(&file_path));
     // An invalid rule option (a pattern that does not compile, say) is not
     // a problem in the document, but the editor is the only place to say so:
     // show it at the top of the file.
@@ -348,8 +277,8 @@ impl LanguageServer for GaleLspServer {
       }
     };
 
-    // Build the lint runner once.
-    let runner = Self::build_runner(&config, has_config_file);
+    // Build the rules once.
+    let rules = Self::build_rule_set(&config, has_config_file);
     // Rules gale has not implemented, and rules Stylelint has removed, are
     // skipped; say so once, as the CLI does.  Names that are no rule at all
     // show up as `Unknown rule` diagnostics in each document instead.
@@ -359,13 +288,13 @@ impl LanguageServer for GaleLspServer {
       if rule.severity == Some(gale_config::Severity::Off) {
         continue;
       }
-      match known_rules::classify(runner.registry(), name) {
+      match known_rules::classify(RuleRegistry::global(), name) {
         RuleSupport::NotImplemented => not_implemented.push(name),
         RuleSupport::Removed => removed.push(name),
         RuleSupport::Implemented | RuleSupport::Unknown => {}
       }
     }
-    *self.runner.write().unwrap_or_else(|e| e.into_inner()) = Some(runner);
+    *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Some(rules);
     for (mut names, why) in [
       (not_implemented, "gale does not support these rules yet"),
       (removed, "these rules were removed from Stylelint"),

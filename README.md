@@ -656,7 +656,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
 |-------|----------------|
 | `gale_css_parser` | Wraps **lightningcss** (CSS) and **raffia** (SCSS/Less) into a unified, owned AST |
 | `gale_diagnostics` | Core types: `Span`, `Diagnostic`, `LintResult`, `Fix`, `Edit` |
-| `gale_linter` | `Rule` trait, `RuleRegistry`, `LintRunner`, inline disable comments, all rule implementations |
+| `gale_linter` | `Rule` trait, `RuleRegistry`, `RuleSet` (the one way a file is linted), inline disable comments, all rule implementations |
 | `gale_config` | Config file discovery, parsing (JSON/YAML/TOML/JS), `extends` resolution, built-in presets |
 | `gale_formatter` | `TextFormatter`, `JsonFormatter`, `CompactFormatter`, `VerboseFormatter`, `TapFormatter`, `UnixFormatter` |
 | `gale_cli` | Clap CLI, file discovery with ignore support, cache layer, `--fix` orchestration |

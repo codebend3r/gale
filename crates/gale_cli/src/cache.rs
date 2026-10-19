@@ -10,7 +10,7 @@ use tracing::debug;
 /// `DefaultHasher`'s algorithm is explicitly unspecified across Rust releases,
 /// so hashes are only meaningful to the binary that wrote them. A mismatch
 /// here discards the cache rather than trusting stale hashes.
-const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// How the cache decides that a file is unchanged: Stylelint's
 /// `--cache-strategy`.
@@ -216,19 +216,6 @@ fn hash_rules(rules: &HashMap<String, gale_config::RuleConfig>, hasher: &mut imp
   }
 }
 
-/// Feed per-rule options into `hasher` in name order.
-fn hash_rule_options(options: &HashMap<String, serde_json::Value>, hasher: &mut impl Hasher) {
-  let mut sorted: Vec<&String> = options.keys().collect();
-  sorted.sort();
-  sorted.len().hash(hasher);
-  for name in sorted {
-    name.hash(hasher);
-    serde_json::to_string(&options[name])
-      .unwrap_or_default()
-      .hash(hasher);
-  }
-}
-
 /// Compute a stable hash of everything in a resolved config that can change
 /// a file's lint result, so cache entries are invalidated when any of it
 /// changes: the rules and their options, the overrides, the syntax, and the
@@ -261,33 +248,14 @@ pub fn compute_config_hash(config: &gale_config::GaleConfig) -> u64 {
   hasher.finish()
 }
 
-/// The cache key part for files linted with `config`, given the options
-/// the runner receives for it (which may carry injected compatibility
-/// settings).
-pub fn compute_params_hash(
-  config: &gale_config::GaleConfig,
-  rule_options: &HashMap<String, serde_json::Value>,
-) -> u64 {
+/// The cache key part shared by every file in a run: the forced
+/// `--custom-syntax`, and what the run adds to every config (the command
+/// line's disable switches and the installed Stylelint version, which a few
+/// rules follow).
+pub fn compute_run_hash(custom_syntax: Option<&str>, run: &gale_config::RunSettings) -> u64 {
   let mut hasher = std::collections::hash_map::DefaultHasher::new();
-  compute_config_hash(config).hash(&mut hasher);
-  hash_rule_options(rule_options, &mut hasher);
-  hasher.finish()
-}
-
-/// The cache key part shared by every file in a run: the root config and
-/// its runner options (the runner falls back on both), the forced
-/// `--custom-syntax`, and the command-line switches that change results
-/// (the four disable reports and `--ignore-disables`).
-pub fn compute_run_hash(
-  root: &gale_config::GaleConfig,
-  root_rule_options: &HashMap<String, serde_json::Value>,
-  custom_syntax: Option<&str>,
-  cli_switches: [bool; 5],
-) -> u64 {
-  let mut hasher = std::collections::hash_map::DefaultHasher::new();
-  compute_params_hash(root, root_rule_options).hash(&mut hasher);
   custom_syntax.hash(&mut hasher);
-  cli_switches.hash(&mut hasher);
+  run.hash(&mut hasher);
   hasher.finish()
 }
 
@@ -494,23 +462,42 @@ mod tests {
   }
 
   #[test]
-  fn run_hash_covers_command_line_switches() {
-    let config = gale_config::GaleConfig::default();
-    let options = HashMap::new();
-    let base = compute_run_hash(&config, &options, None, [false; 5]);
-    assert_ne!(
-      compute_run_hash(&config, &options, Some("postcss-less"), [false; 5]),
-      base
-    );
-    for i in 0..5 {
-      let mut switches = [false; 5];
-      switches[i] = true;
-      assert_ne!(compute_run_hash(&config, &options, None, switches), base);
+  fn run_hash_covers_command_line_switches_and_the_stylelint_version() {
+    let run = gale_config::RunSettings::default();
+    let base = compute_run_hash(None, &run);
+    assert_ne!(compute_run_hash(Some("postcss-less"), &run), base);
+    let switches = [
+      gale_linter::DisableOptions {
+        ignore: true,
+        ..Default::default()
+      },
+      gale_linter::DisableOptions {
+        report_needless: true,
+        ..Default::default()
+      },
+      gale_linter::DisableOptions {
+        report_invalid_scope: true,
+        ..Default::default()
+      },
+      gale_linter::DisableOptions {
+        report_descriptionless: true,
+        ..Default::default()
+      },
+      gale_linter::DisableOptions {
+        report_unscoped: true,
+        ..Default::default()
+      },
+    ];
+    for disables in switches {
+      let switched = gale_config::RunSettings { disables, ..run };
+      assert_ne!(compute_run_hash(None, &switched), base);
     }
-    let injected = HashMap::from([(
-      "unit-no-unknown".to_string(),
-      serde_json::json!({"__additionalUnknownUnits": ["dvh"]}),
-    )]);
-    assert_ne!(compute_run_hash(&config, &injected, None, [false; 5]), base);
+    let legacy = gale_config::RunSettings {
+      env: gale_linter::LintEnv {
+        stylelint_version: Some((14, 0, 0)),
+      },
+      ..run
+    };
+    assert_ne!(compute_run_hash(None, &legacy), base);
   }
 }

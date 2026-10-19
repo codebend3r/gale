@@ -252,6 +252,7 @@ mod tests {
   fn lint_with(css: &str, syntax: Syntax) -> Vec<(String, usize, usize, usize, usize)> {
     let parsed = parse(css, syntax).expect("fixture should parse");
     let ctx = RuleContext {
+      env: Default::default(),
       file_path: "t.css",
       source: css,
       syntax,

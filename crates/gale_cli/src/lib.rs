@@ -13,15 +13,15 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use tracing::debug;
 
-use gale_config::{ConfigResolver, GaleConfig};
+use gale_config::{ConfigResolver, GaleConfig, RunSettings, WithoutConfig};
 use gale_css_parser::{Syntax, detect_syntax};
 use gale_diagnostics::{LintResult, Severity, apply_fixes};
 use gale_formatter::{StylelintResult, create_formatter_with_color, strip_ansi};
 use gale_linter::known_rules::{self, RuleSupport};
-use gale_linter::{LintRunner, RuleRegistry};
+use gale_linter::{DisableOptions, LintEnv, RuleRegistry, RuleSet};
 
 use crate::cache::{
-  CacheStrategy, LintCache, combine_hashes, compute_hash, compute_params_hash, compute_run_hash,
+  CacheStrategy, LintCache, combine_hashes, compute_config_hash, compute_hash, compute_run_hash,
   metadata_fingerprint, resolve_cache_path,
 };
 
@@ -1214,8 +1214,7 @@ pub fn run() -> Result<()> {
     }
   };
 
-  // Build rule registry and determine enabled rules.
-  let registry = RuleRegistry::default();
+  let registry = RuleRegistry::global();
 
   // Validate plugins declared in the config.
   for plugin in &config.plugins {
@@ -1232,32 +1231,9 @@ pub fn run() -> Result<()> {
   // Names that are no rule at all are reported by the runner as
   // `Unknown rule`, the way Stylelint does.
   let mut skipped_rules = if has_config_file {
-    SkippedRules::in_config(&config, &registry)
+    SkippedRules::in_config(&config, registry)
   } else {
     SkippedRules::default()
-  };
-
-  let enabled_rules: Vec<String> = if config.rules.is_empty() && !has_config_file {
-    // No config file found at all — enable all registered rules as a
-    // sensible default so `gale .` works out-of-the-box.
-    registry
-      .all()
-      .iter()
-      .map(|r| r.name().to_string())
-      .collect()
-  } else {
-    config
-      .rules
-      .iter()
-      .filter(|(_, cfg)| {
-        cfg
-          .severity
-          .as_ref()
-          .map(|s| !matches!(s, gale_config::Severity::Off))
-          .unwrap_or(true)
-      })
-      .map(|(name, _)| name.clone())
-      .collect()
   };
 
   // Handle --print-config: print resolved config as JSON and exit.
@@ -1358,309 +1334,79 @@ pub fn run() -> Result<()> {
     LintCache::new(cache_strategy)
   };
 
-  // Extract per-rule options from the config, keyed by canonical rule name.
-  // Config may use deprecated aliases (e.g. "function-comma-space-after")
-  // but the runner looks up options by canonical name
-  // (e.g. "@stylistic/function-comma-space-after").
-  let mut rule_options: std::collections::HashMap<String, serde_json::Value> = config
-    .rules
-    .iter()
-    .filter_map(|(name, cfg)| {
-      cfg.options.as_ref().map(|opts| {
-        // Resolve to canonical name if this is a deprecated alias
-        let canonical = registry
-          .get(name)
-          .map(|r| r.name().to_string())
-          .unwrap_or_else(|| name.clone());
-        (canonical, opts.clone())
-      })
-    })
-    .collect();
+  // What the run adds to every config's rule sets: the command line's
+  // disable switches, and the installed Stylelint, whose version a few
+  // rules follow.
+  let run_settings = RunSettings {
+    disables: DisableOptions {
+      ignore: cli.ignore_disables,
+      report_needless: cli.report_needless_disables,
+      report_invalid_scope: cli.report_invalid_scope_disables,
+      report_descriptionless: cli.report_descriptionless_disables,
+      report_unscoped: cli.report_unscoped_disables,
+    },
+    env: LintEnv::detect(&std::env::current_dir().unwrap_or_default()),
+  };
 
-  // Detect Stylelint version and inject compatibility options.
-  // Older Stylelint versions (< 15) have a smaller known-units list that
-  // doesn't include dynamic viewport units (dvh, dvw, etc.) or container
-  // query units (cqw, cqh, etc.).  When running against repos that use an
-  // older Stylelint, inject these as "additional unknown units" so Gale's
-  // `unit-no-unknown` rule reports them consistently.
-  if enabled_rules.iter().any(|r| r == "unit-no-unknown") {
-    let detect_cwd = std::env::current_dir().unwrap_or_default();
-    if let Some(extra) = detect_legacy_unknown_units(&detect_cwd) {
-      let entry = rule_options
-        .entry("unit-no-unknown".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-      if let Some(obj) = entry.as_object_mut() {
-        obj.insert(
-          "__additionalUnknownUnits".to_string(),
-          serde_json::json!(extra),
-        );
-      }
-    }
-  }
+  // The cache key part shared by every file: the forced syntax and what the
+  // run adds to every config.
+  let run_hash = compute_run_hash(cli_custom_syntax, &run_settings);
 
-  // Extract per-rule severity overrides from the config, keyed by canonical name.
-  let rule_severities: std::collections::HashMap<String, gale_diagnostics::Severity> = config
-    .rules
-    .iter()
-    .filter_map(|(name, cfg)| {
-      cfg.severity.as_ref().and_then(|s| {
-        let canonical = registry
-          .get(name)
-          .map(|r| r.name().to_string())
-          .unwrap_or_else(|| name.clone());
-        match s {
-          gale_config::Severity::Error => Some((canonical, gale_diagnostics::Severity::Error)),
-          gale_config::Severity::Warning => Some((canonical, gale_diagnostics::Severity::Warning)),
-          gale_config::Severity::Off => None,
-        }
-      })
-    })
-    .collect();
-
-  // The cache key part shared by every file: the root config, whose rules
-  // and switches the runner falls back on, its options as the runner gets
-  // them, and the command-line flags that change results.
-  let run_hash = compute_run_hash(
-    &config,
-    &rule_options,
-    cli_custom_syntax,
-    [
-      cli.report_needless_disables,
-      cli.report_invalid_scope_disables,
-      cli.report_descriptionless_disables,
-      cli.report_unscoped_disables,
-      cli.ignore_disables,
-    ],
-  );
-
-  let mut runner = LintRunner::with_options_and_severities(
-    registry,
-    enabled_rules.clone(),
-    rule_options,
-    rule_severities,
-  );
-  runner
-    .set_report_needless_disables(config.report_needless_disables || cli.report_needless_disables);
-  runner.set_report_invalid_scope_disables(
-    config.report_invalid_scope_disables || cli.report_invalid_scope_disables,
-  );
-  runner.set_report_descriptionless_disables(
-    config.report_descriptionless_disables || cli.report_descriptionless_disables,
-  );
-  runner
-    .set_report_unscoped_disables(config.report_unscoped_disables || cli.report_unscoped_disables);
-  runner.set_ignore_disables(cli.ignore_disables || config.ignore_disables);
-  embedded::set_ignore_disables(cli.ignore_disables || config.ignore_disables);
-  // Plugin rules the config names but Gale does not implement still count
-  // as configured for reportInvalidScopeDisables.
-  runner.set_configured_rules(config.rules.keys().cloned().collect());
-  runner.set_default_severity(config.default_severity.map(|s| match s {
-    gale_config::Severity::Error => gale_diagnostics::Severity::Error,
-    gale_config::Severity::Warning => gale_diagnostics::Severity::Warning,
-    gale_config::Severity::Off => gale_diagnostics::Severity::Warning, // shouldn't happen
-  }));
-  let has_overrides = config.has_overrides();
+  // The config for stdin and for `--config` runs: the one found or named,
+  // else (no config file at all) every rule gale has.
+  let root_config = if has_config_file {
+    config.clone()
+  } else {
+    WithoutConfig::AllRules.config()
+  };
+  let root_params = build_lint_params(Arc::new(root_config), &run_settings);
 
   /// Pre-computed lint parameters for a resolved config.
   ///
   /// When multiple files share the same config (same directory or same config
-  /// file in the hierarchy), we compute the enabled rules, options, and
-  /// severities once and share them via `Arc` to avoid redundant allocations
-  /// in the parallel linting loop.
+  /// file in the hierarchy), the rule set is built once and shared via `Arc`.
   struct ResolvedLintParams {
     config: Arc<GaleConfig>,
-    enabled_rules: Vec<String>,
-    rule_options: std::collections::HashMap<String, serde_json::Value>,
-    rule_severities: std::collections::HashMap<String, gale_diagnostics::Severity>,
+    /// The rules for files no override applies to.
+    base: RuleSet,
     has_overrides: bool,
-    /// The cache key part for files using this config: the config and its
-    /// options as the runner gets them.
+    /// The cache key part for files using this config.
     cache_key: u64,
   }
 
-  /// Build `ResolvedLintParams` from a `GaleConfig`, pre-computing enabled
-  /// rules, options, and severities so the parallel loop avoids per-file
-  /// allocation.
-  fn build_lint_params(config: Arc<GaleConfig>, runner: &LintRunner) -> Arc<ResolvedLintParams> {
-    let has_overrides = config.has_overrides();
-    let enabled_rules: Vec<String> = config
-      .rules
-      .iter()
-      .filter(|(_, cfg)| {
-        cfg
-          .severity
-          .as_ref()
-          .map(|s| !matches!(s, gale_config::Severity::Off))
-          .unwrap_or(true)
-      })
-      .map(|(name, _)| name.clone())
-      .collect();
-    let mut rule_options: std::collections::HashMap<String, serde_json::Value> = config
-      .rules
-      .iter()
-      .filter_map(|(name, cfg)| {
-        cfg.options.as_ref().map(|opts| {
-          // Resolve to canonical name if this is a deprecated alias
-          let canonical = runner
-            .registry()
-            .get(name)
-            .map(|r| r.name().to_string())
-            .unwrap_or_else(|| name.clone());
-          (canonical, opts.clone())
-        })
-      })
-      .collect();
-    // Inject legacy unknown units for older Stylelint versions.
-    if enabled_rules.iter().any(|r| r == "unit-no-unknown") {
-      let detect_cwd = std::env::current_dir().unwrap_or_default();
-      if let Some(extra) = detect_legacy_unknown_units(&detect_cwd) {
-        let entry = rule_options
-          .entry("unit-no-unknown".to_string())
-          .or_insert_with(|| serde_json::json!({}));
-        if let Some(obj) = entry.as_object_mut() {
-          obj.insert(
-            "__additionalUnknownUnits".to_string(),
-            serde_json::json!(extra),
-          );
-        }
-      }
-    }
-    let rule_severities: std::collections::HashMap<String, gale_diagnostics::Severity> = config
-      .rules
-      .iter()
-      .filter_map(|(name, cfg)| {
-        cfg.severity.as_ref().and_then(|s| {
-          // Resolve to canonical name if this is a deprecated alias
-          let canonical = runner
-            .registry()
-            .get(name)
-            .map(|r| r.name().to_string())
-            .unwrap_or_else(|| name.clone());
-          match s {
-            gale_config::Severity::Error => Some((canonical, gale_diagnostics::Severity::Error)),
-            gale_config::Severity::Warning => {
-              Some((canonical, gale_diagnostics::Severity::Warning))
-            }
-            gale_config::Severity::Off => None,
-          }
-        })
-      })
-      .collect();
-    let cache_key = compute_params_hash(&config, &rule_options);
+  /// Build `ResolvedLintParams` from a `GaleConfig`.
+  fn build_lint_params(config: Arc<GaleConfig>, run: &RunSettings) -> Arc<ResolvedLintParams> {
     Arc::new(ResolvedLintParams {
+      base: config.rule_set(&[], run),
+      has_overrides: config.has_overrides(),
+      cache_key: compute_config_hash(&config),
       config,
-      enabled_rules,
-      rule_options,
-      rule_severities,
-      has_overrides,
-      cache_key,
     })
   }
 
-  /// Lint a single file using a fully resolved config (with overrides).
-  ///
-  /// Extracts enabled rules, options, and severities from the config (applying
-  /// per-file overrides) and runs the linter.
-  fn lint_file_with_resolved_config(
-    runner: &LintRunner,
-    source: &str,
-    file_path: &str,
-    syntax: gale_css_parser::Syntax,
-    config: &GaleConfig,
-  ) -> LintResult {
-    // Stylelint marks files as fully ignored when they match an override's
-    // `files` pattern AND its `ignoreFiles` pattern.  Return an empty
-    // result so we don't produce false positives.
-    if config.is_file_ignored_by_override(file_path) {
-      return LintResult::new(file_path, source, Vec::new());
-    }
-    let effective_rules = config.rules_for_file(file_path);
-    let file_enabled: Vec<String> = effective_rules
-      .iter()
-      .filter(|(_, cfg)| {
-        cfg
-          .severity
-          .as_ref()
-          .map(|s| !matches!(s, gale_config::Severity::Off))
-          .unwrap_or(true)
-      })
-      .map(|(name, _)| name.clone())
-      .collect();
-    let override_options: std::collections::HashMap<String, serde_json::Value> = effective_rules
-      .iter()
-      .filter_map(|(name, cfg)| {
-        cfg
-          .options
-          .as_ref()
-          .map(|opts| (name.clone(), opts.clone()))
-      })
-      .collect();
-    let override_severities: std::collections::HashMap<String, gale_diagnostics::Severity> =
-      effective_rules
-        .iter()
-        .filter_map(|(name, cfg)| {
-          cfg.severity.as_ref().and_then(|s| match s {
-            gale_config::Severity::Error => Some((name.clone(), gale_diagnostics::Severity::Error)),
-            gale_config::Severity::Warning => {
-              Some((name.clone(), gale_diagnostics::Severity::Warning))
-            }
-            gale_config::Severity::Off => None,
-          })
-        })
-        .collect();
-    embedded::lint(source, file_path, syntax, |source, syntax| {
-      runner.lint_source_with_rules(
-        source,
-        file_path,
-        syntax,
-        &file_enabled,
-        &override_options,
-        &override_severities,
-      )
-    })
-  }
-
-  /// Lint a single file using pre-computed params, falling back to override
-  /// resolution only when the config has overrides.
-  fn lint_file_with_params(
-    runner: &LintRunner,
+  /// Lint a single file with the rules its config, and the overrides in it
+  /// that match the file, enable.
+  fn lint_file(
     source: &str,
     file_path: &str,
     syntax: gale_css_parser::Syntax,
     params: &ResolvedLintParams,
+    run: &RunSettings,
   ) -> LintResult {
-    if params.has_overrides {
-      lint_file_with_resolved_config(runner, source, file_path, syntax, &params.config)
-    } else {
-      embedded::lint(source, file_path, syntax, |source, syntax| {
-        runner.lint_source_with_rules(
-          source,
-          file_path,
-          syntax,
-          &params.enabled_rules,
-          &params.rule_options,
-          &params.rule_severities,
-        )
-      })
+    if !params.has_overrides {
+      return params.base.lint(source, file_path, syntax);
     }
-  }
-
-  /// Lint a single file, computing the effective rules from overrides if needed.
-  fn lint_file(
-    runner: &LintRunner,
-    source: &str,
-    file_path: &str,
-    syntax: gale_css_parser::Syntax,
-    config: &GaleConfig,
-    has_overrides: bool,
-  ) -> LintResult {
-    if has_overrides {
-      lint_file_with_resolved_config(runner, source, file_path, syntax, config)
-    } else {
-      embedded::lint(source, file_path, syntax, |source, syntax| {
-        runner.lint_source(source, file_path, syntax)
-      })
+    // Stylelint marks files as fully ignored when they match an override's
+    // `files` pattern AND its `ignoreFiles` pattern.  Return an empty
+    // result so we don't produce false positives.
+    if params.config.is_file_ignored_by_override(file_path) {
+      return LintResult::new(file_path, source, Vec::new());
     }
+    let overrides = params.config.matching_overrides(file_path);
+    params
+      .config
+      .rule_set(&overrides, run)
+      .lint(source, file_path, syntax)
   }
 
   // Lint: either from stdin or from discovered files.
@@ -1680,12 +1426,11 @@ pub fn run() -> Result<()> {
           eprintln!("{warning}");
         }
         vec![lint_file(
-          &runner,
           &source,
           file_path,
           syntax,
-          &config,
-          has_overrides,
+          &root_params,
+          &run_settings,
         )]
       }
       Err(name) => {
@@ -1769,7 +1514,7 @@ pub fn run() -> Result<()> {
             let ptr = Arc::as_ptr(&cfg_arc) as usize;
             let params = params_by_ptr
               .entry(ptr)
-              .or_insert_with(|| build_lint_params(cfg_arc, &runner))
+              .or_insert_with(|| build_lint_params(cfg_arc, &run_settings))
               .clone();
             (dir, params)
           })
@@ -1780,7 +1525,7 @@ pub fn run() -> Result<()> {
           params_by_ptr.len()
         );
         for params in params_by_ptr.values() {
-          skipped_rules.extend(SkippedRules::in_config(&params.config, runner.registry()));
+          skipped_rules.extend(SkippedRules::in_config(&params.config, registry));
         }
         Some(dir_params)
       } else {
@@ -1842,7 +1587,8 @@ pub fn run() -> Result<()> {
           });
 
           // The key covers everything that changes this file's result.
-          let config_hash = combine_hashes(&[run_hash, params.map_or(0, |p| p.cache_key)]);
+          let params = params.map_or(&root_params, |p| p);
+          let config_hash = combine_hashes(&[run_hash, params.cache_key]);
 
           // Check cache: skip only files that were clean (0 diagnostics).
           // The metadata strategy needs only the file's size and mtime, so
@@ -1869,10 +1615,7 @@ pub fn run() -> Result<()> {
             }
           };
 
-          let result = match params {
-            Some(params) => lint_file_with_params(&runner, &source, &file_path, syntax, params),
-            None => lint_file(&runner, &source, &file_path, syntax, &config, has_overrides),
-          };
+          let result = lint_file(&source, &file_path, syntax, params, &run_settings);
 
           // Update cache with the new result.  A file with an invalid
           // option is not clean either: Stylelint never caches a result
@@ -1896,37 +1639,24 @@ pub fn run() -> Result<()> {
           let source = std::fs::read_to_string(file).ok()?;
           let file_path = file.display().to_string();
 
-          if let Some(ref dp) = dir_params {
-            let abs = if file.is_absolute() {
-              file.clone()
-            } else {
-              cwd.join(file)
-            };
-            let dir = abs.parent().unwrap_or(Path::new("."));
-            if let Some(params) = dp.get(dir) {
-              Some(lint_file_with_params(
-                &runner, &source, &file_path, syntax, params,
-              ))
-            } else {
-              Some(lint_file(
-                &runner,
-                &source,
-                &file_path,
-                syntax,
-                &config,
-                has_overrides,
-              ))
-            }
-          } else {
-            Some(lint_file(
-              &runner,
-              &source,
-              &file_path,
-              syntax,
-              &config,
-              has_overrides,
-            ))
-          }
+          let params = dir_params
+            .as_ref()
+            .and_then(|dp| {
+              let abs = if file.is_absolute() {
+                file.clone()
+              } else {
+                cwd.join(file)
+              };
+              dp.get(abs.parent().unwrap_or(Path::new(".")))
+            })
+            .unwrap_or(&root_params);
+          Some(lint_file(
+            &source,
+            &file_path,
+            syntax,
+            params,
+            &run_settings,
+          ))
         })
         .collect()
     }
@@ -1974,12 +1704,11 @@ pub fn run() -> Result<()> {
         // Re-lint the fixed source to get remaining diagnostics, which
         // also feeds the next pass.
         *result = lint_file(
-          &runner,
           &current,
           &result.file_path,
           syntax,
-          &config,
-          has_overrides,
+          &root_params,
+          &run_settings,
         );
       }
 
@@ -2133,47 +1862,6 @@ impl SkippedRules {
   fn warn(&self) {
     for warning in self.warnings() {
       eprintln!("{warning}");
-    }
-  }
-}
-
-/// Detect whether the project uses an older Stylelint version (< 15) that
-/// doesn't recognize certain modern CSS units (dynamic viewport units,
-/// container query units, etc.).
-///
-/// Returns `Some(units)` with the list of units to treat as unknown, or
-/// `None` if Stylelint is >= 15 or not installed.
-fn detect_legacy_unknown_units(cwd: &Path) -> Option<Vec<String>> {
-  // Walk up from cwd to find node_modules/stylelint/package.json.
-  let mut dir = cwd.to_path_buf();
-  loop {
-    let pkg = dir
-      .join("node_modules")
-      .join("stylelint")
-      .join("package.json");
-    if pkg.exists() {
-      let contents = std::fs::read_to_string(&pkg).ok()?;
-      let parsed: serde_json::Value = serde_json::from_str(&contents).ok()?;
-      let version_str = parsed.get("version")?.as_str()?;
-      let major: u32 = version_str.split('.').next()?.parse().ok()?;
-      if major < 15 {
-        // Stylelint < 15 doesn't know dynamic viewport units, container
-        // query units, or several other modern CSS units.
-        return Some(
-          vec![
-            "dvh", "dvw", "dvb", "dvi", "dvmax", "dvmin", "lvh", "lvw", "lvb", "lvi", "lvmax",
-            "lvmin", "svh", "svw", "svb", "svi", "svmax", "svmin", "cqw", "cqh", "cqi", "cqb",
-            "cqmin", "cqmax", "cap", "ic", "rcap", "rch", "rex", "ric", "vb", "vi",
-          ]
-          .into_iter()
-          .map(|s| s.to_string())
-          .collect(),
-        );
-      }
-      return None;
-    }
-    if !dir.pop() {
-      return None;
     }
   }
 }
