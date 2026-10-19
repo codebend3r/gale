@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::{is_ident_char, is_ident_start};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -284,16 +285,6 @@ fn is_whitespace(b: u8) -> bool {
   matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
 }
 
-/// Whether `c` may start an identifier.
-fn is_ident_start(c: char) -> bool {
-  c.is_ascii_alphabetic() || c == '_' || !c.is_ascii()
-}
-
-/// Whether `c` may continue an identifier.
-fn is_name_char(c: char) -> bool {
-  is_ident_start(c) || c.is_ascii_digit() || c == '-'
-}
-
 /// Whether `text` starts with a valid escape: `\` not followed by a newline.
 fn starts_escape(text: &str) -> bool {
   let mut chars = text.chars();
@@ -322,7 +313,7 @@ fn starts_ident(text: &str) -> bool {
 fn consume_ident(css: &str, mut pos: usize) -> (String, usize) {
   let mut name = String::new();
   while let Some(c) = css[pos..].chars().next() {
-    if is_name_char(c) {
+    if is_ident_char(c) {
       name.push(c);
       pos += c.len_utf8();
     } else if starts_escape(&css[pos..]) {

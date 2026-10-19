@@ -1,6 +1,7 @@
 use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::hex_colors::find_hex_colors;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -82,29 +83,6 @@ impl Check for ColorHexCaseCheck {
     }
     diags
   }
-}
-
-/// Scans for `#`-prefixed hex tokens, returning each with its offset into `value`.
-fn find_hex_colors(value: &str) -> Vec<(usize, String)> {
-  let mut colors = Vec::new();
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-  while i < len {
-    if bytes[i] == b'#' {
-      let start = i;
-      i += 1;
-      while i < len && (bytes[i] as char).is_ascii_hexdigit() {
-        i += 1;
-      }
-      if i > start + 1 {
-        colors.push((start, value[start..i].to_string()));
-      }
-    } else {
-      i += 1;
-    }
-  }
-  colors
 }
 
 #[cfg(test)]

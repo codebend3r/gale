@@ -4,6 +4,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::selector::postcss::split_selectors;
 
 const NAME: &str = "selector-max-id";
 
@@ -79,7 +80,10 @@ impl Check for SelectorMaxIdCheck {
       }
     };
 
-    let parts = split_selector_list(source_selector);
+    let parts: Vec<&str> = split_selectors(source_selector)
+      .into_iter()
+      .map(|(_, part)| part)
+      .collect();
     // Calculate byte offsets of each part within the selector string.
     let mut part_offsets: Vec<usize> = Vec::new();
     {
@@ -172,29 +176,6 @@ fn find_selector_end(source: &str) -> usize {
     i += 1;
   }
   source.len()
-}
-
-/// Split a selector list by commas, respecting parentheses and brackets.
-/// E.g. `"#a .b, #c .d"` → `["#a .b", "#c .d"]`
-fn split_selector_list(selector: &str) -> Vec<&str> {
-  let mut parts = Vec::new();
-  let mut depth = 0usize;
-  let mut start = 0;
-  let bytes = selector.as_bytes();
-
-  for (i, &b) in bytes.iter().enumerate() {
-    match b {
-      b'(' | b'[' => depth += 1,
-      b')' | b']' => depth = depth.saturating_sub(1),
-      b',' if depth == 0 => {
-        parts.push(&selector[start..i]);
-        start = i + 1;
-      }
-      _ => {}
-    }
-  }
-  parts.push(&selector[start..]);
-  parts
 }
 
 /// Count `#` characters that are ID selectors (not hex color fragments or SCSS interpolation).

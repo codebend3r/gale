@@ -264,7 +264,6 @@ fn shorthand_longhands(shorthand: &str) -> Option<&'static [&'static str]> {
     "padding-left",
     "padding-right",
   ];
-  const BORDER_SIDES: &[&str] = &["border-top", "border-bottom", "border-left", "border-right"];
   const BORDER_WIDTHS: &[&str] = &[
     "border-top-width",
     "border-bottom-width",

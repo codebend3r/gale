@@ -58,7 +58,7 @@ impl Check for SelectorMaxClassCheck {
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
     ) {
-      strip_scss_line_comments(&rule.selector)
+      strip_comment_lines(&rule.selector)
     } else {
       rule.selector.clone()
     };
@@ -87,8 +87,11 @@ impl Check for SelectorMaxClassCheck {
   }
 }
 
-/// Strip `//` line comments from a selector string (SCSS/Less).
-fn strip_scss_line_comments(selector: &str) -> String {
+/// The selector without the lines that are only a `//` comment (SCSS,
+/// Less).  A comment after a selector on the same line is left in, unlike
+/// [`crate::selector::strip_line_comments`]: this rule has always counted
+/// classes in it, and the message quotes the selector as it is cut here.
+fn strip_comment_lines(selector: &str) -> String {
   selector
     .lines()
     .filter(|line| !line.trim_start().starts_with("//"))

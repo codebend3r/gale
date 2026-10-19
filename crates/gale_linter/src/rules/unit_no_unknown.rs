@@ -483,7 +483,7 @@ fn check_at_rule_params(
   rule_name: &str,
   diags: &mut Vec<Diagnostic>,
 ) {
-  let features = extract_media_features(params);
+  let features = media_feature_values(params);
 
   for (feature_name, feature_value, value_byte_offset) in &features {
     let is_resolution = feature_name == "resolution"
@@ -498,8 +498,10 @@ fn check_at_rule_params(
   }
 }
 
-/// Splits an at-rule prelude into `(name, value, value_offset)` triples.
-fn extract_media_features(params: &str) -> Vec<(String, String, usize)> {
+/// The `(name, value, value_offset)` of each feature in an at-rule prelude,
+/// for the units in the values; `media-feature-name-no-unknown` reads the
+/// names differently.
+fn media_feature_values(params: &str) -> Vec<(String, String, usize)> {
   let mut results = Vec::new();
   let lower = params.to_ascii_lowercase();
   let chars: Vec<char> = lower.chars().collect();

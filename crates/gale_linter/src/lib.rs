@@ -1,12 +1,8 @@
-#![allow(
-  clippy::all,
-  unreachable_code,
-  unused_variables,
-  unused_assignments,
-  dead_code
-)]
+#![allow(clippy::all, unreachable_code, unused_variables, unused_assignments)]
 
 pub mod autoprefixable;
+pub mod braces;
+pub mod chars;
 pub mod css_tokenizer;
 pub mod custom_message;
 pub mod data;
@@ -14,6 +10,7 @@ pub mod disables;
 pub mod embedded;
 pub mod empty_lines;
 pub mod file_cache;
+pub mod hex_colors;
 pub mod js_number;
 pub mod known_rules;
 pub mod lint_env;

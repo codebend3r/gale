@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_pseudo_class;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 /// Known pseudo-classes that are only valid in a `@page` context.
@@ -53,7 +53,7 @@ declare_rule! {
 /// `selector-pseudo-class-no-unknown` as configured.
 pub struct SelectorPseudoClassNoUnknownCheck {
   /// The `ignorePseudoClasses` option: names and `/regex/` entries.
-  ignore_pseudo_classes: Vec<String>,
+  ignore_pseudo_classes: Matchers,
 }
 
 impl SelectorPseudoClassNoUnknownCheck {
@@ -64,7 +64,7 @@ impl SelectorPseudoClassNoUnknownCheck {
     let ignore_pseudo_classes = options.strings("ignorePseudoClasses");
     options.finish()?;
     Ok(Self {
-      ignore_pseudo_classes,
+      ignore_pseudo_classes: Matchers::new(&ignore_pseudo_classes),
     })
   }
 }
@@ -111,7 +111,7 @@ impl Check for SelectorPseudoClassNoUnknownCheck {
             );
             continue;
           }
-          if is_ignored(&entry.name, &ignore_list) {
+          if ignore_list.matches(&entry.name) {
             continue;
           }
           if !is_known_pseudo_class(&entry.name) {
@@ -151,7 +151,7 @@ impl Check for SelectorPseudoClassNoUnknownCheck {
           if entry.name == "nth" {
             continue;
           }
-          if is_ignored(&entry.name, &ignore_list) {
+          if ignore_list.matches(&entry.name) {
             continue;
           }
           if !is_known_pseudo_class(&entry.name) {
@@ -194,7 +194,7 @@ impl Check for SelectorPseudoClassNoUnknownCheck {
       if entry.after_pseudo_element && is_webkit_scrollbar_pseudo_class(&entry.name) {
         continue;
       }
-      if is_ignored(&entry.name, &ignore_list) {
+      if ignore_list.matches(&entry.name) {
         continue;
       }
       if !is_known_pseudo_class(&entry.name) && !is_page_pseudo_class(&entry.name) {
@@ -217,7 +217,6 @@ impl Check for SelectorPseudoClassNoUnknownCheck {
 
 struct PseudoClassEntry {
   name: String,
-  #[allow(dead_code)]
   char_offset_in_selector: usize,
   after_pseudo_element: bool,
   byte_offset_in_source: usize,
@@ -596,25 +595,6 @@ fn covered_range_end(offset: usize, ranges: &[(usize, usize)]) -> Option<usize> 
 /// Whether `offset` falls inside a range the AST already covers.
 fn is_in_covered_range(offset: usize, ranges: &[(usize, usize)]) -> bool {
   covered_range_end(offset, ranges).is_some()
-}
-
-/// Whether the name matches an ignore entry, as a regex or an exact string.
-fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
-  for pattern in ignore_list {
-    if let Some(re) = parse_regex_pattern(pattern) {
-      if crate::pattern::is_match(&re, name) {
-        return true;
-      }
-    } else if pattern == name {
-      return true;
-    }
-  }
-  false
-}
-
-/// Compiles a `/…/` or `/…/i` pattern, or `None` if it is not one.
-fn parse_regex_pattern(s: &str) -> Option<std::sync::Arc<crate::pattern::Regex>> {
-  crate::pattern::regex_entry(s)
 }
 
 #[cfg(test)]

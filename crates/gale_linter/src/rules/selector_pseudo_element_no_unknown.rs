@@ -3,7 +3,7 @@ use gale_diagnostics::Diagnostic;
 
 use crate::data::is_known_pseudo_element;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "selector-pseudo-element-no-unknown";
@@ -19,7 +19,7 @@ declare_rule! {
 /// `selector-pseudo-element-no-unknown` as configured.
 pub struct SelectorPseudoElementNoUnknownCheck {
   /// The `ignorePseudoElements` option: names and `/regex/` entries.
-  ignored: Vec<String>,
+  ignored: Matchers,
 }
 
 impl SelectorPseudoElementNoUnknownCheck {
@@ -29,7 +29,9 @@ impl SelectorPseudoElementNoUnknownCheck {
     options.no_primary();
     let ignored = options.strings("ignorePseudoElements");
     options.finish()?;
-    Ok(Self { ignored })
+    Ok(Self {
+      ignored: Matchers::new(&ignored),
+    })
   }
 }
 
@@ -42,7 +44,7 @@ impl Check for SelectorPseudoElementNoUnknownCheck {
     };
     let mut diags = Vec::new();
     for name in extract_pseudo_elements(&rule.selector) {
-      if name.starts_with('-') || is_ignored(&name, &self.ignored) {
+      if name.starts_with('-') || self.ignored.matches(&name) {
         continue;
       }
       if !is_known_pseudo_element(&name) {
@@ -57,14 +59,6 @@ impl Check for SelectorPseudoElementNoUnknownCheck {
     }
     diags
   }
-}
-
-/// Whether an `ignorePseudoElements` entry, an exact name or a `/regex/`,
-/// matches `name`.
-fn is_ignored(name: &str, ignored: &[String]) -> bool {
-  ignored
-    .iter()
-    .any(|entry| crate::pattern::match_regex_entry(entry, name).unwrap_or_else(|| entry == name))
 }
 
 /// Extract pseudo-element names from a selector string (::name patterns).
