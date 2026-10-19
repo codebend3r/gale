@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 pub enum Severity {
   Error,
   Warning,
-  Info,
-  Hint,
 }
 
 impl std::fmt::Display for Severity {
@@ -19,8 +17,6 @@ impl std::fmt::Display for Severity {
     match self {
       Severity::Error => write!(f, "error"),
       Severity::Warning => write!(f, "warning"),
-      Severity::Info => write!(f, "info"),
-      Severity::Hint => write!(f, "hint"),
     }
   }
 }
