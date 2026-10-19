@@ -201,8 +201,13 @@ pub(crate) fn print_config(cli: &Cli, root: &RootConfig, file: &Path) -> Result<
   let file_str = file.display().to_string();
   let mut resolver = root.resolver(cli, WithoutConfig::NoRules, None, RunSettings::default());
   let config = resolver.resolve(&file_str).config;
+  // Rules by name, as a sorted map printed them before objects kept their
+  // keys in insertion order.
+  let rules = config.rules_for_file(&file_str);
+  let mut names: Vec<&String> = rules.keys().collect();
+  names.sort();
   let mut rules_json = serde_json::Map::new();
-  for (name, rc) in &config.rules_for_file(&file_str) {
+  for (name, rc) in names.into_iter().map(|name| (name, &rules[name])) {
     let severity = rc
       .severity
       .as_ref()
@@ -226,8 +231,8 @@ pub(crate) fn print_config(cli: &Cli, root: &RootConfig, file: &Path) -> Result<
   }
   let output = serde_json::json!({
       "file": file_str,
-      "rules": rules_json,
       "ignorePatterns": config.ignore_patterns,
+      "rules": rules_json,
   });
   println!("{}", serde_json::to_string_pretty(&output)?);
   Ok(())

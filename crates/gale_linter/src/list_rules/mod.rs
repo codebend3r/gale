@@ -341,7 +341,8 @@ impl KeyedList {
     ))
   }
 
-  /// The list of the first key that matches `key`.
+  /// The list of the first key, in the order the config wrote them, that
+  /// matches `key`.
   pub fn first(&self, key: &str) -> Option<&List> {
     self
       .0
@@ -595,6 +596,14 @@ mod tests {
     assert!(lists.first("margin-top").unwrap().matches("px"));
     assert_eq!(lists.matching("margin-top").count(), 2);
     assert!(lists.first("padding").is_none());
+
+    // The first key in the order written, as Stylelint's `find` takes it.
+    let options = serde_json::json!({ "margin-top": ["em"], "/^margin/": ["px"] });
+    let setting = Setting::new(&OBJECT_RULE, Some(&options));
+    let mut reader = setting.options();
+    let lists = KeyedList::read(&mut reader, "test-rule", Entries::Names).unwrap();
+    assert!(lists.first("margin-top").unwrap().matches("em"));
+    assert!(!lists.first("margin-top").unwrap().matches("px"));
   }
 
   #[test]

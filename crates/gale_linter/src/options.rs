@@ -142,8 +142,7 @@ pub fn stringify(value: &Value) -> String {
 }
 
 /// `JSON.stringify(value)`: numbers as JavaScript prints them (`1`, not
-/// `1.0`).  Objects list their keys in the order the config map holds them,
-/// which is sorted, where JavaScript keeps the order they were written in.
+/// `1.0`), and objects with their keys in the order they were written in.
 pub fn json_stringify(value: &Value) -> String {
   match value {
     Value::Null => "null".to_string(),
@@ -744,7 +743,7 @@ mod tests {
     assert_eq!(stringify(&json!(["a", 1])), "\"[\"a\",1]\"");
     assert_eq!(
       stringify(&json!({ "b": [1], "a": "x" })),
-      "\"{\"a\":\"x\",\"b\":[1]}\""
+      "\"{\"b\":[1],\"a\":\"x\"}\""
     );
     assert_eq!(stringify(&json!("/^a\\d/")), "\"/^a\\d/\"");
   }
