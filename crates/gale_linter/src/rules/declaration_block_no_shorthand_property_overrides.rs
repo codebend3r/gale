@@ -1,13 +1,37 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports when a shorthand property overrides a previously declared longhand property
-/// in the same declaration block.
-///
-/// Equivalent to Stylelint's `declaration-block-no-shorthand-property-overrides` rule.
-pub struct DeclarationBlockNoShorthandPropertyOverrides;
+const NAME: &str = "declaration-block-no-shorthand-property-overrides";
+
+declare_rule! {
+  /// Reports when a shorthand property overrides a previously declared longhand property
+  /// in the same declaration block.
+  ///
+  /// Equivalent to Stylelint's `declaration-block-no-shorthand-property-overrides` rule.
+  pub struct DeclarationBlockNoShorthandPropertyOverrides => DeclarationBlockNoShorthandPropertyOverridesCheck {
+    name: NAME,
+    description: "Disallow shorthand properties that override related longhand properties",
+    default_severity: Warning,
+  }
+}
+
+/// `declaration-block-no-shorthand-property-overrides`, which takes no options.
+pub struct DeclarationBlockNoShorthandPropertyOverridesCheck;
+
+impl DeclarationBlockNoShorthandPropertyOverridesCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Returns the list of longhand properties that a given shorthand expands to.
 fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
@@ -108,19 +132,7 @@ const SHORTHANDS: &[&str] = &[
   "text-decoration",
 ];
 
-impl Rule for DeclarationBlockNoShorthandPropertyOverrides {
-  fn name(&self) -> &'static str {
-    "declaration-block-no-shorthand-property-overrides"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow shorthand properties that override related longhand properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
   /// Flags a shorthand that appears after — and so silently overrides — a
   /// longhand it covers.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
@@ -142,10 +154,9 @@ impl Rule for DeclarationBlockNoShorthandPropertyOverrides {
           if seen_longhands.contains(&longhand) {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!("Unexpected shorthand \"{}\" after \"{}\"", prop, longhand,),
               )
-              .severity(self.default_severity())
               .span(Span::new(decl.span.offset, decl.span.length)),
             );
             // Only report the first overridden longhand per shorthand occurrence.
@@ -174,11 +185,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   #[test]
   fn reports_shorthand_overriding_longhand() {
-    let rule = DeclarationBlockNoShorthandPropertyOverrides;
+    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -206,7 +217,7 @@ mod tests {
 
   #[test]
   fn ignores_longhand_after_shorthand() {
-    let rule = DeclarationBlockNoShorthandPropertyOverrides;
+    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -232,7 +243,7 @@ mod tests {
 
   #[test]
   fn reports_font_shorthand_overriding_font_weight() {
-    let rule = DeclarationBlockNoShorthandPropertyOverrides;
+    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
     let node = CssNode::Style(StyleRule {
       selector: "h1".to_string(),
       declarations: vec![
@@ -256,5 +267,16 @@ mod tests {
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("\"font\""));
     assert!(diags[0].message.contains("\"font-weight\""));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"declaration-block-no-shorthand-property-overrides\""
+      ]
+    );
   }
 }

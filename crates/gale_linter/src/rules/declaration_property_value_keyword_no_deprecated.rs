@@ -1,8 +1,9 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
@@ -145,33 +146,43 @@ fn may_include_keyword(value: &str) -> bool {
   })
 }
 
-/// Disallow deprecated keywords for properties.
-///
-/// Equivalent to Stylelint's `declaration-property-value-keyword-no-deprecated`
-/// rule: deprecated keywords with a replacement (`overflow: overlay`,
-/// system colors such as `InactiveCaptionText`) are fixed to it in place;
-/// those without one (`text-decoration: blink`) are reported unfixed.
-pub struct DeclarationPropertyValueKeywordNoDeprecated;
+const NAME: &str = "declaration-property-value-keyword-no-deprecated";
 
-impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
-  fn name(&self) -> &'static str {
-    "declaration-property-value-keyword-no-deprecated"
+declare_rule! {
+  /// Disallow deprecated keywords for properties.
+  ///
+  /// Equivalent to Stylelint's `declaration-property-value-keyword-no-deprecated`
+  /// rule: deprecated keywords with a replacement (`overflow: overlay`,
+  /// system colors such as `InactiveCaptionText`) are fixed to it in place;
+  /// those without one (`text-decoration: blink`) are reported unfixed.
+  pub struct DeclarationPropertyValueKeywordNoDeprecated => DeclarationPropertyValueKeywordNoDeprecatedCheck {
+    name: NAME,
+    description: "Disallow deprecated keyword values for properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow deprecated keyword values for properties"
+/// `declaration-property-value-keyword-no-deprecated` as configured.
+pub struct DeclarationPropertyValueKeywordNoDeprecatedCheck {
+  /// `ignoreKeywords`, matched against the whole value.
+  ignore_keywords: Matchers,
+}
+
+impl DeclarationPropertyValueKeywordNoDeprecatedCheck {
+  /// Stylelint's options: `true`, then `ignoreKeywords`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_keywords = options.matchers("ignoreKeywords");
+    options.finish()?;
+    Ok(Self { ignore_keywords })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
   /// Flags deprecated value keywords, skipping values that match
   /// `ignoreKeywords`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreKeywords"));
     let mut diags = Vec::new();
     for &decl in ctx.written_declarations(node).iter() {
       if !may_include_keyword(decl.value) {
@@ -183,7 +194,7 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
         continue;
       }
       // Stylelint matches the whole value against `ignoreKeywords`.
-      if pattern::option_matches(ignore, decl.value) {
+      if self.ignore_keywords.matches(decl.value) {
         continue;
       }
       let Some(keywords) = keywords_for(&decl.prop.to_ascii_lowercase()) else {
@@ -213,13 +224,12 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
           Keywords::Rejected(rejected) if rejected.contains(&lower.as_str()) => {
             diags.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!(
                   "Unexpected deprecated keyword \"{}\" for property \"{}\"",
                   node.value, decl.prop
                 ),
               )
-              .severity(self.default_severity())
               .span(span),
             );
           }
@@ -227,10 +237,9 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
             if let Some((_, expected)) = replaced.iter().find(|(key, _)| *key == lower) {
               diags.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   format!("Expected \"{}\" to be \"{expected}\"", node.value),
                 )
-                .severity(self.default_severity())
                 .span(span)
                 .fix(Fix::new(
                   format!("Replace with \"{expected}\""),
@@ -250,9 +259,10 @@ impl Rule for DeclarationPropertyValueKeywordNoDeprecated {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "declaration-property-value-keyword-no-deprecated";
 
@@ -362,5 +372,28 @@ mod tests {
     let css = "a { overflow: overlay; }";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreKeywords": ["/^search/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"declaration-property-value-keyword-no-deprecated\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreKeywords": [1] }])),
+      [
+        "Invalid value \"1\" for option \"ignoreKeywords\" of rule \"declaration-property-value-keyword-no-deprecated\""
+      ]
+    );
   }
 }

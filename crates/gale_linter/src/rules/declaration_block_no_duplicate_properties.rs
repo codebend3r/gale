@@ -1,29 +1,75 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::{is_standard_syntax_property, is_standard_syntax_value};
 
-/// Disallow duplicate properties within declaration blocks.
-///
-/// Equivalent to Stylelint's `declaration-block-no-duplicate-properties`
-/// rule, autofix included: the fix removes the declaration that loses (the
-/// earlier one, or the later one when only the earlier is `!important`).
-/// Secondary options:
-///   - `ignore`: `consecutive-duplicates`,
-///     `consecutive-duplicates-with-different-values`,
-///     `consecutive-duplicates-with-different-syntaxes`,
-///     `consecutive-duplicates-with-same-prefixless-values`
-///   - `ignoreProperties`: names or `/regex/` entries
-///
-/// Each block (style rule, at-rule or the stylesheet itself) is checked on
-/// its own, as Stylelint's `eachDeclarationBlock` does, over the
-/// [`PostcssTree`] of the source so values compare as PostCSS reads them.
-/// Custom properties, `src`, and SCSS/Less variables and interpolated
-/// properties are never duplicates.
-pub struct DeclarationBlockNoDuplicateProperties;
+const NAME: &str = "declaration-block-no-duplicate-properties";
+
+declare_rule! {
+  /// Disallow duplicate properties within declaration blocks.
+  ///
+  /// Equivalent to Stylelint's `declaration-block-no-duplicate-properties`
+  /// rule, autofix included: the fix removes the declaration that loses (the
+  /// earlier one, or the later one when only the earlier is `!important`).
+  /// Secondary options:
+  ///   - `ignore`: `consecutive-duplicates`,
+  ///     `consecutive-duplicates-with-different-values`,
+  ///     `consecutive-duplicates-with-different-syntaxes`,
+  ///     `consecutive-duplicates-with-same-prefixless-values`
+  ///   - `ignoreProperties`: names or `/regex/` entries
+  ///
+  /// Each block (style rule, at-rule or the stylesheet itself) is checked on
+  /// its own, as Stylelint's `eachDeclarationBlock` does, over the
+  /// [`PostcssTree`] of the source so values compare as PostCSS reads them.
+  /// Custom properties, `src`, and SCSS/Less variables and interpolated
+  /// properties are never duplicates.
+  pub struct DeclarationBlockNoDuplicateProperties => DeclarationBlockNoDuplicatePropertiesCheck {
+    name: NAME,
+    description: "Disallow duplicate properties within declaration blocks",
+    default_severity: Warning,
+  }
+}
+
+/// `declaration-block-no-duplicate-properties` as configured.
+pub struct DeclarationBlockNoDuplicatePropertiesCheck {
+  /// The `ignore` flags.
+  ignore: Ignore,
+  /// `ignoreProperties`.
+  ignore_properties: Matchers,
+}
+
+impl DeclarationBlockNoDuplicatePropertiesCheck {
+  /// Stylelint's options: `true`, then `ignore` and `ignoreProperties`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "consecutive-duplicates",
+        "consecutive-duplicates-with-different-values",
+        "consecutive-duplicates-with-different-syntaxes",
+        "consecutive-duplicates-with-same-prefixless-values",
+      ],
+    );
+    let ignore_properties = options.matchers("ignoreProperties");
+    options.finish()?;
+    Ok(Self {
+      ignore: Ignore {
+        consecutive: ignore.contains(&"consecutive-duplicates"),
+        different_values: ignore.contains(&"consecutive-duplicates-with-different-values"),
+        different_syntaxes: ignore.contains(&"consecutive-duplicates-with-different-syntaxes"),
+        same_prefixless_values: ignore
+          .contains(&"consecutive-duplicates-with-same-prefixless-values"),
+      },
+      ignore_properties,
+    })
+  }
+}
 
 /// The `ignore` flags that change how consecutive duplicates are treated.
 #[derive(Debug, Clone, Copy, Default)]
@@ -38,46 +84,14 @@ struct Ignore {
   same_prefixless_values: bool,
 }
 
-impl Rule for DeclarationBlockNoDuplicateProperties {
-  fn name(&self) -> &'static str {
-    "declaration-block-no-duplicate-properties"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow duplicate properties within declaration blocks"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationBlockNoDuplicatePropertiesCheck {
   /// Checks the declarations of every block in the document.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let secondary = ctx.secondary_options();
-    let ignore_option = secondary.and_then(|s| s.get("ignore"));
-    let ignore = Ignore {
-      consecutive: option_matches(ignore_option, "consecutive-duplicates"),
-      different_values: option_matches(
-        ignore_option,
-        "consecutive-duplicates-with-different-values",
-      ),
-      different_syntaxes: option_matches(
-        ignore_option,
-        "consecutive-duplicates-with-different-syntaxes",
-      ),
-      same_prefixless_values: option_matches(
-        ignore_option,
-        "consecutive-duplicates-with-same-prefixless-values",
-      ),
-    };
-    let ignore_properties = secondary.and_then(|s| s.get("ignoreProperties"));
-
     let tree = ctx.postcss_tree();
     let mut checker = Checker {
-      rule: self,
       tree: &tree,
-      ignore,
-      ignore_properties,
+      ignore: self.ignore,
+      ignore_properties: &self.ignore_properties,
       diags: Vec::new(),
     };
     checker.check_block(&tree.root);
@@ -110,10 +124,9 @@ fn is_walked(tree: &PostcssTree, i: usize) -> bool {
 
 /// The state of one run of the rule over a tree.
 struct Checker<'a, 't> {
-  rule: &'a DeclarationBlockNoDuplicateProperties,
   tree: &'a PostcssTree<'t>,
   ignore: Ignore,
-  ignore_properties: Option<&'a serde_json::Value>,
+  ignore_properties: &'a Matchers,
   diags: Vec<Diagnostic>,
 }
 
@@ -133,7 +146,7 @@ impl Checker<'_, '_> {
       let lower_prop = prop.to_ascii_lowercase();
       if !is_standard_syntax_property(prop)
         || prop.starts_with("--")
-        || option_matches(self.ignore_properties, prop)
+        || self.ignore_properties.matches(prop)
         || lower_prop == "src"
       {
         continue;
@@ -217,13 +230,9 @@ impl Checker<'_, '_> {
       .map(|range| Edit::new(Span::from_range(range.start, range.end), String::new()))
       .collect();
     self.diags.push(
-      Diagnostic::new(
-        self.rule.name(),
-        format!("Unexpected duplicate \"{}\"", n.name),
-      )
-      .severity(self.rule.default_severity())
-      .span(Span::new(n.start, n.name.len().min(n.end - n.start)))
-      .fix(Fix::new("Remove the duplicate declaration", edits)),
+      Diagnostic::new(NAME, format!("Unexpected duplicate \"{}\"", n.name))
+        .span(Span::new(n.start, n.name.len().min(n.end - n.start)))
+        .fix(Fix::new("Remove the duplicate declaration", edits)),
     );
   }
 }
@@ -803,14 +812,14 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   const RULE: &str = "declaration-block-no-duplicate-properties";
 
   /// The offsets reported for `source` in `syntax` with `options`.
   fn offsets(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<usize> {
-    let ctx = context(source, syntax, &options);
-    DeclarationBlockNoDuplicateProperties
+    let ctx = context(source, syntax, &serde_json::Value::Null);
+    configured(&DeclarationBlockNoDuplicateProperties, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.span.offset)
@@ -1056,5 +1065,37 @@ mod tests {
     assert_eq!(unprefixed("fit-content"), "fit-content");
     assert_eq!(unprefixed("--x"), "--x");
     assert_eq!(unprefixed("-1px"), "-1px");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, {
+          "ignore": [
+            "consecutive-duplicates",
+            "consecutive-duplicates-with-different-values",
+            "consecutive-duplicates-with-different-syntaxes",
+            "consecutive-duplicates-with-same-prefixless-values"
+          ],
+          "ignoreProperties": ["color", "/^back/"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"declaration-block-no-duplicate-properties\""]
+    );
+    assert_eq!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, { "ignore": ["duplicates"] }])
+      ),
+      [
+        "Invalid value \"duplicates\" for option \"ignore\" of rule \"declaration-block-no-duplicate-properties\""
+      ]
+    );
   }
 }

@@ -1,42 +1,90 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
+use serde_json::{Map, Value};
 
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Matchers, Setting};
 use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of values in a declaration for specific properties.
-///
-/// Options: an object mapping property names (or patterns) to maximum
-/// allowed value counts.
-/// Example: `{"border": 2, "/^margin/": 1}`
-///
-/// v17: Properties are checked as-is (no vendor prefix stripping).
-/// E.g. `{ "border": 2 }` does NOT match `-webkit-border`.
-///
-/// Equivalent to Stylelint's `declaration-property-max-values` rule.
-pub struct DeclarationPropertyMaxValues;
+const NAME: &str = "declaration-property-max-values";
 
-impl Rule for DeclarationPropertyMaxValues {
-  fn name(&self) -> &'static str {
-    "declaration-property-max-values"
+declare_rule! {
+  /// Limit the number of values in a declaration for specific properties.
+  ///
+  /// Options: an object mapping property names (or patterns) to maximum
+  /// allowed value counts.
+  /// Example: `{"border": 2, "/^margin/": 1}`
+  ///
+  /// v17: Properties are checked as-is (no vendor prefix stripping).
+  /// E.g. `{ "border": 2 }` does NOT match `-webkit-border`.
+  ///
+  /// Equivalent to Stylelint's `declaration-property-max-values` rule.
+  pub struct DeclarationPropertyMaxValues => DeclarationPropertyMaxValuesCheck {
+    name: NAME,
+    description: "Limit the number of values for properties",
+    default_severity: Warning,
+  }
+}
+
+/// `declaration-property-max-values` as configured.
+pub struct DeclarationPropertyMaxValuesCheck {
+  /// The limits keyed by lowercase property name.
+  exact: HashMap<String, usize>,
+  /// The limits keyed by a `/regex/` literal, in the order the config
+  /// lists them.
+  patterns: Vec<(Matchers, usize)>,
+}
+
+impl DeclarationPropertyMaxValuesCheck {
+  /// Stylelint's option: an object from property names (or `/regex/`
+  /// literals) to whole numbers of zero or more
+  /// (`validateObjectWithProps(isNonNegativeInteger)`).
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let limits = match options.primary_object() {
+      Some(map) if map.values().all(|v| Accept::NonNegativeInteger.accepts(v)) => {
+        parse_options(map)
+      }
+      Some(map) => {
+        options.report(InvalidOption::value(NAME, &Value::Object(map.clone())));
+        Vec::new()
+      }
+      None => Vec::new(),
+    };
+    options.finish()?;
+    let mut exact = HashMap::new();
+    let mut patterns = Vec::new();
+    for (key, max) in limits {
+      if pattern::split_literal(&key).is_some() {
+        patterns.push((Matchers::new(&[key]), max));
+      } else {
+        exact.insert(key, max);
+      }
+    }
+    Ok(Self { exact, patterns })
   }
 
-  fn description(&self) -> &'static str {
-    "Limit the number of values for properties"
+  /// The limit for a lowercase property: an exact entry first, then the
+  /// first `/regex/` entry that matches.
+  fn limit_for(&self, prop: &str) -> Option<usize> {
+    self.exact.get(prop).copied().or_else(|| {
+      self
+        .patterns
+        .iter()
+        .find(|(matcher, _)| matcher.matches(prop))
+        .map(|&(_, max)| max)
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationPropertyMaxValuesCheck {
   /// Flags declarations holding more values than the config allows for that
   /// property. Property names are matched as written, without prefix stripping.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let limits = parse_options(ctx.primary_option());
-
-    if limits.is_empty() {
+  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    if self.exact.is_empty() && self.patterns.is_empty() {
       return vec![];
     }
 
@@ -51,7 +99,7 @@ impl Rule for DeclarationPropertyMaxValues {
       let prop_lower = decl.property.to_ascii_lowercase();
 
       // v17: check property as-is, no vendor prefix stripping
-      let max = find_matching_limit(&prop_lower, &limits);
+      let max = self.limit_for(&prop_lower);
       let Some(max_values) = max else {
         continue;
       };
@@ -60,14 +108,13 @@ impl Rule for DeclarationPropertyMaxValues {
       if value_count > max_values {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Expected no more than {max_values} value(s) for property \
                              \"{}\", found {value_count}",
               decl.property,
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -76,38 +123,12 @@ impl Rule for DeclarationPropertyMaxValues {
   }
 }
 
-/// Parse the primary option into a map of property patterns to max values.
-fn parse_options(options: Option<&serde_json::Value>) -> HashMap<String, usize> {
-  let Some(val) = options else {
-    return HashMap::new();
-  };
-  let Some(obj) = val.as_object() else {
-    return HashMap::new();
-  };
-  let mut map = HashMap::new();
-  for (prop, max_val) in obj {
-    if let Some(n) = max_val.as_u64() {
-      map.insert(prop.to_ascii_lowercase(), n as usize);
-    } else if let Some(n) = max_val.as_i64() {
-      map.insert(prop.to_ascii_lowercase(), n.max(0) as usize);
-    }
-  }
+/// The limits the option sets, with lowercase property names.
+fn parse_options(map: &Map<String, Value>) -> Vec<(String, usize)> {
   map
-}
-
-/// Find the matching limit for a property, checking exact matches and regex patterns.
-fn find_matching_limit(prop: &str, limits: &HashMap<String, usize>) -> Option<usize> {
-  // Exact match first
-  if let Some(&max) = limits.get(prop) {
-    return Some(max);
-  }
-  // Check regex patterns (keys starting and ending with `/`)
-  for (key, &max) in limits {
-    if pattern::match_regex_entry(key, prop) == Some(true) {
-      return Some(max);
-    }
-  }
-  None
+    .iter()
+    .filter_map(|(prop, max)| Some((prop.to_ascii_lowercase(), max.as_f64()? as usize)))
+    .collect()
 }
 
 /// Count the number of space-separated values in a CSS value string.
@@ -153,7 +174,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_options;
+  use crate::testing::{configured, ctx_with_options, invalid_options};
 
   fn style_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -172,7 +193,8 @@ mod tests {
   #[test]
   fn flags_excess_values() {
     let opts = serde_json::json!({"border": 2});
-    let d = DeclarationPropertyMaxValues.check(
+    let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
+    let d = rule.check(
       &style_decl("border", "1px solid red"),
       &ctx_with_options(&opts),
     );
@@ -183,7 +205,8 @@ mod tests {
   #[test]
   fn allows_within_limit() {
     let opts = serde_json::json!({"border": 3});
-    let d = DeclarationPropertyMaxValues.check(
+    let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
+    let d = rule.check(
       &style_decl("border", "1px solid red"),
       &ctx_with_options(&opts),
     );
@@ -194,7 +217,8 @@ mod tests {
   fn does_not_match_vendor_prefixed_property() {
     // v17: "border" limit should NOT match "-webkit-border"
     let opts = serde_json::json!({"border": 1});
-    let d = DeclarationPropertyMaxValues.check(
+    let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
+    let d = rule.check(
       &style_decl("-webkit-border", "1px solid red"),
       &ctx_with_options(&opts),
     );
@@ -207,7 +231,8 @@ mod tests {
   #[test]
   fn matches_vendor_prefixed_when_explicitly_specified() {
     let opts = serde_json::json!({"-webkit-border": 1});
-    let d = DeclarationPropertyMaxValues.check(
+    let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
+    let d = rule.check(
       &style_decl("-webkit-border", "1px solid red"),
       &ctx_with_options(&opts),
     );
@@ -217,7 +242,8 @@ mod tests {
   #[test]
   fn function_args_count_as_one_value() {
     let opts = serde_json::json!({"background": 1});
-    let d = DeclarationPropertyMaxValues.check(
+    let rule = configured(&DeclarationPropertyMaxValues, opts.clone());
+    let d = rule.check(
       &style_decl("background", "rgb(0, 0, 0)"),
       &ctx_with_options(&opts),
     );
@@ -233,5 +259,36 @@ mod tests {
     assert_eq!(count_values("1px"), 1);
     assert_eq!(count_values("rgb(0, 0, 0) 1px"), 2);
     assert_eq!(count_values(""), 0);
+  }
+
+  #[test]
+  fn regex_keys_match_by_search() {
+    let rule = configured(
+      &DeclarationPropertyMaxValues,
+      serde_json::json!([{ "/^margin/": 1 }]),
+    );
+    let ctx = ctx_with_options(&serde_json::Value::Null);
+    assert_eq!(
+      rule.check(&style_decl("margin-top", "1px 2px"), &ctx).len(),
+      1
+    );
+    assert!(
+      rule
+        .check(&style_decl("padding", "1px 2px"), &ctx)
+        .is_empty()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!({ "border": 2, "/^margin/": 0 })).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!({ "border": -1 })),
+      ["Invalid option value \"{\"border\":-1}\" for rule \"declaration-property-max-values\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("border")),
+      ["Invalid option value \"border\" for rule \"declaration-property-max-values\""]
+    );
   }
 }

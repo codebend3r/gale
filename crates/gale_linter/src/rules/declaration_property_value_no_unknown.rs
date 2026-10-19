@@ -1,19 +1,98 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
+use serde_json::Value;
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow unknown values for known properties.
-///
-/// This is a conservative first implementation that checks a small set of
-/// properties with well-defined keyword values. It intentionally skips
-/// validation for:
-/// - Values containing `var()`, `env()`, or other function calls
-/// - Custom properties (`--*`)
-/// - Values with CSS-wide keywords (`inherit`, `initial`, `unset`, `revert`, `revert-layer`)
-///
-/// Equivalent to Stylelint's `declaration-property-value-no-unknown` rule.
-pub struct DeclarationPropertyValueNoUnknown;
+const NAME: &str = "declaration-property-value-no-unknown";
+
+declare_rule! {
+  /// Disallow unknown values for known properties.
+  ///
+  /// This is a conservative first implementation that checks a small set of
+  /// properties with well-defined keyword values. It intentionally skips
+  /// validation for:
+  /// - Values containing `var()`, `env()`, or other function calls
+  /// - Custom properties (`--*`)
+  /// - Values with CSS-wide keywords (`inherit`, `initial`, `unset`, `revert`, `revert-layer`)
+  ///
+  /// Equivalent to Stylelint's `declaration-property-value-no-unknown` rule.
+  pub struct DeclarationPropertyValueNoUnknown => DeclarationPropertyValueNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown values for known properties",
+    default_severity: Error,
+  }
+}
+
+/// `declaration-property-value-no-unknown` as configured.
+pub struct DeclarationPropertyValueNoUnknownCheck {
+  /// `ignoreProperties`: for each property name (or `/regex/`), the values
+  /// (names or `/regex/` entries) that are not checked.
+  ignore_properties: Vec<(Matchers, Matchers)>,
+}
+
+impl DeclarationPropertyValueNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreProperties` (an object of
+  /// value lists), `propertiesSyntax` and `typesSyntax` (objects of
+  /// strings).  Gale accepts but does not apply the two syntax options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_properties = options.value(
+      "ignoreProperties",
+      &[Accept::Test(is_object_of_string_lists)],
+    );
+    options.value("propertiesSyntax", &[Accept::Test(is_object_of_strings)]);
+    options.value("typesSyntax", &[Accept::Test(is_object_of_strings)]);
+    let ignore_properties = ignore_properties
+      .and_then(Value::as_object)
+      .map(|map| {
+        map
+          .iter()
+          .map(|(prop, values)| {
+            let values: Vec<&str> = match values {
+              Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+              other => other.as_str().into_iter().collect(),
+            };
+            (Matchers::new(&[prop]), Matchers::new(&values))
+          })
+          .collect()
+      })
+      .unwrap_or_default();
+    options.finish()?;
+    Ok(Self { ignore_properties })
+  }
+
+  /// Stylelint's `optionsMatchesEntry`: the first `ignoreProperties` entry
+  /// naming the property decides whether its value is ignored.
+  fn is_ignored(&self, prop: &str, value: &str) -> bool {
+    self
+      .ignore_properties
+      .iter()
+      .find(|(names, _)| names.matches(prop))
+      .is_some_and(|(_, values)| values.matches(value))
+  }
+}
+
+/// `validateObjectWithArrayProps(isString, isRegExp)`: an object whose
+/// values are each a string or a list of strings.
+fn is_object_of_string_lists(value: &Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map.values().all(|item| match item {
+      Value::Array(items) => items.iter().all(Value::is_string),
+      other => other.is_string(),
+    })
+  })
+}
+
+/// `validateObjectWithProps(isString)`: an object whose values are strings.
+fn is_object_of_strings(value: &Value) -> bool {
+  value
+    .as_object()
+    .is_some_and(|map| map.values().all(Value::is_string))
+}
 
 /// CSS-wide keywords valid for any property.
 const CSS_WIDE_KEYWORDS: &[&str] = &["inherit", "initial", "revert", "revert-layer", "unset"];
@@ -72,19 +151,7 @@ const POSITION_KEYWORDS: &[&str] = &["absolute", "fixed", "relative", "static", 
 /// Valid keywords for the `float` property.
 const FLOAT_KEYWORDS: &[&str] = &["inline-end", "inline-start", "left", "none", "right"];
 
-impl Rule for DeclarationPropertyValueNoUnknown {
-  fn name(&self) -> &'static str {
-    "declaration-property-value-no-unknown"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown values for known properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for DeclarationPropertyValueNoUnknownCheck {
   /// Checks each declaration in a style rule, or a bare declaration.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let decls: Vec<&gale_css_parser::Declaration> = match node {
@@ -94,13 +161,16 @@ impl Rule for DeclarationPropertyValueNoUnknown {
     };
     let mut all_diags = Vec::new();
     for decl in decls {
+      if self.is_ignored(&decl.property, decl.value.trim()) {
+        continue;
+      }
       all_diags.extend(self.check_decl(decl));
     }
     all_diags
   }
 }
 
-impl DeclarationPropertyValueNoUnknown {
+impl DeclarationPropertyValueNoUnknownCheck {
   /// Flags a value keyword the property does not accept. Custom properties and
   /// values containing function calls are skipped as unverifiable.
   fn check_decl(&self, decl: &gale_css_parser::Declaration) -> Vec<Diagnostic> {
@@ -161,14 +231,13 @@ impl DeclarationPropertyValueNoUnknown {
       if tokens.len() != 1 {
         return vec![
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected unknown value \"{}\" for property \"{}\"",
               decl.value.trim(),
               decl.property
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         ];
       }
@@ -176,14 +245,13 @@ impl DeclarationPropertyValueNoUnknown {
         let val_off = decl.span.offset + decl.property.len() + 2;
         return vec![
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected unknown value \"{}\" for property \"{}\"",
               decl.value.trim(),
               decl.property
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(val_off, decl.value.trim().len())),
         ];
       }
@@ -201,14 +269,13 @@ impl DeclarationPropertyValueNoUnknown {
     if tokens.len() == 1 && !keywords.contains(&tokens[0]) && !known_since_17 {
       return vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!(
             "Unexpected unknown value \"{}\" for property \"{}\"",
             decl.value.trim(),
             decl.property
           ),
         )
-        .severity(self.default_severity())
         .span({
           // Point to the value, not the whole declaration.
           // Find ": " after the property name within the span.
@@ -251,7 +318,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn decl(property: &str, value: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -266,6 +333,7 @@ mod tests {
 
   #[test]
   fn allows_valid_display_values() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &[
       "block",
       "inline",
@@ -280,13 +348,14 @@ mod tests {
       "flow-root",
       "list-item",
     ] {
-      let d = DeclarationPropertyValueNoUnknown.check(&decl("display", kw), &ctx());
+      let d = rule.check(&decl("display", kw), &ctx());
       assert!(d.is_empty(), "Expected '{}' to be valid for display", kw);
     }
   }
 
   #[test]
   fn allows_legacy_vendor_display_values() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     // docusaurus: `display: -webkit-box` for line clamping.
     for value in [
       "-webkit-box",
@@ -294,16 +363,17 @@ mod tests {
       "-moz-inline-stack",
       "flow",
     ] {
-      let d = DeclarationPropertyValueNoUnknown.check(&decl("display", value), &ctx());
+      let d = rule.check(&decl("display", value), &ctx());
       assert!(d.is_empty(), "{value}");
     }
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("display", "-ms-flexbox"), &ctx());
+    let d = rule.check(&decl("display", "-ms-flexbox"), &ctx());
     assert_eq!(d.len(), 1, "css-tree does not know -ms-flexbox");
   }
 
   #[test]
   fn reports_invalid_display_value() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("display", "banana"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("display", "banana"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("banana"));
     assert!(d[0].message.contains("display"));
@@ -311,15 +381,17 @@ mod tests {
 
   #[test]
   fn allows_css_wide_keywords_for_display() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["inherit", "initial", "unset", "revert", "revert-layer"] {
-      let d = DeclarationPropertyValueNoUnknown.check(&decl("display", kw), &ctx());
+      let d = rule.check(&decl("display", kw), &ctx());
       assert!(d.is_empty(), "Expected '{}' to be valid for display", kw);
     }
   }
 
   #[test]
   fn skips_display_with_var() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("display", "var(--my-display)"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("display", "var(--my-display)"), &ctx());
     assert!(d.is_empty());
   }
 
@@ -327,15 +399,17 @@ mod tests {
 
   #[test]
   fn allows_valid_position_values() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["static", "relative", "absolute", "fixed", "sticky"] {
-      let d = DeclarationPropertyValueNoUnknown.check(&decl("position", kw), &ctx());
+      let d = rule.check(&decl("position", kw), &ctx());
       assert!(d.is_empty(), "Expected '{}' to be valid for position", kw);
     }
   }
 
   #[test]
   fn reports_invalid_position_value() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("position", "floating"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("position", "floating"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("floating"));
     assert!(d[0].message.contains("position"));
@@ -345,15 +419,17 @@ mod tests {
 
   #[test]
   fn allows_valid_float_values() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["left", "right", "none", "inline-start", "inline-end"] {
-      let d = DeclarationPropertyValueNoUnknown.check(&decl("float", kw), &ctx());
+      let d = rule.check(&decl("float", kw), &ctx());
       assert!(d.is_empty(), "Expected '{}' to be valid for float", kw);
     }
   }
 
   #[test]
   fn reports_invalid_float_value() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("float", "center"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("float", "center"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("center"));
     assert!(d[0].message.contains("float"));
@@ -363,34 +439,77 @@ mod tests {
 
   #[test]
   fn skips_custom_properties() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("--my-prop", "anything"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("--my-prop", "anything"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_unknown_properties() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     // We don't validate properties we don't have keyword lists for
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("color", "banana"), &ctx());
+    let d = rule.check(&decl("color", "banana"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_values_with_env() {
-    let d =
-      DeclarationPropertyValueNoUnknown.check(&decl("display", "env(safe-area-inset-top)"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("display", "env(safe-area-inset-top)"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_multi_token_display() {
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     // CSS Display Level 3 multi-keyword syntax
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("display", "inline flex"), &ctx());
+    let d = rule.check(&decl("display", "inline flex"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_multiple_tokens_for_position() {
-    let d = DeclarationPropertyValueNoUnknown.check(&decl("position", "absolute fixed"), &ctx());
+    let rule = configured(&DeclarationPropertyValueNoUnknown, None);
+    let d = rule.check(&decl("position", "absolute fixed"), &ctx());
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn ignore_properties_skips_listed_values() {
+    let rule = configured(
+      &DeclarationPropertyValueNoUnknown,
+      serde_json::json!([true, { "ignoreProperties": { "/^disp/": ["/^fancy/"], "float": "middle" } }]),
+    );
+    assert!(rule.check(&decl("display", "fancy-box"), &ctx()).is_empty());
+    assert!(rule.check(&decl("float", "middle"), &ctx()).is_empty());
+    assert_eq!(rule.check(&decl("display", "plain-box"), &ctx()).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, {
+          "ignoreProperties": { "display": ["x"], "/^float/": "y" },
+          "propertiesSyntax": { "size": "<length>" },
+          "typesSyntax": { "my-type": "<number>" }
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"declaration-property-value-no-unknown\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "propertiesSyntax": { "size": 1 } }])
+      ),
+      [
+        "Invalid value \"{\"size\":1}\" for option \"propertiesSyntax\" of rule \"declaration-property-value-no-unknown\""
+      ]
+    );
   }
 }

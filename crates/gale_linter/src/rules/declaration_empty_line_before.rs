@@ -1,45 +1,85 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity};
+use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before declarations.
-///
-/// Equivalent to Stylelint's `declaration-empty-line-before` rule, autofix
-/// included.  Primary option `"always"` or `"never"`; secondary options:
-///   - `except`: `after-comment`, `after-declaration`, `first-nested`,
-///     `after-block`
-///   - `ignore`: `after-comment`, `after-declaration`, `first-nested`,
-///     `inside-single-line-block`
-///
-/// Custom properties are left to `custom-property-empty-line-before`, and
-/// SCSS/Less variables are not declarations to Stylelint.  Works on the
-/// [`PostcssTree`] of the source, so comments and multi-line values read
-/// as Stylelint reads them.
-pub struct DeclarationEmptyLineBefore;
+const NAME: &str = "declaration-empty-line-before";
 
-impl Rule for DeclarationEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "declaration-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before declarations.
+  ///
+  /// Equivalent to Stylelint's `declaration-empty-line-before` rule, autofix
+  /// included.  Primary option `"always"` or `"never"`; secondary options:
+  ///   - `except`: `after-comment`, `after-declaration`, `first-nested`,
+  ///     `after-block`
+  ///   - `ignore`: `after-comment`, `after-declaration`, `first-nested`,
+  ///     `inside-single-line-block`
+  ///
+  /// Custom properties are left to `custom-property-empty-line-before`, and
+  /// SCSS/Less variables are not declarations to Stylelint.  Works on the
+  /// [`PostcssTree`] of the source, so comments and multi-line values read
+  /// as Stylelint reads them.
+  pub struct DeclarationEmptyLineBefore => DeclarationEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before declarations"
+/// `declaration-empty-line-before` as configured.
+pub struct DeclarationEmptyLineBeforeCheck {
+  /// `"always"` rather than `"never"`.  Gale has read no option as
+  /// `"never"` here.
+  always: bool,
+  /// The `except` keywords.
+  except: Vec<&'static str>,
+  /// The `ignore` keywords.
+  ignore: Vec<&'static str>,
+}
+
+impl DeclarationEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"` or `"never"`, then `except` and
+  /// `ignore`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    let except = options.keywords(
+      "except",
+      &[
+        "first-nested",
+        "after-block",
+        "after-comment",
+        "after-declaration",
+      ],
+    );
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "after-comment",
+        "after-declaration",
+        "first-nested",
+        "inside-single-line-block",
+      ],
+    );
+    options.finish()?;
+    Ok(Self {
+      always: expectation == Some("always"),
+      except,
+      ignore,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationEmptyLineBeforeCheck {
   /// Checks every declaration in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let always = ctx.primary_option_str() == Some("always");
-    let secondary = ctx.secondary_options();
-    let except = |name: &str| option_matches(secondary.and_then(|s| s.get("except")), name);
-    let ignore = |name: &str| option_matches(secondary.and_then(|s| s.get("ignore")), name);
+    let always = self.always;
+    let except = |name: &str| self.except.contains(&name);
+    let ignore = |name: &str| self.ignore.contains(&name);
     let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
@@ -73,8 +113,8 @@ impl Rule for DeclarationEmptyLineBefore {
         continue;
       }
       diags.push(empty_line_report(
-        self.name(),
-        self.default_severity(),
+        NAME,
+        DeclarationEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -103,12 +143,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &options);
-    DeclarationEmptyLineBefore
+    let ctx = context(source, syntax, &serde_json::Value::Null);
+    configured(&DeclarationEmptyLineBefore, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -224,6 +264,33 @@ mod tests {
         Syntax::Css,
       ),
       "a {\n\n  color: red;\n\n  *zoom: 1;\n}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", {
+          "except": ["first-nested", "after-block", "after-comment", "after-declaration"],
+          "ignore": ["after-comment", "after-declaration", "first-nested", "inside-single-line-block"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"declaration-empty-line-before\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignore": ["after-block"] }])
+      ),
+      [
+        "Invalid value \"after-block\" for option \"ignore\" of rule \"declaration-empty-line-before\""
+      ]
     );
   }
 }
