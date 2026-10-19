@@ -24,24 +24,53 @@ use crate::pattern;
 use crate::registry::{RuleRegistry, resolve_deprecated_alias};
 use crate::rule::{Check, Rule, RuleContext, secondary_options_of};
 
-/// Apply the secondary options every Stylelint rule accepts, whatever the
-/// rule itself does with its options:
-///
-/// - `message` replaces the warning text,
-/// - `url` attaches a documentation link to the warning,
-/// - `disableFix: true` keeps the report but drops its autofix.
-fn apply_secondary_options(diag: &mut Diagnostic, options: Option<&serde_json::Value>) {
-  let Some(secondary) = options.and_then(secondary_options_of) else {
-    return;
-  };
-  if let Some(message) = secondary.get("message").and_then(|v| v.as_str()) {
-    crate::custom_message::apply(diag, message);
+/// The secondary options every Stylelint rule accepts, whatever the rule
+/// itself does with its options, read once from a rule's setting.
+#[derive(Debug, Clone, Default)]
+struct CommonOptions {
+  /// `message`, which replaces the warning text.
+  message: Option<String>,
+  /// `url`, a documentation link attached to the warning.
+  url: Option<String>,
+  /// `disableFix: true`, which keeps the report but drops its autofix.
+  disable_fix: bool,
+  /// `reportDisables: true`, which reports every comment disabling the rule.
+  report_disables: bool,
+}
+
+impl CommonOptions {
+  /// The common options in `options`, a rule's setting as the config wrote
+  /// it.
+  fn of(options: Option<&serde_json::Value>) -> Self {
+    let Some(secondary) = options.and_then(secondary_options_of) else {
+      return Self::default();
+    };
+    let text = |key: &str| {
+      secondary
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    };
+    let flag = |key: &str| secondary.get(key).and_then(|v| v.as_bool()) == Some(true);
+    Self {
+      message: text("message"),
+      url: text("url"),
+      disable_fix: flag("disableFix"),
+      report_disables: flag("reportDisables"),
+    }
   }
-  if let Some(url) = secondary.get("url").and_then(|v| v.as_str()) {
-    diag.url = Some(url.to_string());
-  }
-  if secondary.get("disableFix").and_then(|v| v.as_bool()) == Some(true) {
-    diag.fix = None;
+
+  /// Apply the options to one of the rule's problems.
+  fn apply(&self, diag: &mut Diagnostic) {
+    if let Some(message) = &self.message {
+      crate::custom_message::apply(diag, message);
+    }
+    if let Some(url) = &self.url {
+      diag.url = Some(url.clone());
+    }
+    if self.disable_fix {
+      diag.fix = None;
+    }
   }
 }
 
@@ -211,14 +240,17 @@ struct ActiveRule {
   rule: &'static dyn Rule,
   /// The name the config used, under which problems are reported.
   config_name: String,
-  /// The options as the config wrote them, which the runner reads the
-  /// secondary options every rule accepts from (and legacy rules read
-  /// theirs from on every node).
+  /// LEGACY: the options as the config wrote them, which legacy rules read
+  /// on every node.
   options: Option<serde_json::Value>,
+  /// The secondary options every rule accepts.
+  common: CommonOptions,
+  /// The severity every problem of the rule is given: the config's for the
+  /// rule, else its `defaultSeverity`, else the rule's own default.  `None`
+  /// leaves the severity a legacy rule set itself.
   severity: Option<Severity>,
   /// The rule configured with its options, once for the whole set; `None`
-  /// until configured, and for a rule whose options are invalid, which does
-  /// not run.
+  /// for a rule whose options are invalid, which does not run.
   check: Option<Box<dyn Check>>,
 }
 
@@ -237,9 +269,10 @@ pub struct RuleSet {
   configured: HashSet<String>,
   /// The rule names configured with `reportDisables: true`.
   forbids_disable: HashSet<String>,
-  /// Regex literals in the options that do not compile, as invalid-option
-  /// texts; found once rather than per file.
-  invalid_patterns: Vec<String>,
+  /// The problems with the rules' options, as invalid-option texts, each
+  /// once: those that keep a rule from running, and regex literals that do
+  /// not compile.  Found when the set is built and reported on every file.
+  invalid_options: Vec<String>,
   disables: DisableOptions,
   default_severity: Option<Severity>,
   env: LintEnv,
@@ -277,13 +310,8 @@ impl RuleSet {
 
     for setting in settings {
       configured.insert(canonical(&setting.name).to_string());
-      let forbids = setting
-        .options
-        .as_ref()
-        .and_then(secondary_options_of)
-        .and_then(|s| s.get("reportDisables"))
-        .and_then(|v| v.as_bool())
-        == Some(true);
+      let common = CommonOptions::of(setting.options.as_ref());
+      let forbids = common.report_disables;
       let Some(rule) = registry.get(&setting.name) else {
         if forbids {
           forbids_disable.insert(setting.name.clone());
@@ -300,11 +328,15 @@ impl RuleSet {
         forbids_disable.insert(rule.name().to_string());
         forbids_disable.insert(setting.name.clone());
       }
+      // A legacy rule sets its problems' severity itself; any other is
+      // given its default here.
+      let fallback = (!rule.is_legacy()).then(|| rule.default_severity());
       let active = ActiveRule {
         rule,
         config_name: setting.name,
         options: setting.options,
-        severity: setting.severity,
+        common,
+        severity: setting.severity.or(default_severity).or(fallback),
         check: None,
       };
       match by_name.get(rule.name()) {
@@ -322,9 +354,15 @@ impl RuleSet {
       }
     }
 
-    let mut invalid_patterns: Vec<String> = Vec::new();
+    let mut invalid_options: Vec<String> = Vec::new();
+    let mut report = |text: String| {
+      if !invalid_options.contains(&text) {
+        invalid_options.push(text);
+      }
+    };
     for active in &mut rules {
-      // Each rule is configured once here, for every file the set lints.
+      // Each rule is configured once here, for every file the set lints.  A
+      // rule whose options are invalid does not run.
       let meta = active.rule.meta();
       let setting = Setting::new(
         meta.name,
@@ -333,20 +371,16 @@ impl RuleSet {
       );
       match active.rule.configure(&setting, &env) {
         Ok(check) => active.check = Some(check),
-        Err(problems) => {
-          for problem in problems {
-            let text = problem.into_text();
-            if !invalid_patterns.contains(&text) {
-              invalid_patterns.push(text);
-            }
-          }
-        }
+        Err(problems) => problems
+          .into_iter()
+          .for_each(|problem| report(problem.into_text())),
       }
+      // A regex literal that does not compile is reported wherever it is,
+      // but only stops the rule when the rule says so: in a list it just
+      // matches nothing.
       if let Some(options) = &active.options {
-        for invalid in pattern::invalid_options(active.rule.name(), options) {
-          if !invalid_patterns.contains(&invalid.message) {
-            invalid_patterns.push(invalid.message);
-          }
+        for invalid in pattern::invalid_options(meta.name, options) {
+          report(invalid.message);
         }
       }
     }
@@ -357,7 +391,7 @@ impl RuleSet {
       unknown,
       configured,
       forbids_disable,
-      invalid_patterns,
+      invalid_options,
       disables,
       default_severity,
       env,
@@ -383,6 +417,12 @@ impl RuleSet {
     self.env
   }
 
+  /// The problems with the rules' options, as Stylelint words them, which
+  /// every file linted with this set reports as invalid-option warnings.
+  pub fn invalid_options(&self) -> &[String] {
+    &self.invalid_options
+  }
+
   /// Lint `source`, the text of `file_path`, parsed as `syntax`.
   ///
   /// An HTML-like file (`.vue`, `.svelte`, `.astro`, `.html`, ...) is linted
@@ -397,9 +437,14 @@ impl RuleSet {
         let options = HostOptions {
           ignore_disables: self.disables.ignore,
         };
-        lint_host(source, file_path, host, options, |text, syntax| {
+        let mut result = lint_host(source, file_path, host, options, |text, syntax| {
           self.lint_sheet(text, file_path, syntax)
-        })
+        });
+        // A file with no style sheet in it still has the set's options.
+        if result.invalid_option_warnings.is_empty() {
+          result.invalid_option_warnings = self.invalid_options.clone();
+        }
+        result
       }
       None => self.lint_sheet(source, file_path, syntax),
     }
@@ -475,15 +520,22 @@ impl RuleSet {
   }
 
   /// Give a rule's problem what its configuration says: the `message`,
-  /// `url` and `disableFix` options, the configured severity (else the
-  /// `defaultSeverity`), and the rule name the config used.
+  /// `url` and `disableFix` options, its severity (the configured one, else
+  /// the `defaultSeverity`, else the rule's default), and the rule name the
+  /// config used.
   fn settle(&self, diag: &mut Diagnostic) {
     let active = self
       .by_name
       .get(diag.rule_name.as_str())
       .map(|&index| &self.rules[index]);
-    apply_secondary_options(diag, active.and_then(|a| a.options.as_ref()));
-    if let Some(severity) = active.and_then(|a| a.severity).or(self.default_severity) {
+    if let Some(active) = active {
+      active.common.apply(diag);
+    }
+    let severity = match active {
+      Some(active) => active.severity,
+      None => self.default_severity,
+    };
+    if let Some(severity) = severity {
       diag.severity = severity;
     }
     if let Some(active) = active
@@ -678,7 +730,8 @@ struct RuleRun<'a> {
   /// One internal-error problem per rule that panicked.  Kept apart from
   /// `diagnostics` so disables and severity overrides never touch them.
   failures: Vec<Diagnostic>,
-  /// Texts of the invalid-option reports, each once.
+  /// Texts of the invalid-option reports, each once: the set's, and those
+  /// legacy rules return as they check.
   invalid_options: Vec<String>,
 }
 
@@ -694,7 +747,7 @@ impl<'a> RuleRun<'a> {
       failed: vec![false; set.rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
-      invalid_options: set.invalid_patterns.clone(),
+      invalid_options: set.invalid_options.clone(),
     }
   }
 
@@ -927,6 +980,160 @@ mod tests {
       result.invalid_option_warnings
     );
     assert!(result.invalid_option_warnings[0].contains("\"/[broken/\""));
+  }
+
+  // -- Rules configured once per set --
+
+  thread_local! {
+    /// How often [`FlagsRules`] has been configured on this test's thread.
+    static FLAGS_CONFIGURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+  }
+
+  /// A rule with typed options: it flags every style rule, with the word
+  /// its primary option names (`"a"` or `"b"`).
+  struct FlagsRules {
+    word: &'static str,
+  }
+
+  impl FlagsRules {
+    fn from_setting(
+      setting: &Setting,
+      _env: &LintEnv,
+    ) -> Result<Self, Vec<crate::options::InvalidOption>> {
+      FLAGS_CONFIGURED.set(FLAGS_CONFIGURED.get() + 1);
+      let mut options = setting.options();
+      let word = options.primary_one_of(&["a", "b"]).unwrap_or("a");
+      options.flag("ignoreNothing");
+      options.finish()?;
+      Ok(Self { word })
+    }
+  }
+
+  impl Check for FlagsRules {
+    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+      match node {
+        CssNode::Style(rule) => {
+          vec![Diagnostic::new("test/flags", self.word).span(Span::new(rule.span.offset, 1))]
+        }
+        _ => vec![],
+      }
+    }
+  }
+
+  crate::rule::declare_rule! {
+    /// Flags every style rule.
+    struct Flags => FlagsRules {
+      name: "test/flags",
+      description: "Flags every style rule",
+      default_severity: Error,
+    }
+  }
+
+  /// A set running [`Flags`] as `setting` says, with `default_severity`.
+  fn flags_set(setting: RuleSetting, default_severity: Option<Severity>) -> RuleSet {
+    let mut registry = RuleRegistry::default();
+    registry.register(Box::new(Flags));
+    set_in(
+      registry,
+      RuleSetSpec {
+        rules: vec![setting],
+        default_severity,
+        ..RuleSetSpec::default()
+      },
+    )
+  }
+
+  #[test]
+  fn a_rule_with_typed_options_is_configured_once_per_set() {
+    let before = FLAGS_CONFIGURED.get();
+    let set = flags_set(
+      RuleSetting::new("test/flags").with_options(serde_json::json!("b")),
+      None,
+    );
+    for _ in 0..3 {
+      let result = set.lint("a {}\nb {}\n", "test.css", Syntax::Css);
+      let words: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+      assert_eq!(words, ["b", "b"]);
+    }
+    assert_eq!(FLAGS_CONFIGURED.get() - before, 1);
+    assert!(set.invalid_options().is_empty());
+  }
+
+  #[test]
+  fn the_runner_gives_problems_their_severity() {
+    let severity_of = |setting: RuleSetting, default: Option<Severity>| {
+      let result = flags_set(setting, default).lint("a {}\n", "test.css", Syntax::Css);
+      result.diagnostics[0].severity
+    };
+    // The rule leaves its problems at `Diagnostic::new`'s warning; with no
+    // severity configured it reports at its own default.
+    assert_eq!(
+      severity_of(RuleSetting::new("test/flags"), None),
+      Severity::Error
+    );
+    assert_eq!(
+      severity_of(RuleSetting::new("test/flags"), Some(Severity::Warning)),
+      Severity::Warning,
+      "defaultSeverity comes before the rule's default"
+    );
+    assert_eq!(
+      severity_of(
+        RuleSetting::new("test/flags").with_severity(Severity::Warning),
+        Some(Severity::Error)
+      ),
+      Severity::Warning,
+      "the rule's own severity comes first"
+    );
+  }
+
+  #[test]
+  fn invalid_options_stop_the_rule_and_are_reported_on_every_file() {
+    let set = flags_set(
+      RuleSetting::new("test/flags").with_options(serde_json::json!(["c", { "ignoreAll": true }])),
+      None,
+    );
+    let expected = [
+      "Invalid option value \"c\" for rule \"test/flags\"",
+      "Invalid option name \"ignoreAll\" for rule \"test/flags\"",
+    ];
+    assert_eq!(set.invalid_options(), expected);
+    for (source, path) in [
+      ("a {}\n", "a.css"),
+      ("", "empty.css"),
+      ("<template></template>\n", "nothing.vue"),
+      ("<style>a {}</style>\n", "styled.vue"),
+    ] {
+      let result = set.lint(source, path, Syntax::Css);
+      assert!(
+        result.diagnostics.is_empty(),
+        "{path}: {:?}",
+        result.diagnostics
+      );
+      assert_eq!(result.invalid_option_warnings, expected, "{path}");
+      assert!(result.errored(), "{path}");
+    }
+  }
+
+  #[test]
+  fn a_rule_with_typed_options_gets_the_common_secondary_options() {
+    let set = flags_set(
+      RuleSetting::new("test/flags").with_options(serde_json::json!([
+        "a",
+        { "message": "custom", "url": "https://example.test", "ignoreNothing": true }
+      ])),
+      None,
+    );
+    let result = set.lint("a {}\n", "test.css", Syntax::Css);
+    assert!(result.invalid_option_warnings.is_empty());
+    assert_eq!(result.diagnostics[0].message, "custom");
+    assert_eq!(
+      result.diagnostics[0].url.as_deref(),
+      Some("https://example.test")
+    );
   }
 
   // -- Unknown rule names --
