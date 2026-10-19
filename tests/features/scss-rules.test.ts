@@ -68,14 +68,14 @@ describe("scss/dollar-variable-no-missing-interpolation", () => {
   const rules = { "scss/dollar-variable-no-missing-interpolation": true };
   const scss = '$var: "my-anim";\n.a {\n  animation-name: $var;\n}\n';
 
-  test.failing("flags a string variable used as a custom identifier", () => {
+  test("flags a string variable used as a custom identifier", () => {
     expect(lint(rules, scss)).toEqual([
       "3:19 Expected variable $var to be interpolated when using it with animation-name " +
         "(scss/dollar-variable-no-missing-interpolation)",
     ]);
   });
 
-  test.failing("--fix interpolates the variable", () => {
+  test("--fix interpolates the variable", () => {
     const project = makeProject({ ".stylelintrc.json": config(rules), "a.scss": scss });
     runGale(["--fix", "a.scss"], { cwd: project.dir });
     expect(project.read("a.scss")).toBe('$var: "my-anim";\n.a {\n  animation-name: #{$var};\n}\n');

@@ -965,9 +965,8 @@ fn needless_disables(
 fn is_noop_stub_rule(name: &str) -> bool {
   // Only include rules where BOTH Gale AND Stylelint produce zero warnings
   // in practice.  Plugin rules that Gale stubs as no-ops BUT Stylelint
-  // actually fires (like scss/dollar-variable-no-missing-interpolation)
-  // must NOT be listed here, because their disables suppress real
-  // Stylelint warnings and are therefore not needless.
+  // actually fires must NOT be listed here, because their disables
+  // suppress real Stylelint warnings and are therefore not needless.
   matches!(name, "material/no-prefixes")
 }
 
