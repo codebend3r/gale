@@ -12,7 +12,8 @@ use gale_css_parser::Syntax;
 
 use super::{Found, KeyedFound};
 use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
-use crate::postcss_tree::{Node, NodeKind, PostcssTree, has_delimited};
+use crate::data;
+use crate::postcss_tree::{Node, NodeKind, PostcssTree};
 use crate::selector::postcss::{self as selector, Kind};
 use crate::standard_syntax;
 use crate::value_parser::{self, ValueNode};
@@ -160,7 +161,7 @@ pub fn url_schemes(tree: &PostcssTree, found: &mut Vec<Found>) {
     let text = tree.text(i).trim_end_matches(';').to_ascii_lowercase();
     for (args, index) in function_arguments(&text, "url") {
       let unspaced = args.trim();
-      if !is_standard_syntax_url(unspaced) {
+      if !standard_syntax::is_standard_syntax_url(unspaced) {
         continue;
       }
       let url = unspaced.trim_matches(['\'', '"']);
@@ -200,41 +201,6 @@ fn function_arguments<'s>(source: &'s str, name: &str) -> Vec<(&'s str, usize)> 
     true
   });
   out
-}
-
-/// Stylelint's `isStandardSyntaxUrl`: no interpolation (only Less's inside
-/// quotes), no Less variable as the whole url, no unquoted Sass variable.
-fn is_standard_syntax_url(url: &str) -> bool {
-  if url.is_empty() {
-    return true;
-  }
-  if has_delimited(url, "#{", '}', true)
-    || has_delimited(url, "{", '}', true)
-    || has_delimited(url, "$(", ')', false)
-  {
-    return false;
-  }
-  let quoted =
-    (url.starts_with('\'') && url.ends_with('\'')) || (url.starts_with('"') && url.ends_with('"'));
-  if quoted {
-    return !has_delimited(url, "@{", '}', false);
-  }
-  let less_variable = url
-    .strip_prefix("@@")
-    .or_else(|| url.strip_prefix('@'))
-    .is_some_and(|name| {
-      !name.is_empty()
-        && name
-          .bytes()
-          .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    });
-  if less_variable {
-    return false;
-  }
-  let scss_characters = url.bytes().all(|b| {
-    b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || b"$_+-,./*'\"@#?".contains(&b)
-  });
-  !(url.contains('$') && scss_characters && !url.ends_with('/'))
 }
 
 /// Stylelint's `getSchemeFromUrl`: the scheme of an absolute URL that is
@@ -943,7 +909,7 @@ pub fn scss_function_names(tree: &PostcssTree, found: &mut Vec<Found>) {
         skipped = true;
         return true;
       }
-      if function.value.is_empty() || is_native_css_function(function.value) {
+      if function.value.is_empty() || data::is_native_css_function(function.value) {
         return true;
       }
       let name = function
@@ -956,148 +922,6 @@ pub fn scss_function_names(tree: &PostcssTree, found: &mut Vec<Found>) {
     });
   }
 }
-
-/// Whether `name` is a function CSS itself defines, which
-/// `scss/function-disallowed-list` never reports (stylelint-scss's
-/// `isNativeCssFunction`).
-fn is_native_css_function(name: &str) -> bool {
-  NATIVE_CSS_FUNCTIONS.binary_search(&name).is_ok()
-}
-
-/// stylelint-scss's `nativeCssFunctions`, in byte order for the binary
-/// search.
-const NATIVE_CSS_FUNCTIONS: &[&str] = &[
-  "abs",
-  "acos",
-  "anchor",
-  "anchor-size",
-  "annotation",
-  "asin",
-  "atan",
-  "atan2",
-  "attr",
-  "blur",
-  "brightness",
-  "calc",
-  "calc-size",
-  "character-variant",
-  "circle",
-  "clamp",
-  "color",
-  "color-contrast",
-  "color-mix",
-  "conic-gradient",
-  "contrast",
-  "cos",
-  "counter",
-  "counters",
-  "cross-fade",
-  "cubic-bezier",
-  "device-cmyk",
-  "drop-shadow",
-  "element",
-  "ellipse",
-  "env",
-  "exp",
-  "fit-content",
-  "format",
-  "frames",
-  "grayscale",
-  "hsl",
-  "hsla",
-  "hue-rotate",
-  "hwb",
-  "hypot",
-  "image",
-  "image-set",
-  "inset",
-  "invert",
-  "lab",
-  "layer",
-  "lch",
-  "leader",
-  "light-dark",
-  "linear",
-  "linear-gradient",
-  "local",
-  "log",
-  "matrix",
-  "matrix3d",
-  "max",
-  "min",
-  "minmax",
-  "mod",
-  "oklab",
-  "oklch",
-  "opacity",
-  "ornaments",
-  "paint",
-  "palette-mix",
-  "path",
-  "perspective",
-  "polygon",
-  "pow",
-  "radial-gradient",
-  "ray",
-  "rect",
-  "rem",
-  "repeat",
-  "repeating-conic-gradient",
-  "repeating-linear-gradient",
-  "repeating-radial-gradient",
-  "rgb",
-  "rgba",
-  "rotate",
-  "rotate3d",
-  "rotateX",
-  "rotateY",
-  "rotateZ",
-  "rotatex",
-  "rotatey",
-  "rotatez",
-  "round",
-  "saturate",
-  "scale",
-  "scale3d",
-  "scaleX",
-  "scaleY",
-  "scaleZ",
-  "scalex",
-  "scaley",
-  "scalez",
-  "scroll",
-  "sepia",
-  "shape",
-  "sign",
-  "sin",
-  "skew",
-  "skewX",
-  "skewY",
-  "skewx",
-  "skewy",
-  "sqrt",
-  "steps",
-  "styleset",
-  "stylistic",
-  "swash",
-  "symbols",
-  "tan",
-  "target-counter",
-  "target-counters",
-  "target-text",
-  "translate",
-  "translate3d",
-  "translateX",
-  "translateY",
-  "translateZ",
-  "translatex",
-  "translatey",
-  "translatez",
-  "url",
-  "var",
-  "view",
-  "xywh",
-];
 
 /// The extension of every partial an `@import` names, as written and
 /// without the dot, skipping CSS imports, URLs and media queries:
@@ -1188,17 +1012,6 @@ pub fn included_mixins(tree: &PostcssTree, syntax: Syntax, found: &mut Vec<Found
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn native_css_functions_are_sorted_for_the_binary_search() {
-    assert!(
-      NATIVE_CSS_FUNCTIONS
-        .windows(2)
-        .all(|pair| pair[0] < pair[1])
-    );
-    assert!(is_native_css_function("translateX"));
-    assert!(!is_native_css_function("darken"));
-  }
 
   #[test]
   fn a_scheme_needs_slashes_unless_it_is_data() {

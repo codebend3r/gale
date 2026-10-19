@@ -2,8 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
-use crate::pattern;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "color-named";
@@ -27,7 +26,7 @@ pub struct ColorNamedCheck {
   /// `ignore: ["inside-function"]`.
   ignore_inside_function: bool,
   /// `ignoreProperties`: names (any case) and `/regex/` literals.
-  ignore_properties: Vec<String>,
+  ignore_properties: Matchers,
 }
 
 impl ColorNamedCheck {
@@ -39,7 +38,7 @@ impl ColorNamedCheck {
     let mut options = setting.options();
     let expectation = options.primary_one_of(&["never", "always-where-possible"]);
     let ignore = options.keywords("ignore", &["inside-function"]);
-    let ignore_properties = options.strings("ignoreProperties");
+    let ignore_properties = Matchers::ignoring_case(&options.strings("ignoreProperties"));
     options.strings("ignoreFunctions");
     options.finish()?;
     Ok(Self {
@@ -462,7 +461,7 @@ impl Check for ColorNamedCheck {
     for decl in &rule.declarations {
       // Check if this property should be ignored
       let prop_lower = decl.property.to_ascii_lowercase();
-      if should_ignore_property(&prop_lower, ignore_properties) {
+      if ignore_properties.matches(&prop_lower) {
         continue;
       }
 
@@ -874,20 +873,6 @@ fn is_system_color(word: &str) -> bool {
 /// Whether `prop` never takes a color, so its values can be skipped.
 fn is_non_color_property(prop: &str) -> bool {
   NON_COLOR_PROPERTIES.contains(&prop)
-}
-
-/// Check if property should be ignored based on ignoreProperties config.
-fn should_ignore_property(prop: &str, ignore_properties: &[String]) -> bool {
-  for entry in ignore_properties {
-    if let Some(matched) = pattern::match_regex_entry(entry, prop) {
-      if matched {
-        return true;
-      }
-    } else if entry.eq_ignore_ascii_case(prop) {
-      return true;
-    }
-  }
-  false
 }
 
 /// Parse a hex color string (without #) to RGB.

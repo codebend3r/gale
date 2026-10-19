@@ -47,8 +47,8 @@ impl ListRule for UnitDisallowedList {
   fn options(options: &mut Options<'_>) -> Self::Options {
     UnitDisallowedListOptions {
       ignore_functions: list_option(options, "ignoreFunctions"),
-      ignore_properties: keyed_option(options, "ignoreProperties"),
-      ignore_media_feature_names: keyed_option(options, "ignoreMediaFeatureNames"),
+      ignore_properties: keyed_option(options, "ignoreProperties", Entries::Names),
+      ignore_media_feature_names: keyed_option(options, "ignoreMediaFeatureNames", Entries::Names),
     }
   }
 

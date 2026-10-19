@@ -2,6 +2,7 @@
 //! from preprocessor syntax (interpolation, variables, mixins) that the
 //! rules skip.
 
+use crate::postcss_tree::has_delimited;
 use crate::value_parser::{NodeKind, ValueNode};
 
 /// Stylelint's `isStandardSyntaxSelector`: whether a rule's selector is
@@ -162,6 +163,41 @@ pub fn is_standard_syntax_color_function(node: &ValueNode<'_>) -> bool {
     }
   }
   true
+}
+
+/// Stylelint's `isStandardSyntaxUrl`: no interpolation (only Less's inside
+/// quotes), no Less variable as the whole url, no unquoted Sass variable.
+pub fn is_standard_syntax_url(url: &str) -> bool {
+  if url.is_empty() {
+    return true;
+  }
+  if has_delimited(url, "#{", '}', true)
+    || has_delimited(url, "{", '}', true)
+    || has_delimited(url, "$(", ')', false)
+  {
+    return false;
+  }
+  let quoted =
+    (url.starts_with('\'') && url.ends_with('\'')) || (url.starts_with('"') && url.ends_with('"'));
+  if quoted {
+    return !has_delimited(url, "@{", '}', false);
+  }
+  let less_variable = url
+    .strip_prefix("@@")
+    .or_else(|| url.strip_prefix('@'))
+    .is_some_and(|name| {
+      !name.is_empty()
+        && name
+          .bytes()
+          .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    });
+  if less_variable {
+    return false;
+  }
+  let scss_characters = url.bytes().all(|b| {
+    b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || b"$_+-,./*'\"@#?".contains(&b)
+  });
+  !(url.contains('$') && scss_characters && !url.ends_with('/'))
 }
 
 #[cfg(test)]

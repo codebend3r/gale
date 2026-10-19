@@ -2,8 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
-use crate::pattern;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "nesting-selector-no-missing-scoping-root";
@@ -27,7 +26,7 @@ declare_rule! {
 pub struct NestingSelectorNoMissingScopingRootCheck {
   /// `ignoreAtRules`: at-rule names (matched in any case) and `/regex/`
   /// entries.
-  ignore_at_rules: Vec<String>,
+  ignore_at_rules: Matchers,
 }
 
 impl NestingSelectorNoMissingScopingRootCheck {
@@ -35,7 +34,7 @@ impl NestingSelectorNoMissingScopingRootCheck {
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
     options.primary_true();
-    let ignore_at_rules = options.strings("ignoreAtRules");
+    let ignore_at_rules = Matchers::ignoring_case(&options.strings("ignoreAtRules"));
     options.finish()?;
     Ok(Self { ignore_at_rules })
   }
@@ -43,10 +42,7 @@ impl NestingSelectorNoMissingScopingRootCheck {
   /// Whether the at-rule `name` is one of `ignoreAtRules`: a `/regex/`
   /// entry matches by search, a name in any case.
   fn is_ignored_at_rule(&self, name: &str) -> bool {
-    self.ignore_at_rules.iter().any(|ignored| {
-      pattern::match_regex_entry(ignored, name)
-        .unwrap_or_else(|| ignored.eq_ignore_ascii_case(name))
-    })
+    self.ignore_at_rules.matches(name)
   }
 }
 

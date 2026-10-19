@@ -2,7 +2,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, Setting, is_truthy};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "order/properties-alphabetical-order";
@@ -30,17 +30,6 @@ impl OrderPropertiesAlphabeticalOrderCheck {
     options.primary_test(is_truthy);
     options.finish()?;
     Ok(Self)
-  }
-}
-
-/// JavaScript's `Boolean(value)`.
-fn is_truthy(value: &serde_json::Value) -> bool {
-  match value {
-    serde_json::Value::Null => false,
-    serde_json::Value::Bool(flag) => *flag,
-    serde_json::Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
-    serde_json::Value::String(text) => !text.is_empty(),
-    serde_json::Value::Array(_) | serde_json::Value::Object(_) => true,
   }
 }
 

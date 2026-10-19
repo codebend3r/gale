@@ -2,7 +2,7 @@ use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
+use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/dollar-variable-empty-line-before";
@@ -62,8 +62,7 @@ impl ScssDollarVariableEmptyLineBeforeCheck {
         "after-dollar-variable",
       ],
     );
-    // `disableFix` is applied by the runner; reading it keeps it known.
-    options.value("disableFix", &[Accept::Boolean]);
+    options.disable_fix();
     options.finish()?;
     Ok(Self {
       expectation,

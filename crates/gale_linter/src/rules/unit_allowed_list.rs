@@ -44,7 +44,7 @@ impl ListRule for UnitAllowedList {
   fn options(options: &mut Options<'_>) -> Self::Options {
     UnitAllowedListOptions {
       ignore_functions: list_option(options, "ignoreFunctions"),
-      ignore_properties: keyed_option(options, "ignoreProperties"),
+      ignore_properties: keyed_option(options, "ignoreProperties", Entries::Names),
     }
   }
 

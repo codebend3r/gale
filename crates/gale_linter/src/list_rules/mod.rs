@@ -34,7 +34,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Options, Setting};
+use crate::options::{Accept, InvalidOption, Options, Setting, is_object_of_string_lists};
 use crate::pattern::{self, Regex};
 use crate::postcss_tree::PostcssTree;
 use crate::rule::{Check, RuleContext};
@@ -158,14 +158,6 @@ impl List {
       Some(None) => None,
     }
   }
-}
-
-/// Stylelint's `validateObjectWithArrayProps(isString, isRegExp)`: an
-/// object whose every value is a string or a list of strings.
-fn is_string_list_object(value: &Value) -> bool {
-  value
-    .as_object()
-    .is_some_and(|map| map.values().all(|item| strings_of(item).is_some()))
 }
 
 /// The strings of a string or an array of strings; `None` when anything
@@ -323,7 +315,7 @@ impl KeyedList {
   /// option.
   pub fn read(options: &mut Options<'_>, rule: &str, values: Entries) -> Option<Self> {
     let map: &Map<String, Value> = options.primary_object()?;
-    if !is_string_list_object(&Value::Object(map.clone())) {
+    if !is_object_of_string_lists(&Value::Object(map.clone())) {
       options.report(InvalidOption::value(rule, &Value::Object(map.clone())));
       return None;
     }
@@ -349,6 +341,12 @@ impl KeyedList {
       .iter()
       .find(|(entry, _)| entry.matches(key))
       .map(|(_, list)| list)
+  }
+
+  /// Whether the list of the first key that matches `key` matches
+  /// `subject` (Stylelint's `optionsMatches` on an object of lists).
+  pub fn first_matches(&self, key: &str, subject: &str) -> bool {
+    self.first(key).is_some_and(|list| list.matches(subject))
   }
 
   /// The lists of every key that matches `key`.
@@ -485,9 +483,11 @@ impl<R: KeyedListRule> Check for KeyedCheck<R> {
 }
 
 /// A secondary option mapping names (units, say) to lists, as Stylelint's
-/// `validateObjectWithArrayProps(isString, isRegExp)` checks it.
-pub fn keyed_option(options: &mut Options<'_>, key: &'static str) -> KeyedList {
-  let Some(Value::Object(map)) = options.value(key, &[Accept::Test(is_string_list_object)]) else {
+/// `validateObjectWithArrayProps(isString, isRegExp)` checks it.  `keys`
+/// says how its keys are read.
+pub fn keyed_option(options: &mut Options<'_>, key: &'static str, keys: Entries) -> KeyedList {
+  let Some(Value::Object(map)) = options.value(key, &[Accept::Test(is_object_of_string_lists)])
+  else {
     return KeyedList::default();
   };
   KeyedList(
@@ -496,7 +496,7 @@ pub fn keyed_option(options: &mut Options<'_>, key: &'static str) -> KeyedList {
       .map(|(name, list)| {
         let entries = strings_of(list).unwrap_or_default();
         (
-          Entry::new(name, Entries::Names),
+          Entry::new(name, keys),
           List::new(&entries, Entries::Patterns),
         )
       })

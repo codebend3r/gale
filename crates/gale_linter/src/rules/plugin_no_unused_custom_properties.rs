@@ -4,7 +4,7 @@ use gale_css_parser::CssNode;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Matchers, Options, Setting};
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "plugin/no-unused-custom-properties";
@@ -43,33 +43,12 @@ impl PluginNoUnusedCustomPropertiesCheck {
   /// of them, and ignores its primary option and any other key.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let ignore_properties = lenient_strings(setting, &mut options, "ignoreProperties");
+    let ignore_properties = options.lenient_strings("ignoreProperties");
     options.finish()?;
     Ok(Self {
       ignore_properties: Matchers::new(&ignore_properties),
     })
   }
-}
-
-/// The secondary option `key`, a name or `/regex/` entry or a list of them,
-/// read without making other keys unknown.  An entry that is not a string
-/// is reported as Stylelint words it.
-fn lenient_strings(setting: &Setting, options: &mut Options<'_>, key: &str) -> Vec<String> {
-  let Some(value) = setting.secondary().and_then(|secondary| secondary.get(key)) else {
-    return Vec::new();
-  };
-  let entries: Vec<&serde_json::Value> = match value {
-    serde_json::Value::Array(items) => items.iter().collect(),
-    other => vec![other],
-  };
-  let mut strings = Vec::new();
-  for entry in entries {
-    match entry.as_str() {
-      Some(text) => strings.push(text.to_string()),
-      None => options.report(InvalidOption::option_value(NAME, key, entry)),
-    }
-  }
-  strings
 }
 
 /// A custom property definition with its location.

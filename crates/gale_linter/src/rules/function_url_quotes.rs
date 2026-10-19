@@ -5,6 +5,7 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
+use crate::standard_syntax;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "function-url-quotes";
@@ -206,7 +207,7 @@ fn url_arguments<'a>(text: &'a str, function: &ValueNode) -> Option<&'a str> {
 /// complies, uses preprocessor syntax, or needs its quotes to be valid CSS.
 fn check_args(args: &str, always: bool, except_empty: bool) -> Option<Problem> {
   let trimmed = args.trim_start();
-  if !is_standard_syntax_url(trimmed) {
+  if !standard_syntax::is_standard_syntax_url(trimmed) {
     return None;
   }
   let mut expect_quotes = always;
@@ -222,68 +223,6 @@ fn check_args(args: &str, always: bool, except_empty: bool) -> Option<Problem> {
     (false, true) => Some(Problem::Rejected),
     _ => None,
   }
-}
-
-/// Stylelint's `isStandardSyntaxUrl`.
-fn is_standard_syntax_url(url: &str) -> bool {
-  if url.is_empty() {
-    return true;
-  }
-  // Sass, template and PostCSS-simple-vars interpolation work anywhere.
-  if has_braced(url, b'{', b'}', true) || has_after(url, "$(", b')') {
-    return false;
-  }
-  let quoted =
-    (url.starts_with('\'') && url.ends_with('\'')) || (url.starts_with('"') && url.ends_with('"'));
-  if quoted {
-    // Only Less interpolation works inside quotes.
-    return !has_after(url, "@{", b'}');
-  }
-  // A Less variable works only at the beginning.
-  let is_less_variable = url
-    .strip_prefix("@@")
-    .or_else(|| url.strip_prefix('@'))
-    .is_some_and(|name| {
-      !name.is_empty()
-        && name
-          .bytes()
-          .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    });
-  if is_less_variable {
-    return false;
-  }
-  // A Sass variable can sit anywhere in an unquoted url, among a limited
-  // set of characters, unless the url ends with `/`.
-  let scss_chars = url.bytes().all(|b| {
-    b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || b"$_+-,./*'\"@#?".contains(&b)
-  });
-  !(url.contains('$') && scss_chars && !url.ends_with('/'))
-}
-
-/// Whether `text` holds `open`, at least one character, then `close`
-/// (`/\{.+?\}/s` when `multiline`).
-fn has_braced(text: &str, open: u8, close: u8, multiline: bool) -> bool {
-  let bytes = text.as_bytes();
-  bytes.iter().enumerate().any(|(i, &b)| {
-    b == open
-      && bytes[i + 1..]
-        .iter()
-        .take_while(|&&c| multiline || c != b'\n')
-        .skip(1)
-        .any(|&c| c == close)
-  })
-}
-
-/// Whether `text` holds `opener`, at least one character on the same line,
-/// then `close` (`/@\{.+?\}/`, `/\$\(.+?\)/`).
-fn has_after(text: &str, opener: &str, close: u8) -> bool {
-  text.match_indices(opener).any(|(i, _)| {
-    text.as_bytes()[i + opener.len()..]
-      .iter()
-      .take_while(|&&c| c != b'\n')
-      .skip(1)
-      .any(|&c| c == close)
-  })
 }
 
 /// Stylelint's `requiresQuotes`: whether the quoted argument's content
