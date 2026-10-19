@@ -1111,6 +1111,7 @@ mod tests {
       }),
     ];
     let less_context = RuleContext {
+      env: Default::default(),
       file_path: "test.less",
       source,
       syntax: Syntax::Less,

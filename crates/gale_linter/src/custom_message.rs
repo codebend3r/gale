@@ -85,28 +85,22 @@ mod tests {
 
   #[test]
   fn the_runner_fills_custom_messages_from_the_rule() {
-    use std::collections::HashMap;
-
     use gale_css_parser::Syntax;
 
-    use crate::{LintRunner, RuleRegistry};
+    use crate::{RuleSet, RuleSetSpec, RuleSetting};
 
     // stylelint-config-standard's message function, as the config loader
     // converts it.
-    let mut options = HashMap::new();
-    options.insert(
-      "keyframes-name-pattern".to_string(),
-      serde_json::json!([
-        "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$",
-        { "message": "Expected keyframe name \"${name}\" to be kebab-case" }
-      ]),
-    );
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec!["keyframes-name-pattern".to_string()],
-      options,
-    );
-    let result = runner.lint_source("@keyframes slideIn { }", "t.css", Syntax::Css);
+    let set = RuleSet::new(RuleSetSpec {
+      rules: vec![
+        RuleSetting::new("keyframes-name-pattern").with_options(serde_json::json!([
+          "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$",
+          { "message": "Expected keyframe name \"${name}\" to be kebab-case" }
+        ])),
+      ],
+      ..RuleSetSpec::default()
+    });
+    let result = set.lint("@keyframes slideIn { }", "t.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(
       result.diagnostics[0].message,

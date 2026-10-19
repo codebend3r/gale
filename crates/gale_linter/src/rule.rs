@@ -7,6 +7,7 @@ use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
+use crate::lint_env::LintEnv;
 use crate::postcss_tree::PostcssTree;
 use crate::source_text::{self, WrittenDeclaration};
 use crate::style_rules::{self, ScannedRules};
@@ -25,6 +26,9 @@ pub struct RuleContext<'a> {
   /// runner always sets it; without one (a rule's own tests, say) every
   /// accessor such as [`Self::postcss_tree`] builds afresh.
   pub cache: Option<&'a FileCache<'a>>,
+  /// What the run knows about the project beyond its config, such as the
+  /// installed Stylelint version.
+  pub env: LintEnv,
 }
 
 impl<'a> RuleContext<'a> {
@@ -285,6 +289,7 @@ mod tests {
   /// A context over `source` with no options.
   fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
     RuleContext {
+      env: Default::default(),
       file_path: "test.css",
       source,
       syntax,
@@ -334,6 +339,7 @@ mod tests {
     let source = String::from("a { color: red; }");
     let cache = FileCache::new(&source, Syntax::Css);
     let ctx = RuleContext {
+      env: Default::default(),
       cache: Some(&cache),
       ..context(&source, Syntax::Css)
     };
@@ -342,6 +348,7 @@ mod tests {
 
     let other = source.clone();
     let elsewhere = RuleContext {
+      env: Default::default(),
       cache: Some(&cache),
       ..context(&other, Syntax::Css)
     };

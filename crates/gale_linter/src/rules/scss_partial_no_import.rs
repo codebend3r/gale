@@ -68,6 +68,7 @@ mod tests {
 
   fn partial_ctx() -> RuleContext<'static> {
     RuleContext {
+      env: Default::default(),
       file_path: "_partial.scss",
       source: "",
       syntax: Syntax::Scss,
@@ -78,6 +79,7 @@ mod tests {
 
   fn non_partial_ctx() -> RuleContext<'static> {
     RuleContext {
+      env: Default::default(),
       file_path: "main.scss",
       source: "",
       syntax: Syntax::Scss,
@@ -125,6 +127,7 @@ mod tests {
   #[test]
   fn skips_non_scss() {
     let css_ctx = RuleContext {
+      env: Default::default(),
       file_path: "_partial.css",
       source: "",
       syntax: Syntax::Css,

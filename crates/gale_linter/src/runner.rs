@@ -1,15 +1,26 @@
-use std::collections::HashMap;
+//! Linting a file against a [`RuleSet`].
+//!
+//! A [`RuleSet`] is everything that decides how one file is linted: the rules
+//! its config enables, each with the name the config used, its options and
+//! its severity, plus the disable-comment settings and `defaultSeverity`.
+//! It is built once per distinct effective config and shared by every file
+//! that config applies to; [`RuleSet::lint`] is the one way a file is linted.
+
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use gale_css_parser::embedded::HostLanguage;
 use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisableReports};
+use crate::embedded::{HostOptions, lint_host};
 use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
+use crate::lint_env::LintEnv;
 use crate::panic_guard::{self, Caught, ISSUES_URL};
 use crate::pattern;
-use crate::registry::RuleRegistry;
+use crate::registry::{RuleRegistry, resolve_deprecated_alias};
 use crate::rule::{Rule, RuleContext, secondary_options_of};
 
 /// Apply the secondary options every Stylelint rule accepts, whatever the
@@ -49,148 +60,409 @@ fn debug_panic(rule_name: &str, source: &str) {
   }
 }
 
-/// Returns `true` when the `GALE_DEBUG_PERF` environment variable is set to `"1"`.
+/// The `tracing` target the per-phase timings are emitted under, at debug
+/// level.  The CLI turns it on for `GALE_DEBUG_PERF=1`; `GALE_LOG` can
+/// select it like any other target (`GALE_LOG=gale_perf=debug`).
+pub const PERF_TARGET: &str = "gale_perf";
+
+/// A `check_root` that takes longer than this is timed on its own.
+const SLOW_CHECK_ROOT_SECS: f64 = 0.001;
+
+/// Times the phases of linting one style sheet, when the timings are on.
 ///
-/// Read once per process rather than once per file.
-fn perf_enabled() -> bool {
-  static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-  *ENABLED.get_or_init(|| {
-    std::env::var("GALE_DEBUG_PERF")
-      .map(|v| v == "1")
-      .unwrap_or(false)
-  })
+/// Off, it costs one check of the tracing filter per file and no clock
+/// reads.
+struct PhaseTimer<'a> {
+  file_path: &'a str,
+  /// When the current phase started, or `None` with the timings off.
+  started: Option<Instant>,
 }
 
-/// The main lint runner that applies enabled rules to parsed CSS.
-pub struct LintRunner {
-  registry: RuleRegistry,
-  enabled_rules: Vec<String>,
-  /// Per-rule options from the config (keyed by rule name).
-  rule_options: HashMap<String, serde_json::Value>,
-  /// Per-rule severity overrides from the config (keyed by rule name).
-  /// When a rule is listed here its diagnostics will use this severity
-  /// instead of the rule's `default_severity()`.
-  rule_severities: HashMap<String, Severity>,
-  /// When `true`, report `stylelint-disable` comments that don't suppress
-  /// any warnings (Stylelint's `reportNeedlessDisables`).
-  report_needless_disables: bool,
-  /// When `true`, ignore all `/* stylelint-disable */` comments — diagnostics
-  /// are reported regardless of disable directives (Stylelint's `ignoreDisables`).
-  ignore_disables: bool,
-  /// Stylelint's `reportInvalidScopeDisables`.
-  report_invalid_scope_disables: bool,
-  /// Stylelint's `reportDescriptionlessDisables`.
-  report_descriptionless_disables: bool,
-  /// Stylelint's `reportUnscopedDisables`.
-  report_unscoped_disables: bool,
-  /// Rule names from the config (including plugin rules Gale doesn't
-  /// implement).  Used to suppress false needless-disable reports for
-  /// rules that are configured but not in Gale's registry.
-  configured_rules: Vec<String>,
-  /// Global default severity from the config (`defaultSeverity`).
-  /// Applied to rules that don't have an explicit severity override.
+impl<'a> PhaseTimer<'a> {
+  /// Start timing the first phase of linting `file_path`.
+  fn start(file_path: &'a str) -> Self {
+    let on = tracing::enabled!(target: PERF_TARGET, tracing::Level::DEBUG);
+    Self {
+      file_path,
+      started: on.then(Instant::now),
+    }
+  }
+
+  /// Whether the timings are on.
+  fn on(&self) -> bool {
+    self.started.is_some()
+  }
+
+  /// Report the phase that just ended as `phase`, and start the next.
+  fn lap(&mut self, phase: &'static str) {
+    if let Some(started) = self.started {
+      let now = Instant::now();
+      tracing::debug!(
+        target: PERF_TARGET,
+        file = self.file_path,
+        phase,
+        secs = (now - started).as_secs_f64(),
+      );
+      self.started = Some(now);
+    }
+  }
+}
+
+/// One rule as a config sets it: the name it is listed under, its options
+/// and its severity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleSetting {
+  /// The name the config uses, which may be a deprecated alias of the rule
+  /// (`color-hex-case` for `@stylistic/color-hex-case`).  Problems are
+  /// reported under it, as Stylelint reports them.
+  pub name: String,
+  /// The options exactly as the config wrote them.
+  pub options: Option<serde_json::Value>,
+  /// The severity the config gives the rule, if any.
+  pub severity: Option<Severity>,
+}
+
+impl RuleSetting {
+  /// `name` with no options and no severity of its own.
+  pub fn new(name: impl Into<String>) -> Self {
+    Self {
+      name: name.into(),
+      options: None,
+      severity: None,
+    }
+  }
+
+  /// This setting with `options`.
+  pub fn with_options(mut self, options: serde_json::Value) -> Self {
+    self.options = Some(options);
+    self
+  }
+
+  /// This setting with `severity`.
+  pub fn with_severity(mut self, severity: Severity) -> Self {
+    self.severity = Some(severity);
+    self
+  }
+}
+
+/// How configuration comments (`/* stylelint-disable */` and friends) are
+/// treated: Stylelint's `ignoreDisables` and its four `report*Disables`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct DisableOptions {
+  /// `ignoreDisables`: report problems even where a comment disables them.
+  pub ignore: bool,
+  /// `reportNeedlessDisables`: report comments that suppress nothing.
+  pub report_needless: bool,
+  /// `reportInvalidScopeDisables`: report comments naming a rule that is
+  /// not configured.
+  pub report_invalid_scope: bool,
+  /// `reportDescriptionlessDisables`: report comments without a
+  /// `-- description`.
+  pub report_descriptionless: bool,
+  /// `reportUnscopedDisables`: report comments that name no rule.
+  pub report_unscoped: bool,
+}
+
+impl DisableOptions {
+  /// Every switch that either `self` or `other` turns on, as the command
+  /// line's flags add to the config's.
+  pub fn union(self, other: Self) -> Self {
+    Self {
+      ignore: self.ignore || other.ignore,
+      report_needless: self.report_needless || other.report_needless,
+      report_invalid_scope: self.report_invalid_scope || other.report_invalid_scope,
+      report_descriptionless: self.report_descriptionless || other.report_descriptionless,
+      report_unscoped: self.report_unscoped || other.report_unscoped,
+    }
+  }
+
+  /// Whether the comments' disabled ranges are needed at all: to suppress
+  /// problems, or for one of the reports.
+  fn needs_ranges(&self) -> bool {
+    !self.ignore
+      || self.report_needless
+      || self.report_invalid_scope
+      || self.report_descriptionless
+      || self.report_unscoped
+  }
+}
+
+/// What a [`RuleSet`] is built from.
+#[derive(Debug, Clone, Default)]
+pub struct RuleSetSpec {
+  /// The rules the config enables for the files this set applies to.
+  pub rules: Vec<RuleSetting>,
+  /// Rule names the config lists that count as configured for
+  /// `reportInvalidScopeDisables` on top of `rules`: those an override
+  /// turns off, say, or plugin rules gale does not implement.
+  pub configured_rules: Vec<String>,
+  /// How configuration comments are treated.
+  pub disables: DisableOptions,
+  /// Stylelint's `defaultSeverity`: the severity of a rule the config gives
+  /// none, and of the disable-comment reports.
+  pub default_severity: Option<Severity>,
+  /// What the run knows about the project beyond the config.
+  pub env: LintEnv,
+}
+
+/// A rule a [`RuleSet`] runs, as configured.
+struct ActiveRule {
+  rule: &'static dyn Rule,
+  /// The name the config used, under which problems are reported.
+  config_name: String,
+  options: Option<serde_json::Value>,
+  severity: Option<Severity>,
+}
+
+/// Everything that decides how a file is linted, resolved once and shared
+/// by every file the same effective config applies to.
+pub struct RuleSet {
+  /// The registered rules to run, in config order.
+  rules: Vec<ActiveRule>,
+  /// Position in `rules` by each rule's own name, which is the name the
+  /// rules report under before relabelling.
+  by_name: HashMap<&'static str, usize>,
+  /// Enabled names that are no rule at all, reported as `Unknown rule`.
+  unknown: Vec<String>,
+  /// The rule names, by their canonical spelling, that count as configured
+  /// for `reportInvalidScopeDisables`.
+  configured: HashSet<String>,
+  /// The rule names configured with `reportDisables: true`.
+  forbids_disable: HashSet<String>,
+  /// Regex literals in the options that do not compile, as invalid-option
+  /// texts; found once rather than per file.
+  invalid_patterns: Vec<String>,
+  disables: DisableOptions,
   default_severity: Option<Severity>,
+  env: LintEnv,
 }
 
-impl LintRunner {
-  /// Create a new runner with the given registry and list of enabled rule names.
-  pub fn new(registry: RuleRegistry, enabled_rules: Vec<String>) -> Self {
+/// A name with any deprecated alias resolved to the rule's own name.
+fn canonical(name: &str) -> &str {
+  resolve_deprecated_alias(name).unwrap_or(name)
+}
+
+impl RuleSet {
+  /// The rule set `spec` describes, with rules from the built-in registry.
+  pub fn new(spec: RuleSetSpec) -> Self {
+    Self::with_registry(RuleRegistry::global(), spec)
+  }
+
+  /// The rule set `spec` describes, with rules looked up in `registry`.
+  pub fn with_registry(registry: &'static RuleRegistry, spec: RuleSetSpec) -> Self {
+    let RuleSetSpec {
+      rules: settings,
+      configured_rules,
+      disables,
+      default_severity,
+      env,
+    } = spec;
+
+    let mut configured: HashSet<String> = configured_rules
+      .iter()
+      .map(|name| canonical(name).to_string())
+      .collect();
+    let mut forbids_disable = HashSet::new();
+    let mut rules: Vec<ActiveRule> = Vec::with_capacity(settings.len());
+    let mut by_name: HashMap<&'static str, usize> = HashMap::with_capacity(settings.len());
+    let mut unknown = Vec::new();
+
+    for setting in settings {
+      configured.insert(canonical(&setting.name).to_string());
+      let forbids = setting
+        .options
+        .as_ref()
+        .and_then(secondary_options_of)
+        .and_then(|s| s.get("reportDisables"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+      let Some(rule) = registry.get(&setting.name) else {
+        if forbids {
+          forbids_disable.insert(setting.name.clone());
+        }
+        // Real Stylelint and plugin rules gale lacks, and rules Stylelint
+        // removed, are skipped quietly here; the caller warns about them
+        // once per run.
+        if known_rules::classify(registry, &setting.name) == RuleSupport::Unknown {
+          unknown.push(setting.name);
+        }
+        continue;
+      };
+      if forbids {
+        forbids_disable.insert(rule.name().to_string());
+        forbids_disable.insert(setting.name.clone());
+      }
+      let active = ActiveRule {
+        rule,
+        config_name: setting.name,
+        options: setting.options,
+        severity: setting.severity,
+      };
+      match by_name.get(rule.name()) {
+        // A config that names one rule twice, by its name and by an alias,
+        // runs it once, as the name it is registered under.
+        Some(&index) => {
+          if active.config_name == rule.name() {
+            rules[index] = active;
+          }
+        }
+        None => {
+          by_name.insert(rule.name(), rules.len());
+          rules.push(active);
+        }
+      }
+    }
+
+    let mut invalid_patterns: Vec<String> = Vec::new();
+    for active in &rules {
+      if let Some(options) = &active.options {
+        for invalid in pattern::invalid_options(active.rule.name(), options) {
+          if !invalid_patterns.contains(&invalid.message) {
+            invalid_patterns.push(invalid.message);
+          }
+        }
+      }
+    }
+
     Self {
-      registry,
-      enabled_rules,
-      rule_options: HashMap::new(),
-      rule_severities: HashMap::new(),
-      report_needless_disables: false,
-      ignore_disables: false,
-      report_invalid_scope_disables: false,
-      report_descriptionless_disables: false,
-      report_unscoped_disables: false,
-      configured_rules: Vec::new(),
-      default_severity: None,
+      rules,
+      by_name,
+      unknown,
+      configured,
+      forbids_disable,
+      invalid_patterns,
+      disables,
+      default_severity,
+      env,
     }
   }
 
-  /// Create a new runner with per-rule options.
-  pub fn with_options(
-    registry: RuleRegistry,
-    enabled_rules: Vec<String>,
-    rule_options: HashMap<String, serde_json::Value>,
-  ) -> Self {
-    Self {
-      registry,
-      enabled_rules,
-      rule_options,
-      rule_severities: HashMap::new(),
-      report_needless_disables: false,
-      ignore_disables: false,
-      report_invalid_scope_disables: false,
-      report_descriptionless_disables: false,
-      report_unscoped_disables: false,
-      configured_rules: Vec::new(),
-      default_severity: None,
+  /// A rule set running the rules `names`, with no options.  Mostly for
+  /// tests and tools that lint with a fixed list.
+  pub fn of_rules<S: Into<String>>(names: impl IntoIterator<Item = S>) -> Self {
+    Self::new(RuleSetSpec {
+      rules: names.into_iter().map(RuleSetting::new).collect(),
+      ..RuleSetSpec::default()
+    })
+  }
+
+  /// How configuration comments are treated in files linted with this set.
+  pub fn disables(&self) -> DisableOptions {
+    self.disables
+  }
+
+  /// The environment rules see.
+  pub fn env(&self) -> LintEnv {
+    self.env
+  }
+
+  /// Lint `source`, the text of `file_path`, parsed as `syntax`.
+  ///
+  /// An HTML-like file (`.vue`, `.svelte`, `.astro`, `.html`, ...) is linted
+  /// one embedded style sheet at a time, with every problem placed in the
+  /// file; anything else is one style sheet.
+  ///
+  /// Never panics: a rule that crashes is reported as an internal-error
+  /// problem on the file and the remaining rules still run.
+  pub fn lint(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    match HostLanguage::from_path(file_path) {
+      Some(host) => {
+        let options = HostOptions {
+          ignore_disables: self.disables.ignore,
+        };
+        lint_host(source, file_path, host, options, |text, syntax| {
+          self.lint_sheet(text, file_path, syntax)
+        })
+      }
+      None => self.lint_sheet(source, file_path, syntax),
     }
   }
 
-  /// Create a new runner with per-rule options and severity overrides.
-  pub fn with_options_and_severities(
-    registry: RuleRegistry,
-    enabled_rules: Vec<String>,
-    rule_options: HashMap<String, serde_json::Value>,
-    rule_severities: HashMap<String, Severity>,
-  ) -> Self {
-    Self {
-      registry,
-      enabled_rules,
-      rule_options,
-      rule_severities,
-      report_needless_disables: false,
-      ignore_disables: false,
-      report_invalid_scope_disables: false,
-      report_descriptionless_disables: false,
-      report_unscoped_disables: false,
-      configured_rules: Vec::new(),
-      default_severity: None,
+  /// Lint one style sheet, reporting a panic outside any one rule as a
+  /// single internal-error problem on the file.
+  fn lint_sheet(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    guard_file(source, file_path, || {
+      self.lint_sheet_unguarded(source, file_path, syntax)
+    })
+  }
+
+  /// [`Self::lint_sheet`] without the file-level panic guard.
+  fn lint_sheet_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+    let mut timer = PhaseTimer::start(file_path);
+    let mut parse_result = match parse(source, syntax) {
+      Ok(result) => result,
+      Err(err) => {
+        let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
+          .severity(Severity::Error)
+          .span(Span::new(0, 0));
+        return LintResult::new(file_path, source, vec![diag]);
+      }
+    };
+    timer.lap("parse");
+    // The walk below is the tree's last use, so it takes the nodes; `finish`
+    // needs only the source map.
+    let nodes = std::mem::take(&mut parse_result.nodes);
+    // Rules read the text the parser saw, which for Sass is the converted
+    // SCSS that every node span points into.  `finish` maps the spans back.
+    let text = parse_result.source.as_str();
+
+    let cache = FileCache::new(text, syntax);
+    let mut run = RuleRun::new(self, file_path, &cache);
+
+    run.check_root(&nodes, timer.on());
+    timer.lap("check_root");
+    for node in nodes {
+      run.walk(node);
     }
+    timer.lap("walk");
+    let RuleRun {
+      mut diagnostics,
+      failures,
+      invalid_options,
+      ..
+    } = run;
+
+    for diag in &mut diagnostics {
+      if diag.file_path.is_empty() {
+        diag.file_path = file_path.to_string();
+      }
+      self.settle(diag);
+    }
+
+    if let Some(rejected) =
+      self.apply_disables(&mut diagnostics, source, &parse_result, &cache, file_path)
+    {
+      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
+    }
+    timer.lap("disables");
+
+    // Rule crashes go in last so that disables, severity overrides and the
+    // `message` option cannot hide or soften them.
+    diagnostics.extend(failures);
+
+    let unknown = self.unknown_rule_problems(source, file_path);
+    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
+    result.invalid_option_warnings = invalid_options;
+    timer.lap("finish");
+    result
   }
 
-  /// Enable or disable `reportNeedlessDisables` checking.
-  pub fn set_report_needless_disables(&mut self, enabled: bool) {
-    self.report_needless_disables = enabled;
-  }
-
-  /// Enable or disable `ignoreDisables` — when `true`, inline disable
-  /// comments are ignored and all diagnostics are reported.
-  pub fn set_ignore_disables(&mut self, enabled: bool) {
-    self.ignore_disables = enabled;
-  }
-
-  /// Enable or disable `reportInvalidScopeDisables` — report disable
-  /// comments that name a rule which is not configured.
-  pub fn set_report_invalid_scope_disables(&mut self, enabled: bool) {
-    self.report_invalid_scope_disables = enabled;
-  }
-
-  /// Enable or disable `reportDescriptionlessDisables` — report disable
-  /// comments that carry no `-- description`.
-  pub fn set_report_descriptionless_disables(&mut self, enabled: bool) {
-    self.report_descriptionless_disables = enabled;
-  }
-
-  /// Enable or disable `reportUnscopedDisables` — report disable comments
-  /// that name no rule.
-  pub fn set_report_unscoped_disables(&mut self, enabled: bool) {
-    self.report_unscoped_disables = enabled;
-  }
-
-  /// The disable-comment reports this runner emits, at the severity
-  /// Stylelint would use (`defaultSeverity`, falling back to error).
-  fn disable_reports(&self) -> DisableReports {
-    DisableReports {
-      needless: self.report_needless_disables,
-      invalid_scope: self.report_invalid_scope_disables,
-      descriptionless: self.report_descriptionless_disables,
-      unscoped: self.report_unscoped_disables,
-      severity: self.default_severity.unwrap_or(Severity::Error),
+  /// Give a rule's problem what its configuration says: the `message`,
+  /// `url` and `disableFix` options, the configured severity (else the
+  /// `defaultSeverity`), and the rule name the config used.
+  fn settle(&self, diag: &mut Diagnostic) {
+    let active = self
+      .by_name
+      .get(diag.rule_name.as_str())
+      .map(|&index| &self.rules[index]);
+    apply_secondary_options(diag, active.and_then(|a| a.options.as_ref()));
+    if let Some(severity) = active.and_then(|a| a.severity).or(self.default_severity) {
+      diag.severity = severity;
+    }
+    if let Some(active) = active
+      && active.config_name != diag.rule_name
+    {
+      diag.rule_name = active.config_name.clone();
     }
   }
 
@@ -207,7 +479,6 @@ impl LintRunner {
   /// Returns Stylelint's `CssSyntaxError` for a comment it rejects (an
   /// `enable` with nothing disabled, say), which replaces every other
   /// problem in the file, `ignoreDisables` or not.
-  #[allow(clippy::too_many_arguments)]
   fn apply_disables(
     &self,
     diagnostics: &mut Vec<Diagnostic>,
@@ -215,8 +486,6 @@ impl LintRunner {
     parsed: &ParseResult,
     cache: &FileCache,
     file_path: &str,
-    is_configured: &dyn Fn(&str) -> bool,
-    forbids_disable: &dyn Fn(&str) -> bool,
   ) -> Option<Diagnostic> {
     let text = cache.source();
     if !disables::may_have_directives(text) {
@@ -234,429 +503,41 @@ impl LintRunner {
     if let Some(rejected) = rejected.filter(|_| !embedded) {
       return Some(rejected.to_diagnostic(file_path));
     }
-    if !self.needs_disabled_ranges() {
+    if !self.disables.needs_ranges() {
       return None;
     }
     let settings = disables::DisableSettings {
-      suppress: !self.ignore_disables && !embedded,
-      reports: self.disable_reports(),
-      is_configured,
-      forbids_disable,
+      suppress: !self.disables.ignore && !embedded,
+      reports: DisableReports {
+        needless: self.disables.report_needless,
+        invalid_scope: self.disables.report_invalid_scope,
+        descriptionless: self.disables.report_descriptionless,
+        unscoped: self.disables.report_unscoped,
+        // Stylelint reports the comments at `defaultSeverity`, else as
+        // errors.
+        severity: self.default_severity.unwrap_or(Severity::Error),
+      },
+      is_configured: &|name| self.configured.contains(canonical(name)),
+      forbids_disable: &|name| {
+        self.forbids_disable.contains(name) || self.forbids_disable.contains(canonical(name))
+      },
       file_path,
     };
     disables::apply(diagnostics, &ranges, &line_of, &settings);
     None
   }
 
-  /// Whether the comment reports need the disabled ranges at all.
-  fn needs_disabled_ranges(&self) -> bool {
-    !self.ignore_disables
-      || self.report_needless_disables
-      || self.report_invalid_scope_disables
-      || self.report_descriptionless_disables
-      || self.report_unscoped_disables
-  }
-
-  /// Whether a rule was configured with `reportDisables: true`, looking at
-  /// the per-file options first and the runner's own second.
-  fn rule_forbids_disable(
-    &self,
-    extra_options: &HashMap<String, serde_json::Value>,
-    name: &str,
-  ) -> bool {
-    let lookup = |n: &str| {
-      extra_options
-        .get(n)
-        .or_else(|| self.rule_options.get(n))
-        .and_then(secondary_options_of)
-        .and_then(|s| s.get("reportDisables"))
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    };
-    lookup(name) || crate::registry::resolve_deprecated_alias(name).is_some_and(lookup)
-  }
-
-  /// Whether a rule name counts as configured for `reportInvalidScopeDisables`.
-  ///
-  /// Both the config's own keys (which may include plugin rules Gale does
-  /// not implement) and the enabled rules count, compared by canonical name.
-  fn is_configured_rule(&self, extra_enabled: &[String], name: &str) -> bool {
-    let canonical = |n: &str| -> String {
-      crate::registry::resolve_deprecated_alias(n)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| n.to_string())
-    };
-    let wanted = canonical(name);
-    self
-      .configured_rules
-      .iter()
-      .chain(self.enabled_rules.iter())
-      .chain(extra_enabled.iter())
-      .any(|r| canonical(r) == wanted)
-  }
-
-  /// Set the list of rule names from the config (including plugin rules
-  /// Gale doesn't implement).
-  pub fn set_configured_rules(&mut self, rules: Vec<String>) {
-    self.configured_rules = rules;
-  }
-
-  /// Set the global default severity (from config's `defaultSeverity`).
-  pub fn set_default_severity(&mut self, severity: Option<Severity>) {
-    self.default_severity = severity;
-  }
-
-  /// Check if a rule name is known to the registry.
-  pub fn has_rule(&self, name: &str) -> bool {
-    self.registry.get(name).is_some()
-  }
-
-  /// Return a reference to the underlying rule registry.
-  pub fn registry(&self) -> &RuleRegistry {
-    &self.registry
-  }
-
-  /// Parse and lint a CSS source string, returning all diagnostics.
-  ///
-  /// Never panics: a rule that crashes is reported as an internal-error
-  /// problem on the file and the remaining rules still run.
-  pub fn lint_source(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
-    guard_file(source, file_path, || {
-      self.lint_source_unguarded(source, file_path, syntax)
-    })
-  }
-
-  /// [`Self::lint_source`] without the file-level panic guard.
-  fn lint_source_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
-    let debug = perf_enabled();
-    if debug {
-      eprintln!("[perf] start file: {}", file_path);
-    }
-
-    let t0 = Instant::now();
-    let mut parse_result = match parse(source, syntax) {
-      Ok(result) => result,
-      Err(err) => {
-        let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
-          .severity(Severity::Error)
-          .span(Span::new(0, 0));
-        return LintResult::new(file_path, source, vec![diag]);
-      }
-    };
-    if debug {
-      eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
-    }
-    // The walk below is the tree's last use, so it takes the nodes; `finish`
-    // needs only the source map.
-    let nodes = std::mem::take(&mut parse_result.nodes);
-    // Rules read the text the parser saw, which for Sass is the converted
-    // SCSS that every node span points into.  `finish` maps the spans back.
-    let text = parse_result.source.as_str();
-
-    // Collect enabled rules from the registry.
-    let (active_rules, missing) = self.resolve_rules(&self.enabled_rules);
-    let options: Vec<Option<&serde_json::Value>> = active_rules
-      .iter()
-      .map(|rule| self.rule_options.get(rule.name()))
-      .collect();
-
-    let cache = FileCache::new(text, syntax);
-    let mut run = RuleRun::new(&active_rules, options.clone(), options, file_path, &cache);
-
-    // Run document-level checks (check_root).
-    let t1 = Instant::now();
-    run.check_root(&nodes, debug);
-    if debug {
-      eprintln!(
-        "[perf] check_root total: {:.3}s",
-        t1.elapsed().as_secs_f64()
-      );
-    }
-
-    // Walk each top-level node for per-node checks.
-    let t2 = Instant::now();
-    for node in nodes {
-      run.walk(node);
-    }
-    if debug {
-      eprintln!("[perf] walk: {:.3}s", t2.elapsed().as_secs_f64());
-    }
-    let RuleRun {
-      mut diagnostics,
-      failures,
-      invalid_options,
-      ..
-    } = run;
-
-    // Set file_path and apply severity overrides on all diagnostics.
-    let t3 = Instant::now();
-    for diag in &mut diagnostics {
-      if diag.file_path.is_empty() {
-        diag.file_path = file_path.to_string();
-      }
-      apply_secondary_options(diag, self.rule_options.get(&diag.rule_name));
-      // Apply config-specified severity overrides.
-      if let Some(&sev) = self.rule_severities.get(&diag.rule_name) {
-        diag.severity = sev;
-      } else if let Some(default_sev) = self.default_severity {
-        // If no explicit severity override for this rule, apply the
-        // global defaultSeverity from the config.
-        diag.severity = default_sev;
-      }
-    }
-    if debug {
-      eprintln!("[perf] set_file_path: {:.3}s", t3.elapsed().as_secs_f64());
-    }
-
-    // Filter diagnostics based on inline disable comments and optionally
-    // report needless disable comments.  When `ignore_disables` is true,
-    // skip filtering entirely so all diagnostics are reported.
-    let t4 = Instant::now();
-    if let Some(rejected) = self.apply_disables(
-      &mut diagnostics,
-      source,
-      &parse_result,
-      &cache,
-      file_path,
-      &|rule_name| self.is_configured_rule(&[], rule_name),
-      &|rule_name| self.rule_forbids_disable(&HashMap::new(), rule_name),
-    ) {
-      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
-    }
-    if debug {
-      eprintln!("[perf] disable-filter: {:.3}s", t4.elapsed().as_secs_f64());
-    }
-
-    // Rule crashes go in last so that disables, severity overrides and the
-    // `message` option cannot hide or soften them.
-    diagnostics.extend(failures);
-
-    let t5 = Instant::now();
-    let unknown = self.unknown_rule_problems(&missing, source, file_path);
-    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
-    result.invalid_option_warnings = invalid_options;
-    if debug {
-      eprintln!("[perf] sort: {:.3}s", t5.elapsed().as_secs_f64());
-      eprintln!("[perf] total diagnostics: {}", result.diagnostics.len());
-    }
-    result
-  }
-
-  /// Parse and lint a CSS source string using a custom set of enabled rule
-  /// names instead of the runner's default list.  Used when config overrides
-  /// change the effective rules for a specific file.
-  ///
-  /// Never panics, for the same reason as [`Self::lint_source`].
-  pub fn lint_source_with_rules(
-    &self,
-    source: &str,
-    file_path: &str,
-    syntax: Syntax,
-    enabled_rules: &[String],
-    rule_options: &HashMap<String, serde_json::Value>,
-    rule_severities: &HashMap<String, Severity>,
-  ) -> LintResult {
-    guard_file(source, file_path, || {
-      self.lint_source_with_rules_unguarded(
-        source,
-        file_path,
-        syntax,
-        enabled_rules,
-        rule_options,
-        rule_severities,
-      )
-    })
-  }
-
-  /// [`Self::lint_source_with_rules`] without the file-level panic guard.
-  fn lint_source_with_rules_unguarded(
-    &self,
-    source: &str,
-    file_path: &str,
-    syntax: Syntax,
-    enabled_rules: &[String],
-    rule_options: &HashMap<String, serde_json::Value>,
-    rule_severities: &HashMap<String, Severity>,
-  ) -> LintResult {
-    let debug = perf_enabled();
-    if debug {
-      eprintln!("[perf] start file: {}", file_path);
-    }
-
-    let t0 = Instant::now();
-    let mut parse_result = match parse(source, syntax) {
-      Ok(result) => result,
-      Err(err) => {
-        let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
-          .severity(Severity::Error)
-          .span(Span::new(0, 0));
-        return LintResult::new(file_path, source, vec![diag]);
-      }
-    };
-    if debug {
-      eprintln!("[perf] parse: {:.3}s", t0.elapsed().as_secs_f64());
-    }
-    // The walk below is the tree's last use, so it takes the nodes; `finish`
-    // needs only the source map.
-    let nodes = std::mem::take(&mut parse_result.nodes);
-    // Rules read the text the parser saw, which for Sass is the converted
-    // SCSS that every node span points into.  `finish` maps the spans back.
-    let text = parse_result.source.as_str();
-
-    let (active_rules, missing) = self.resolve_rules(enabled_rules);
-
-    // `check_root` sees the per-file options, falling back to the runner's
-    // own.  The node walk sees the per-file options alone when there are
-    // any, and the runner's otherwise.
-    let root_options: Vec<Option<&serde_json::Value>> = active_rules
-      .iter()
-      .map(|rule| {
-        rule_options
-          .get(rule.name())
-          .or_else(|| self.rule_options.get(rule.name()))
-      })
-      .collect();
-    let merged_options = if rule_options.is_empty() {
-      &self.rule_options
-    } else {
-      rule_options
-    };
-    let node_options: Vec<Option<&serde_json::Value>> = active_rules
-      .iter()
-      .map(|rule| merged_options.get(rule.name()))
-      .collect();
-
-    let cache = FileCache::new(text, syntax);
-    let mut run = RuleRun::new(&active_rules, root_options, node_options, file_path, &cache);
-
-    let t1 = Instant::now();
-    run.check_root(&nodes, debug);
-    if debug {
-      eprintln!(
-        "[perf] check_root total: {:.3}s",
-        t1.elapsed().as_secs_f64()
-      );
-    }
-
-    let t2 = Instant::now();
-    for node in nodes {
-      run.walk(node);
-    }
-    if debug {
-      eprintln!("[perf] walk: {:.3}s", t2.elapsed().as_secs_f64());
-    }
-    let RuleRun {
-      mut diagnostics,
-      mut failures,
-      invalid_options,
-      ..
-    } = run;
-
-    // Build alias map: canonical rule name -> config-specified name.
-    // When the config uses a deprecated name (e.g. "function-comma-space-after"),
-    // the registry resolves it to the canonical name (e.g. "@stylistic/function-comma-space-after").
-    // We need to relabel diagnostics back to the config name for output compatibility.
-    let alias_map: HashMap<String, String> = enabled_rules
-      .iter()
-      .filter_map(|config_name| {
-        let rule = self.registry.get(config_name)?;
-        let canonical = rule.name();
-        if canonical != config_name.as_str() {
-          Some((canonical.to_string(), config_name.clone()))
-        } else {
-          None
-        }
-      })
-      .collect();
-
-    for diag in &mut diagnostics {
-      if diag.file_path.is_empty() {
-        diag.file_path = file_path.to_string();
-      }
-      apply_secondary_options(
-        diag,
-        rule_options
-          .get(&diag.rule_name)
-          .or_else(|| self.rule_options.get(&diag.rule_name)),
-      );
-      // Apply config-specified severity overrides BEFORE relabeling,
-      // because severities are keyed by canonical rule name.
-      if let Some(&sev) = rule_severities
-        .get(&diag.rule_name)
-        .or_else(|| self.rule_severities.get(&diag.rule_name))
-      {
-        diag.severity = sev;
-      } else if let Some(default_sev) = self.default_severity {
-        diag.severity = default_sev;
-      }
-      // Relabel rule name from canonical to config-specified alias.
-      if let Some(config_name) = alias_map.get(&diag.rule_name) {
-        diag.rule_name = config_name.clone();
-      }
-    }
-
-    if let Some(rejected) = self.apply_disables(
-      &mut diagnostics,
-      source,
-      &parse_result,
-      &cache,
-      file_path,
-      &|rule_name| self.is_configured_rule(enabled_rules, rule_name),
-      &|rule_name| self.rule_forbids_disable(rule_options, rule_name),
-    ) {
-      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
-    }
-
-    // Rule crashes go in last, as in `lint_source`, under the rule name the
-    // config used.
-    for failure in &mut failures {
-      if let Some(config_name) = alias_map.get(&failure.rule_name) {
-        failure.rule_name = config_name.clone();
-      }
-    }
-    diagnostics.extend(failures);
-
-    let unknown = self.unknown_rule_problems(&missing, source, file_path);
-    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
-    result.invalid_option_warnings = invalid_options;
-    result
-  }
-
-  /// The registered rules behind `names`, and the names the registry does
-  /// not know.
-  fn resolve_rules<'r>(&'r self, names: &'r [String]) -> (Vec<&'r dyn Rule>, Vec<&'r str>) {
-    let mut active = Vec::with_capacity(names.len());
-    let mut missing = Vec::new();
-    for name in names {
-      match self.registry.get(name) {
-        Some(rule) => active.push(rule),
-        None => missing.push(name.as_str()),
-      }
-    }
-    (active, missing)
-  }
-
   /// Stylelint's report for every enabled name that is no rule at all:
   /// `Unknown rule <name>.` as an error at the very start of the file, like
   /// Stylelint's own (which disables, severities and the `message` option do
   /// not touch either).
-  ///
-  /// `missing` holds the enabled names the registry does not know.  Those
-  /// that are real Stylelint or plugin rules gale has not implemented, or
-  /// rules Stylelint has removed, are skipped silently here; the CLI warns
-  /// about them once per run.
-  fn unknown_rule_problems(
-    &self,
-    missing: &[&str],
-    source: &str,
-    file_path: &str,
-  ) -> Vec<Diagnostic> {
+  fn unknown_rule_problems(&self, source: &str, file_path: &str) -> Vec<Diagnostic> {
     let first_char = source.chars().next().map_or(1, char::len_utf8);
-    missing
+    self
+      .unknown
       .iter()
-      .filter(|name| known_rules::classify(&self.registry, name) == RuleSupport::Unknown)
       .map(|name| {
-        Diagnostic::new(*name, known_rules::unknown_rule_message(name))
+        Diagnostic::new(name.as_str(), known_rules::unknown_rule_message(name))
           .severity(Severity::Error)
           .span(Span::new(0, first_char))
           .file_path(file_path)
@@ -673,11 +554,11 @@ impl LintRunner {
 /// converted SCSS, so applying them to the Sass file would corrupt it.
 ///
 /// Diagnostics are sorted by position.  The rule name breaks ties: rules run
-/// in the order `enabled_rules` happens to hold them, which comes from a
-/// HashMap and so varies between processes.  Without a tiebreaker two
-/// warnings at the same offset swap places between runs.
+/// in the order the config's rule map happens to hold them, which varies
+/// between processes.  Without a tiebreaker two warnings at the same offset
+/// swap places between runs.
 ///
-/// `unknown_rules` (from [`LintRunner::unknown_rule_problems`]) already point
+/// `unknown_rules` (from [`RuleSet::unknown_rule_problems`]) already point
 /// into `source` and are added after the mapping.
 fn finish(
   file_path: &str,
@@ -706,16 +587,18 @@ fn finish(
   LintResult::new(file_path, source, diagnostics)
 }
 
-/// The problem reported in place of a rule that panicked.
+/// The problem reported in place of a rule that panicked, under the name
+/// the config used for it.
 ///
 /// It is an error whatever the rule's configured severity, so the run exits
 /// non-zero, and it carries the panic message and location so the report is
 /// enough to file a bug.
-fn internal_error(rule_name: &str, caught: &Caught, offset: usize) -> Diagnostic {
+fn internal_error(active: &ActiveRule, caught: &Caught, offset: usize) -> Diagnostic {
   Diagnostic::new(
-    rule_name,
+    active.config_name.as_str(),
     format!(
-      "Internal error in rule \"{rule_name}\": {}. This is a bug in gale; please report it at {ISSUES_URL}",
+      "Internal error in rule \"{}\": {}. This is a bug in gale; please report it at {ISSUES_URL}",
+      active.rule.name(),
       caught.describe()
     ),
   )
@@ -749,84 +632,56 @@ fn guard_file(source: &str, file_path: &str, lint: impl FnOnce() -> LintResult) 
   })
 }
 
-/// One file's pass over its active rules.
+/// One file's pass over a rule set's rules.
 ///
 /// Every `check_root` and `check` call runs inside [`panic_guard::catch`].  A
 /// rule that panics is reported once, as an internal error at the node it was
 /// checking, and skipped for the rest of the file; the other rules carry on.
 struct RuleRun<'a> {
-  rules: &'a [&'a dyn Rule],
-  /// The options each rule sees in `check_root`, by index into `rules`.
-  root_options: Vec<Option<&'a serde_json::Value>>,
-  /// The options each rule sees in `check`, by index into `rules`.
-  node_options: Vec<Option<&'a serde_json::Value>>,
+  set: &'a RuleSet,
   file_path: &'a str,
   source: &'a str,
   syntax: Syntax,
   /// What the rules share for this file, built from `source`.
   cache: &'a FileCache<'a>,
-  /// `failed[i]` once `rules[i]` has panicked on this file.
+  /// `failed[i]` once rule `i` has panicked on this file.
   failed: Vec<bool>,
   /// What the rules reported.
   diagnostics: Vec<Diagnostic>,
   /// One internal-error problem per rule that panicked.  Kept apart from
   /// `diagnostics` so disables and severity overrides never touch them.
   failures: Vec<Diagnostic>,
-  /// Texts of the invalid-option reports the rules returned, each once.
+  /// Texts of the invalid-option reports, each once.
   invalid_options: Vec<String>,
 }
 
 impl<'a> RuleRun<'a> {
-  /// Prepare a pass of `rules` over one file, the text `cache` was built
-  /// for.
-  fn new(
-    rules: &'a [&'a dyn Rule],
-    root_options: Vec<Option<&'a serde_json::Value>>,
-    node_options: Vec<Option<&'a serde_json::Value>>,
-    file_path: &'a str,
-    cache: &'a FileCache<'a>,
-  ) -> Self {
-    let mut run = Self {
-      rules,
-      root_options,
-      node_options,
+  /// Prepare a pass of `set` over one file, the text `cache` was built for.
+  fn new(set: &'a RuleSet, file_path: &'a str, cache: &'a FileCache<'a>) -> Self {
+    Self {
+      set,
       file_path,
       source: cache.source(),
       syntax: cache.syntax(),
       cache,
-      failed: vec![false; rules.len()],
+      failed: vec![false; set.rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
-      invalid_options: Vec::new(),
-    };
-    run.validate_patterns();
-    run
-  }
-
-  /// Report every regex literal in the rules' options that does not
-  /// compile, so a broken `ignore*: ["/[a-z/"]` entry is an invalid option
-  /// rather than an entry that silently matches nothing.
-  fn validate_patterns(&mut self) {
-    for (index, rule) in self.rules.iter().enumerate() {
-      let options = [self.root_options[index], self.node_options[index]];
-      for value in options.into_iter().flatten() {
-        for invalid in pattern::invalid_options(rule.name(), value) {
-          if !self.invalid_options.contains(&invalid.message) {
-            self.invalid_options.push(invalid.message);
-          }
-        }
-      }
+      invalid_options: set.invalid_patterns.clone(),
     }
   }
 
-  /// The context a rule's options are read through for one call.
-  fn context(&self, options: Option<&'a serde_json::Value>) -> RuleContext<'a> {
+  /// The context rule `index` is called with: the same in `check_root` and
+  /// in every `check`.
+  fn context(&self, index: usize) -> RuleContext<'a> {
+    let set: &'a RuleSet = self.set;
     RuleContext {
       file_path: self.file_path,
       source: self.source,
       syntax: self.syntax,
-      options,
+      options: set.rules[index].options.as_ref(),
       cache: Some(self.cache),
+      env: set.env,
     }
   }
 
@@ -850,26 +705,34 @@ impl<'a> RuleRun<'a> {
         let offset = clamp_to_char_boundary(self.source, offset);
         self
           .failures
-          .push(internal_error(self.rules[index].name(), &caught, offset));
+          .push(internal_error(&self.set.rules[index], &caught, offset));
       }
     }
   }
 
   /// Run every rule's document-level `check_root`.
-  fn check_root(&mut self, nodes: &[CssNode], debug: bool) {
-    for index in 0..self.rules.len() {
-      let rule = self.rules[index];
-      let context = self.context(self.root_options[index]);
-      let started = Instant::now();
+  ///
+  /// With `timed`, a rule whose `check_root` is slow is timed on its own.
+  fn check_root(&mut self, nodes: &[CssNode], timed: bool) {
+    for index in 0..self.set.rules.len() {
+      let rule = self.set.rules[index].rule;
+      let context = self.context(index);
+      let started = timed.then(Instant::now);
       let source = self.source;
       let outcome = panic_guard::catch(|| {
         debug_panic(rule.name(), source);
         rule.check_root(nodes, &context)
       });
-      if debug {
-        let elapsed = started.elapsed().as_secs_f64();
-        if elapsed > 0.001 {
-          eprintln!("[perf] check_root {}: {:.3}s", rule.name(), elapsed);
+      if let Some(started) = started {
+        let secs = started.elapsed().as_secs_f64();
+        if secs > SLOW_CHECK_ROOT_SECS {
+          tracing::debug!(
+            target: PERF_TARGET,
+            file = self.file_path,
+            rule = rule.name(),
+            secs,
+            "slow check_root"
+          );
         }
       }
       self.record(index, outcome, 0);
@@ -885,12 +748,12 @@ impl<'a> RuleRun<'a> {
     let offset = node.span().offset;
     // `node` stays put until `leave_node`, as `enter_node` requires.
     self.cache.enter_node(&node);
-    for index in 0..self.rules.len() {
+    for index in 0..self.set.rules.len() {
       if self.failed[index] {
         continue;
       }
-      let rule = self.rules[index];
-      let context = self.context(self.node_options[index]);
+      let rule = self.set.rules[index].rule;
+      let context = self.context(index);
       let outcome = panic_guard::catch(|| rule.check(&node, &context));
       self.record(index, outcome, offset);
     }
@@ -933,11 +796,37 @@ mod tests {
   use super::*;
   use crate::registry::RuleRegistry;
 
+  /// The spec of a set running `rules` with no options.
+  fn spec_for(rules: &[&str]) -> RuleSetSpec {
+    RuleSetSpec {
+      rules: rules.iter().map(|r| RuleSetting::new(*r)).collect(),
+      ..RuleSetSpec::default()
+    }
+  }
+
+  /// A set running `rules` with no options.
+  fn set_for(rules: &[&str]) -> RuleSet {
+    RuleSet::of_rules(rules.iter().copied())
+  }
+
+  /// A set running just `rule`, configured with `options`.
+  fn set_with_options(rule: &str, options: serde_json::Value) -> RuleSet {
+    RuleSet::new(RuleSetSpec {
+      rules: vec![RuleSetting::new(rule).with_options(options)],
+      ..RuleSetSpec::default()
+    })
+  }
+
+  /// A set running `rules` with rules from `registry`, which is leaked so
+  /// the set can borrow its rules as it borrows the built-in ones.
+  fn set_in(registry: RuleRegistry, spec: RuleSetSpec) -> RuleSet {
+    RuleSet::with_registry(Box::leak(Box::new(registry)), spec)
+  }
+
   #[test]
   fn lint_empty_block() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
-    let result = runner.lint_source("a { }", "test.css", Syntax::Css);
+    let set = set_for(&["block-no-empty"]);
+    let result = set.lint("a { }", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].rule_name, "block-no-empty");
     assert_eq!(result.diagnostics[0].message, "Unexpected empty block");
@@ -945,17 +834,15 @@ mod tests {
 
   #[test]
   fn lint_non_empty_block() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
-    let result = runner.lint_source("a { color: red; }", "test.css", Syntax::Css);
+    let set = set_for(&["block-no-empty"]);
+    let result = set.lint("a { color: red; }", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn disabled_rule_not_run() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec![]);
-    let result = runner.lint_source("a { }", "test.css", Syntax::Css);
+    let set = set_for(&[]);
+    let result = set.lint("a { }", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
@@ -963,11 +850,11 @@ mod tests {
 
   #[test]
   fn a_lookahead_pattern_works() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "selector-class-pattern",
       serde_json::json!("^(?!js-)[a-z-]+$"),
     );
-    let result = runner.lint_source(".card {}\n.js-card {}\n", "test.css", Syntax::Css);
+    let result = set.lint(".card {}\n.js-card {}\n", "test.css", Syntax::Css);
     assert!(result.invalid_option_warnings.is_empty());
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     assert!(result.diagnostics[0].message.contains("js-card"));
@@ -975,8 +862,8 @@ mod tests {
 
   #[test]
   fn a_pattern_that_does_not_compile_is_an_invalid_option_once_per_file() {
-    let runner = runner_with_options("selector-class-pattern", serde_json::json!("^[a-z"));
-    let result = runner.lint_source(".a {}\n.b {}\n", "test.css", Syntax::Css);
+    let set = set_with_options("selector-class-pattern", serde_json::json!("^[a-z"));
+    let result = set.lint(".a {}\n.b {}\n", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.invalid_option_warnings.len(), 1);
     assert!(
@@ -990,11 +877,11 @@ mod tests {
 
   #[test]
   fn a_broken_list_entry_is_an_invalid_option() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "color-named",
       serde_json::json!(["never", { "ignoreProperties": ["/[broken/"] }]),
     );
-    let result = runner.lint_source("a { color: red; }\n", "test.css", Syntax::Css);
+    let result = set.lint("a { color: red; }\n", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1, "the rule still runs");
     assert_eq!(
       result.invalid_option_warnings.len(),
@@ -1009,8 +896,8 @@ mod tests {
 
   #[test]
   fn an_unknown_rule_is_reported_like_stylelint() {
-    let runner = runner_for(&["block-no-emty", "block-no-empty"]);
-    let result = runner.lint_source("a {}\n", "test.css", Syntax::Css);
+    let set = set_for(&["block-no-emty", "block-no-empty"]);
+    let result = set.lint("a {}\n", "test.css", Syntax::Css);
     let unknown: Vec<&Diagnostic> = result
       .diagnostics
       .iter()
@@ -1036,23 +923,18 @@ mod tests {
   #[test]
   fn rules_gale_lacks_are_not_unknown() {
     // A Stylelint core rule gale has not implemented, and a plugin rule.
-    let runner = runner_for(&["no-unknown-custom-properties", "acme/no-foo"]);
-    let result = runner.lint_source("a {}\n", "test.css", Syntax::Css);
+    let set = set_for(&["no-unknown-custom-properties", "acme/no-foo"]);
+    let result = set.lint("a {}\n", "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
   }
 
   #[test]
   fn unknown_rules_ignore_disables_and_default_severity() {
-    let mut runner = runner_for(&["not-a-rule"]);
-    runner.set_default_severity(Some(Severity::Warning));
-    let result = runner.lint_source_with_rules(
-      "/* stylelint-disable */\na {}\n",
-      "test.css",
-      Syntax::Css,
-      &["not-a-rule".to_string()],
-      &HashMap::new(),
-      &HashMap::new(),
-    );
+    let set = RuleSet::new(RuleSetSpec {
+      default_severity: Some(Severity::Warning),
+      ..spec_for(&["not-a-rule"])
+    });
+    let result = set.lint("/* stylelint-disable */\na {}\n", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     assert_eq!(result.diagnostics[0].message, "Unknown rule not-a-rule.");
     assert_eq!(result.diagnostics[0].severity, Severity::Error);
@@ -1094,11 +976,11 @@ mod tests {
 
   #[test]
   fn a_panicking_rule_is_reported_once_and_other_rules_still_run() {
-    let runner = LintRunner::new(
+    let set = set_in(
       registry_with_panicking_rule(),
-      vec!["test/panics".to_string(), "block-no-empty".to_string()],
+      spec_for(&["test/panics", "block-no-empty"]),
     );
-    let result = runner.lint_source("a {}\nb {}\n", "test.css", Syntax::Css);
+    let result = set.lint("a {}\nb {}\n", "test.css", Syntax::Css);
 
     let crashes: Vec<&Diagnostic> = result
       .diagnostics
@@ -1129,36 +1011,55 @@ mod tests {
 
   #[test]
   fn a_rule_crash_ignores_disables_and_severity_overrides() {
-    let mut severities = HashMap::new();
-    severities.insert("test/panics".to_string(), Severity::Warning);
-    let mut options = HashMap::new();
-    options.insert(
-      "test/panics".to_string(),
-      serde_json::json!([true, { "message": "custom" }]),
-    );
-    let runner = LintRunner::with_options_and_severities(
+    let set = set_in(
       registry_with_panicking_rule(),
-      vec!["test/panics".to_string()],
-      options,
-      severities,
+      RuleSetSpec {
+        rules: vec![
+          RuleSetting::new("test/panics")
+            .with_options(serde_json::json!([true, { "message": "custom" }]))
+            .with_severity(Severity::Warning),
+        ],
+        ..RuleSetSpec::default()
+      },
     );
     let src = "/* stylelint-disable */\na { color: red; }\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     assert_eq!(result.diagnostics[0].severity, Severity::Error);
     assert!(result.diagnostics[0].message.starts_with("Internal error"));
   }
 
   #[test]
-  fn per_file_rule_sets_are_guarded_too() {
-    let runner = LintRunner::new(registry_with_panicking_rule(), vec![]);
-    let result = runner.lint_source_with_rules(
-      "a { color: red; }",
-      "test.css",
+  fn host_files_are_linted_per_block_with_the_blocks_syntax() {
+    let set = RuleSet::new(RuleSetSpec {
+      rules: vec![
+        RuleSetting::new("scss/dollar-variable-pattern")
+          .with_options(serde_json::json!("^[a-z]+$")),
+      ],
+      ..RuleSetSpec::default()
+    });
+    let source = "<template></template>\n<style lang=\"scss\">$Bad: 1;</style>\n";
+    let result = set.lint(source, "a.vue", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(
+      result.diagnostics[0].span.offset,
+      source.find("$Bad").unwrap()
+    );
+    // The same text as a style sheet of its own is CSS, not SCSS.
+    let as_css = set.lint("$Bad: 1;", "a.css", Syntax::Css);
+    assert!(as_css.diagnostics.is_empty(), "{:?}", as_css.diagnostics);
+  }
+
+  #[test]
+  fn embedded_style_sheets_are_guarded_too() {
+    let set = set_in(
+      registry_with_panicking_rule(),
+      spec_for(&["test/panics", "color-named"]),
+    );
+    let result = set.lint(
+      "<template></template>\n<style>a { color: red; }</style>\n",
+      "test.vue",
       Syntax::Css,
-      &["test/panics".to_string(), "color-named".to_string()],
-      &HashMap::new(),
-      &HashMap::new(),
     );
     let rules: Vec<&str> = result
       .diagnostics
@@ -1167,6 +1068,153 @@ mod tests {
       .collect();
     assert!(rules.contains(&"test/panics"), "{rules:?}");
     assert!(rules.contains(&"color-named"), "{rules:?}");
+  }
+
+  // -- Configured names, options and severities --
+
+  #[test]
+  fn problems_are_reported_under_the_name_the_config_used() {
+    // `indentation` is the deprecated name of `@stylistic/indentation`.
+    for name in ["indentation", "@stylistic/indentation"] {
+      let set = RuleSet::new(RuleSetSpec {
+        rules: vec![
+          RuleSetting::new(name)
+            .with_options(serde_json::json!([2, { "message": "indent it" }]))
+            .with_severity(Severity::Warning),
+        ],
+        ..RuleSetSpec::default()
+      });
+      let result = set.lint("a {\n    top: 0;\n}\n", "test.css", Syntax::Css);
+      assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+      let d = &result.diagnostics[0];
+      assert_eq!(d.rule_name, name);
+      assert_eq!(d.message, "indent it");
+      assert_eq!(d.severity, Severity::Warning);
+    }
+  }
+
+  #[test]
+  fn a_rule_named_twice_runs_once_under_its_own_name() {
+    let set = set_for(&["indentation", "@stylistic/indentation"]);
+    let result = set.lint("a {\n   top: 0;\n}\n", "test.css", Syntax::Css);
+    let names: Vec<&str> = result
+      .diagnostics
+      .iter()
+      .map(|d| d.rule_name.as_str())
+      .collect();
+    assert_eq!(names, ["@stylistic/indentation"]);
+  }
+
+  #[test]
+  fn the_default_severity_applies_to_rules_without_their_own() {
+    let set = RuleSet::new(RuleSetSpec {
+      rules: vec![
+        RuleSetting::new("block-no-empty"),
+        RuleSetting::new("color-named")
+          .with_options(serde_json::json!("never"))
+          .with_severity(Severity::Error),
+      ],
+      default_severity: Some(Severity::Warning),
+      ..RuleSetSpec::default()
+    });
+    let result = set.lint("a {}\nb { color: red; }\n", "test.css", Syntax::Css);
+    let severities: Vec<(&str, Severity)> = result
+      .diagnostics
+      .iter()
+      .map(|d| (d.rule_name.as_str(), d.severity))
+      .collect();
+    assert_eq!(
+      severities,
+      [
+        ("block-no-empty", Severity::Warning),
+        ("color-named", Severity::Error)
+      ]
+    );
+  }
+
+  /// A rule that reports the options it was called with, from `check_root`
+  /// and from `check` on each style rule.
+  struct ReportsOptions;
+
+  impl Rule for ReportsOptions {
+    /// The rule's test-only name.
+    fn name(&self) -> &'static str {
+      "test/reports-options"
+    }
+
+    /// What the rule does.
+    fn description(&self) -> &'static str {
+      "Reports the options it sees"
+    }
+
+    /// Warnings, like most rules.
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    /// Reports the options seen at the root.
+    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+      vec![Diagnostic::new(
+        self.name(),
+        format!("root {:?}", ctx.options),
+      )]
+    }
+
+    /// Reports the options seen on a style rule.
+    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+      match node {
+        CssNode::Style(_) => vec![
+          Diagnostic::new(self.name(), format!("node {:?}", ctx.options))
+            .span(Span::new(node.span().offset, 1)),
+        ],
+        _ => vec![],
+      }
+    }
+  }
+
+  #[test]
+  fn a_rule_sees_the_same_options_in_check_root_and_check() {
+    let mut registry = RuleRegistry::default();
+    registry.register(Box::new(ReportsOptions));
+    let set = set_in(
+      registry,
+      RuleSetSpec {
+        rules: vec![RuleSetting::new("test/reports-options").with_options(serde_json::json!(3))],
+        ..RuleSetSpec::default()
+      },
+    );
+    let result = set.lint("a {}", "test.css", Syntax::Css);
+    let messages: Vec<&str> = result
+      .diagnostics
+      .iter()
+      .map(|d| d.message.as_str())
+      .collect();
+    assert_eq!(messages, ["root Some(Number(3))", "node Some(Number(3))"]);
+  }
+
+  #[test]
+  fn rules_see_the_environment_of_their_set() {
+    let src = "a { height: 100dvh; }";
+    let modern = set_for(&["unit-no-unknown"]);
+    assert!(
+      modern
+        .lint(src, "test.css", Syntax::Css)
+        .diagnostics
+        .is_empty()
+    );
+
+    let legacy = RuleSet::new(RuleSetSpec {
+      env: LintEnv {
+        stylelint_version: Some((14, 16, 1)),
+      },
+      ..spec_for(&["unit-no-unknown"])
+    });
+    let result = legacy.lint(src, "test.css", Syntax::Css);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(
+      result.diagnostics[0].message,
+      "Unexpected unknown unit \"dvh\""
+    );
   }
 
   // -- Panics and the artifacts rules share --
@@ -1316,16 +1364,16 @@ mod tests {
     }
   }
 
-  /// A runner over `rules`, in that order, with the test rules above
+  /// A set running `rules`, in that order, with the test rules above
   /// registered.
-  fn runner_with_tree_rules(rules: &[&str]) -> LintRunner {
+  fn set_with_tree_rules(rules: &[&str]) -> RuleSet {
     let mut registry = RuleRegistry::default();
     registry.register(Box::new(ReportsTreeRules));
     registry.register(Box::new(BreaksTreeBuild));
     registry.register(Box::new(PanicsHoldingTree));
     registry.register(Box::new(ReportsDeclarations));
     registry.register(Box::new(PanicsHoldingDeclarations));
-    LintRunner::new(registry, rules.iter().map(|r| r.to_string()).collect())
+    set_in(registry, spec_for(rules))
   }
 
   /// The messages of `rule`'s problems, by offset.
@@ -1343,7 +1391,7 @@ mod tests {
   /// comments read after the rules.
   #[test]
   fn a_shared_build_that_panics_is_built_again_for_the_next_rule() {
-    let runner = runner_with_tree_rules(&["test/breaks-tree-build", "test/tree-rules"]);
+    let set = set_with_tree_rules(&["test/breaks-tree-build", "test/tree-rules"]);
     // The disable comment is read from the same shared tree, after the
     // failed build: it must still apply.
     let src = "a {}
@@ -1351,7 +1399,7 @@ mod tests {
 b {}
 c {}
 ";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
 
     let crashes = problems_of(&result, "test/breaks-tree-build");
     assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
@@ -1373,8 +1421,8 @@ c {}
   /// reference; the other rules still get the tree.
   #[test]
   fn a_rule_that_panics_holding_the_shared_tree_leaves_it_to_the_others() {
-    let runner = runner_with_tree_rules(&["test/panics-holding-tree", "test/tree-rules"]);
-    let result = runner.lint_source(
+    let set = set_with_tree_rules(&["test/panics-holding-tree", "test/tree-rules"]);
+    let result = set.lint(
       "a {}
 b {}
 ",
@@ -1399,9 +1447,9 @@ b {}
   /// not lock them: the next rule reads them for that node and every other.
   #[test]
   fn a_rule_that_panics_holding_shared_declarations_leaves_them_to_the_others() {
-    let runner = runner_with_tree_rules(&["test/panics-holding-declarations", "test/declarations"]);
+    let set = set_with_tree_rules(&["test/panics-holding-declarations", "test/declarations"]);
     let src = "a { color: red; top: 0 }\nb { left: 0 }\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
 
     let crashes = problems_of(&result, "test/panics-holding-declarations");
     assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
@@ -1432,81 +1480,73 @@ b {}
 
   #[test]
   fn gale_disable_all() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable */\na { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn gale_disable_specific_rule() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable block-no-empty */\na { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn gale_disable_wrong_rule_still_reports() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable some-other-rule */\na { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
   }
 
   #[test]
   fn gale_disable_enable_block() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable */\na { }\n/* gale-enable */\nb { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     // First `a { }` is disabled, second `b { }` should be reported.
     assert_eq!(result.diagnostics.len(), 1);
   }
 
   #[test]
   fn gale_disable_next_line() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable-next-line */\na { }\nb { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     // Only `a { }` is disabled; `b { }` still reported.
     assert_eq!(result.diagnostics.len(), 1);
   }
 
   #[test]
   fn gale_disable_next_line_specific_rule() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* gale-disable-next-line block-no-empty */\na { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn stylelint_disable_compat() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* stylelint-disable */\na { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn stylelint_disable_next_line_compat() {
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = "/* stylelint-disable-next-line */\na { }\nb { }";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
   }
 
-  /// The lines `runner` reports problems on in `src`.
-  fn problem_lines(runner: &LintRunner, src: &str, path: &str, syntax: Syntax) -> Vec<usize> {
-    let result = runner.lint_source(src, path, syntax);
+  /// The lines `set` reports problems on in `src`.
+  fn problem_lines(set: &RuleSet, src: &str, path: &str, syntax: Syntax) -> Vec<usize> {
+    let result = set.lint(src, path, syntax);
     let index = SourceLineIndex::build(src);
     result
       .diagnostics
@@ -1517,8 +1557,8 @@ b {}
 
   #[test]
   fn disables_cover_whole_lines_like_stylelint() {
-    let runner = runner_for(&["block-no-empty"]);
-    let lines = |src: &str| problem_lines(&runner, src, "test.css", Syntax::Css);
+    let set = set_for(&["block-no-empty"]);
+    let lines = |src: &str| problem_lines(&set, src, "test.css", Syntax::Css);
     // A disable covers its own line, code before it included, and the
     // enable's line is still off.
     assert_eq!(
@@ -1542,37 +1582,29 @@ b {}
 
   #[test]
   fn a_plain_enable_turns_rules_disabled_by_name_back_on() {
-    let runner = runner_for(&["color-no-invalid-hex"]);
+    let set = set_for(&["color-no-invalid-hex"]);
     let src = "/* stylelint-disable color-no-invalid-hex */\na { color: #ab; }\n/* stylelint-enable */\na { color: #ab; }\n";
-    assert_eq!(
-      problem_lines(&runner, src, "test.css", Syntax::Css),
-      vec![4]
-    );
+    assert_eq!(problem_lines(&set, src, "test.css", Syntax::Css), vec![4]);
     // And enabling one rule under a blanket disable turns on just that one.
-    let runner = runner_for(&["color-no-invalid-hex", "block-no-empty"]);
+    let set = set_for(&["color-no-invalid-hex", "block-no-empty"]);
     let src = "/* stylelint-disable */\na {}\n/* stylelint-enable color-no-invalid-hex */\nb { color: #ab; }\nc {}\n";
-    assert_eq!(
-      problem_lines(&runner, src, "test.css", Syntax::Css),
-      vec![4]
-    );
+    assert_eq!(problem_lines(&set, src, "test.css", Syntax::Css), vec![4]);
   }
 
   #[test]
   fn a_rejected_command_replaces_every_problem_like_stylelint() {
-    let mut runner = runner_for(&["block-no-empty", "not-a-rule"]);
-    runner.set_default_severity(Some(Severity::Warning));
-    runner.set_ignore_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        ignore: true,
+        ..DisableOptions::default()
+      },
+      default_severity: Some(Severity::Warning),
+      ..spec_for(&["block-no-empty", "not-a-rule"])
+    });
     let src = "a {}\n/* stylelint-enable */\nb {}\n";
     for result in [
-      runner.lint_source(src, "test.css", Syntax::Css),
-      runner.lint_source_with_rules(
-        src,
-        "test.css",
-        Syntax::Css,
-        &["block-no-empty".to_string()],
-        &HashMap::new(),
-        &HashMap::new(),
-      ),
+      set.lint(src, "test.css", Syntax::Css),
+      set_for(&["block-no-empty"]).lint(src, "test.css", Syntax::Css),
     ] {
       assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
       let d = &result.diagnostics[0];
@@ -1589,19 +1621,19 @@ b {}
 
   #[test]
   fn double_slash_commands_need_scss_or_less() {
-    let runner = runner_for(&["block-no-empty"]);
+    let set = set_for(&["block-no-empty"]);
     let src = "// stylelint-disable-next-line block-no-empty\na {}\nb {}\n";
-    assert_eq!(problem_lines(&runner, src, "t.scss", Syntax::Scss), vec![3]);
-    assert_eq!(problem_lines(&runner, src, "t.less", Syntax::Less), vec![3]);
+    assert_eq!(problem_lines(&set, src, "t.scss", Syntax::Scss), vec![3]);
+    assert_eq!(problem_lines(&set, src, "t.less", Syntax::Less), vec![3]);
     // In CSS the line is part of the next selector, not a comment.
-    let hex = runner_for(&["color-no-invalid-hex"]);
+    let hex = set_for(&["color-no-invalid-hex"]);
     let css = "a { color: #ab; } // stylelint-disable-line color-no-invalid-hex\nb {}\n";
     assert_eq!(problem_lines(&hex, css, "t.css", Syntax::Css), vec![1]);
     assert!(problem_lines(&hex, css, "t.scss", Syntax::Scss).is_empty());
     // A description on the next `//` line makes the command span both.
     let described = "// stylelint-disable-next-line block-no-empty\n// -- legacy\na {}\nb {}\n";
     assert_eq!(
-      problem_lines(&runner, described, "t.scss", Syntax::Scss),
+      problem_lines(&set, described, "t.scss", Syntax::Scss),
       vec![4]
     );
   }
@@ -1610,29 +1642,19 @@ b {}
   fn sass_disables_count_the_lines_of_the_sass() {
     // The converted SCSS gains a `}` line before `color`, which must not
     // push the problem off the line the command names.
-    let mut options = HashMap::new();
-    options.insert("color-hex-case".to_string(), serde_json::json!("lower"));
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec!["color-hex-case".to_string()],
-      options,
-    );
+    let set = set_with_options("color-hex-case", serde_json::json!("lower"));
     let src =
       ".a\n  .b\n    // stylelint-disable-next-line color-hex-case\n  color: #FFF\n  top: #FFF\n";
-    assert_eq!(
-      problem_lines(&runner, src, "test.sass", Syntax::Sass),
-      vec![5]
-    );
+    assert_eq!(problem_lines(&set, src, "test.sass", Syntax::Sass), vec![5]);
   }
 
   #[test]
   fn sass_parses_successfully() {
     // Sass indented syntax is now converted to SCSS before parsing,
     // so it should produce lint results, not parse-error diagnostics.
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = ".foo\n  color: red";
-    let result = runner.lint_source(src, "test.sass", Syntax::Sass);
+    let result = set.lint(src, "test.sass", Syntax::Sass);
 
     assert_eq!(result.file_path, "test.sass");
     // The file should parse without a parse-error diagnostic.
@@ -1647,44 +1669,13 @@ b {}
   }
 
   #[test]
-  fn sass_parses_successfully_with_rules() {
-    // Same check through lint_source_with_rules path.
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec![]);
-    let src = ".foo\n  color: red";
-    let result = runner.lint_source_with_rules(
-      src,
-      "test.sass",
-      Syntax::Sass,
-      &["block-no-empty".to_string()],
-      &HashMap::new(),
-      &HashMap::new(),
-    );
-
-    let has_parse_error = result
-      .diagnostics
-      .iter()
-      .any(|d| d.rule_name == "parse-error");
-    assert!(
-      !has_parse_error,
-      "Sass should now parse successfully via with_rules, but got parse-error diagnostic"
-    );
-  }
-
-  #[test]
   fn sass_spans_point_into_the_original_file() {
     // Multibyte text before the problem used to push spans (computed on the
     // converted SCSS) into the middle of characters of the Sass source.
     let src =
       "// héllo wörld ünïcödé\n.foo\n  content: \"→ ✓ ★\"\n  color: red\n\n.baz\n  color: #FFF\n";
-    let mut options = HashMap::new();
-    options.insert("color-hex-case".to_string(), serde_json::json!("lower"));
-    let runner = LintRunner::with_options(
-      RuleRegistry::default(),
-      vec!["color-hex-case".to_string()],
-      options,
-    );
-    let result = runner.lint_source(src, "test.sass", Syntax::Sass);
+    let set = set_with_options("color-hex-case", serde_json::json!("lower"));
+    let result = set.lint(src, "test.sass", Syntax::Sass);
 
     assert_eq!(result.source, src, "results carry the Sass, not the SCSS");
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
@@ -1701,14 +1692,8 @@ b {}
   #[test]
   fn sass_with_multibyte_text_lints_with_every_rule() {
     let src = "// héllo wörld ünïcödé\n.foo\n  content: \"→ ✓ ★\"\n  color: red\n  .bar\n    margin: 0 0 0 0\n    font-family: Ärial\n\n.baz\n  color: #FFF\n";
-    let registry = RuleRegistry::default();
-    let all: Vec<String> = registry
-      .all()
-      .iter()
-      .map(|r| r.name().to_string())
-      .collect();
-    let runner = LintRunner::new(registry, all);
-    let result = runner.lint_source(src, "test.sass", Syntax::Sass);
+    let set = RuleSet::of_rules(RuleRegistry::global().all().iter().map(|r| r.name()));
+    let result = set.lint(src, "test.sass", Syntax::Sass);
     for d in &result.diagnostics {
       assert!(!d.message.starts_with("Internal error"), "{}", d.message);
       assert!(src.is_char_boundary(d.span.offset), "{d:?}");
@@ -1721,10 +1706,9 @@ b {}
     // Malformed SCSS should either produce lint diagnostics (via
     // the lightningcss fallback) or a parse-error diagnostic. It
     // should never silently return empty results.
-    let registry = RuleRegistry::default();
-    let runner = LintRunner::new(registry, vec!["block-no-empty".to_string()]);
+    let set = set_for(&["block-no-empty"]);
     let src = ".foo { content: \"unclosed; }";
-    let result = runner.lint_source(src, "test.scss", Syntax::Scss);
+    let result = set.lint(src, "test.scss", Syntax::Scss);
 
     // Verify file_path is set regardless of parse outcome.
     assert_eq!(result.file_path, "test.scss");
@@ -1736,19 +1720,13 @@ b {}
 
   // -- Secondary options every rule accepts --
 
-  fn runner_with_options(rule: &str, options: serde_json::Value) -> LintRunner {
-    let mut opts = HashMap::new();
-    opts.insert(rule.to_string(), options);
-    LintRunner::with_options(RuleRegistry::default(), vec![rule.to_string()], opts)
-  }
-
   #[test]
   fn message_option_replaces_the_warning_text() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "block-no-empty",
       serde_json::json!([true, { "message": "No empty blocks please" }]),
     );
-    let result = runner.lint_source("a {}", "test.css", Syntax::Css);
+    let result = set.lint("a {}", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].message, "No empty blocks please");
     assert_eq!(result.diagnostics[0].rule_name, "block-no-empty");
@@ -1756,11 +1734,11 @@ b {}
 
   #[test]
   fn url_option_is_attached_to_every_warning_of_the_rule() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "block-no-empty",
       serde_json::json!([true, { "url": "https://example.com/empty" }]),
     );
-    let result = runner.lint_source("a {}\nb {}", "test.css", Syntax::Css);
+    let result = set.lint("a {}\nb {}", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 2);
     for d in &result.diagnostics {
       assert_eq!(d.url.as_deref(), Some("https://example.com/empty"));
@@ -1769,58 +1747,46 @@ b {}
 
   #[test]
   fn disable_fix_option_keeps_the_report_but_drops_the_fix() {
-    let fixable = runner_with_options("color-hex-case", serde_json::json!(["lower"]));
-    let with_fix = fixable.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    let fixable = set_with_options("color-hex-case", serde_json::json!(["lower"]));
+    let with_fix = fixable.lint("a { color: #FFF; }", "test.css", Syntax::Css);
     assert!(
       with_fix.diagnostics[0].fix.is_some(),
       "precondition: rule is fixable"
     );
 
-    let runner = runner_with_options(
+    let set = set_with_options(
       "color-hex-case",
       serde_json::json!(["lower", { "disableFix": true }]),
     );
-    let result = runner.lint_source("a { color: #FFF; }", "test.css", Syntax::Css);
+    let result = set.lint("a { color: #FFF; }", "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert!(result.diagnostics[0].fix.is_none());
   }
 
   #[test]
-  fn secondary_options_apply_through_per_file_rule_sets() {
-    let runner = LintRunner::new(RuleRegistry::default(), vec![]);
-    let enabled = vec!["block-no-empty".to_string()];
-    let mut opts = HashMap::new();
-    opts.insert(
-      "block-no-empty".to_string(),
+  fn secondary_options_apply_in_embedded_style_sheets() {
+    let set = set_with_options(
+      "block-no-empty",
       serde_json::json!([true, { "message": "Custom", "url": "https://x.y" }]),
     );
-    let result = runner.lint_source_with_rules(
-      "a {}",
-      "test.css",
-      Syntax::Css,
-      &enabled,
-      &opts,
-      &HashMap::new(),
-    );
+    let result = set.lint("<style>a {}</style>", "test.html", Syntax::Css);
     assert_eq!(result.diagnostics[0].message, "Custom");
     assert_eq!(result.diagnostics[0].url.as_deref(), Some("https://x.y"));
   }
 
   // -- Disable-comment reports --
 
-  fn runner_for(rules: &[&str]) -> LintRunner {
-    LintRunner::new(
-      RuleRegistry::default(),
-      rules.iter().map(|r| r.to_string()).collect(),
-    )
-  }
-
   #[test]
   fn invalid_scope_disable_is_reported_for_unconfigured_rule() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_invalid_scope_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_invalid_scope: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable color-named */\na { color: red; }\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     let d = &result.diagnostics[0];
     assert_eq!(d.rule_name, "--report-invalid-scope-disables");
@@ -1833,10 +1799,15 @@ b {}
 
   #[test]
   fn disable_reports_point_at_the_declaration_holding_the_comment() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_invalid_scope_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_invalid_scope: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "a {\n  color: /* stylelint-disable-line color-named */ red;\n}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     let span = result.diagnostics[0].span;
     assert_eq!(
@@ -1847,43 +1818,63 @@ b {}
 
   #[test]
   fn invalid_scope_ignores_configured_and_blanket_disables() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_invalid_scope_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_invalid_scope: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     for src in [
       "/* stylelint-disable block-no-empty */\na { color: red; }\n",
       "/* stylelint-disable */\na { color: red; }\n",
     ] {
-      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      let result = set.lint(src, "test.css", Syntax::Css);
       assert!(result.diagnostics.is_empty(), "{src}");
     }
   }
 
   #[test]
   fn invalid_scope_counts_plugin_rules_from_the_config() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_invalid_scope_disables(true);
-    runner.set_configured_rules(vec!["some-plugin/rule".to_string()]);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_invalid_scope: true,
+        ..DisableOptions::default()
+      },
+      configured_rules: vec!["some-plugin/rule".to_string()],
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable some-plugin/rule */\na { color: red; }\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert!(result.diagnostics.is_empty());
   }
 
   #[test]
   fn invalid_scope_reports_once_per_comment_and_rule() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_invalid_scope_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_invalid_scope: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     // An inline disable creates two ranges for the same comment.
     let src = "a { color: red; } /* stylelint-disable color-named */\nb { color: red; }\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
   }
 
   #[test]
   fn descriptionless_disable_is_reported_once_per_comment() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_descriptionless_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable block-no-empty, color-named */\na {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     let d = &result.diagnostics[0];
     assert_eq!(d.rule_name, "--report-descriptionless-disables");
@@ -1896,10 +1887,15 @@ b {}
 
   #[test]
   fn descriptionless_blanket_disable_is_named_all() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_descriptionless_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable */\na {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(
       result.diagnostics[0].message,
@@ -1909,24 +1905,34 @@ b {}
 
   #[test]
   fn described_disables_are_not_reported() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_descriptionless_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     for src in [
       "/* stylelint-disable block-no-empty -- legacy markup */\na {}\n",
       "/* stylelint-disable -- legacy markup */\na {}\n",
       "/* stylelint-disable-next-line block-no-empty -- why */\na {}\n",
     ] {
-      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      let result = set.lint(src, "test.css", Syntax::Css);
       assert!(result.diagnostics.is_empty(), "{src}");
     }
   }
 
   #[test]
   fn descriptionless_next_line_disable_is_reported() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_descriptionless_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable-next-line block-no-empty */\na {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(
       result.diagnostics[0].rule_name,
@@ -1936,11 +1942,16 @@ b {}
 
   #[test]
   fn unscoped_disable_is_reported_once_per_comment() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_unscoped_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_unscoped: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     // Inline placement creates two ranges for one comment.
     let src = "a { color: red; } /* stylelint-disable */\nb {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics.len(), 1);
     let d = &result.diagnostics[0];
     assert_eq!(d.rule_name, "--report-unscoped-disables");
@@ -1951,20 +1962,25 @@ b {}
 
   #[test]
   fn scoped_disables_are_not_unscoped() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_unscoped_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_unscoped: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     for src in [
       "/* stylelint-disable block-no-empty */\na {}\n",
       "/* stylelint-disable-next-line block-no-empty */\na {}\n",
     ] {
-      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      let result = set.lint(src, "test.css", Syntax::Css);
       assert!(result.diagnostics.is_empty(), "{src}");
     }
   }
 
   #[test]
   fn report_disables_option_flags_a_disable_of_that_rule() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "block-no-empty",
       serde_json::json!([true, { "reportDisables": true }]),
     );
@@ -1972,7 +1988,7 @@ b {}
       "/* stylelint-disable block-no-empty */\na {}\n",
       "/* stylelint-disable-next-line block-no-empty */\na {}\n",
     ] {
-      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      let result = set.lint(src, "test.css", Syntax::Css);
       assert_eq!(result.diagnostics.len(), 1, "{src}");
       let d = &result.diagnostics[0];
       assert_eq!(d.rule_name, "reportDisables");
@@ -1984,7 +2000,7 @@ b {}
 
   #[test]
   fn report_disables_ignores_other_rules_and_blanket_disables() {
-    let runner = runner_with_options(
+    let set = set_with_options(
       "block-no-empty",
       serde_json::json!([true, { "reportDisables": true }]),
     );
@@ -1992,28 +2008,38 @@ b {}
       "/* stylelint-disable color-named */\na { color: red; }\n",
       "/* stylelint-disable */\na {}\n",
     ] {
-      let result = runner.lint_source(src, "test.css", Syntax::Css);
+      let result = set.lint(src, "test.css", Syntax::Css);
       assert!(result.diagnostics.is_empty(), "{src}");
     }
   }
 
   #[test]
   fn disable_reports_use_the_default_severity() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_report_descriptionless_disables(true);
-    runner.set_default_severity(Some(Severity::Warning));
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      default_severity: Some(Severity::Warning),
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable block-no-empty */\na {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     assert_eq!(result.diagnostics[0].severity, Severity::Warning);
   }
 
   #[test]
   fn reports_still_run_under_ignore_disables() {
-    let mut runner = runner_for(&["block-no-empty"]);
-    runner.set_ignore_disables(true);
-    runner.set_report_descriptionless_disables(true);
+    let set = RuleSet::new(RuleSetSpec {
+      disables: DisableOptions {
+        ignore: true,
+        report_descriptionless: true,
+        ..DisableOptions::default()
+      },
+      ..spec_for(&["block-no-empty"])
+    });
     let src = "/* stylelint-disable block-no-empty */\na {}\n";
-    let result = runner.lint_source(src, "test.css", Syntax::Css);
+    let result = set.lint(src, "test.css", Syntax::Css);
     let rules: Vec<&str> = result
       .diagnostics
       .iter()

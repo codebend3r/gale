@@ -39,8 +39,14 @@ fn installed_version() -> Option<(u32, u32, u32)> {
 /// Walks up from the current directory looking for an installed Stylelint
 /// and parses its version.
 fn detect() -> Option<(u32, u32, u32)> {
-  let cwd = std::env::current_dir().ok()?;
-  let mut dir = cwd.as_path();
+  installed_version_from(&std::env::current_dir().ok()?)
+}
+
+/// The `(major, minor, patch)` version of the Stylelint installed in `start`
+/// or the closest of its ancestors that has one, or `None` when there is
+/// none.
+pub fn installed_version_from(start: &std::path::Path) -> Option<(u32, u32, u32)> {
+  let mut dir = start;
   loop {
     let pkg = dir.join("node_modules/stylelint/package.json");
     if let Some(version) = std::fs::read_to_string(&pkg)

@@ -8,6 +8,8 @@ description = "Configuration loading for the Gale CSS linter"
 
 [dependencies]
 gale_linter = { workspace = true }
+gale_css_parser = { workspace = true }
+gale_diagnostics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

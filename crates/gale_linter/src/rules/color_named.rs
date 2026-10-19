@@ -1237,6 +1237,7 @@ mod tests {
   fn reports_named_color() {
     let (node, source) = style_with_decl("color", "red");
     let c = RuleContext {
+      env: Default::default(),
       source: &source,
       ..ctx()
     };
@@ -1249,6 +1250,7 @@ mod tests {
   fn allows_hex_color() {
     let (node, source) = style_with_decl("color", "#ff0000");
     let c = RuleContext {
+      env: Default::default(),
       source: &source,
       ..ctx()
     };
@@ -1260,6 +1262,7 @@ mod tests {
   fn skips_url_function() {
     let (node, source) = style_with_decl("background-image", "url(./black.png)");
     let c = RuleContext {
+      env: Default::default(),
       source: &source,
       ..ctx()
     };
@@ -1271,6 +1274,7 @@ mod tests {
   fn skips_animation_property() {
     let (node, source) = style_with_decl("animation", "blue 2s linear");
     let c = RuleContext {
+      env: Default::default(),
       source: &source,
       ..ctx()
     };
@@ -1282,6 +1286,7 @@ mod tests {
   fn skips_font_family() {
     let (node, source) = style_with_decl("font-family", "blue");
     let c = RuleContext {
+      env: Default::default(),
       source: &source,
       ..ctx()
     };
