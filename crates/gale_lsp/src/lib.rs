@@ -116,8 +116,6 @@ impl GaleLspServer {
     let severity = match d.severity {
       Severity::Error => Some(DiagnosticSeverity::ERROR),
       Severity::Warning => Some(DiagnosticSeverity::WARNING),
-      Severity::Info => Some(DiagnosticSeverity::INFORMATION),
-      Severity::Hint => Some(DiagnosticSeverity::HINT),
     };
 
     tower_lsp::lsp_types::Diagnostic {
