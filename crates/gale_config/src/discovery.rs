@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::js::parse_js_config;
+use crate::js::load_js_config;
 use crate::resolve::resolve_raw;
 use crate::{ConfigError, ConfigFile, GaleConfig};
 
@@ -68,7 +68,6 @@ pub(crate) fn config_in_dir(dir: &Path) -> Option<PathBuf> {
 /// extracted and used as the config.  If the field is a string it is
 /// treated as `{ "extends": "<that-string>" }`.
 pub fn load_config(path: &Path) -> Result<GaleConfig, ConfigError> {
-  let contents = std::fs::read_to_string(path)?;
   let file_name = path
     .file_name()
     .and_then(|n| n.to_str())
@@ -76,12 +75,25 @@ pub fn load_config(path: &Path) -> Result<GaleConfig, ConfigError> {
 
   let base_dir = path.parent().unwrap_or(Path::new("."));
 
-  let raw = if file_name == "package.json" {
-    parse_package_json_stylelint(&contents)?
+  let raw = if is_javascript(file_name) {
+    load_js_config(path)?
   } else {
-    parse_config_file(file_name, &contents, Some(base_dir))?
+    let contents = std::fs::read_to_string(path)?;
+    if file_name == "package.json" {
+      parse_package_json_stylelint(&contents)?
+    } else {
+      parse_config_file(file_name, &contents)?
+    }
   };
   Ok(resolve_raw(raw, base_dir))
+}
+
+/// Whether `file_name` is a JavaScript module, which is run rather than
+/// parsed (see [`load_js_config`]).
+fn is_javascript(file_name: &str) -> bool {
+  [".js", ".mjs", ".cjs"]
+    .iter()
+    .any(|ext| file_name.ends_with(ext))
 }
 
 /// Extract and parse the `"stylelint"` field from the contents of a
@@ -112,20 +124,13 @@ fn parse_package_json_stylelint(contents: &str) -> Result<ConfigFile, ConfigErro
 
 /// Parses config contents using the format implied by the file name.
 /// `.stylelintrc` has no extension, so it is tried as JSON then YAML.
-fn parse_config_file(
-  file_name: &str,
-  contents: &str,
-  file_dir: Option<&Path>,
-) -> Result<ConfigFile, ConfigError> {
+fn parse_config_file(file_name: &str, contents: &str) -> Result<ConfigFile, ConfigError> {
   if file_name.ends_with(".json") || file_name == "gale.json" {
     Ok(serde_json::from_str(contents)?)
   } else if file_name.ends_with(".toml") || file_name == "gale.toml" {
     Ok(toml::from_str(contents)?)
   } else if file_name.ends_with(".yml") || file_name.ends_with(".yaml") {
     Ok(serde_yaml::from_str(contents)?)
-  } else if file_name.ends_with(".js") || file_name.ends_with(".mjs") || file_name.ends_with(".cjs")
-  {
-    parse_js_config(contents, file_dir)
   } else if file_name == ".stylelintrc" {
     // Try JSON first, fall back to YAML.
     serde_json::from_str(contents)
@@ -138,12 +143,14 @@ fn parse_config_file(
 
 /// Read a file and parse it as a [`ConfigFile`], inferring format from the file name.
 pub(crate) fn load_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
-  let contents = std::fs::read_to_string(path)?;
   let file_name = path
     .file_name()
     .and_then(|n| n.to_str())
     .unwrap_or_default();
-  let file_dir = path.parent();
+  if is_javascript(file_name) {
+    return load_js_config(path);
+  }
+  let contents = std::fs::read_to_string(path)?;
 
   // Handle package.json specially: extract the "stylelint" field.
   if file_name == "package.json" {
@@ -158,9 +165,6 @@ pub(crate) fn load_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
     Ok(toml::from_str(&contents)?)
   } else if file_name.ends_with(".yml") || file_name.ends_with(".yaml") {
     Ok(serde_yaml::from_str(&contents)?)
-  } else if file_name.ends_with(".js") || file_name.ends_with(".mjs") || file_name.ends_with(".cjs")
-  {
-    parse_js_config(&contents, file_dir)
   } else {
     // Unknown extension — try JSON, then YAML.
     serde_json::from_str(&contents)
@@ -187,25 +191,23 @@ mod tests {
   use super::*;
 
   #[test]
-  fn js_config_parse_config_file_dispatches() {
-    let js = r#"
-module.exports = {
-  'rules': {
-    'block-no-empty': true,
-  }
-};
-"#;
-    let raw = parse_config_file("stylelint.config.js", js, None).unwrap();
-    let rules = raw.rules.unwrap();
-    assert!(rules.contains_key("block-no-empty"));
-
-    // Also works for .mjs
-    let raw2 = parse_config_file("stylelint.config.mjs", js, None).unwrap();
-    assert!(raw2.rules.is_some());
-
-    // Also works for .cjs
-    let raw3 = parse_config_file("stylelint.config.cjs", js, None).unwrap();
-    assert!(raw3.rules.is_some());
+  fn js_config_files_dispatch_to_the_javascript_loader() {
+    let tmp = tempfile::tempdir().unwrap();
+    for name in [
+      "stylelint.config.js",
+      "stylelint.config.mjs",
+      "stylelint.config.cjs",
+    ] {
+      let js = if name.ends_with(".mjs") {
+        "export default { rules: { 'block-no-empty': true } };\n"
+      } else {
+        "module.exports = { rules: { 'block-no-empty': true } };\n"
+      };
+      let path = tmp.path().join(name);
+      std::fs::write(&path, js).unwrap();
+      let raw = load_config_file(&path).unwrap();
+      assert!(raw.rules.unwrap().contains_key("block-no-empty"), "{name}");
+    }
   }
 
   #[test]

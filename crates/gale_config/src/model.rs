@@ -24,6 +24,11 @@ pub enum ConfigError {
 
   #[error("unsupported config file format: {0}")]
   UnsupportedFormat(String),
+
+  /// A JavaScript config that could not be evaluated: it threw, failed to
+  /// import, or does not export an object.
+  #[error("{0}")]
+  JavaScript(String),
 }
 
 /// Rule severity levels.

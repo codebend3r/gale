@@ -42,7 +42,7 @@ describe("a JS config is run as JavaScript", () => {
     ]);
   });
 
-  test.failing("object spread", () => {
+  test("object spread", () => {
     expect(
       rulesFor(
         'const base = { "block-no-empty": true };\nmodule.exports = { rules: { ...base } };\n',
@@ -50,7 +50,7 @@ describe("a JS config is run as JavaScript", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("rules built with map and Object.fromEntries", () => {
+  test("rules built with map and Object.fromEntries", () => {
     expect(
       rulesFor(
         'module.exports = {\n  rules: Object.fromEntries(["block-no-empty"].map((r) => [r, true])),\n};\n',
@@ -58,7 +58,7 @@ describe("a JS config is run as JavaScript", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("a value read from process.env", () => {
+  test("a value read from process.env", () => {
     expect(
       rulesFor(
         'module.exports = { rules: { "block-no-empty": process.env.GALE_UNSET ? null : true } };\n',
@@ -66,7 +66,7 @@ describe("a JS config is run as JavaScript", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("a config assembled by statements", () => {
+  test("a config assembled by statements", () => {
     expect(
       rulesFor(
         'const rules = {};\nrules["block-no-empty"] = true;\nmodule.exports = { rules };\n',
@@ -75,7 +75,7 @@ describe("a JS config is run as JavaScript", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("a constant's name inside a string is left alone", () => {
+  test("a constant's name inside a string is left alone", () => {
     const project = makeProject({
       "stylelint.config.js":
         'const OFF = null;\nmodule.exports = {\n  rules: { "block-no-empty": [true, { message: "OFF is not allowed" }] },\n};\n',
@@ -85,7 +85,7 @@ describe("a JS config is run as JavaScript", () => {
     expect(warning.text).toBe("OFF is not allowed (block-no-empty)");
   });
 
-  test.failing("non-ASCII text after a constant does not crash the loader", () => {
+  test("non-ASCII text after a constant does not crash the loader", () => {
     expect(
       rulesFor(
         'const OFF = null;\nmodule.exports = {\n  rules: { "block-no-empty": [true, { message: "Empty — remove it" }] },\n};\n',
@@ -93,7 +93,7 @@ describe("a JS config is run as JavaScript", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("a config that throws is a configuration error", () => {
+  test("a config that throws is a configuration error", () => {
     const project = makeProject({
       "stylelint.config.js": 'throw new Error("boom");\n',
       "a.css": EMPTY_BLOCK,
@@ -114,7 +114,7 @@ describe("without Node on PATH", () => {
     ).toEqual(["block-no-empty"]);
   });
 
-  test.failing("says what the static reader could not evaluate", () => {
+  test("says what the static reader could not evaluate", () => {
     const project = makeProject({
       "stylelint.config.js":
         'const base = { "block-no-empty": true };\nmodule.exports = { rules: { ...base } };\n',
