@@ -87,14 +87,14 @@ done
 # perl, not sed: BSD sed has no \b and silently matches nothing. \${1} not \$1: "$1" + "0.2.2" is read as group $10.
 # Sweep: any 0.x.y in a tracked file that is not VERSION. Must print nothing.
 git ls-files \
-  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^docs/feature-research\.md$|^benchmarks/|^npm/bin/|^\.claude/skills/' \
+  | grep -vE '(^|/)(Cargo\.lock|bun\.lock|package-lock\.json)$|^MIGRATION_PRS\.md$|^docs/feature-research\.md$|^benchmarks/|^\.claude/skills/' \
   | xargs grep -nE '\bv?0\.[0-9]+\.[0-9]+\b' 2>/dev/null | grep -vF "$VERSION"
 git diff --stat
 ```
 
 Any line the sweep prints is either a gale version that still needs updating (fix it, add the file to the table above) or a third-party version that happens to start with `0.` (leave it, add its path to the exclusion list). Do not proceed with hits you have not classified.
 
-Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `docs/feature-research.md` (a dated research snapshot), `benchmarks/` (cloned repos), `npm/bin/` (binaries), `.claude/skills/` (illustrative semvers in skill docs, not references).
+Excluded on purpose: `Cargo.lock` and the JS lockfiles (third-party pins; the gale crates are handled by `cargo update`), `MIGRATION_PRS.md` (records which version each upstream PR was opened against; history, not a reference), `docs/feature-research.md` (a dated research snapshot), `benchmarks/` (cloned repos), `.claude/skills/` (illustrative semvers in skill docs, not references).
 
 ### 4. Commit and tag on the current branch
 
@@ -105,7 +105,7 @@ git commit -m "$VERSION"
 git tag -a "v$VERSION" -m "$VERSION"
 ```
 
-On the CI path the commit carries no binaries: CI builds every platform from the tag. The `npm/bin/<target>/gale` files tracked in git are not what npm users get, so leave them alone.
+The commit never carries binaries: `npm/bin/<target>/` is ignored by git, and CI builds every platform from the tag.
 
 ### 5. Push the commit and dry-run the release
 
@@ -177,18 +177,17 @@ docker info >/dev/null 2>&1 || echo "Docker is not running; cross cannot build t
 ./scripts/build-npm.sh --all
 node ./npm/bin/gale.cjs --version      # the launcher is gale.cjs, not bin/gale; must print "gale $VERSION"
 ls -l npm/bin/*/gale                   # four files, all freshly mtimed
-git status --short                     # exactly the four npm/bin/*/gale files
 ```
+
+The binaries are ignored by git: they ship in the npm tarball, never in a commit.
 
 If the launcher still prints the old version, the Cargo substitution in step 2 did not land; fix it and rebuild. npm can never reuse a version number once it is published.
 
-Fold the binaries into the release commit, push, and publish. npm 11 satisfies the two-factor check with **web auth**: `npm publish` opens a browser URL and polls until the user approves, so it runs from a non-interactive shell given the 10-minute timeout.
+Push the release commit and publish from the working tree. npm 11 satisfies the two-factor check with **web auth**: `npm publish` opens a browser URL and polls until the user approves, so it runs from a non-interactive shell given the 10-minute timeout.
 
 ```bash
 npm whoami                             # E401 means an expired token: ask the user to run `! npm login`
 npm access list collaborators "$PKG"   # whoami MUST appear with read-write
-git add npm/bin
-git commit --amend --no-edit
 git tag -f -a "v$VERSION" -m "$VERSION"
 git push origin HEAD
 (cd npm && npm publish --access public)   # opens the browser for 2FA approval; wait for it
