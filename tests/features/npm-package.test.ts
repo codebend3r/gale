@@ -47,14 +47,6 @@ describe("TypeScript declarations", () => {
     expect(exports["."].types).toBe("./index.d.ts");
     expect(pkg.files as string[]).toContain("index.d.ts");
   });
-
-  test("the root package.json points at the declarations", () => {
-    const pkg = readJson("package.json");
-    const exports = pkg.exports as Record<string, Record<string, string>>;
-
-    expect(pkg.types).toBe("npm/index.d.ts");
-    expect(exports["."].types).toBe("./npm/index.d.ts");
-  });
 });
 
 describe("lint() warning shape", () => {
@@ -125,13 +117,6 @@ describe("platform launcher", () => {
     const firstLine = readFileSync(join(NPM_DIR, bin), "utf8").split("\n")[0];
     expect(firstLine).toBe("#!/usr/bin/env node");
   });
-
-  test("the root package.json uses the same launcher", () => {
-    const pkg = readJson("package.json");
-    const bin = (pkg.bin as Record<string, string>).gale;
-
-    expect(bin).toMatch(/^npm\/bin\/gale\.c?js$/);
-  });
 });
 
 describe("release workflow", () => {
@@ -200,7 +185,7 @@ describe("formatters", () => {
 });
 
 describe("repository layout", () => {
-  test.failing("the root package.json is private and publishes nothing", () => {
+  test("the root package.json is private and publishes nothing", () => {
     const pkg = readJson("package.json");
 
     expect(pkg.private).toBe(true);
@@ -209,13 +194,13 @@ describe("repository layout", () => {
     }
   });
 
-  test.failing("no prebuilt binary is tracked in git", () => {
+  test("no prebuilt binary is tracked in git", () => {
     const tracked = Bun.spawnSync(["git", "ls-files", "npm/bin"], { cwd: REPO_ROOT }).stdout.toString();
 
     expect(tracked.trim().split("\n")).toEqual(["npm/bin/gale.cjs"]);
   });
 
-  test.failing("internal crates do not repeat the workspace version", () => {
+  test("internal crates do not repeat the workspace version", () => {
     const cargo = readFileSync(join(REPO_ROOT, "Cargo.toml"), "utf8");
     const internal = cargo.split("\n").filter((line) => /^gale_\w+ = \{ path = /.test(line));
 

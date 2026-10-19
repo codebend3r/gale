@@ -28,7 +28,8 @@ SCRIPT_DIR = Path(__file__).parent
 REPOS_JSON = SCRIPT_DIR / "repos.json"
 CLONES_DIR = SCRIPT_DIR / ".clones"
 GALE_ROOT = SCRIPT_DIR.parent.parent
-GALE_VERSION = "0.3.1"
+# The published npm version, which the migration PRs install.
+GALE_VERSION = json.loads((GALE_ROOT / "npm" / "package.json").read_text())["version"]
 GALE_NPM_PACKAGE = "@codebend3r/gale"
 GALE_GITHUB = "https://github.com/codebend3r/gale"
 

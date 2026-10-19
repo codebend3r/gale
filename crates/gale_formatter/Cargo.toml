@@ -3,6 +3,7 @@ name = "gale_formatter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Output formatters for the Gale CSS linter"
 
 [dependencies]

@@ -53,15 +53,14 @@ gh api "repos/{owner}/{repo}/actions/workflows/release.yml" --jq .state   # "act
 
 ### 2. Bump the manifests
 
-`Cargo.toml` pins the workspace version and the seven internal crate versions to the same string, so a single substitution covers all of them. The Cargo version and the npm version can differ if a previous release skipped one, so capture both.
+The version lives in two manifests: `[workspace.package] version` in `Cargo.toml`, which every crate inherits, and `npm/package.json`. The two can differ if a previous release skipped one, so capture both.
 
 ```bash
 OLD_CARGO=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 OLD_NPM=$(bun -p "require('./npm/package.json').version")
 sed -i '' "s/version = \"$OLD_CARGO\"/version = \"$VERSION\"/g" Cargo.toml
-grep -c "version = \"$VERSION\"" Cargo.toml   # must be 8: workspace + 7 internal crates; anything else means a third-party pin matched, so inspect `git diff Cargo.toml`
+grep -c "version = \"$VERSION\"" Cargo.toml   # must be 1; anything else means a third-party pin matched, so inspect `git diff Cargo.toml`
 cargo update --workspace               # rewrites the gale_* entries in Cargo.lock
-bun pm pkg set version="$VERSION"
 (cd npm && bun pm pkg set version="$VERSION")
 ```
 
@@ -73,15 +72,12 @@ The manifests are not the only place the version lives. These files carry it too
 
 | File | What it holds |
 |---|---|
-| `README.md` | `build-npm.sh --version X.Y.Z` example |
-| `scripts/build-npm.sh` | usage comment `--version X.Y.Z` |
-| `tests/differential/open_prs.py` | `GALE_VERSION = "X.Y.Z"`, written into migration PRs |
 | `docs/index.html` | `"@codebend3r/gale": "^X.Y.Z"` in the install snippet |
 
 Rewrite the known files, then run the sweep. The sweep is the real check; the table is only what was true last time.
 
 ```bash
-for f in README.md scripts/build-npm.sh tests/differential/open_prs.py docs/index.html; do
+for f in docs/index.html; do
   perl -pi -e "s/\b(v?)(\Q$OLD_NPM\E|\Q$OLD_CARGO\E)\b/\${1}$VERSION/g" "$f"
 done
 # perl, not sed: BSD sed has no \b and silently matches nothing. \${1} not \$1: "$1" + "0.2.2" is read as group $10.
@@ -202,7 +198,7 @@ Push the tag only if the user wants it on origin: with the workflow disabled it 
 | Treating "npm version patch" as not a release | It is one. Compute `VERSION` from the registry and run every step. |
 | Computing the bump from `package.json` | A half-finished release leaves manifests ahead of the registry; `bun info` is the baseline. |
 | Cutting a `release/X` branch or opening a PR | Commit on the current branch. |
-| Bumping only the four manifests | Docs, `open_prs.py`, and `docs/index.html` carry the version too. Run the sweep; it must print nothing. |
+| Bumping only the two manifests | `docs/index.html` carries the version too. Run the sweep; it must print nothing. |
 | Skipping `cargo update --workspace` | `Cargo.lock` keeps the old gale versions and the version guard rejects the tag. |
 | Pushing the tag before the dry run | A failed tag run needs a moved tag. Dry-run first; push the tag once it is green. |
 | Rebuilding `npm/bin` on the CI path | CI builds every binary from the tag. Local builds are the fallback only. |

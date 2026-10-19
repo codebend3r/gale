@@ -630,7 +630,7 @@ For local testing, and for the local publish fallback in
 ./scripts/build-npm.sh --all
 
 # Set npm package version before building
-./scripts/build-npm.sh --version 0.3.1
+./scripts/build-npm.sh --version X.Y.Z
 ```
 
 ## Architecture
