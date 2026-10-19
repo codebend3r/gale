@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify lowercase or uppercase for at-rule names.
-///
-/// Equivalent to `@stylistic/at-rule-name-case`.
-pub struct StylisticAtRuleNameCase;
+const NAME: &str = "@stylistic/at-rule-name-case";
 
-impl Rule for StylisticAtRuleNameCase {
-  fn name(&self) -> &'static str {
-    "@stylistic/at-rule-name-case"
+declare_rule! {
+  /// Specify lowercase or uppercase for at-rule names.
+  ///
+  /// Equivalent to `@stylistic/at-rule-name-case`.
+  pub struct StylisticAtRuleNameCase => StylisticAtRuleNameCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for at-rule names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for at-rule names"
+/// `@stylistic/at-rule-name-case` as configured.
+pub struct StylisticAtRuleNameCaseCheck {
+  /// The primary option: `"lower"` or `"upper"`.
+  option: &'static str,
+}
+
+impl StylisticAtRuleNameCaseCheck {
+  /// The plugin's options: `"lower"` or `"upper"`.  Gale reads no option as
+  /// `"lower"`.  The plugin takes `"upper"` only where the syntax reads an
+  /// upper-case at-rule name, which gale cannot know until it lints a file, so it
+  /// accepts it everywhere.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["lower", "upper"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("lower"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticAtRuleNameCaseCheck {
   /// Flags at-rule names not in the configured case.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("lower");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -94,10 +113,9 @@ impl Rule for StylisticAtRuleNameCase {
           };
           diagnostics.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Expected at-rule name \"@{}\" to be {}", name, expected),
             )
-            .severity(self.default_severity())
             .span(Span::new(at_pos, name_end - at_pos)),
           );
         }
@@ -114,20 +132,22 @@ impl Rule for StylisticAtRuleNameCase {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_lowercase_at_rule_names() {
+    let rule = configured(&StylisticAtRuleNameCase, None);
     let source = "@media screen { } @keyframes foo { }";
-    let d = StylisticAtRuleNameCase.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_uppercase_at_rule_name_with_lower_option() {
     let opt = serde_json::Value::String("lower".to_string());
+    let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@Media screen { }";
-    let d = StylisticAtRuleNameCase.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("lowercase"));
   }
@@ -135,24 +155,38 @@ mod tests {
   #[test]
   fn allows_uppercase_with_upper_option() {
     let opt = serde_json::Value::String("upper".to_string());
+    let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@MEDIA screen { }";
-    let d = StylisticAtRuleNameCase.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_lowercase_at_rule_name_with_upper_option() {
     let opt = serde_json::Value::String("upper".to_string());
+    let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@media screen { }";
-    let d = StylisticAtRuleNameCase.check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("uppercase"));
   }
 
   #[test]
   fn skips_comments() {
+    let rule = configured(&StylisticAtRuleNameCase, None);
     let source = "/* @Media */ @media screen { }";
-    let d = StylisticAtRuleNameCase.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The rule validates no secondary options, so it ignores them.
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("camel")),
+      ["Invalid option value \"camel\" for rule \"@stylistic/at-rule-name-case\""]
+    );
+    assert!(invalid_options(NAME, serde_json::json!(["lower", { "ignore": ["x"] }])).is_empty());
   }
 }

@@ -1,32 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline or disallow whitespace before the semicolons of declaration blocks.
-///
-/// Equivalent to `@stylistic/declaration-block-semicolon-newline-before`.
-pub struct StylisticDeclarationBlockSemicolonNewlineBefore;
+const NAME: &str = "@stylistic/declaration-block-semicolon-newline-before";
 
-impl Rule for StylisticDeclarationBlockSemicolonNewlineBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-block-semicolon-newline-before"
+declare_rule! {
+  /// Require a newline or disallow whitespace before the semicolons of declaration blocks.
+  ///
+  /// Equivalent to `@stylistic/declaration-block-semicolon-newline-before`.
+  pub struct StylisticDeclarationBlockSemicolonNewlineBefore => StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
+    name: NAME,
+    description: "Require a newline or disallow whitespace before the semicolons of declaration blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline or disallow whitespace before the semicolons of declaration blocks"
+/// `@stylistic/declaration-block-semicolon-newline-before` as configured.
+pub struct StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
+  /// The primary option: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`; gale applies only `"always"` so far.  With no option
+  /// gale disallows a newline before the semicolon, its own `"never"`, which the
+  /// plugin does not accept as a value.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
   /// Flags a declaration semicolon whose preceding newline does not match the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.option;
 
     let mut diags = Vec::new();
     let source = ctx.source;
@@ -65,11 +85,7 @@ impl Rule for StylisticDeclarationBlockSemicolonNewlineBefore {
           "never" => "Unexpected whitespace before \";\"",
           _ => continue,
         };
-        diags.push(
-          Diagnostic::new(self.name(), msg)
-            .severity(self.default_severity())
-            .span(Span::new(semi_offset, 1)),
-        );
+        diags.push(Diagnostic::new(NAME, msg).span(Span::new(semi_offset, 1)));
       }
     }
 
@@ -82,11 +98,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_no_newline_before_semicolon() {
-    let rule = StylisticDeclarationBlockSemicolonNewlineBefore;
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineBefore, None);
     let source = "a { color: red; }";
     let ctx = ctx_with_source(source);
     let node = CssNode::Style(StyleRule {
@@ -106,7 +122,7 @@ mod tests {
 
   #[test]
   fn reports_newline_before_semicolon_when_never() {
-    let rule = StylisticDeclarationBlockSemicolonNewlineBefore;
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineBefore, None);
     let source = "a { color: red\n; }";
     let ctx = ctx_with_source(source);
     let node = CssNode::Style(StyleRule {
@@ -123,5 +139,16 @@ mod tests {
     let d = rule.check(&node, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("never")),
+      [
+        "Invalid option value \"never\" for rule \"@stylistic/declaration-block-semicolon-newline-before\""
+      ]
+    );
   }
 }

@@ -1,35 +1,70 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a trailing semicolon within declaration blocks.
-///
-/// Equivalent to `@stylistic/declaration-block-trailing-semicolon`.
-pub struct StylisticDeclarationBlockTrailingSemicolon;
+const NAME: &str = "@stylistic/declaration-block-trailing-semicolon";
 
-impl Rule for StylisticDeclarationBlockTrailingSemicolon {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-block-trailing-semicolon"
+declare_rule! {
+  /// Require or disallow a trailing semicolon within declaration blocks.
+  ///
+  /// Equivalent to `@stylistic/declaration-block-trailing-semicolon`.
+  pub struct StylisticDeclarationBlockTrailingSemicolon => StylisticDeclarationBlockTrailingSemicolonCheck {
+    name: NAME,
+    description: "Require or disallow a trailing semicolon within declaration blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a trailing semicolon within declaration blocks"
+/// `@stylistic/declaration-block-trailing-semicolon` as configured.
+pub struct StylisticDeclarationBlockTrailingSemicolonCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+  /// `ignore: ["single-declaration"]`: pass over a block holding nothing but
+  /// one declaration.
+  ignore_single_declaration: bool,
+}
+
+impl StylisticDeclarationBlockTrailingSemicolonCheck {
+  /// The plugin's options: `"always"` or `"never"`, then `ignore:
+  /// ["single-declaration"]`.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    let ignore = options.keywords("ignore", &["single-declaration"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+      ignore_single_declaration: ignore.contains(&"single-declaration"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationBlockTrailingSemicolonCheck {
   /// Flags a block whose last declaration's trailing semicolon does not match
   /// the option.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
-    let option = ctx.primary_option_str().unwrap_or("always");
+    let option = self.option;
 
     if rule.declarations.is_empty() {
+      return vec![];
+    }
+
+    // The plugin passes over a block whose only node, comments aside, is
+    // this declaration.
+    if self.ignore_single_declaration
+      && rule.declarations.len() == 1
+      && rule.children.is_empty()
+      && rule
+        .nested_at_rules
+        .iter()
+        .all(|node| matches!(node, CssNode::Comment(_)))
+    {
       return vec![];
     }
 
@@ -83,8 +118,7 @@ impl Rule for StylisticDeclarationBlockTrailingSemicolon {
     match option {
       "always" if !has_semicolon => {
         vec![
-          Diagnostic::new(self.name(), "Expected a trailing semicolon")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Expected a trailing semicolon")
             .span(Span::new(last_decl_end, 0))
             .fix(Fix::new(
               "Add trailing semicolon",
@@ -104,8 +138,7 @@ impl Rule for StylisticDeclarationBlockTrailingSemicolon {
           return vec![];
         };
         vec![
-          Diagnostic::new(self.name(), "Unexpected trailing semicolon")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected trailing semicolon")
             .span(Span::new(abs_semi, 1))
             .fix(Fix::new(
               "Remove trailing semicolon",
@@ -121,13 +154,13 @@ impl Rule for StylisticDeclarationBlockTrailingSemicolon {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_trailing_semicolon() {
-    let rule = StylisticDeclarationBlockTrailingSemicolon;
+    let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, None);
     // Span does NOT include the semicolon (semi is in the gap)
     let source = "a { color: red; }";
     let ctx = ctx_with_source(source);
@@ -148,7 +181,7 @@ mod tests {
 
   #[test]
   fn allows_trailing_semicolon_span_includes_semi() {
-    let rule = StylisticDeclarationBlockTrailingSemicolon;
+    let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, None);
     // Span includes the semicolon (what lightningcss actually produces)
     let source = "a { color: red; }";
     let ctx = ctx_with_source(source);
@@ -169,7 +202,7 @@ mod tests {
 
   #[test]
   fn allows_multiline_trailing_semicolon() {
-    let rule = StylisticDeclarationBlockTrailingSemicolon;
+    let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, None);
     // Mimics the Grafana false-positive case: multi-declaration block
     // where the parser span includes the ';' on the last declaration.
     let source = ".foo {\n  position: absolute;\n  top: 0;\n}";
@@ -204,7 +237,7 @@ mod tests {
 
   #[test]
   fn reports_missing_trailing_semicolon() {
-    let rule = StylisticDeclarationBlockTrailingSemicolon;
+    let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, None);
     let source = "a { color: red }";
     let ctx = ctx_with_source(source);
     let node = CssNode::Style(StyleRule {
@@ -226,10 +259,10 @@ mod tests {
 
   #[test]
   fn never_reports_with_span_including_semi() {
-    let rule = StylisticDeclarationBlockTrailingSemicolon;
     // "never" mode: span includes the ';'
     let source = "a { color: red; }";
     let opts = serde_json::json!(["never"]);
+    let rule = configured(&StylisticDeclarationBlockTrailingSemicolon, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -248,5 +281,39 @@ mod tests {
     // The fix should point at byte 14 (the ';')
     assert_eq!(d[0].span.offset, 14);
     assert_eq!(d[0].span.length, 1);
+  }
+
+  #[test]
+  fn ignore_single_declaration_passes_over_a_lone_declaration() {
+    let options = serde_json::json!(["always", { "ignore": ["single-declaration"] }]);
+    let lint = |source| crate::testing::lint(NAME, options.clone(), source, Syntax::Css);
+    assert!(lint("a { color: red }").is_empty());
+    assert_eq!(lint("a { color: red; top: 0 }").len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "ignore": ["single-declaration"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/declaration-block-trailing-semicolon\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignore": ["multi-declaration"] }])
+      ),
+      [
+        "Invalid value \"multi-declaration\" for option \"ignore\" of rule \"@stylistic/declaration-block-trailing-semicolon\""
+      ]
+    );
   }
 }

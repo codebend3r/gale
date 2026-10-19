@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline after opening braces.
-///
-/// Equivalent to `@stylistic/block-opening-brace-newline-after`.
-pub struct StylisticBlockOpeningBraceNewlineAfter;
+const NAME: &str = "@stylistic/block-opening-brace-newline-after";
 
-impl Rule for StylisticBlockOpeningBraceNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-opening-brace-newline-after"
+declare_rule! {
+  /// Require a newline after opening braces.
+  ///
+  /// Equivalent to `@stylistic/block-opening-brace-newline-after`.
+  pub struct StylisticBlockOpeningBraceNewlineAfter => StylisticBlockOpeningBraceNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline after opening braces",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline after opening braces"
+/// `@stylistic/block-opening-brace-newline-after` as configured.
+pub struct StylisticBlockOpeningBraceNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticBlockOpeningBraceNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale reads no option as `"always"`.  `ignore` is
+  /// accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    options.keywords("ignore", &["rules"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockOpeningBraceNewlineAfterCheck {
   /// Flags an opening brace whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -138,14 +158,12 @@ impl Rule for StylisticBlockOpeningBraceNewlineAfter {
           let expect_newline = option != "never-multi-line";
           if expect_newline && !has_newline {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Expected newline after \"{\"".to_string())
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Expected newline after \"{\"".to_string())
                 .span(Span::new(brace_pos, 1)),
             );
           } else if !expect_newline && has_newline {
             diagnostics.push(
-              Diagnostic::new(self.name(), "Unexpected newline after \"{\"".to_string())
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Unexpected newline after \"{\"".to_string())
                 .span(Span::new(brace_pos, 1)),
             );
           }
@@ -163,21 +181,22 @@ impl Rule for StylisticBlockOpeningBraceNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_newline_after_brace() {
+    let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, None);
     let source = "a {\n  color: red;\n}";
-    let d = StylisticBlockOpeningBraceNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_missing_newline_after_brace() {
     let opt = serde_json::Value::String("always".to_string());
+    let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\n}";
-    let d = StylisticBlockOpeningBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -185,25 +204,50 @@ mod tests {
   #[test]
   fn always_multi_line_allows_single_line_without_newline() {
     let opt = serde_json::Value::String("always-multi-line".to_string());
+    let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_multi_line_reports_multi_line_without_newline_after_brace() {
     let opt = serde_json::Value::String("always-multi-line".to_string());
+    let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\nbackground: blue; }";
-    let d = StylisticBlockOpeningBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn skips_comments() {
+    let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, None);
     let source = "/* { no newline } */ a {\n  color: red;\n}";
-    let d = StylisticBlockOpeningBraceNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never-multi-line", { "ignore": ["rules"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("never")),
+      ["Invalid option value \"never\" for rule \"@stylistic/block-opening-brace-newline-after\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignore": ["at-rules"] }])
+      ),
+      [
+        "Invalid value \"at-rules\" for option \"ignore\" of rule \"@stylistic/block-opening-brace-newline-after\""
+      ]
+    );
   }
 }

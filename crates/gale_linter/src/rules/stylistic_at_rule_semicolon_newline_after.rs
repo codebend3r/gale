@@ -1,29 +1,40 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline after the semicolon of at-rules.
-///
-/// Equivalent to Stylelint's `@stylistic/at-rule-semicolon-newline-after` rule.
-pub struct StylisticAtRuleSemicolonNewlineAfter;
+const NAME: &str = "@stylistic/at-rule-semicolon-newline-after";
 
-impl Rule for StylisticAtRuleSemicolonNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/at-rule-semicolon-newline-after"
+declare_rule! {
+  /// Require a newline after the semicolon of at-rules.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/at-rule-semicolon-newline-after` rule.
+  pub struct StylisticAtRuleSemicolonNewlineAfter => StylisticAtRuleSemicolonNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline after the semicolon of at-rules",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline after the semicolon of at-rules"
+/// `@stylistic/at-rule-semicolon-newline-after`, whose only option is
+/// `"always"`.
+pub struct StylisticAtRuleSemicolonNewlineAfterCheck;
+
+impl StylisticAtRuleSemicolonNewlineAfterCheck {
+  /// The plugin's options: `"always"`, the only one.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_one_of(&["always"]);
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticAtRuleSemicolonNewlineAfterCheck {
   /// Flags an at-rule semicolon not followed by a newline.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let _option = context.primary_option_str().unwrap_or("always");
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -122,12 +133,8 @@ impl Rule for StylisticAtRuleSemicolonNewlineAfter {
         // statement in the block — no newline needed.
         if found_non_ws && !found_newline && j < len && bytes[j] != b'}' {
           diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              "Expected newline after \";\" of at-rule".to_string(),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(semi_pos, 1)),
+            Diagnostic::new(NAME, "Expected newline after \";\" of at-rule".to_string())
+              .span(Span::new(semi_pos, 1)),
           );
         }
       } else {
@@ -146,28 +153,31 @@ impl Rule for StylisticAtRuleSemicolonNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn allows_newline_after_at_rule_semicolon() {
+    let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@import url(\"foo.css\");\na { }";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_missing_newline_after_at_rule_semicolon() {
+    let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@import url(\"foo.css\"); a { }";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
 
   #[test]
   fn at_signs_in_scss_line_comments_are_no_at_rules() {
+    let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "a {\n\t// @todo refactor this away; it is\n\t// in the quote block.\n\t&:first-child { color: red; }\n}\n@import url(//example.com/a.css); b { }";
     let ctx = scss_ctx_with_source(source);
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     // Only the `@import`, whose `//` sits inside `url()`.
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].span.offset, source.rfind(';').unwrap());
@@ -175,8 +185,18 @@ mod tests {
 
   #[test]
   fn allows_eof_after_semicolon() {
+    let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@charset \"UTF-8\";";
-    let d = StylisticAtRuleSemicolonNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("never")),
+      ["Invalid option value \"never\" for rule \"@stylistic/at-rule-semicolon-newline-after\""]
+    );
   }
 }

@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after the bang (`!`) of declarations.
-///
-/// Primary: "always" | "never"
-pub struct StylisticDeclarationBangSpaceAfter;
+const NAME: &str = "@stylistic/declaration-bang-space-after";
 
-impl Rule for StylisticDeclarationBangSpaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-bang-space-after"
+declare_rule! {
+  /// Require or disallow a space after the bang (`!`) of declarations.
+  ///
+  /// Primary: "always" | "never"
+  pub struct StylisticDeclarationBangSpaceAfter => StylisticDeclarationBangSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the bang of declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the bang of declarations"
+/// `@stylistic/declaration-bang-space-after` as configured.
+pub struct StylisticDeclarationBangSpaceAfterCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticDeclarationBangSpaceAfterCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationBangSpaceAfterCheck {
   /// Flags a `!` whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -112,11 +129,7 @@ impl Rule for StylisticDeclarationBangSpaceAfter {
             "never" => "Unexpected space after \"!\"",
             _ => "Expected a space after \"!\"",
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(bang_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(bang_pos, 1)));
         }
       }
       i += 1;
@@ -130,11 +143,11 @@ impl Rule for StylisticDeclarationBangSpaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticDeclarationBangSpaceAfter;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticDeclarationBangSpaceAfter, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -163,5 +176,16 @@ mod tests {
     let d = check("a { color: red !important; }", "always");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always-single-line")),
+      [
+        "Invalid option value \"always-single-line\" for rule \"@stylistic/declaration-bang-space-after\""
+      ]
+    );
   }
 }
