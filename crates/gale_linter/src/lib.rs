@@ -17,6 +17,7 @@ pub mod file_cache;
 pub mod js_number;
 pub mod known_rules;
 pub mod lint_env;
+pub mod list_rules;
 pub mod options;
 pub mod panic_guard;
 pub mod pattern;

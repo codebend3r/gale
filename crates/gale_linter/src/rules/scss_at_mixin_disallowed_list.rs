@@ -1,239 +1,73 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "scss/at-mixin-disallowed-list";
 
-/// Specify a list of disallowed SCSS mixin names.
-///
-/// Primary option: an array of mixin name strings or regex patterns (wrapped
-/// in `/`).
-///
-/// ```json
-/// ["breakpoint", "legacy-mixin", "/^old-/"]
-/// ```
-///
-/// For each `@include` at-rule found in SCSS files, the mixin name is checked
-/// against the list.  Plain strings are matched exactly (case-sensitive).
-/// Regex patterns (delimited by `/`) are matched against the full mixin name.
-///
-/// Equivalent to `scss/at-mixin-disallowed-list`.
-pub struct ScssAtMixinDisallowedList;
-
-impl Rule for ScssAtMixinDisallowedList {
-  fn name(&self) -> &'static str {
-    "scss/at-mixin-disallowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed mixins"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags an `@include` whose mixin name matches a configured string or regex.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
-      return vec![];
-    }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "include" {
-      return vec![];
-    }
-
-    let disallowed: Vec<String> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => arr
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect(),
-      _ => return vec![],
-    };
-
-    if disallowed.is_empty() {
-      return vec![];
-    }
-
-    // Extract the mixin name from params.
-    // params is e.g. "breakpoint(red)" or "mixin-name" or "mixin-name()"
-    let params = at.params.trim();
-    let mixin_name = match params.find('(') {
-      Some(pos) => params[..pos].trim(),
-      None => params,
-    };
-
-    if mixin_name.is_empty() {
-      return vec![];
-    }
-
-    if is_disallowed(mixin_name, &disallowed) {
-      vec![
-        Diagnostic::new(self.name(), format!("Unexpected mixin \"{}\"", mixin_name))
-          .severity(self.default_severity())
-          .span(Span::new(at.span.offset, at.span.length)),
-      ]
-    } else {
-      vec![]
-    }
+declare_rule! {
+  /// Disallow including the SCSS mixins listed.
+  ///
+  /// Options: a mixin name or `/regex/`, or a list of them, matched
+  /// exactly against the name each `@include` gives, in SCSS files.
+  ///
+  /// A Gale rule in the `scss/` namespace; stylelint-scss has no such rule.
+  pub struct ScssAtMixinDisallowedList => ListCheck<ScssAtMixinDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed mixins",
+    default_severity: Warning,
+    primary_option_array: true,
   }
 }
 
-/// Check whether `name` matches any entry in the disallowed list.
-///
-/// Plain strings are compared exactly (case-sensitive).  Entries wrapped in
-/// `/` are treated as regex patterns.
-fn is_disallowed(name: &str, disallowed: &[String]) -> bool {
-  for entry in disallowed {
-    if let Some(matched) = pattern::match_regex_entry(entry, name) {
-      if matched {
-        return true;
-      }
-    } else if entry == name {
-      return true;
-    }
+impl ListRule for ScssAtMixinDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = ();
+
+  fn find(tree: &PostcssTree, ctx: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::included_mixins(tree, ctx.syntax, found);
   }
-  false
+
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected mixin \"{}\"", found.name)
+  }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{ctx_with_options, scss_ctx, scss_ctx_with_options};
-
-  fn include_node(mixin_params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "include".to_string(),
-      params: mixin_params.to_string(),
-      span: ParserSpan::new(0, 10),
-      children: vec![],
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::{check, check_css};
+  use crate::testing::invalid_options;
 
   #[test]
-  fn detects_disallowed_mixin_exact_name() {
-    let opts = serde_json::json!(["breakpoint"]);
-    let d = ScssAtMixinDisallowedList.check(
-      &include_node("breakpoint(medium)"),
-      &scss_ctx_with_options(&opts),
+  fn reports_listed_mixins() {
+    check(
+      NAME,
+      Syntax::Scss,
+      &[
+        (
+          json!(["breakpoint", "/^old-/"]),
+          "a {\n  @include breakpoint(md) { color: red; }\n  @include old-header;\n  @include reset();\n}",
+          &[
+            "2:3 Unexpected mixin \"breakpoint\"",
+            "3:3 Unexpected mixin \"old-header\"",
+          ],
+        ),
+        (json!(["Breakpoint"]), "a { @include breakpoint; }", &[]),
+        (json!(["breakpoint"]), "@mixin breakpoint {}", &[]),
+      ],
     );
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("breakpoint"));
-  }
-
-  #[test]
-  fn detects_disallowed_mixin_no_args() {
-    let opts = serde_json::json!(["breakpoint"]);
-    let d =
-      ScssAtMixinDisallowedList.check(&include_node("breakpoint"), &scss_ctx_with_options(&opts));
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("breakpoint"));
-  }
-
-  #[test]
-  fn allows_non_disallowed_mixin() {
-    let opts = serde_json::json!(["breakpoint"]);
-    let d = ScssAtMixinDisallowedList.check(
-      &include_node("button-styles(primary)"),
-      &scss_ctx_with_options(&opts),
+    check_css(
+      NAME,
+      &[(json!(["breakpoint"]), "@include breakpoint;", &[])],
     );
-    assert!(d.is_empty());
   }
 
   #[test]
-  fn regex_pattern_matching() {
-    let opts = serde_json::json!(["/^old-/"]);
-    let d = ScssAtMixinDisallowedList.check(
-      &include_node("old-button(red)"),
-      &scss_ctx_with_options(&opts),
-    );
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("old-button"));
-  }
-
-  #[test]
-  fn regex_does_not_match_non_matching() {
-    let opts = serde_json::json!(["/^old-/"]);
-    let d = ScssAtMixinDisallowedList.check(
-      &include_node("new-button(red)"),
-      &scss_ctx_with_options(&opts),
-    );
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn only_triggers_on_scss() {
-    let opts = serde_json::json!(["breakpoint"]);
-    let d = ScssAtMixinDisallowedList.check(
-      &include_node("breakpoint(medium)"),
-      &ctx_with_options(&opts),
-    );
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn multiple_disallowed_mixins() {
-    let opts = serde_json::json!(["breakpoint", "legacy-mixin", "/^old-/"]);
-
-    let d1 = ScssAtMixinDisallowedList.check(
-      &include_node("breakpoint(medium)"),
-      &scss_ctx_with_options(&opts),
-    );
-    assert_eq!(d1.len(), 1);
-
-    let d2 =
-      ScssAtMixinDisallowedList.check(&include_node("legacy-mixin"), &scss_ctx_with_options(&opts));
-    assert_eq!(d2.len(), 1);
-
-    let d3 =
-      ScssAtMixinDisallowedList.check(&include_node("old-header"), &scss_ctx_with_options(&opts));
-    assert_eq!(d3.len(), 1);
-
-    let d4 =
-      ScssAtMixinDisallowedList.check(&include_node("new-button"), &scss_ctx_with_options(&opts));
-    assert!(d4.is_empty());
-  }
-
-  #[test]
-  fn no_options_no_report() {
-    let ctx = scss_ctx();
-    let d = ScssAtMixinDisallowedList.check(&include_node("breakpoint(medium)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_non_include_at_rules() {
-    let opts = serde_json::json!(["breakpoint"]);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "breakpoint".to_string(),
-      span: ParserSpan::new(0, 10),
-      children: vec![],
-    });
-    let d = ScssAtMixinDisallowedList.check(&node, &scss_ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn exact_match_is_case_sensitive() {
-    let opts = serde_json::json!(["Breakpoint"]);
-    let d =
-      ScssAtMixinDisallowedList.check(&include_node("breakpoint"), &scss_ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn works_with_empty_parens() {
-    let opts = serde_json::json!(["reset"]);
-    let d =
-      ScssAtMixinDisallowedList.check(&include_node("reset()"), &scss_ctx_with_options(&opts));
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("reset"));
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, json!("breakpoint")).is_empty());
   }
 }

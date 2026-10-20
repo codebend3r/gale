@@ -1,272 +1,142 @@
-use std::sync::Arc;
+use crate::list_rules::{Found, List, ListCheck, ListRule, Polarity, list_option, subjects};
+use crate::options::Options;
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+const NAME: &str = "function-allowed-list";
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
-
-/// Only allow specified CSS functions.
-///
-/// Options: an array of function names (strings) or regex patterns
-/// (strings that start and end with `/`). All other functions are flagged.
-///
-/// Matching is strict: only exact string matches or regex patterns match.
-/// Vendor-prefixed functions are NOT implicitly matched by unprefixed names.
-///
-/// Equivalent to Stylelint's `function-allowed-list` rule.
-pub struct FunctionAllowedList;
-
-impl Rule for FunctionAllowedList {
-  fn name(&self) -> &'static str {
-    "function-allowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of allowed functions"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags functions outside the configured allow list, accepting the option as a
-  /// bare array or nested inside the options array.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    // The primary option is an array of allowed function names/patterns.
-    // It can arrive as:
-    //   - A bare array: ["rgb", "hsl"]
-    //   - Nested in options array: [["rgb", "hsl"]]
-    //   - Nested with secondary: [["rgb", "hsl"], { ... }]
-    let allowed_values: Vec<&str> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => {
-        // Check if first element is itself an array (nested format)
-        if let Some(serde_json::Value::Array(inner)) = arr.first() {
-          inner.iter().filter_map(|v| v.as_str()).collect()
-        } else {
-          // Could be bare array of strings, OR could be ["always", {...}] style
-          // For this rule, primary is always an array of strings
-          arr.iter().filter_map(|v| v.as_str()).collect()
-        }
-      }
-      _ => return vec![],
-    };
-
-    if allowed_values.is_empty() {
-      return vec![];
-    }
-
-    // Separate plain names from regex patterns
-    let mut plain_names: Vec<String> = Vec::new();
-    let mut regex_patterns: Vec<Arc<pattern::Regex>> = Vec::new();
-
-    for val in &allowed_values {
-      if pattern::split_literal(val).is_some() {
-        // It's a regex pattern; one that does not compile is reported as an
-        // invalid option and allows nothing.
-        if let Some(re) = pattern::regex_entry(val) {
-          regex_patterns.push(re);
-        }
-      } else {
-        plain_names.push((*val).to_string());
-      }
-    }
-
-    let mut diags = Vec::new();
-
-    match node {
-      CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          let decl_start = decl.span.offset;
-          let decl_end = decl_start + decl.span.length;
-          let search_area = if decl.span.length > 0 && decl_end <= ctx.source.len() {
-            &ctx.source[decl_start..decl_end]
-          } else {
-            &decl.value
-          };
-          find_disallowed_functions(
-            search_area,
-            decl_start,
-            &plain_names,
-            &regex_patterns,
-            self,
-            &mut diags,
-          );
-        }
-      }
-      CssNode::Declaration(decl) => {
-        let decl_start = decl.span.offset;
-        let decl_end = decl_start + decl.span.length;
-        let search_area = if decl.span.length > 0 && decl_end <= ctx.source.len() {
-          &ctx.source[decl_start..decl_end]
-        } else {
-          &decl.value
-        };
-        find_disallowed_functions(
-          search_area,
-          decl_start,
-          &plain_names,
-          &regex_patterns,
-          self,
-          &mut diags,
-        );
-      }
-      _ => {}
-    }
-
-    diags
+declare_rule! {
+  /// Only allow the functions listed.
+  ///
+  /// Options: a function name or `/regex/`, or a list of them, matched
+  /// exactly as written, as Stylelint 17 does: `RGB()` and `-webkit-calc()`
+  /// need entries of their own.  `exceptWithoutPropertyFallback` names
+  /// listed functions that are still reported unless an earlier
+  /// declaration of the same property gives a fallback.
+  ///
+  /// Equivalent to Stylelint's `function-allowed-list` rule.
+  pub struct FunctionAllowedList => ListCheck<FunctionAllowedList> {
+    name: NAME,
+    description: "Specify a list of allowed functions",
+    default_severity: Warning,
+    primary_option_array: true,
   }
 }
 
-/// Exact name or regex match only — no prefix stripping, no case folding.
-fn is_function_allowed(
-  fname: &str,
-  plain_names: &[String],
-  regex_patterns: &[Arc<pattern::Regex>],
-) -> bool {
-  // Strict matching: exact string match or regex pattern match only.
-  // No vendor prefix stripping, no implicit case-insensitive matching.
-  if plain_names.iter().any(|n| n == fname) {
-    return true;
-  }
-
-  for re in regex_patterns {
-    if pattern::is_match(re, fname) {
-      return true;
-    }
-  }
-
-  false
+/// `function-allowed-list`'s secondary options.
+#[derive(Default)]
+pub struct FunctionAllowedListOptions {
+  /// `exceptWithoutPropertyFallback`.
+  except_without_fallback: List,
 }
 
-/// Scans `value` for function calls and reports each one not on the allow list.
-fn find_disallowed_functions(
-  value: &str,
-  base_offset: usize,
-  plain_names: &[String],
-  regex_patterns: &[Arc<pattern::Regex>],
-  rule: &FunctionAllowedList,
-  diags: &mut Vec<Diagnostic>,
-) {
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
+impl ListRule for FunctionAllowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Allowed;
+  type Options = FunctionAllowedListOptions;
 
-  while i < len {
-    if bytes[i] == b'(' && i > 0 {
-      let end = i;
-      let mut start = i;
-      while start > 0
-        && (bytes[start - 1].is_ascii_alphanumeric()
-          || bytes[start - 1] == b'-'
-          || bytes[start - 1] == b'_')
-      {
-        start -= 1;
-      }
-      if start < end {
-        let fname = &value[start..end];
-        if !is_function_allowed(fname, plain_names, regex_patterns) {
-          diags.push(
-            Diagnostic::new(rule.name(), format!("Unexpected function \"{fname}\""))
-              .severity(rule.default_severity())
-              .span(Span::new(base_offset + start, end - start)),
-          );
-        }
-      }
+  fn options(options: &mut Options<'_>) -> Self::Options {
+    FunctionAllowedListOptions {
+      except_without_fallback: list_option(options, "exceptWithoutPropertyFallback"),
     }
-    i += 1;
+  }
+
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &Self::Options, found: &mut Vec<Found>) {
+    subjects::function_names(tree, found);
+  }
+
+  /// Listed, unless it is also an exception and nothing before it in its
+  /// block declares the property as a fallback.
+  fn listed<'l>(
+    list: &'l List,
+    options: &Self::Options,
+    found: &Found,
+    tree: &PostcssTree,
+  ) -> Option<&'l str> {
+    let entry = list.find(&found.name)?;
+    let needs_fallback = options.except_without_fallback.matches(&found.name);
+    (!needs_fallback || subjects::has_fallback_declaration(tree, found.node)).then_some(entry)
+  }
+
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected function \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, val.len()),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
+  #[test]
+  fn reports_functions_missing_from_the_list() {
+    check_css(
+      NAME,
+      &[
+        (json!(["rgb", "hsl"]), "a { color: rgb(0, 0, 0); }", &[]),
+        (
+          json!(["rgb"]),
+          "a { color: hsl(0, 100%, 50%); }",
+          &["1:12 Unexpected function \"hsl\""],
+        ),
+        (
+          json!(["rgb"]),
+          "a { color: RGB(0, 0, 0); }",
+          &["1:12 Unexpected function \"RGB\""],
+        ),
+        (
+          json!(["calc"]),
+          "a { width: -webkit-calc(1px + 2px); }",
+          &["1:12 Unexpected function \"-webkit-calc\""],
+        ),
+        (json!(["/^rgb/"]), "a { color: rgba(0, 0, 0, 0.5); }", &[]),
+        (
+          json!([["translate"], { "severity": "warning" }]),
+          "a { transform: translate(var(--x)); }",
+          &["1:26 Unexpected function \"var\""],
+        ),
+        (json!(["rgb"]), "a { color: red; }", &[]),
+      ],
+    );
   }
 
   #[test]
-  fn allows_all_when_no_options() {
-    let ctx = ctx_with_options(None);
-    let d = FunctionAllowedList.check(&style_with_value("rgb(0, 0, 0)"), &ctx);
-    assert!(d.is_empty());
+  fn listed_functions_can_require_a_fallback() {
+    let options = json!([["rgb", "oklch"], { "exceptWithoutPropertyFallback": ["oklch"] }]);
+    check_css(
+      NAME,
+      &[
+        (
+          options.clone(),
+          "a { color: oklch(0 0 0); }",
+          &["1:12 Unexpected function \"oklch\""],
+        ),
+        (
+          options,
+          "a { color: rgb(0 0 0); color: oklch(0 0 0); }",
+          &[],
+        ),
+      ],
+    );
   }
 
   #[test]
-  fn allows_listed_function() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["rgb", "hsl"])));
-    let d = FunctionAllowedList.check(&style_with_value("rgb(0, 0, 0)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn flags_unlisted_function() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["rgb"])));
-    let d = FunctionAllowedList.check(&style_with_value("hsl(0, 100%, 50%)"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("hsl"));
-  }
-
-  #[test]
-  fn allows_non_function_values() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["rgb"])));
-    let d = FunctionAllowedList.check(&style_with_value("red"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn case_sensitive() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["rgb"])));
-    let d = FunctionAllowedList.check(&style_with_value("RGB(0, 0, 0)"), &ctx);
-    // "rgb" does not match "RGB" -- strict matching
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn vendor_prefixed_function_not_matched_by_unprefixed() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["calc"])));
-    let d = FunctionAllowedList.check(&style_with_value("-webkit-calc(100% - 10px)"), &ctx);
-    // "calc" does not match "-webkit-calc" -- strict matching
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn regex_pattern_matching() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["/^rgb/"])));
-    let d = FunctionAllowedList.check(&style_with_value("rgba(0, 0, 0, 0.5)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn regex_pattern_rejects_non_matching() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["/^rgb/"])));
-    let d = FunctionAllowedList.check(&style_with_value("hsl(0, 100%, 50%)"), &ctx);
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn nested_array_format() {
-    let ctx = ctx_with_options(Some(serde_json::json!([["rgb", "hsl"]])));
-    let d = FunctionAllowedList.check(&style_with_value("rgb(0, 0, 0)"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(FunctionAllowedList.name(), "function-allowed-list");
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(
+        NAME,
+        json!([["rgb"], { "exceptWithoutPropertyFallback": [1] }])
+      ),
+      [
+        "Invalid value \"1\" for option \"exceptWithoutPropertyFallback\" of rule \"function-allowed-list\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, json!([["rgb"], { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"function-allowed-list\""]
+    );
   }
 }

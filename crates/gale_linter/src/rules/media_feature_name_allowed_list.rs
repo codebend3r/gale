@@ -1,193 +1,92 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "media-feature-name-allowed-list";
 
-/// Only allow specified media feature names.
-///
-/// Options: an array of allowed media feature names.
-/// Example: `["width", "height", "color"]`
-///
-/// Equivalent to Stylelint's `media-feature-name-allowed-list` rule.
-pub struct MediaFeatureNameAllowedList;
-
-/// Extract media feature names from a media query params string.
-/// Looks for patterns like `(feature-name:` or `(feature-name)`.
-fn extract_media_features(params: &str) -> Vec<String> {
-  let mut features = Vec::new();
-  let chars: Vec<char> = params.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
-
-  while i < len {
-    if chars[i] == '(' {
-      i += 1;
-      // Skip whitespace
-      while i < len && chars[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      // Collect the feature name
-      let start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
-        i += 1;
-      }
-      if i > start {
-        let name = params[start..i].to_string();
-        // Skip whitespace after name
-        while i < len && chars[i].is_ascii_whitespace() {
-          i += 1;
-        }
-        // Confirm it's followed by ':' or ')' (it's a feature, not a keyword like "not")
-        if i < len && (chars[i] == ':' || chars[i] == ')') {
-          // Exclude logical keywords
-          let lower = name.to_ascii_lowercase();
-          if lower != "not" && lower != "and" && lower != "or" && lower != "only" {
-            features.push(name);
-          }
-        }
-      }
-    } else {
-      i += 1;
-    }
+declare_rule! {
+  /// Only allow the media feature names listed.
+  ///
+  /// Options: a feature name or `/regex/`, or a list of them, matched
+  /// exactly as written, as Stylelint 17 does: `min-width` needs an entry
+  /// of its own beside `width`.  Range features count by their name, and
+  /// custom media (`--name`) is not checked.
+  ///
+  /// Equivalent to Stylelint's `media-feature-name-allowed-list` rule.
+  pub struct MediaFeatureNameAllowedList => ListCheck<MediaFeatureNameAllowedList> {
+    name: NAME,
+    description: "Specify a list of allowed media feature names",
+    default_severity: Warning,
+    primary_option_array: true,
   }
-
-  features
 }
 
-/// Reads the allowed media feature names, lowercased.
-fn parse_allowed_list(options: Option<&serde_json::Value>) -> Vec<String> {
-  let Some(val) = options else {
-    return Vec::new();
-  };
-  let Some(arr) = val.as_array() else {
-    return Vec::new();
-  };
-  arr
-    .iter()
-    .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-    .collect()
-}
+impl ListRule for MediaFeatureNameAllowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Allowed;
+  type Options = ();
 
-impl Rule for MediaFeatureNameAllowedList {
-  fn name(&self) -> &'static str {
-    "media-feature-name-allowed-list"
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::media_feature_names(tree, found);
   }
 
-  fn description(&self) -> &'static str {
-    "Specify a list of allowed media feature names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags media features outside the configured allow list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let allowed = parse_allowed_list(ctx.options);
-    if allowed.is_empty() {
-      return vec![];
-    }
-
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
-    };
-    if !at_rule.name.eq_ignore_ascii_case("media") {
-      return vec![];
-    }
-
-    let mut diags = Vec::new();
-    let features = extract_media_features(&at_rule.params);
-
-    for feature in features {
-      let feature_lower = feature.to_ascii_lowercase();
-      if !allowed.contains(&feature_lower) {
-        diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected media feature name \"{feature}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(at_rule.span.offset, at_rule.span.length)),
-        );
-      }
-    }
-    diags
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected media feature name \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
-
-  fn media_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: ParserSpan::new(0, 20),
-      children: vec![],
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
   #[test]
-  fn allows_all_when_no_options() {
-    let d = MediaFeatureNameAllowedList.check(&media_rule("(min-width: 768px)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_listed_feature() {
-    let opts = json!(["min-width", "max-width"]);
-    let d = MediaFeatureNameAllowedList
-      .check(&media_rule("(min-width: 768px)"), &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rejects_unlisted_feature() {
-    let opts = json!(["min-width"]);
-    let d = MediaFeatureNameAllowedList.check(&media_rule("(color)"), &ctx_with_options(&opts));
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("color"));
-  }
-
-  #[test]
-  fn case_insensitive_feature_match() {
-    let opts = json!(["MIN-WIDTH"]);
-    let d = MediaFeatureNameAllowedList
-      .check(&media_rule("(min-width: 768px)"), &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_non_media_at_rules() {
-    let opts = json!(["min-width"]);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "slide".to_string(),
-      span: ParserSpan::new(0, 20),
-      children: vec![],
-    });
-    let d = MediaFeatureNameAllowedList.check(&node, &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(
-      MediaFeatureNameAllowedList.name(),
-      "media-feature-name-allowed-list"
+  fn reports_features_missing_from_the_list() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["width"]),
+          "@media screen and (min-width: 10px) and (color) {}",
+          &[
+            "1:20 Unexpected media feature name \"min-width\"",
+            "1:42 Unexpected media feature name \"color\"",
+          ],
+        ),
+        (
+          json!(["/width$/"]),
+          "@media (min-width: 10px) and (max-width: 20px) {}",
+          &[],
+        ),
+        (
+          json!(["width"]),
+          "@media (400px <= width <= 700px), not all and (height > 1px) {}",
+          &["1:48 Unexpected media feature name \"height\""],
+        ),
+        (
+          json!(["width"]),
+          "@media (WIDTH: 1px) {}",
+          &["1:9 Unexpected media feature name \"WIDTH\""],
+        ),
+        (json!(["width"]), "@media (--custom) {}", &[]),
+        (json!(["width"]), "@supports (height: 1px) {}", &[]),
+        (
+          json!(["width"]),
+          "@media not ((height: 1px) or (width: 2px)) {}",
+          &["1:14 Unexpected media feature name \"height\""],
+        ),
+      ],
     );
   }
 
   #[test]
-  fn extract_features_works() {
-    let features = extract_media_features("(min-width: 768px) and (color)");
-    assert_eq!(features.len(), 2);
-    assert_eq!(features[0], "min-width");
-    assert_eq!(features[1], "color");
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(NAME, json!([["width", 2]])),
+      ["Invalid option value \"2\" for rule \"media-feature-name-allowed-list\""]
+    );
   }
 }

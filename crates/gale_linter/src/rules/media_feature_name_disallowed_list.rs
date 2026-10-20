@@ -1,180 +1,70 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "media-feature-name-disallowed-list";
 
-/// Disallow specified media feature names.
-///
-/// Options: an array of disallowed media feature names.
-/// Example: `["max-width", "min-resolution"]`
-///
-/// Equivalent to Stylelint's `media-feature-name-disallowed-list` rule.
-pub struct MediaFeatureNameDisallowedList;
-
-/// Extract media feature names from a media query params string.
-fn extract_media_features(params: &str) -> Vec<String> {
-  let mut features = Vec::new();
-  let chars: Vec<char> = params.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
-
-  while i < len {
-    if chars[i] == '(' {
-      i += 1;
-      while i < len && chars[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      let start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
-        i += 1;
-      }
-      if i > start {
-        let name = params[start..i].to_string();
-        while i < len && chars[i].is_ascii_whitespace() {
-          i += 1;
-        }
-        if i < len && (chars[i] == ':' || chars[i] == ')') {
-          let lower = name.to_ascii_lowercase();
-          if lower != "not" && lower != "and" && lower != "or" && lower != "only" {
-            features.push(name);
-          }
-        }
-      }
-    } else {
-      i += 1;
-    }
+declare_rule! {
+  /// Disallow the media feature names listed.
+  ///
+  /// Options: a feature name or `/regex/`, or a list of them, matched
+  /// exactly as written, as Stylelint 17 does.  Range features count by
+  /// their name, and custom media (`--name`) is not checked.
+  ///
+  /// Equivalent to Stylelint's `media-feature-name-disallowed-list` rule.
+  pub struct MediaFeatureNameDisallowedList => ListCheck<MediaFeatureNameDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed media feature names",
+    default_severity: Warning,
+    primary_option_array: true,
   }
-
-  features
 }
 
-/// Reads the disallowed media feature names, lowercased.
-fn parse_disallowed_list(options: Option<&serde_json::Value>) -> Vec<String> {
-  let Some(val) = options else {
-    return Vec::new();
-  };
-  let Some(arr) = val.as_array() else {
-    return Vec::new();
-  };
-  arr
-    .iter()
-    .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-    .collect()
-}
+impl ListRule for MediaFeatureNameDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = ();
 
-impl Rule for MediaFeatureNameDisallowedList {
-  fn name(&self) -> &'static str {
-    "media-feature-name-disallowed-list"
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::media_feature_names(tree, found);
   }
 
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed media feature names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags media features named in the configured disallow list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let disallowed = parse_disallowed_list(ctx.options);
-    if disallowed.is_empty() {
-      return vec![];
-    }
-
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
-    };
-    if !at_rule.name.eq_ignore_ascii_case("media") {
-      return vec![];
-    }
-
-    let mut diags = Vec::new();
-    let features = extract_media_features(&at_rule.params);
-
-    for feature in features {
-      let feature_lower = feature.to_ascii_lowercase();
-      if disallowed.contains(&feature_lower) {
-        diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected media feature name \"{feature}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(at_rule.span.offset, at_rule.span.length)),
-        );
-      }
-    }
-    diags
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected media feature name \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{AtRule, Span as ParserSpan};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
-
-  fn media_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: ParserSpan::new(0, 20),
-      children: vec![],
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
   #[test]
-  fn allows_all_when_no_options() {
-    let d = MediaFeatureNameDisallowedList.check(&media_rule("(min-width: 768px)"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_non_disallowed_feature() {
-    let opts = json!(["max-width"]);
-    let d = MediaFeatureNameDisallowedList
-      .check(&media_rule("(min-width: 768px)"), &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rejects_disallowed_feature() {
-    let opts = json!(["min-width"]);
-    let d = MediaFeatureNameDisallowedList
-      .check(&media_rule("(min-width: 768px)"), &ctx_with_options(&opts));
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("min-width"));
-  }
-
-  #[test]
-  fn case_insensitive_match() {
-    let opts = json!(["MIN-WIDTH"]);
-    let d = MediaFeatureNameDisallowedList
-      .check(&media_rule("(min-width: 768px)"), &ctx_with_options(&opts));
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn ignores_non_media_at_rules() {
-    let opts = json!(["min-width"]);
-    let node = CssNode::AtRule(AtRule {
-      name: "supports".to_string(),
-      params: "(display: grid)".to_string(),
-      span: ParserSpan::new(0, 20),
-      children: vec![],
-    });
-    let d = MediaFeatureNameDisallowedList.check(&node, &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(
-      MediaFeatureNameDisallowedList.name(),
-      "media-feature-name-disallowed-list"
+  fn reports_listed_features() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["max-width"]),
+          "@media (min-width: 1px) and (max-width: 2px) {}",
+          &["1:30 Unexpected media feature name \"max-width\""],
+        ),
+        (
+          json!(["/^device-/"]),
+          "@media (device-width < 2px) {}",
+          &["1:9 Unexpected media feature name \"device-width\""],
+        ),
+        (json!(["max-width"]), "@media (MAX-WIDTH: 2px) {}", &[]),
+        (json!(["max-width"]), "@media print {}", &[]),
+      ],
     );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, json!("max-width")).is_empty());
   }
 }

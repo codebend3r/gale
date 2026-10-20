@@ -1,79 +1,111 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::subjects::{self, SelectorOptions};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity};
+use crate::options::Options;
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "selector-disallowed-list";
 
-/// Disallow specific selectors.
-///
-/// By default, disallows no selectors. Configure via rule options.
-///
-/// Equivalent to Stylelint's `selector-disallowed-list` rule.
-pub struct SelectorDisallowedList;
-
-const DISALLOWED: &[&str] = &[];
-
-impl Rule for SelectorDisallowedList {
-  fn name(&self) -> &'static str {
-    "selector-disallowed-list"
+declare_rule! {
+  /// Disallow the selectors listed.
+  ///
+  /// Options: a selector or `/regex/`, or a list of them.  A string must
+  /// equal the rule's whole selector as written; a regex need only match
+  /// part of it.  `splitList: true` matches each selector of a list on its
+  /// own; `ignore: ["inside-block"]` skips nested rules and
+  /// `ignore: ["keyframe-selectors"]` the selectors in `@keyframes`.
+  ///
+  /// Equivalent to Stylelint's `selector-disallowed-list` rule.
+  pub struct SelectorDisallowedList => ListCheck<SelectorDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed selectors",
+    default_severity: Warning,
+    primary_option_array: true,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed selectors"
-  }
+impl ListRule for SelectorDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = SelectorOptions;
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags a selector containing any disallowed substring.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-    let selector = rule.selector.trim();
-    for disallowed in DISALLOWED {
-      if selector.contains(disallowed) {
-        return vec![
-          Diagnostic::new(self.name(), format!("Unexpected selector \"{selector}\""))
-            .severity(self.default_severity())
-            .span(Span::new(rule.span.offset, rule.span.length)),
-        ];
-      }
+  fn options(options: &mut Options<'_>) -> SelectorOptions {
+    let ignore = options.keywords("ignore", &["inside-block", "keyframe-selectors"]);
+    SelectorOptions {
+      ignore_inside_block: ignore.contains(&"inside-block"),
+      ignore_keyframes: ignore.contains(&"keyframe-selectors"),
+      split_list: options.flag("splitList"),
     }
-    vec![]
+  }
+
+  fn find(tree: &PostcssTree, _: &RuleContext, options: &SelectorOptions, found: &mut Vec<Found>) {
+    subjects::selectors(tree, *options, found);
+  }
+
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected selector \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::ctx;
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![],
-      span: ParserSpan::new(0, sel.len()),
-      ..Default::default()
-    })
+  #[test]
+  fn reports_listed_selectors() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["a > b"]),
+          "a > b { color: red; }",
+          &["1:1 Unexpected selector \"a > b\""],
+        ),
+        (json!(["a > b"]), "a > b, c { color: red; }", &[]),
+        (
+          json!(["/\\.foo/"]),
+          "a, .foo { color: red; }",
+          &["1:1 Unexpected selector \"a, .foo\""],
+        ),
+        (
+          json!([["c"], { "splitList": true }]),
+          "a, c { color: red; }",
+          &["1:4 Unexpected selector \"c\""],
+        ),
+        (
+          json!([["b"], { "ignore": ["inside-block"] }]),
+          "b {}\na { b {} }",
+          &["1:1 Unexpected selector \"b\""],
+        ),
+        (
+          json!([["from"], { "ignore": ["keyframe-selectors"] }]),
+          "@keyframes k { from {} }",
+          &[],
+        ),
+        (
+          json!(["from"]),
+          "@keyframes k { from {} }",
+          &["1:16 Unexpected selector \"from\""],
+        ),
+      ],
+    );
   }
 
   #[test]
-  fn allows_all_when_list_empty() {
-    let d = SelectorDisallowedList.check(&style_with_selector(".foo"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_any_selector_by_default() {
-    let d = SelectorDisallowedList.check(&style_with_selector("#id > .class"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(SelectorDisallowedList.name(), "selector-disallowed-list");
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(
+        NAME,
+        json!([["a"], { "ignore": ["outside"], "splitList": "yes" }])
+      ),
+      [
+        "Invalid value \"outside\" for option \"ignore\" of rule \"selector-disallowed-list\"",
+        "Invalid value \"yes\" for option \"splitList\" of rule \"selector-disallowed-list\"",
+      ]
+    );
   }
 }
