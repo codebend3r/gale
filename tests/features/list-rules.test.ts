@@ -62,7 +62,7 @@ describe("allowed lists read the configured list", () => {
 });
 
 describe("a list followed by secondary options", () => {
-  test.failing("property-allowed-list still allows the listed properties", () => {
+  test("property-allowed-list still allows the listed properties", () => {
     expect(
       lint(
         { "property-allowed-list": [["color", "margin"], { severity: "warning" }] },

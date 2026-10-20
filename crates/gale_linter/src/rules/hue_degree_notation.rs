@@ -1,18 +1,47 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Specify number or angle notation for degree hues.
-///
-/// Equivalent to Stylelint's `hue-degree-notation` rule, including its
-/// autofix.  Checks the hue of `hsl()`, `hsla()` and `hwb()` (first channel)
-/// and `lch()` and `oklch()` (third channel), also in relative color syntax.
-/// Primary option: `"angle"` (hues as `120deg`) or `"number"` (hues as
-/// `120`).
-pub struct HueDegreeNotation;
+const NAME: &str = "hue-degree-notation";
+
+declare_rule! {
+  /// Specify number or angle notation for degree hues.
+  ///
+  /// Equivalent to Stylelint's `hue-degree-notation` rule, including its
+  /// autofix.  Checks the hue of `hsl()`, `hsla()` and `hwb()` (first channel)
+  /// and `lch()` and `oklch()` (third channel), also in relative color syntax.
+  /// Primary option: `"angle"` (hues as `120deg`) or `"number"` (hues as
+  /// `120`).
+  pub struct HueDegreeNotation => HueDegreeNotationCheck {
+    name: NAME,
+    description: "Specify number or angle notation for degree hues",
+    default_severity: Warning,
+  }
+}
+
+/// `hue-degree-notation` as configured.
+pub struct HueDegreeNotationCheck {
+  /// `Some(true)` for `"angle"`, `Some(false)` for `"number"`; the rule
+  /// checks nothing without one.
+  want_angle: Option<bool>,
+}
+
+impl HueDegreeNotationCheck {
+  /// Stylelint's options: `"angle"` or `"number"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["angle", "number"]);
+    options.finish()?;
+    Ok(Self {
+      want_angle: notation.map(|notation| notation == "angle"),
+    })
+  }
+}
 
 /// Functions whose first channel is the hue.
 const HUE_FIRST: &[&str] = &["hsl", "hsla", "hwb"];
@@ -20,26 +49,12 @@ const HUE_FIRST: &[&str] = &["hsl", "hsla", "hwb"];
 /// Functions whose third channel is the hue.
 const HUE_THIRD: &[&str] = &["lch", "oklch"];
 
-impl Rule for HueDegreeNotation {
-  fn name(&self) -> &'static str {
-    "hue-degree-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify number or angle notation for degree hues"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for HueDegreeNotationCheck {
   /// Reports every degree or unitless hue in the wrong notation, with a fix
   /// that adds or drops the `deg` unit.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let want_angle = match ctx.primary_option_str() {
-      Some("angle") => true,
-      Some("number") => false,
-      _ => return Vec::new(),
+    let Some(want_angle) = self.want_angle else {
+      return Vec::new();
     };
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
@@ -77,16 +92,12 @@ impl Rule for HueDegreeNotation {
         let start = decl.value_span.start + hue.source_index;
         let span = Span::new(start, hue.source_end_index - hue.source_index);
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{unfixed}\" to be \"{fixed}\""),
-          )
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("Replace \"{unfixed}\" with \"{fixed}\""),
-            vec![Edit::new(span, fixed.clone())],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{unfixed}\" to be \"{fixed}\""))
+            .span(span)
+            .fix(Fix::new(
+              format!("Replace \"{unfixed}\" with \"{fixed}\""),
+              vec![Edit::new(span, fixed.clone())],
+            )),
         );
       };
       value_parser::walk(&parsed, &mut |node| {
@@ -213,5 +224,15 @@ mod tests {
     let source = "a { color: hsl(120 60% 70%) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(RULE, json!("number")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("degree")),
+      ["Invalid option value \"degree\" for rule \"hue-degree-notation\""]
+    );
   }
 }

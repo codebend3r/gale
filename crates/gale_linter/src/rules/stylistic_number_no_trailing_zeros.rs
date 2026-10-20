@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow trailing zeros in numbers.
-///
-/// Equivalent to `@stylistic/number-no-trailing-zeros`.
-pub struct StylisticNumberNoTrailingZeros;
+const NAME: &str = "@stylistic/number-no-trailing-zeros";
 
-impl Rule for StylisticNumberNoTrailingZeros {
-  fn name(&self) -> &'static str {
-    "@stylistic/number-no-trailing-zeros"
+declare_rule! {
+  /// Disallow trailing zeros in numbers.
+  ///
+  /// Equivalent to `@stylistic/number-no-trailing-zeros`.
+  pub struct StylisticNumberNoTrailingZeros => StylisticNumberNoTrailingZerosCheck {
+    name: NAME,
+    description: "Disallow trailing zeros in numbers",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow trailing zeros in numbers"
+/// `@stylistic/number-no-trailing-zeros`, which takes no options.
+pub struct StylisticNumberNoTrailingZerosCheck;
+
+impl StylisticNumberNoTrailingZerosCheck {
+  /// The plugin validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticNumberNoTrailingZerosCheck {
   /// Checks declaration values for trailing zeros.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -29,19 +41,14 @@ impl Rule for StylisticNumberNoTrailingZeros {
 
     let mut diags = Vec::new();
     for decl in &rule.declarations {
-      find_trailing_zeros(&decl.value, decl.span.offset, self, &mut diags);
+      find_trailing_zeros(&decl.value, decl.span.offset, &mut diags);
     }
     diags
   }
 }
 
 /// Reports each number in `value` with a redundant zero after the decimal point.
-fn find_trailing_zeros(
-  value: &str,
-  base_offset: usize,
-  rule: &StylisticNumberNoTrailingZeros,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn find_trailing_zeros(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
   let bytes = value.as_bytes();
   let len = bytes.len();
   let mut i = 0;
@@ -112,19 +119,15 @@ fn find_trailing_zeros(
             };
 
             diags.push(
-              Diagnostic::new(
-                rule.name(),
-                format!("Unexpected trailing zero(s) in \"{number}\""),
-              )
-              .severity(rule.default_severity())
-              .span(Span::new(base_offset + num_start, number.len()))
-              .fix(Fix::new(
-                "Remove trailing zeros",
-                vec![Edit::new(
-                  Span::new(base_offset + num_start, number.len()),
-                  &fixed,
-                )],
-              )),
+              Diagnostic::new(NAME, format!("Unexpected trailing zero(s) in \"{number}\""))
+                .span(Span::new(base_offset + num_start, number.len()))
+                .fix(Fix::new(
+                  "Remove trailing zeros",
+                  vec![Edit::new(
+                    Span::new(base_offset + num_start, number.len()),
+                    &fixed,
+                  )],
+                )),
             );
           }
         }
@@ -140,7 +143,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -158,7 +161,7 @@ mod tests {
 
   #[test]
   fn reports_trailing_zero() {
-    let rule = StylisticNumberNoTrailingZeros;
+    let rule = configured(&StylisticNumberNoTrailingZeros, None);
     let d = rule.check(&style_with_value("1.0"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1.0"));
@@ -168,7 +171,7 @@ mod tests {
 
   #[test]
   fn reports_multiple_trailing_zeros() {
-    let rule = StylisticNumberNoTrailingZeros;
+    let rule = configured(&StylisticNumberNoTrailingZeros, None);
     let d = rule.check(&style_with_value("0.500"), &ctx());
     assert_eq!(d.len(), 1);
     let fix = d[0].fix.as_ref().unwrap();
@@ -177,15 +180,24 @@ mod tests {
 
   #[test]
   fn allows_no_trailing_zeros() {
-    let rule = StylisticNumberNoTrailingZeros;
+    let rule = configured(&StylisticNumberNoTrailingZeros, None);
     let d = rule.check(&style_with_value("0.5"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_integer() {
-    let rule = StylisticNumberNoTrailingZeros;
+    let rule = configured(&StylisticNumberNoTrailingZeros, None);
     let d = rule.check(&style_with_value("10"), &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"@stylistic/number-no-trailing-zeros\""]
+    );
   }
 }

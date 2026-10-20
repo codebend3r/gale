@@ -1,32 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
-/// Enforces a pattern for class selectors.
-///
-/// Accepts a regex string as the primary option (e.g. `"^[a-z][a-zA-Z0-9]+$"`).
-/// Defaults to kebab-case pattern if no option is provided.
-///
-/// Equivalent to Stylelint's `selector-class-pattern` rule.
-pub struct SelectorClassPattern;
+const NAME: &str = "selector-class-pattern";
 
-impl Rule for SelectorClassPattern {
-  fn name(&self) -> &'static str {
-    "selector-class-pattern"
+declare_rule! {
+  /// Enforces a pattern for class selectors.
+  ///
+  /// Accepts a regex string as the primary option (e.g. `"^[a-z][a-zA-Z0-9]+$"`).
+  /// Defaults to kebab-case pattern if no option is provided.
+  ///
+  /// Equivalent to Stylelint's `selector-class-pattern` rule.
+  pub struct SelectorClassPattern => SelectorClassPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for class selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for class selectors"
+/// `selector-class-pattern` as configured.
+pub struct SelectorClassPatternCheck {
+  /// The pattern every class name must match.
+  pattern: Pattern,
+}
+
+impl SelectorClassPatternCheck {
+  /// Stylelint's options: a regular expression, as a string or `/regex/`.
+  /// Gale reads no option as kebab-case, and a pattern that does not
+  /// compile is an invalid option, as Stylelint reports it, rather than the
+  /// rule quietly switching off.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    let pattern = match pattern {
+      Some(pattern) => pattern,
+      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
+    };
+    Ok(Self { pattern })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorClassPatternCheck {
   /// Flags class names that do not match the configured regex, defaulting to
   /// kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -34,16 +54,7 @@ impl Rule for SelectorClassPattern {
       return vec![];
     };
 
-    // Read the user-supplied regex pattern from options, or use the default kebab-case pattern.
-    // Options may be a plain string "^pattern$" or an array ["^pattern$", { secondary }].
-    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
+    let pattern_str = self.pattern.source.as_str();
 
     let mut diags = Vec::new();
 
@@ -83,7 +94,7 @@ impl Rule for SelectorClassPattern {
       cursor = part_start + trimmed_part.len();
 
       for (class, class_byte_offset) in extract_class_names_with_offsets(trimmed_part) {
-        if !pattern::is_match(&re, &class) {
+        if !self.pattern.is_match(&class) {
           let offset = selector_start + part_start + class_byte_offset;
           let msg = if is_kebab_case_pattern(pattern_str) {
             format!("Expected class selector \".{class}\" to be kebab-case")
@@ -91,8 +102,7 @@ impl Rule for SelectorClassPattern {
             format!("Expected \".{class}\" to match pattern \"{pattern_str}\"")
           };
           diags.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, msg)
               .span(Span::new(offset, class.len() + 1)) // +1 for the dot
               .message_args([format!(".{class}"), pattern_str.to_string()]),
           );
@@ -273,7 +283,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -291,87 +301,75 @@ mod tests {
 
   #[test]
   fn reports_camel_case_class() {
-    let d = SelectorClassPattern.check(&style_with_selector(".myClass"), &ctx());
+    let rule = configured(&SelectorClassPattern, None);
+    let d = rule.check(&style_with_selector(".myClass"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myClass"));
   }
 
   #[test]
   fn allows_kebab_case_class() {
+    let rule = configured(&SelectorClassPattern, None);
     assert!(
-      SelectorClassPattern
+      rule
         .check(&style_with_selector(".my-class"), &ctx())
         .is_empty()
     );
-    assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".foo"), &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&style_with_selector(".foo"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_underscore_class() {
-    let d = SelectorClassPattern.check(&style_with_selector(".my_class"), &ctx());
+    let rule = configured(&SelectorClassPattern, None);
+    let d = rule.check(&style_with_selector(".my_class"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn custom_pattern_camel_case() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
+    let rule = configured(&SelectorClassPattern, opts.clone());
     let c = ctx_with_options(&opts);
     // camelCase should pass
-    assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".myClass"), &c)
-        .is_empty()
-    );
+    assert!(rule.check(&style_with_selector(".myClass"), &c).is_empty());
     // kebab-case should fail
-    let d = SelectorClassPattern.check(&style_with_selector(".my-class"), &c);
+    let d = rule.check(&style_with_selector(".my-class"), &c);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn custom_pattern_in_message() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
+    let rule = configured(&SelectorClassPattern, opts.clone());
     let c = ctx_with_options(&opts);
-    let d = SelectorClassPattern.check(&style_with_selector(".my-class"), &c);
+    let d = rule.check(&style_with_selector(".my-class"), &c);
     assert!(d[0].message.contains("^[a-z][a-zA-Z0-9]+$"));
   }
 
   #[test]
   fn ignores_numeric_values_after_dot() {
+    let rule = configured(&SelectorClassPattern, None);
     // These are numeric values (e.g. `opacity: .5`), not class selectors.
     // Gale should not report them as class pattern violations.
     let c = ctx();
     assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".5"), &c)
-        .is_empty(),
+      rule.check(&style_with_selector(".5"), &c).is_empty(),
       ".5 should be ignored (numeric value)"
     );
     assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".2"), &c)
-        .is_empty(),
+      rule.check(&style_with_selector(".2"), &c).is_empty(),
       ".2 should be ignored (numeric value)"
     );
     assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".15"), &c)
-        .is_empty(),
+      rule.check(&style_with_selector(".15"), &c).is_empty(),
       ".15 should be ignored (numeric value)"
     );
     assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".65"), &c)
-        .is_empty(),
+      rule.check(&style_with_selector(".65"), &c).is_empty(),
       ".65 should be ignored (numeric value)"
     );
     assert!(
-      SelectorClassPattern
-        .check(&style_with_selector(".8"), &c)
-        .is_empty(),
+      rule.check(&style_with_selector(".8"), &c).is_empty(),
       ".8 should be ignored (numeric value)"
     );
   }
@@ -385,5 +383,20 @@ mod tests {
     // But real class names still work
     assert_eq!(extract_class_names(".foo"), vec!["foo"]);
     assert_eq!(extract_class_names(".foo-bar"), vec!["foo-bar"]);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("/^[a-z]+$/i")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"selector-class-pattern\""]
+    );
+    let broken = invalid_options(NAME, serde_json::json!("^[a-z"));
+    assert_eq!(broken.len(), 1);
+    assert!(
+      broken[0].starts_with("Invalid option value \"^[a-z\" for rule \"selector-class-pattern\": "),
+      "{broken:?}"
+    );
   }
 }

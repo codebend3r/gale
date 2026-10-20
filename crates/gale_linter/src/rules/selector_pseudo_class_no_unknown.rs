@@ -1,8 +1,10 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_pseudo_class;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 /// Known pseudo-classes that are only valid in a `@page` context.
 /// These should NOT be recognized as valid pseudo-classes in regular selectors.
@@ -38,25 +40,40 @@ fn is_webkit_scrollbar_pseudo_class(name: &str) -> bool {
     .any(|p| p.eq_ignore_ascii_case(name))
 }
 
-pub struct SelectorPseudoClassNoUnknown;
+const NAME: &str = "selector-pseudo-class-no-unknown";
 
-impl Rule for SelectorPseudoClassNoUnknown {
-  fn name(&self) -> &'static str {
-    "selector-pseudo-class-no-unknown"
+declare_rule! {
+  pub struct SelectorPseudoClassNoUnknown => SelectorPseudoClassNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown pseudo-class selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown pseudo-class selectors"
+/// `selector-pseudo-class-no-unknown` as configured.
+pub struct SelectorPseudoClassNoUnknownCheck {
+  /// The `ignorePseudoClasses` option: names and `/regex/` entries.
+  ignore_pseudo_classes: Vec<String>,
+}
+
+impl SelectorPseudoClassNoUnknownCheck {
+  /// Stylelint's options: nothing but `true`, then `ignorePseudoClasses`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_pseudo_classes = options.strings("ignorePseudoClasses");
+    options.finish()?;
+    Ok(Self {
+      ignore_pseudo_classes,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorPseudoClassNoUnknownCheck {
   /// Flags pseudo-classes that are not standard, skipping vendor-prefixed names,
   /// interpolated selectors, and anything in the ignore list.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_list = parse_ignore_list(ctx.options);
+    let ignore_list = &self.ignore_pseudo_classes;
 
     match node {
       CssNode::Style(rule) => {
@@ -84,13 +101,12 @@ impl Rule for SelectorPseudoClassNoUnknown {
             let span = find_pseudo_class_span(ctx.source, rule.span.offset, entry);
             diags.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!(
                   "Unexpected unknown pseudo-class selector \":{}\"",
                   entry.name
                 ),
               )
-              .severity(self.default_severity())
               .span(span),
             );
             continue;
@@ -102,13 +118,12 @@ impl Rule for SelectorPseudoClassNoUnknown {
             let span = find_pseudo_class_span(ctx.source, rule.span.offset, entry);
             diags.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!(
                   "Unexpected unknown pseudo-class selector \":{}\"",
                   entry.name
                 ),
               )
-              .severity(self.default_severity())
               .span(span),
             );
           }
@@ -143,13 +158,12 @@ impl Rule for SelectorPseudoClassNoUnknown {
             let span = find_page_pseudo_span(ctx.source, at.span.offset, entry);
             diags.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 format!(
                   "Unexpected unknown pseudo-class selector \":{}\"",
                   entry.name
                 ),
               )
-              .severity(self.default_severity())
               .span(span),
             );
           }
@@ -163,7 +177,7 @@ impl Rule for SelectorPseudoClassNoUnknown {
   /// Catches pseudo-classes in selectors the parser did not surface, by scanning
   /// the source outside the ranges the AST already covers.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_list = parse_ignore_list(ctx.options);
+    let ignore_list = &self.ignore_pseudo_classes;
     let mut diags = Vec::new();
     let source = ctx.source;
 
@@ -186,13 +200,12 @@ impl Rule for SelectorPseudoClassNoUnknown {
       if !is_known_pseudo_class(&entry.name) && !is_page_pseudo_class(&entry.name) {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Unexpected unknown pseudo-class selector \":{}\"",
               entry.name
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(entry.byte_offset_in_source, entry.name.len() + 1)),
         );
       }
@@ -585,38 +598,6 @@ fn is_in_covered_range(offset: usize, ranges: &[(usize, usize)]) -> bool {
   covered_range_end(offset, ranges).is_some()
 }
 
-/// Parse `ignorePseudoClasses` from the secondary options.
-fn parse_ignore_list(options: Option<&serde_json::Value>) -> Vec<String> {
-  let Some(opts) = options else {
-    return vec![];
-  };
-  let obj = match opts {
-    serde_json::Value::Object(o) => o,
-    serde_json::Value::Array(arr) => {
-      for item in arr {
-        if let serde_json::Value::Object(o) = item
-          && let Some(serde_json::Value::Array(names)) = o.get("ignorePseudoClasses")
-        {
-          return names
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        }
-      }
-      return vec![];
-    }
-    _ => return vec![],
-  };
-  if let Some(serde_json::Value::Array(names)) = obj.get("ignorePseudoClasses") {
-    names
-      .iter()
-      .filter_map(|v| v.as_str().map(String::from))
-      .collect()
-  } else {
-    vec![]
-  }
-}
-
 /// Whether the name matches an ignore entry, as a regex or an exact string.
 fn is_ignored(name: &str, ignore_list: &[String]) -> bool {
   for pattern in ignore_list {
@@ -641,7 +622,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -659,20 +640,22 @@ mod tests {
 
   #[test]
   fn reports_unknown_pseudo_class() {
-    let d = SelectorPseudoClassNoUnknown.check(&style_with_selector("a:hoverr"), &ctx());
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
+    let d = rule.check(&style_with_selector("a:hoverr"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(":hoverr"));
   }
 
   #[test]
   fn allows_known_pseudo_class() {
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
     assert!(
-      SelectorPseudoClassNoUnknown
+      rule
         .check(&style_with_selector("a:hover"), &ctx())
         .is_empty()
     );
     assert!(
-      SelectorPseudoClassNoUnknown
+      rule
         .check(&style_with_selector("a:nth-child(2)"), &ctx())
         .is_empty()
     );
@@ -680,8 +663,9 @@ mod tests {
 
   #[test]
   fn does_not_confuse_with_pseudo_elements() {
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
     assert!(
-      SelectorPseudoClassNoUnknown
+      rule
         .check(&style_with_selector("a::before"), &ctx())
         .is_empty()
     );
@@ -689,11 +673,10 @@ mod tests {
 
   #[test]
   fn allows_legacy_single_colon_pseudo_elements() {
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
     for sel in ["p:before", "p:after", "p:first-line", "p:first-letter"] {
       assert!(
-        SelectorPseudoClassNoUnknown
-          .check(&style_with_selector(sel), &ctx())
-          .is_empty(),
+        rule.check(&style_with_selector(sel), &ctx()).is_empty(),
         "should not flag legacy pseudo-element in selector \"{sel}\"",
       );
     }
@@ -701,7 +684,8 @@ mod tests {
 
   #[test]
   fn rejects_first_in_regular_selector() {
-    let d = SelectorPseudoClassNoUnknown.check(&style_with_selector(":first"), &ctx());
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
+    let d = rule.check(&style_with_selector(":first"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(":first"));
   }
@@ -713,5 +697,29 @@ mod tests {
     let src = ".\u{4e2d}\u{6587}\u{540d} { color: red; }";
     let entries = scan_source_for_unparsed_pseudo_classes(src, &[]);
     assert_eq!(entries.len(), 0, "no pseudo-classes in this selector");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignorePseudoClasses": ["hoverr", "/^my-/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"selector-pseudo-class-no-unknown\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignorePseudoClasses": [1] }])
+      ),
+      [
+        "Invalid value \"1\" for option \"ignorePseudoClasses\" of rule \"selector-pseudo-class-no-unknown\""
+      ]
+    );
   }
 }

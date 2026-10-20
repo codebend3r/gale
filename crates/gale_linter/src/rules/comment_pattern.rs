@@ -1,54 +1,61 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify a pattern for comments.
-///
-/// Equivalent to Stylelint's `comment-pattern` rule.
-/// Options: a regex string that comment text must match.
-pub struct CommentPattern;
+const NAME: &str = "comment-pattern";
 
-impl Rule for CommentPattern {
-  fn name(&self) -> &'static str {
-    "comment-pattern"
+declare_rule! {
+  /// Specify a pattern for comments.
+  ///
+  /// Equivalent to Stylelint's `comment-pattern` rule.
+  /// Options: a regex string that comment text must match.
+  pub struct CommentPattern => CommentPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for comments",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for comments"
+/// `comment-pattern` as configured.
+pub struct CommentPatternCheck {
+  /// The pattern comment text must match; `None` when the config gives
+  /// none, and the rule checks nothing.
+  pattern: Option<Pattern>,
+}
+
+impl CommentPatternCheck {
+  /// Stylelint's option: a regular expression, as a string or `/regex/`.
+  /// One that does not compile is an invalid option.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    Ok(Self { pattern })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CommentPatternCheck {
   /// Flags comment text that does not match the configured regex.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Comment(comment) = node else {
       return vec![];
     };
 
-    let pattern_str = match ctx.primary_option_str() {
-      Some(s) => s,
-      None => return vec![],
+    let Some(pattern) = &self.pattern else {
+      return vec![];
     };
-
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
+    let pattern_str = &pattern.source;
 
     let text = comment.text.trim();
-    if !pattern::is_match(&re, text) {
+    if !pattern.is_match(text) {
       return vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Expected comment to match pattern \"/{pattern_str}/\""),
         )
-        .severity(self.default_severity())
         .span(Span::new(comment.span.offset, comment.span.length)),
       ];
     }
@@ -61,7 +68,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Comment, Span as ParserSpan};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn comment_node(text: &str) -> CssNode {
     CssNode::Comment(Comment {
@@ -73,27 +80,45 @@ mod tests {
 
   #[test]
   fn reports_comment_not_matching_pattern() {
-    let ctx = ctx_with_options(serde_json::json!("^TODO:"));
-    let d = CommentPattern.check(&comment_node("some random comment"), &ctx);
+    let rule = configured(&CommentPattern, serde_json::json!("^TODO:"));
+    let ctx = ctx();
+    let d = rule.check(&comment_node("some random comment"), &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("TODO:"));
   }
 
   #[test]
   fn allows_comment_matching_pattern() {
-    let ctx = ctx_with_options(serde_json::json!("^TODO:"));
-    let d = CommentPattern.check(&comment_node("TODO: fix this"), &ctx);
+    let rule = configured(&CommentPattern, serde_json::json!("^TODO:"));
+    let ctx = ctx();
+    let d = rule.check(&comment_node("TODO: fix this"), &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_all_when_no_options() {
-    let d = CommentPattern.check(&comment_node("anything"), &ctx());
+    let rule = configured(&CommentPattern, None);
+    let d = rule.check(&comment_node("anything"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn rule_name_is_correct() {
-    assert_eq!(CommentPattern.name(), "comment-pattern");
+    assert_eq!(CommentPattern::META.name, "comment-pattern");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("/^TODO/")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"comment-pattern\""]
+    );
+    let broken = invalid_options(NAME, serde_json::json!("^[a-"));
+    assert_eq!(broken.len(), 1);
+    assert!(
+      broken[0].starts_with("Invalid option value \"^[a-\" for rule \"comment-pattern\": "),
+      "{broken:?}"
+    );
   }
 }

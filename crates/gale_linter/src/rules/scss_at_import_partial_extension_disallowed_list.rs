@@ -1,7 +1,7 @@
 use gale_css_parser::{CssNode, Syntax};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{LegacyRule as Rule, RuleContext};
 
 /// Specify a list of disallowed file extensions for partial names in
 /// `@import`, `@use`, and `@forward` commands.

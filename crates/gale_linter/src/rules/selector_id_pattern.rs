@@ -1,35 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 const DEFAULT_PATTERN: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
 
-/// Enforces a naming pattern for ID selectors.
-///
-/// Extracts `#id` patterns from selectors (excluding hex colors in values)
-/// and validates them against the configured regex pattern.
-///
-/// Accepts a regex string as the primary option.
-/// Defaults to kebab-case pattern if no option is provided.
-///
-/// Equivalent to Stylelint's `selector-id-pattern` rule.
-pub struct SelectorIdPattern;
+const NAME: &str = "selector-id-pattern";
 
-impl Rule for SelectorIdPattern {
-  fn name(&self) -> &'static str {
-    "selector-id-pattern"
+declare_rule! {
+  /// Enforces a naming pattern for ID selectors.
+  ///
+  /// Extracts `#id` patterns from selectors (excluding hex colors in values)
+  /// and validates them against the configured regex pattern.
+  ///
+  /// Accepts a regex string as the primary option.
+  /// Defaults to kebab-case pattern if no option is provided.
+  ///
+  /// Equivalent to Stylelint's `selector-id-pattern` rule.
+  pub struct SelectorIdPattern => SelectorIdPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for ID selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for ID selectors"
+/// `selector-id-pattern` as configured.
+pub struct SelectorIdPatternCheck {
+  /// The pattern every ID must match.
+  pattern: Pattern,
+}
+
+impl SelectorIdPatternCheck {
+  /// Stylelint's options: a regular expression, as a string or `/regex/`.
+  /// Gale reads no option as kebab-case, and a pattern that does not
+  /// compile is an invalid option, as Stylelint reports it.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    let pattern = match pattern {
+      Some(pattern) => pattern,
+      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
+    };
+    Ok(Self { pattern })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorIdPatternCheck {
   /// Flags ID selector names that do not match the configured regex, defaulting
   /// to kebab-case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -37,16 +56,7 @@ impl Rule for SelectorIdPattern {
       return vec![];
     };
 
-    // The pattern is the primary option, also when written as
-    // `[pattern, { message }]`.
-    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
+    let pattern_str = self.pattern.source.as_str();
 
     let mut diags = Vec::new();
     for id in extract_id_selectors(&rule.selector) {
@@ -58,13 +68,12 @@ impl Rule for SelectorIdPattern {
       {
         continue;
       }
-      if !pattern::is_match(&re, &id) {
+      if !self.pattern.is_match(&id) {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Expected ID selector \"#{id}\" to match pattern \"{pattern_str}\""),
           )
-          .severity(self.default_severity())
           .span(Span::new(rule.span.offset, rule.span.length))
           .message_args([format!("#{id}"), pattern_str.to_string()]),
         );
@@ -134,7 +143,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -152,61 +161,81 @@ mod tests {
 
   #[test]
   fn reports_camel_case_id() {
-    let d = SelectorIdPattern.check(&style_with_selector("#myId"), &ctx());
+    let rule = configured(&SelectorIdPattern, None);
+    let d = rule.check(&style_with_selector("#myId"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myId"));
   }
 
   #[test]
   fn allows_kebab_case_id() {
+    let rule = configured(&SelectorIdPattern, None);
     assert!(
-      SelectorIdPattern
+      rule
         .check(&style_with_selector("#my-id"), &ctx())
         .is_empty()
     );
-    assert!(
-      SelectorIdPattern
-        .check(&style_with_selector("#foo"), &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&style_with_selector("#foo"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_underscore_id() {
-    let d = SelectorIdPattern.check(&style_with_selector("#my_id"), &ctx());
+    let rule = configured(&SelectorIdPattern, None);
+    let d = rule.check(&style_with_selector("#my_id"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_bad_ids() {
-    let d = SelectorIdPattern.check(&style_with_selector("#myId #anotherId"), &ctx());
+    let rule = configured(&SelectorIdPattern, None);
+    let d = rule.check(&style_with_selector("#myId #anotherId"), &ctx());
     assert_eq!(d.len(), 2);
   }
 
   #[test]
   fn custom_pattern_camel_case() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
+    let rule = configured(&SelectorIdPattern, opts.clone());
     let c = ctx_with_options(&opts);
     // camelCase should pass
-    assert!(
-      SelectorIdPattern
-        .check(&style_with_selector("#myId"), &c)
-        .is_empty()
-    );
+    assert!(rule.check(&style_with_selector("#myId"), &c).is_empty());
     // kebab-case should fail
-    let d = SelectorIdPattern.check(&style_with_selector("#my-id"), &c);
+    let d = rule.check(&style_with_selector("#my-id"), &c);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn ignores_non_style_nodes() {
+    let rule = configured(&SelectorIdPattern, None);
     let node = CssNode::AtRule(gale_css_parser::AtRule {
       name: "media".to_string(),
       params: "(min-width: 768px)".to_string(),
       span: ParserSpan::new(0, 0),
       children: vec![],
     });
-    let d = SelectorIdPattern.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The rule validates no secondary options, so it ignores them.
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["/^[a-z]+$/i", { "anything": true }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"selector-id-pattern\""]
+    );
+    let broken = invalid_options(NAME, serde_json::json!("^[a-z"));
+    assert_eq!(broken.len(), 1);
+    assert!(
+      broken[0].starts_with("Invalid option value \"^[a-z\" for rule \"selector-id-pattern\": "),
+      "{broken:?}"
+    );
   }
 }

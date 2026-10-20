@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::js_number::to_js_string;
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of declarations within a single-line declaration block.
-///
-/// Equivalent to Stylelint's `declaration-block-single-line-max-declarations` rule.
-/// Default maximum: 1. Detection-only.
-pub struct DeclarationBlockSingleLineMaxDeclarations;
+const NAME: &str = "declaration-block-single-line-max-declarations";
 
-const MAX_DECLARATIONS: usize = 1;
-
-impl Rule for DeclarationBlockSingleLineMaxDeclarations {
-  fn name(&self) -> &'static str {
-    "declaration-block-single-line-max-declarations"
+declare_rule! {
+  /// Limit the number of declarations within a single-line declaration block.
+  ///
+  /// Equivalent to Stylelint's `declaration-block-single-line-max-declarations` rule.
+  /// Default maximum: 1. Detection-only.
+  pub struct DeclarationBlockSingleLineMaxDeclarations => DeclarationBlockSingleLineMaxDeclarationsCheck {
+    name: NAME,
+    description: "Limit the number of declarations within a single-line declaration block",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Limit the number of declarations within a single-line declaration block"
+/// `declaration-block-single-line-max-declarations` as configured.
+pub struct DeclarationBlockSingleLineMaxDeclarationsCheck {
+  /// The most declarations a single-line block may hold.
+  max: f64,
+}
+
+impl DeclarationBlockSingleLineMaxDeclarationsCheck {
+  /// Stylelint's option: a number.  Gale reads no option as 1.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_number(&[Accept::Number]);
+    options.finish()?;
+    Ok(Self {
+      max: max.unwrap_or(MAX_DECLARATIONS),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
+/// The most declarations a single-line block may hold when the config
+/// gives no number.
+const MAX_DECLARATIONS: f64 = 1.0;
 
+impl Check for DeclarationBlockSingleLineMaxDeclarationsCheck {
   /// Flags single-line blocks holding more than the configured number of
   /// declarations. Multi-line blocks are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -36,12 +55,7 @@ impl Rule for DeclarationBlockSingleLineMaxDeclarations {
       return vec![];
     }
 
-    // Read configured max from options (primary option is a number).
-    let max = ctx
-      .options
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(MAX_DECLARATIONS);
+    let max = self.max;
 
     // Determine if this rule block is single-line by checking the source span.
     let is_single_line = is_single_line_block(rule.span.offset, rule.span.length, ctx.source);
@@ -51,15 +65,15 @@ impl Rule for DeclarationBlockSingleLineMaxDeclarations {
     }
 
     let count = rule.declarations.len();
-    if count > max {
+    if count as f64 > max {
       vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!(
-            "Expected no more than {max} declaration(s) in a single-line block, found {count}"
+            "Expected no more than {} declaration(s) in a single-line block, found {count}",
+            to_js_string(max)
           ),
         )
-        .severity(self.default_severity())
         .span(Span::new(rule.span.offset, rule.span.length)),
       ]
     } else {
@@ -84,7 +98,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   fn style_with_decls(decls: Vec<(&str, &str)>, span_offset: usize, span_len: usize) -> CssNode {
     CssNode::Style(StyleRule {
@@ -105,39 +119,43 @@ mod tests {
 
   #[test]
   fn reports_multiple_decls_single_line() {
+    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
     let source = "a { color: red; font-size: 16px; }";
     let node = style_with_decls(
       vec![("color", "red"), ("font-size", "16px")],
       0,
       source.len(),
     );
-    let d = DeclarationBlockSingleLineMaxDeclarations.check(&node, &ctx_with_source(source));
+    let d = rule.check(&node, &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
   }
 
   #[test]
   fn allows_single_decl_single_line() {
+    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
     let source = "a { color: red; }";
     let node = style_with_decls(vec![("color", "red")], 0, source.len());
-    let d = DeclarationBlockSingleLineMaxDeclarations.check(&node, &ctx_with_source(source));
+    let d = rule.check(&node, &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_multiple_decls_multi_line() {
+    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
     let source = "a {\n  color: red;\n  font-size: 16px;\n}";
     let node = style_with_decls(
       vec![("color", "red"), ("font-size", "16px")],
       0,
       source.len(),
     );
-    let d = DeclarationBlockSingleLineMaxDeclarations.check(&node, &ctx_with_source(source));
+    let d = rule.check(&node, &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_zero_length_span() {
+    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
     // Simulates a parser-generated style node with no real span (e.g. from @tailwind directives)
     let source = "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n";
     let node = style_with_decls(
@@ -145,7 +163,34 @@ mod tests {
       0,
       0, // zero-length span — parser didn't set it
     );
-    let d = DeclarationBlockSingleLineMaxDeclarations.check(&node, &ctx_with_source(source));
+    let d = rule.check(&node, &ctx_with_source(source));
     assert!(d.is_empty(), "should not report on zero-length span");
+  }
+
+  #[test]
+  fn reads_the_configured_maximum() {
+    let source = "a { color: red; top: 0; }";
+    let node = style_with_decls(vec![("color", "red"), ("top", "0")], 0, source.len());
+    let ctx = ctx_with_source(source);
+    let two = configured(
+      &DeclarationBlockSingleLineMaxDeclarations,
+      serde_json::json!(2),
+    );
+    assert!(two.check(&node, &ctx).is_empty());
+    // The array form Stylelint configs use for secondary options.
+    let one = configured(
+      &DeclarationBlockSingleLineMaxDeclarations,
+      serde_json::json!([1, { "severity": "warning" }]),
+    );
+    assert_eq!(one.check(&node, &ctx).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(3)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("3")),
+      ["Invalid option value \"3\" for rule \"declaration-block-single-line-max-declarations\""]
+    );
   }
 }

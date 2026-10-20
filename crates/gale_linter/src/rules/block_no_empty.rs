@@ -1,44 +1,47 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports when a CSS rule block has no declarations or nested children.
-///
-/// Equivalent to Stylelint's `block-no-empty` rule.
-pub struct BlockNoEmpty;
+const NAME: &str = "block-no-empty";
 
-impl Rule for BlockNoEmpty {
-  fn name(&self) -> &'static str {
-    "block-no-empty"
+declare_rule! {
+  /// Reports when a CSS rule block has no declarations or nested children.
+  ///
+  /// Equivalent to Stylelint's `block-no-empty` rule.
+  pub struct BlockNoEmpty => BlockNoEmptyCheck {
+    name: NAME,
+    description: "Disallow empty blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow empty blocks"
+/// `block-no-empty` as configured.
+pub struct BlockNoEmptyCheck {
+  /// `ignore: ["comments"]`: a block holding only comments is empty.
+  ignore_comments: bool,
+}
+
+impl BlockNoEmptyCheck {
+  /// Stylelint's options: `true`, then `ignore: ["comments"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    let ignore = options.keywords("ignore", &["comments"]);
+    options.finish()?;
+    Ok(Self {
+      ignore_comments: ignore.contains(&"comments"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for BlockNoEmptyCheck {
   /// Flags a block with no declarations or children. With `ignore: ["comments"]`
   /// a block holding only comments is allowed, so the source is re-checked.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
-    // Read the `ignore` secondary option.
-    // Options may be stored as:
-    //   - {"ignore": ["comments"]} directly (when config is [true, {...}])
-    //   - ["never", {"ignore": ["comments"]}] (when config is ["never", {...}])
-    let secondary = context.secondary_options().or_else(|| {
-      // When config is [true/false, {secondary}], the config loader
-      // stores only the secondary object directly.
-      context.options.filter(|v| v.is_object())
-    });
-    let ignore_comments = secondary
-      .and_then(|obj| obj.get("ignore"))
-      .and_then(|v| v.as_array())
-      .map(|arr| arr.iter().any(|v| v.as_str() == Some("comments")))
-      .unwrap_or(false);
-
+    let ignore_comments = self.ignore_comments;
     match node {
       CssNode::Style(rule) => {
         // If the AST recorded declarations or children, it's not empty.
@@ -46,7 +49,6 @@ impl Rule for BlockNoEmpty {
           return vec![];
         }
         check_block_source(
-          self,
           context,
           rule.span.offset,
           rule.span.offset + rule.span.length,
@@ -70,7 +72,7 @@ impl Rule for BlockNoEmpty {
         if !block_src.contains('{') {
           return vec![];
         }
-        check_block_source(self, context, start, end, ignore_comments)
+        check_block_source(context, start, end, ignore_comments)
       }
       _ => vec![],
     }
@@ -80,7 +82,6 @@ impl Rule for BlockNoEmpty {
 /// Check the source text between `{` and `}` for a block at `[span_start..span_end]`.
 /// Returns a diagnostic if the block is empty.
 fn check_block_source(
-  rule: &BlockNoEmpty,
   context: &RuleContext,
   span_start: usize,
   span_end: usize,
@@ -104,8 +105,7 @@ fn check_block_source(
   let make_diag = || {
     let brace_offset = span_start + open_brace_rel;
     vec![
-      Diagnostic::new(rule.name(), "Unexpected empty block")
-        .severity(rule.default_severity())
+      Diagnostic::new(NAME, "Unexpected empty block")
         .span(Span::new(brace_offset, span_end - brace_offset)),
     ]
   };
@@ -276,11 +276,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, invalid_options, lint, scss_ctx_with_source};
 
   #[test]
   fn reports_empty_style_rule() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = "a { }";
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -298,7 +298,7 @@ mod tests {
 
   #[test]
   fn ignores_non_empty_style_rule() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = "a { color: red; }";
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -318,7 +318,7 @@ mod tests {
 
   #[test]
   fn block_with_comment_is_non_empty_by_default() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = "a { /* foo */ }";
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -333,7 +333,7 @@ mod tests {
 
   #[test]
   fn block_with_semicolons_is_non_empty() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = "a { ; }";
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -348,7 +348,7 @@ mod tests {
 
   #[test]
   fn allows_scss_block_with_include() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = ".btn { @include button-styles; }";
     let node = CssNode::Style(StyleRule {
       selector: ".btn".to_string(),
@@ -363,7 +363,7 @@ mod tests {
 
   #[test]
   fn reports_truly_empty_scss_block() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let source = ".btn {  }";
     let node = CssNode::Style(StyleRule {
       selector: ".btn".to_string(),
@@ -378,7 +378,7 @@ mod tests {
 
   #[test]
   fn ignores_non_style_rule_nodes() {
-    let rule = BlockNoEmpty;
+    let rule = configured(&BlockNoEmpty, None);
     let node = CssNode::Comment(gale_css_parser::Comment {
       text: "/* hi */".to_string(),
       span: ParserSpan::new(0, 8),
@@ -387,5 +387,35 @@ mod tests {
     let ctx = ctx_with_source("/* hi */");
     let diags = rule.check(&node, &ctx);
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn ignore_comments_counts_a_commented_block_as_empty() {
+    let source = "a { /* note */ }";
+    assert!(lint(NAME, serde_json::json!(true), source, Syntax::Css).is_empty());
+    let options = serde_json::json!([true, { "ignore": ["comments"] }]);
+    assert_eq!(lint(NAME, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("yes")),
+      ["Invalid option value \"yes\" for rule \"block-no-empty\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignore": ["comments", "blocks"] }])
+      ),
+      ["Invalid value \"blocks\" for option \"ignore\" of rule \"block-no-empty\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!({ "ignore": "comments", "except": [] })
+      ),
+      ["Invalid option name \"except\" for rule \"block-no-empty\""]
+    );
   }
 }

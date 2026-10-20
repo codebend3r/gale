@@ -1,7 +1,9 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 /// Deprecated media types (sorted for binary search).
 static DEPRECATED_MEDIA_TYPES: &[&str] = &[
@@ -53,21 +55,35 @@ fn extract_media_types(params: &str) -> Vec<String> {
   types
 }
 
-pub struct MediaTypeNoDeprecated;
+const NAME: &str = "media-type-no-deprecated";
 
-impl Rule for MediaTypeNoDeprecated {
-  fn name(&self) -> &'static str {
-    "media-type-no-deprecated"
+declare_rule! {
+  pub struct MediaTypeNoDeprecated => MediaTypeNoDeprecatedCheck {
+    name: NAME,
+    description: "Disallow deprecated media types",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow deprecated media types"
+/// `media-type-no-deprecated` as configured.
+pub struct MediaTypeNoDeprecatedCheck {
+  /// `ignoreMediaTypes`: media types (names or `/regex/` entries) that may
+  /// be used.
+  ignore_media_types: Matchers,
+}
+
+impl MediaTypeNoDeprecatedCheck {
+  /// Stylelint's options: `true`, then `ignoreMediaTypes`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_media_types = options.matchers("ignoreMediaTypes");
+    options.finish()?;
+    Ok(Self { ignore_media_types })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MediaTypeNoDeprecatedCheck {
   /// Flags media types that have been deprecated, such as `tv`.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
@@ -81,12 +97,12 @@ impl Rule for MediaTypeNoDeprecated {
     let deprecated_types = extract_media_types(&at.params);
     deprecated_types
       .into_iter()
+      .filter(|media_type| !self.ignore_media_types.matches(media_type))
       .map(|media_type| {
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Unexpected deprecated media type \"{}\"", media_type),
         )
-        .severity(self.default_severity())
         .span(Span::new(at.span.offset, at.span.length))
       })
       .collect()
@@ -98,7 +114,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, CssNode, Span};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -111,28 +127,32 @@ mod tests {
 
   #[test]
   fn reports_deprecated_tty() {
-    let d = MediaTypeNoDeprecated.check(&media("tty"), &ctx());
+    let rule = configured(&MediaTypeNoDeprecated, None);
+    let d = rule.check(&media("tty"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("tty"));
   }
 
   #[test]
   fn reports_deprecated_handheld() {
-    let d = MediaTypeNoDeprecated.check(&media("handheld and (min-width: 768px)"), &ctx());
+    let rule = configured(&MediaTypeNoDeprecated, None);
+    let d = rule.check(&media("handheld and (min-width: 768px)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("handheld"));
   }
 
   #[test]
   fn reports_multiple_deprecated() {
-    let d = MediaTypeNoDeprecated.check(&media("tty, projection"), &ctx());
+    let rule = configured(&MediaTypeNoDeprecated, None);
+    let d = rule.check(&media("tty, projection"), &ctx());
     assert_eq!(d.len(), 2);
   }
 
   #[test]
   fn allows_screen() {
+    let rule = configured(&MediaTypeNoDeprecated, None);
     assert!(
-      MediaTypeNoDeprecated
+      rule
         .check(&media("screen and (min-width: 768px)"), &ctx())
         .is_empty()
     );
@@ -140,21 +160,43 @@ mod tests {
 
   #[test]
   fn allows_all() {
-    assert!(
-      MediaTypeNoDeprecated
-        .check(&media("all"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&MediaTypeNoDeprecated, None);
+    assert!(rule.check(&media("all"), &ctx()).is_empty());
   }
 
   #[test]
   fn ignores_non_media_at_rule() {
+    let rule = configured(&MediaTypeNoDeprecated, None);
     let node = CssNode::AtRule(AtRule {
       name: "keyframes".to_string(),
       params: "tty".to_string(),
       span: Span::new(0, 0),
       children: vec![],
     });
-    assert!(MediaTypeNoDeprecated.check(&node, &ctx()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreMediaTypes": ["tty", "/^proj/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreTypes": ["tty"] }])),
+      ["Invalid option name \"ignoreTypes\" for rule \"media-type-no-deprecated\""]
+    );
+  }
+
+  #[test]
+  fn ignore_media_types_skips_listed_types() {
+    let options = serde_json::json!([true, { "ignoreMediaTypes": ["tty", "/^proj/"] }]);
+    let rule = configured(&MediaTypeNoDeprecated, options);
+    assert!(rule.check(&media("tty, projection"), &ctx()).is_empty());
+    assert_eq!(rule.check(&media("handheld, tty"), &ctx()).len(), 1);
   }
 }

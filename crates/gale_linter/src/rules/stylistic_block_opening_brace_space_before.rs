@@ -1,29 +1,58 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space before the opening brace of blocks.
-///
-/// Equivalent to `@stylistic/block-opening-brace-space-before`.
-pub struct StylisticBlockOpeningBraceSpaceBefore;
+const NAME: &str = "@stylistic/block-opening-brace-space-before";
 
-impl Rule for StylisticBlockOpeningBraceSpaceBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-opening-brace-space-before"
+declare_rule! {
+  /// Require or disallow a space before the opening brace of blocks.
+  ///
+  /// Equivalent to `@stylistic/block-opening-brace-space-before`.
+  pub struct StylisticBlockOpeningBraceSpaceBefore => StylisticBlockOpeningBraceSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the opening brace of blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the opening brace of blocks"
+/// `@stylistic/block-opening-brace-space-before` as configured.
+pub struct StylisticBlockOpeningBraceSpaceBeforeCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticBlockOpeningBraceSpaceBeforeCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.  Gale
+  /// reads no option as `"always"`.  `"never-single-line"`, `"never-multi-line"`,
+  /// `ignoreAtRules` and `ignoreSelectors` are accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&[
+      "always",
+      "never",
+      "always-single-line",
+      "never-single-line",
+      "always-multi-line",
+      "never-multi-line",
+    ]);
+    options.strings("ignoreAtRules");
+    options.strings("ignoreSelectors");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockOpeningBraceSpaceBeforeCheck {
   /// Flags an opening brace whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -120,8 +149,7 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
           "always" => {
             if !has_space_before && !has_newline_before {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected single space before \"{\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected single space before \"{\"")
                   .span(Span::new(brace_pos.saturating_sub(1), 1)),
               );
             }
@@ -129,8 +157,7 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
           "never" => {
             if has_space_before {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected space before \"{\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected space before \"{\"")
                   .span(Span::new(brace_pos, 1)),
               );
             }
@@ -139,8 +166,7 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
             // Only check single-line blocks; multi-line blocks are ignored.
             if is_single_line && !has_space_before && !has_newline_before {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected single space before \"{\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected single space before \"{\"")
                   .span(Span::new(brace_pos.saturating_sub(1), 1)),
               );
             }
@@ -149,8 +175,7 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
             // Only check multi-line blocks; single-line blocks are ignored.
             if !is_single_line && !has_space_before && !has_newline_before {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected single space before \"{\"")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected single space before \"{\"")
                   .span(Span::new(brace_pos.saturating_sub(1), 1)),
               );
             }
@@ -170,23 +195,23 @@ impl Rule for StylisticBlockOpeningBraceSpaceBefore {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_allows_space_before_brace() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_reports_missing_space() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -194,18 +219,18 @@ mod tests {
   #[test]
   fn never_allows_no_space() {
     let opt = serde_json::json!("never");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_space() {
     let opt = serde_json::json!("never");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -213,27 +238,27 @@ mod tests {
   #[test]
   fn always_single_line_allows_space_for_single_line() {
     let opt = serde_json::json!("always-single-line");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_multi_line_allows_no_space_for_single_line() {
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a{ color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_multi_line_reports_missing_space_for_multiline() {
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a{\n  color: red;\n}";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
   }
 
@@ -242,9 +267,9 @@ mod tests {
     // Single-line blocks should be completely ignored in "always-multi-line" mode,
     // even if they have a space before the brace.
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "a { color: red; }";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag single-line block with space in always-multi-line mode"
@@ -254,12 +279,32 @@ mod tests {
   #[test]
   fn always_multi_line_ignores_empty_single_line_block() {
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticBlockOpeningBraceSpaceBefore, opt.clone());
     let source = "@mixin foo() {}";
-    let d = StylisticBlockOpeningBraceSpaceBefore
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag empty single-line block in always-multi-line mode"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(["never-multi-line", { "ignoreAtRules": ["/^if/"], "ignoreSelectors": [":root"] }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-opening-brace-space-before\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "ignoreAtRules": [1] }])
+      ),
+      [
+        "Invalid value \"1\" for option \"ignoreAtRules\" of rule \"@stylistic/block-opening-brace-space-before\""
+      ]
     );
   }
 }

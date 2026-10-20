@@ -1,32 +1,51 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify single or double quotes around strings.
-///
-/// Equivalent to Stylelint's deprecated `string-quotes` rule (now
-/// `@stylistic/string-quotes`). Both rules share the same logic.
-///
-/// Primary option: `"single"` | `"double"` (default `"double"`).
-pub struct StringQuotes;
+const NAME: &str = "string-quotes";
 
-impl Rule for StringQuotes {
-  fn name(&self) -> &'static str {
-    "string-quotes"
+declare_rule! {
+  /// Specify single or double quotes around strings.
+  ///
+  /// Equivalent to Stylelint's deprecated `string-quotes` rule (now
+  /// `@stylistic/string-quotes`). Both rules share the same logic.
+  ///
+  /// Primary option: `"single"` | `"double"` (default `"double"`).
+  pub struct StringQuotes => StringQuotesCheck {
+    name: NAME,
+    description: "Specify single or double quotes around strings",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify single or double quotes around strings"
+/// `string-quotes` as configured.
+pub struct StringQuotesCheck {
+  /// The primary option: `"single"` or `"double"`.
+  option: &'static str,
+}
+
+impl StringQuotesCheck {
+  /// Stylelint's options: `"single"` or `"double"`, then `avoidEscape`,
+  /// which gale accepts but does not yet apply (it reports as if it were
+  /// `false`).  Gale reads no option as `"double"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["single", "double"]);
+    options.flag("avoidEscape");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("double"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StringQuotesCheck {
   /// Flags strings using the quote character the option forbids.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("double");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -148,8 +167,7 @@ impl Rule for StringQuotes {
         let replacement = format!("{}{}{}", good_quote as char, escaped, good_quote as char);
 
         diagnostics.push(
-          Diagnostic::new(self.name(), format!("Expected {good_name} quotes"))
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, format!("Expected {good_name} quotes"))
             .span(Span::new(start, span_len))
             .fix(Fix::new(
               format!("Replace with {good_name} quotes"),
@@ -184,11 +202,11 @@ impl Rule for StringQuotes {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StringQuotes;
     let opts = serde_json::json!(option);
+    let rule = configured(&StringQuotes, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -233,5 +251,27 @@ mod tests {
   fn skips_comments() {
     let d = check("/* 'inside comment' */ a { content: \"ok\"; }", "double");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["single", { "avoidEscape": false }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("backtick")),
+      ["Invalid option value \"backtick\" for rule \"string-quotes\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["double", { "avoidEscape": "yes" }])
+      ),
+      ["Invalid value \"yes\" for option \"avoidEscape\" of rule \"string-quotes\""]
+    );
   }
 }

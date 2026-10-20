@@ -1,29 +1,46 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify lowercase or uppercase for units.
-///
-/// Equivalent to `@stylistic/unit-case`.
-pub struct StylisticUnitCase;
+const NAME: &str = "@stylistic/unit-case";
 
-impl Rule for StylisticUnitCase {
-  fn name(&self) -> &'static str {
-    "@stylistic/unit-case"
+declare_rule! {
+  /// Specify lowercase or uppercase for units.
+  ///
+  /// Equivalent to `@stylistic/unit-case`.
+  pub struct StylisticUnitCase => StylisticUnitCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for units",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for units"
+/// `@stylistic/unit-case` as configured.
+pub struct StylisticUnitCaseCheck {
+  /// The primary option: `"lower"` or `"upper"`.
+  expected_case: &'static str,
+}
+
+impl StylisticUnitCaseCheck {
+  /// The plugin's options: `"lower"` or `"upper"`.  Gale reads no option as
+  /// `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    options.finish()?;
+    Ok(Self {
+      expected_case: expected_case.unwrap_or("lower"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticUnitCaseCheck {
   /// Flags units not in the configured case.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = ctx.primary_option_str().unwrap_or("lower");
+    let expected_case = self.expected_case;
 
     let decls: Vec<_> = match node {
       CssNode::Style(rule) => rule.declarations.iter().collect(),
@@ -51,16 +68,12 @@ impl Rule for StylisticUnitCase {
           // Try to find the unit in source for accurate offset
           let abs_offset = base + unit_offset;
           diags.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Expected \"{unit}\" to be \"{fixed}\""),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(abs_offset, unit.len()))
-            .fix(Fix::new(
-              format!("Convert to {expected_case}case"),
-              vec![Edit::new(Span::new(abs_offset, unit.len()), &fixed)],
-            )),
+            Diagnostic::new(NAME, format!("Expected \"{unit}\" to be \"{fixed}\""))
+              .span(Span::new(abs_offset, unit.len()))
+              .fix(Fix::new(
+                format!("Convert to {expected_case}case"),
+                vec![Edit::new(Span::new(abs_offset, unit.len()), &fixed)],
+              )),
           );
         }
       }
@@ -158,7 +171,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -176,7 +189,7 @@ mod tests {
 
   #[test]
   fn reports_uppercase_unit() {
-    let rule = StylisticUnitCase;
+    let rule = configured(&StylisticUnitCase, None);
     let d = rule.check(&style_with_value("10PX"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("\"px\""));
@@ -184,14 +197,14 @@ mod tests {
 
   #[test]
   fn allows_lowercase_unit() {
-    let rule = StylisticUnitCase;
+    let rule = configured(&StylisticUnitCase, None);
     let d = rule.check(&style_with_value("10px"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_mixed_case_unit() {
-    let rule = StylisticUnitCase;
+    let rule = configured(&StylisticUnitCase, None);
     let d = rule.check(&style_with_value("10Rem"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("\"rem\""));
@@ -200,11 +213,21 @@ mod tests {
   #[test]
   fn does_not_flag_var_custom_property_with_uppercase_letter() {
     // `var(--base0C)` — the `C` is part of the custom property name, not a unit
-    let rule = StylisticUnitCase;
+    let rule = configured(&StylisticUnitCase, None);
     let d = rule.check(&style_with_value("var(--base0C)"), &ctx());
     assert!(
       d.is_empty(),
       "uppercase letter in a CSS custom property name must not be flagged as a unit"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("lower")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("upper")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/unit-case\""]
     );
   }
 }

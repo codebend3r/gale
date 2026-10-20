@@ -1,31 +1,45 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports obviously invalid media queries.
-///
-/// Checks for common errors in `@media` params such as:
-/// - Empty media query params
-/// - Unbalanced parentheses
-/// - Consecutive operators (and/or/not) without a condition
-///
-/// Equivalent to Stylelint's `media-query-no-invalid` rule.
-pub struct MediaQueryNoInvalid;
+const NAME: &str = "media-query-no-invalid";
 
-impl Rule for MediaQueryNoInvalid {
-  fn name(&self) -> &'static str {
-    "media-query-no-invalid"
+declare_rule! {
+  /// Reports obviously invalid media queries.
+  ///
+  /// Checks for common errors in `@media` params such as:
+  /// - Empty media query params
+  /// - Unbalanced parentheses
+  /// - Consecutive operators (and/or/not) without a condition
+  ///
+  /// Equivalent to Stylelint's `media-query-no-invalid` rule.
+  pub struct MediaQueryNoInvalid => MediaQueryNoInvalidCheck {
+    name: NAME,
+    description: "Disallow invalid media queries",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow invalid media queries"
+/// `media-query-no-invalid`, whose options change nothing yet.
+pub struct MediaQueryNoInvalidCheck;
+
+impl MediaQueryNoInvalidCheck {
+  /// Stylelint's options: `true`, then `ignoreFunctions`.  Gale accepts
+  /// but does not yet apply `ignoreFunctions`, since it does not check the
+  /// functions in a query.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.strings("ignoreFunctions");
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MediaQueryNoInvalidCheck {
   /// Flags media queries that are empty, have unbalanced parentheses, or chain
   /// operators with no condition between them.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -41,8 +55,7 @@ impl Rule for MediaQueryNoInvalid {
     // Empty media query
     if params.is_empty() {
       return vec![
-        Diagnostic::new(self.name(), "Unexpected empty media query")
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, "Unexpected empty media query")
           .span(Span::new(at.span.offset, at.span.length)),
       ];
     }
@@ -56,12 +69,8 @@ impl Rule for MediaQueryNoInvalid {
           depth -= 1;
           if depth < 0 {
             return vec![
-              Diagnostic::new(
-                self.name(),
-                "Unexpected unbalanced parentheses in media query",
-              )
-              .severity(self.default_severity())
-              .span(Span::new(at.span.offset, at.span.length)),
+              Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
+                .span(Span::new(at.span.offset, at.span.length)),
             ];
           }
         }
@@ -70,20 +79,15 @@ impl Rule for MediaQueryNoInvalid {
     }
     if depth != 0 {
       return vec![
-        Diagnostic::new(
-          self.name(),
-          "Unexpected unbalanced parentheses in media query",
-        )
-        .severity(self.default_severity())
-        .span(Span::new(at.span.offset, at.span.length)),
+        Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
+          .span(Span::new(at.span.offset, at.span.length)),
       ];
     }
 
     // Check for empty parentheses ()
     if params.contains("()") {
       return vec![
-        Diagnostic::new(self.name(), "Unexpected empty parentheses in media query")
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, "Unexpected empty parentheses in media query")
           .span(Span::new(at.span.offset, at.span.length)),
       ];
     }
@@ -97,7 +101,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn media(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -110,34 +114,41 @@ mod tests {
 
   #[test]
   fn reports_empty_media_query() {
-    let d = MediaQueryNoInvalid.check(&media(""), &ctx());
+    let rule = configured(&MediaQueryNoInvalid, None);
+    let d = rule.check(&media(""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty"));
   }
 
   #[test]
   fn reports_empty_parentheses() {
-    let d = MediaQueryNoInvalid.check(&media("screen and ()"), &ctx());
+    let rule = configured(&MediaQueryNoInvalid, None);
+    let d = rule.check(&media("screen and ()"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty parentheses"));
   }
 
   #[test]
   fn allows_valid_media_queries() {
+    let rule = configured(&MediaQueryNoInvalid, None);
+    assert!(rule.check(&media("(min-width: 768px)"), &ctx()).is_empty());
+    assert!(rule.check(&media("screen and (color)"), &ctx()).is_empty());
+    assert!(rule.check(&media("(hover: hover)"), &ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
     assert!(
-      MediaQueryNoInvalid
-        .check(&media("(min-width: 768px)"), &ctx())
-        .is_empty()
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFunctions": ["/^theme/", "env"] }])
+      )
+      .is_empty()
     );
-    assert!(
-      MediaQueryNoInvalid
-        .check(&media("screen and (color)"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      MediaQueryNoInvalid
-        .check(&media("(hover: hover)"), &ctx())
-        .is_empty()
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreFunctions": [{}] }])),
+      ["Invalid value \"{}\" for option \"ignoreFunctions\" of rule \"media-query-no-invalid\""]
     );
   }
 }

@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify single or double quotes around strings.
-///
-/// Primary: "single" | "double"
-pub struct StylisticStringQuotes;
+const NAME: &str = "@stylistic/string-quotes";
 
-impl Rule for StylisticStringQuotes {
-  fn name(&self) -> &'static str {
-    "@stylistic/string-quotes"
+declare_rule! {
+  /// Specify single or double quotes around strings.
+  ///
+  /// Primary: "single" | "double"
+  pub struct StylisticStringQuotes => StylisticStringQuotesCheck {
+    name: NAME,
+    description: "Specify single or double quotes around strings",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify single or double quotes around strings"
+/// `@stylistic/string-quotes` as configured.
+pub struct StylisticStringQuotesCheck {
+  /// The primary option: `"single"` or `"double"`.
+  option: &'static str,
+}
+
+impl StylisticStringQuotesCheck {
+  /// The plugin's options: `"single"` or `"double"`, then `avoidEscape`.  Gale
+  /// reads no option as `"double"`.  Gale accepts but does not yet apply the
+  /// secondary options.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["single", "double"]);
+    options.flag("avoidEscape");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("double"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticStringQuotesCheck {
   /// Flags strings using the quote character the option forbids.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("double");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -137,8 +156,7 @@ impl Rule for StylisticStringQuotes {
         }
         let span_len = i - start;
         diagnostics.push(
-          Diagnostic::new(self.name(), format!("Expected {good_name} quotes"))
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, format!("Expected {good_name} quotes"))
             .span(Span::new(start, span_len)),
         );
         continue;
@@ -170,11 +188,11 @@ impl Rule for StylisticStringQuotes {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticStringQuotes;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticStringQuotes, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -209,5 +227,22 @@ mod tests {
   fn skips_comments() {
     let d = check("/* 'inside comment' */ a { content: \"ok\"; }", "double");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("single")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("double")).is_empty());
+    assert!(
+      invalid_options(NAME, serde_json::json!(["single", {"avoidEscape": false}])).is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/string-quotes\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["single", {"avoidEscape": "yes"}])),
+      ["Invalid value \"yes\" for option \"avoidEscape\" of rule \"@stylistic/string-quotes\""]
+    );
   }
 }

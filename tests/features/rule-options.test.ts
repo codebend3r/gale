@@ -26,20 +26,20 @@ function check(rules: Record<string, unknown>, css: string) {
 }
 
 describe("an invalid primary option", () => {
-  test.failing("is reported and the rule does not run", () => {
+  test("is reported and the rule does not run", () => {
     const result = check({ "color-hex-length": "sideways" }, "a { color: #ffffff; }\n");
     expect(result.invalid).toEqual(['Invalid option value "sideways" for rule "color-hex-length"']);
     expect(result.rules).toEqual([]);
     expect(result.exitCode).toBe(2);
   });
 
-  test.failing("is reported for a file with nothing in it", () => {
+  test("is reported for a file with nothing in it", () => {
     expect(check({ "color-hex-length": "sideways" }, "").invalid).toEqual([
       'Invalid option value "sideways" for rule "color-hex-length"',
     ]);
   });
 
-  test.failing("is reported when a list rule is given a number", () => {
+  test("is reported when a list rule is given a number", () => {
     expect(check({ "property-allowed-list": 5 }, "a { color: red; }\n").invalid).toEqual([
       'Invalid option value "5" for rule "property-allowed-list"',
     ]);
@@ -47,7 +47,7 @@ describe("an invalid primary option", () => {
 });
 
 describe("an unknown secondary option", () => {
-  test.failing("is reported by name", () => {
+  test("is reported by name", () => {
     expect(
       check({ "color-named": ["never", { ignoreEverything: true }] }, "a { color: red; }\n").invalid,
     ).toEqual(['Invalid option name "ignoreEverything" for rule "color-named"']);

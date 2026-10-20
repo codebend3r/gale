@@ -1,29 +1,59 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a newline after the closing brace of blocks.
-///
-/// Equivalent to Stylelint's `@stylistic/block-closing-brace-newline-after` rule.
-pub struct StylisticBlockClosingBraceNewlineAfter;
+const NAME: &str = "@stylistic/block-closing-brace-newline-after";
 
-impl Rule for StylisticBlockClosingBraceNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-closing-brace-newline-after"
+declare_rule! {
+  /// Require or disallow a newline after the closing brace of blocks.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/block-closing-brace-newline-after` rule.
+  pub struct StylisticBlockClosingBraceNewlineAfter => StylisticBlockClosingBraceNewlineAfterCheck {
+    name: NAME,
+    description: "Require or disallow a newline after the closing brace of blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a newline after the closing brace of blocks"
+/// `@stylistic/block-closing-brace-newline-after` as configured.
+pub struct StylisticBlockClosingBraceNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"`, `"never-multi-line"` or
+  /// gale's own `"never"`.
+  option: &'static str,
+}
+
+impl StylisticBlockClosingBraceNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.  Gale
+  /// also accepts `"never"`, which the plugin does not.  Gale reads no option as
+  /// `"always"`.  `"never-single-line"`, `"never-multi-line"` and
+  /// `ignoreAtRules` are accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&[
+      "always",
+      "always-single-line",
+      "never-single-line",
+      "always-multi-line",
+      "never-multi-line",
+      "never",
+    ]);
+    options.strings("ignoreAtRules");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockClosingBraceNewlineAfterCheck {
   /// Flags a closing brace whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -130,8 +160,7 @@ impl Rule for StylisticBlockClosingBraceNewlineAfter {
             // Expect newline after every closing brace (unless followed by another }, EOF, or @else)
             if found_non_ws && !is_next_closing_brace(bytes, after_pos) && !is_followed_by_else {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected newline after \"}\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected newline after \"}\"".to_string())
                   .span(Span::new(brace_pos, 1)),
               );
             }
@@ -139,8 +168,7 @@ impl Rule for StylisticBlockClosingBraceNewlineAfter {
           "never" => {
             if found_newline {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected newline after \"}\"".to_string())
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected newline after \"}\"".to_string())
                   .span(Span::new(brace_pos, 1)),
               );
             }
@@ -153,10 +181,9 @@ impl Rule for StylisticBlockClosingBraceNewlineAfter {
             {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   "Expected newline after \"}\" of a single-line block".to_string(),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(brace_pos, 1)),
               );
             }
@@ -169,10 +196,9 @@ impl Rule for StylisticBlockClosingBraceNewlineAfter {
             {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   "Expected newline after \"}\" of a multi-line block".to_string(),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(brace_pos, 1)),
               );
             }
@@ -255,21 +281,22 @@ fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_newline_after_brace() {
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, None);
     let source = "a { color: red; }\nb { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_missing_newline_after_brace() {
     let opt = serde_json::Value::String("always".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "a { color: red; } b { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -277,9 +304,9 @@ mod tests {
   #[test]
   fn never_reports_newline_after_brace() {
     let opt = serde_json::Value::String("never".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "a { color: red; }\nb { }";
-    let d = StylisticBlockClosingBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline"));
   }
@@ -287,9 +314,9 @@ mod tests {
   #[test]
   fn allows_else_after_closing_brace() {
     let opt = serde_json::Value::String("always".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@if $cond { color: red; } @else { color: blue; }";
-    let d = StylisticBlockClosingBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     // The first } before @else should NOT be flagged
     assert!(
       d.is_empty(),
@@ -301,9 +328,9 @@ mod tests {
   #[test]
   fn allows_else_if_after_closing_brace() {
     let opt = serde_json::Value::String("always".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@if $a { color: red; } @else if $b { color: blue; } @else { color: green; }";
-    let d = StylisticBlockClosingBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag }} before @else if, got: {:?}",
@@ -315,13 +342,36 @@ mod tests {
   fn allows_semicolon_after_closing_brace() {
     // SCSS pattern: `@function foo() { ... };` or map closings
     let opt = serde_json::Value::String("always".to_string());
+    let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@function foo() {\n  @return 1;\n};\n";
-    let d = StylisticBlockClosingBraceNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag }}; pattern, got: {:?}",
       d.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never-multi-line", { "ignoreAtRules": ["if", "else"] }])
+      )
+      .is_empty()
+    );
+    // `"never"` is gale's own value; the plugin rejects it.
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-closing-brace-newline-after\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["always", { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"@stylistic/block-closing-brace-newline-after\""]
     );
   }
 }

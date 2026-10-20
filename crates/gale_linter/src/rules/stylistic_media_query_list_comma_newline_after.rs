@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline or disallow whitespace after the commas of media query lists.
-///
-/// Equivalent to Stylelint's `@stylistic/media-query-list-comma-newline-after` rule.
-pub struct StylisticMediaQueryListCommaNewlineAfter;
+const NAME: &str = "@stylistic/media-query-list-comma-newline-after";
 
-impl Rule for StylisticMediaQueryListCommaNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/media-query-list-comma-newline-after"
+declare_rule! {
+  /// Require a newline or disallow whitespace after the commas of media query lists.
+  ///
+  /// Equivalent to Stylelint's `@stylistic/media-query-list-comma-newline-after` rule.
+  pub struct StylisticMediaQueryListCommaNewlineAfter => StylisticMediaQueryListCommaNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline or disallow whitespace after the commas of media query lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline or disallow whitespace after the commas of media query lists"
+/// `@stylistic/media-query-list-comma-newline-after` as configured.
+pub struct StylisticMediaQueryListCommaNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
+  option: &'static str,
+}
+
+impl StylisticMediaQueryListCommaNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale also accepts `"never"`, which the plugin does
+  /// not.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticMediaQueryListCommaNewlineAfterCheck {
   /// Flags a media query list comma whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -109,8 +129,7 @@ impl Rule for StylisticMediaQueryListCommaNewlineAfter {
               "always" => {
                 if !has_newline {
                   diagnostics.push(
-                    Diagnostic::new(self.name(), "Expected newline after \",\"".to_string())
-                      .severity(self.default_severity())
+                    Diagnostic::new(NAME, "Expected newline after \",\"".to_string())
                       .span(Span::new(comma_pos, 1)),
                   );
                 }
@@ -118,8 +137,7 @@ impl Rule for StylisticMediaQueryListCommaNewlineAfter {
               "never" => {
                 if has_newline || has_space {
                   diagnostics.push(
-                    Diagnostic::new(self.name(), "Unexpected whitespace after \",\"".to_string())
-                      .severity(self.default_severity())
+                    Diagnostic::new(NAME, "Unexpected whitespace after \",\"".to_string())
                       .span(Span::new(comma_pos, 1)),
                   );
                 }
@@ -128,10 +146,20 @@ impl Rule for StylisticMediaQueryListCommaNewlineAfter {
                 if is_multi_line && !has_newline {
                   diagnostics.push(
                     Diagnostic::new(
-                      self.name(),
+                      NAME,
                       "Expected newline after \",\" in a multi-line media query list".to_string(),
                     )
-                    .severity(self.default_severity())
+                    .span(Span::new(comma_pos, 1)),
+                  );
+                }
+              }
+              "never-multi-line" => {
+                if is_multi_line && (has_newline || has_space) {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Unexpected whitespace after \",\" in a multi-line list",
+                    )
                     .span(Span::new(comma_pos, 1)),
                   );
                 }
@@ -157,13 +185,13 @@ impl Rule for StylisticMediaQueryListCommaNewlineAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn allows_newline_after_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media screen,\nprint { }";
-    let d = StylisticMediaQueryListCommaNewlineAfter
+    let d = configured(&StylisticMediaQueryListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -172,7 +200,7 @@ mod tests {
   fn reports_missing_newline_after_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media screen, print { }";
-    let d = StylisticMediaQueryListCommaNewlineAfter
+    let d = configured(&StylisticMediaQueryListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
@@ -182,9 +210,51 @@ mod tests {
   fn never_disallows_whitespace_after_comma() {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media screen, print { }";
-    let d = StylisticMediaQueryListCommaNewlineAfter
+    let d = configured(&StylisticMediaQueryListCommaNewlineAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/media-query-list-comma-newline-after\""
+      ]
+    );
+  }
+
+  #[test]
+  fn never_multi_line_checks_multi_line_lists_only() {
+    use gale_css_parser::Syntax;
+
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "@media screen, print,\nprojection {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+      messages,
+      [
+        "Unexpected whitespace after \",\" in a multi-line list",
+        "Unexpected whitespace after \",\" in a multi-line list"
+      ] as [&str; 2]
+    );
+    let d = crate::testing::lint(
+      NAME,
+      serde_json::json!("never-multi-line"),
+      "@media screen, print {}",
+      Syntax::Css,
+    );
+    let messages: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, [] as [&str; 0]);
   }
 }

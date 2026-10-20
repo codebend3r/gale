@@ -1,6 +1,3 @@
-use std::any::{Any, TypeId};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gale_css_parser::{CssNode, Syntax};
@@ -8,6 +5,7 @@ use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
 use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::PostcssTree;
 use crate::source_text::{self, WrittenDeclaration};
 use crate::style_rules::{self, ScannedRules};
@@ -20,7 +18,10 @@ pub struct RuleContext<'a> {
   pub source: &'a str,
   /// The CSS syntax variant.
   pub syntax: Syntax,
-  /// Per-rule options from the config (e.g. max value, ignore lists).
+  /// LEGACY: the rule's options exactly as the config gave them, for rules
+  /// not yet converted to typed options ([`LegacyRule`]).  A converted rule
+  /// reads its options once, in its `from_setting`, and never looks here.
+  /// Goes away with [`LegacyRule`].
   pub options: Option<&'a serde_json::Value>,
   /// What the rules linting this file share, built once per file.  The
   /// runner always sets it; without one (a rule's own tests, say) every
@@ -32,7 +33,8 @@ pub struct RuleContext<'a> {
 }
 
 impl<'a> RuleContext<'a> {
-  /// Extract the **primary option** from Stylelint-format options.
+  /// LEGACY (see [`RuleContext::options`]): extract the **primary option**
+  /// from Stylelint-format options.
   ///
   /// Options may arrive in several shapes depending on how the config was
   /// written and resolved:
@@ -49,13 +51,15 @@ impl<'a> RuleContext<'a> {
     }
   }
 
-  /// Extract the primary option as a `&str`, handling both plain strings
+  /// LEGACY (see [`RuleContext::options`]): extract the primary option as a
+  /// `&str`, handling both plain strings
   /// and array-format options `["value", { ... }]`.
   pub fn primary_option_str(&self) -> Option<&'a str> {
     self.primary_option().and_then(|v| v.as_str())
   }
 
-  /// Extract the **secondary options object** from Stylelint-format options.
+  /// LEGACY (see [`RuleContext::options`]): extract the **secondary options
+  /// object** from Stylelint-format options.
   ///
   /// Present when options are in array form `[primary, secondary]` (returns
   /// the second element), OR when options is a bare object (returned directly,
@@ -191,8 +195,148 @@ pub fn secondary_options_of(value: &serde_json::Value) -> Option<&serde_json::Va
   }
 }
 
-/// A single lint rule that can inspect CSS AST nodes and emit diagnostics.
+/// What the registry knows about a rule before it is configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleMeta {
+  /// Unique rule name, e.g. "block-no-empty".
+  pub name: &'static str,
+  /// Human-readable description of what this rule checks.
+  pub description: &'static str,
+  /// The severity of the rule's problems when neither its config nor the
+  /// config's `defaultSeverity` gives one.
+  pub default_severity: Severity,
+  /// Stylelint's `primaryOptionArray`: whether the primary option can be an
+  /// array, which decides how a setting written as an array is split into
+  /// primary and secondary options (see [`Setting::new`]).
+  pub primary_option_array: bool,
+}
+
+/// A rule configured with its options, ready to check files.
+///
+/// A rule set configures each of its rules once, and every file linted with
+/// the set is checked by the same configured rule.  The runner gives each
+/// problem its severity, so a check leaves it at the default.
+pub trait Check: Send + Sync {
+  /// Check a single CSS node and return any diagnostics.
+  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+    let _ = (node, context);
+    vec![]
+  }
+
+  /// Check the entire document (all top-level nodes). Used for rules that need
+  /// document-level context like duplicate detection or source-level checks.
+  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+    let _ = (nodes, context);
+    vec![]
+  }
+}
+
+/// A lint rule, as the registry holds it: its metadata, and a way to
+/// configure it.
+///
+/// A rule file declares its rule with [`declare_rule!`], which implements
+/// this for a unit struct from a type that holds the parsed options,
+/// implements [`Check`] and has a `from_setting` constructor.
 pub trait Rule: Send + Sync {
+  /// The rule's name, description, default severity and option shape.
+  fn meta(&self) -> RuleMeta;
+
+  /// The rule configured with `setting`, or every problem with its options.
+  /// A rule with invalid options does not run.
+  fn configure(
+    &self,
+    setting: &Setting,
+    env: &LintEnv,
+  ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>>;
+
+  /// Unique rule name, e.g. "block-no-empty".
+  fn name(&self) -> &'static str {
+    self.meta().name
+  }
+
+  /// Human-readable description of what this rule checks.
+  fn description(&self) -> &'static str {
+    self.meta().description
+  }
+
+  /// The default severity for diagnostics produced by this rule.
+  fn default_severity(&self) -> Severity {
+    self.meta().default_severity
+  }
+
+  /// LEGACY: whether the rule is a [`LegacyRule`], which reads its options
+  /// from the context on every node and sets its own severity.
+  #[doc(hidden)]
+  fn is_legacy(&self) -> bool {
+    false
+  }
+}
+
+/// Declare a rule whose options are parsed once: a unit struct the registry
+/// holds, implementing [`Rule`] by building `$check` with its
+/// `fn from_setting(&Setting, &LintEnv) -> Result<Self, Vec<InvalidOption>>`.
+///
+/// ```ignore
+/// declare_rule! {
+///   /// Disallow empty blocks.
+///   pub struct BlockNoEmpty => BlockNoEmptyCheck {
+///     name: NAME,
+///     description: "Disallow empty blocks",
+///     default_severity: Warning,
+///   }
+/// }
+/// ```
+///
+/// `primary_option_array: true` after the severity marks a rule whose
+/// primary option can be an array (Stylelint's `rule.primaryOptionArray`).
+macro_rules! declare_rule {
+  (
+    $(#[$attr:meta])*
+    $vis:vis struct $rule:ident => $check:ty {
+      name: $name:expr,
+      description: $description:expr,
+      default_severity: $severity:ident
+      $(, primary_option_array: $array:expr)?
+      $(,)?
+    }
+  ) => {
+    $(#[$attr])*
+    $vis struct $rule;
+
+    impl $rule {
+      /// The rule's name, description, default severity and option shape.
+      pub const META: $crate::rule::RuleMeta = $crate::rule::RuleMeta {
+        name: $name,
+        description: $description,
+        default_severity: gale_diagnostics::Severity::$severity,
+        primary_option_array: false $(|| $array)?,
+      };
+    }
+
+    impl $crate::rule::Rule for $rule {
+      fn meta(&self) -> $crate::rule::RuleMeta {
+        Self::META
+      }
+
+      fn configure(
+        &self,
+        setting: &$crate::options::Setting,
+        env: &$crate::lint_env::LintEnv,
+      ) -> Result<Box<dyn $crate::rule::Check + '_>, Vec<$crate::options::InvalidOption>> {
+        Ok(Box::new(<$check>::from_setting(setting, env)?))
+      }
+    }
+  };
+}
+pub(crate) use declare_rule;
+
+/// LEGACY: a rule that has not been converted to typed options yet.  It
+/// reads its raw options from [`RuleContext::options`] on every node and
+/// sets each diagnostic's severity itself.  Every legacy rule is a [`Rule`]
+/// whose configuration always succeeds.  Rule files import it as `Rule`
+/// (`use crate::rule::{LegacyRule as Rule, ...}`) so they compile unchanged;
+/// it goes away once every rule is converted.
+pub trait LegacyRule: Send + Sync {
   /// Unique rule name, e.g. "block-no-empty".
   fn name(&self) -> &'static str;
 
@@ -215,76 +359,59 @@ pub trait Rule: Send + Sync {
   }
 }
 
-/// How many parsed options values [`per_run`] keeps for each rule and
-/// parsed type on a thread.  A run needs one for each config the rule is
-/// set in; the language server, which outlives configs, keeps the latest.
-const PARSED_OPTIONS_PER_RULE: usize = 8;
-
-/// One options value [`per_run`] parsed, and what the parse returned.
-struct ParsedOptions {
-  /// A copy of the options value, compared by content.
-  options: Option<serde_json::Value>,
-  /// What `parse` returned.
-  parsed: Rc<dyn Any>,
-}
-
-thread_local! {
-  /// Options parsed on this thread, by rule and parsed type, the most
-  /// recent last.
-  static PARSED_OPTIONS: RefCell<HashMap<(&'static str, TypeId), Vec<ParsedOptions>>> =
-    RefCell::new(HashMap::new());
-}
-
-/// Parse a rule's options at most once per run.
-///
-/// A rule whose options take real work to interpret (long lists, lookup
-/// tables) wraps that work in this, and it is done once on each worker
-/// thread for each distinct options value, however many files the run
-/// lints.  `parse` must depend only on `options`.
-///
-/// Options are compared by content rather than by address, so the copy a
-/// config override makes for every file, or a config the language server
-/// reloads, still finds its parse, and an address that a dropped value
-/// left behind never finds another value's.
-pub fn per_run<T: 'static>(
-  rule: &'static str,
-  options: Option<&serde_json::Value>,
-  parse: impl FnOnce() -> T,
-) -> Rc<T> {
-  let key = (rule, TypeId::of::<T>());
-  let cached = PARSED_OPTIONS.with(|memo| {
-    let memo = memo.borrow();
-    let entry = memo
-      .get(&key)?
-      .iter()
-      .rev()
-      .find(|entry| entry.options.as_ref() == options)?;
-    Rc::clone(&entry.parsed).downcast::<T>().ok()
-  });
-  if let Some(parsed) = cached {
-    return parsed;
-  }
-  // Parse without holding the memo borrowed, so a panicking parse leaves
-  // it unlocked and caches nothing.
-  let parsed = Rc::new(parse());
-  PARSED_OPTIONS.with(|memo| {
-    let mut memo = memo.borrow_mut();
-    let entries = memo.entry(key).or_default();
-    if entries.len() >= PARSED_OPTIONS_PER_RULE {
-      entries.remove(0);
+impl<T: LegacyRule> Rule for T {
+  fn meta(&self) -> RuleMeta {
+    RuleMeta {
+      name: LegacyRule::name(self),
+      description: LegacyRule::description(self),
+      default_severity: LegacyRule::default_severity(self),
+      primary_option_array: false,
     }
-    entries.push(ParsedOptions {
-      options: options.cloned(),
-      parsed: Rc::clone(&parsed) as Rc<dyn Any>,
-    });
-  });
-  parsed
+  }
+
+  /// A legacy rule takes any options; it reads them as it checks.
+  fn configure(
+    &self,
+    _setting: &Setting,
+    _env: &LintEnv,
+  ) -> Result<Box<dyn Check + '_>, Vec<InvalidOption>> {
+    Ok(Box::new(LegacyCheck(self)))
+  }
+
+  fn name(&self) -> &'static str {
+    LegacyRule::name(self)
+  }
+
+  fn description(&self) -> &'static str {
+    LegacyRule::description(self)
+  }
+
+  fn default_severity(&self) -> Severity {
+    LegacyRule::default_severity(self)
+  }
+
+  fn is_legacy(&self) -> bool {
+    true
+  }
+}
+
+/// LEGACY: a [`LegacyRule`] as a [`Check`], reading its options from the
+/// context the runner fills in.
+struct LegacyCheck<'r, T>(&'r T);
+
+impl<T: LegacyRule> Check for LegacyCheck<'_, T> {
+  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+    self.0.check(node, context)
+  }
+
+  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+    self.0.check_root(nodes, context)
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::cell::Cell;
 
   /// A context over `source` with no options.
   fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
@@ -367,76 +494,111 @@ mod tests {
     ));
   }
 
-  /// Calls `per_run` for `options` as `rule`, counting how often it had to
-  /// parse.
-  fn parse_counting(
-    rule: &'static str,
-    options: &serde_json::Value,
-    parses: &Cell<usize>,
-  ) -> Rc<usize> {
-    per_run(rule, Some(options), || {
-      parses.set(parses.get() + 1);
-      options.as_array().map_or(0, Vec::len)
-    })
+  /// A rule declared the way rule files declare theirs: it reports its
+  /// primary option at the root.
+  struct ReportsWord {
+    word: &'static str,
   }
 
-  /// Each distinct options value is parsed once, whichever copy of it a
-  /// file hands over, and the parse is kept from one file to the next.
-  #[test]
-  fn per_run_parses_each_options_value_once() {
-    let first = serde_json::json!([1, 2, 3]);
-    let second = serde_json::json!([1]);
-    let parses = Cell::new(0);
-    for _ in 0..5 {
-      // A fresh copy each time, as config overrides make for every file.
-      let copy = first.clone();
-      assert_eq!(*parse_counting("test/once", &copy, &parses), 3);
-      assert_eq!(*parse_counting("test/once", &second, &parses), 1);
+  impl ReportsWord {
+    fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+      let mut options = setting.options();
+      let word = options.primary_one_of(&["a", "b"]).unwrap_or("a");
+      options.finish()?;
+      Ok(Self { word })
     }
-    assert_eq!(parses.get(), 2);
+  }
 
-    // Another rule, or another parsed type, gets its own entry.
-    assert_eq!(*per_run("test/other", Some(&first), || 7usize), 7);
-    let as_string = per_run("test/once", Some(&first), || "parsed".to_string());
-    assert_eq!(*as_string, "parsed");
-    assert_eq!(*per_run("test/once", None, || 0usize), 0);
+  impl Check for ReportsWord {
+    fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+      vec![Diagnostic::new("test/word", self.word)]
+    }
+  }
+
+  declare_rule! {
+    /// Reports its primary option.
+    struct WordRule => ReportsWord {
+      name: "test/word",
+      description: "Reports a word",
+      default_severity: Error,
+    }
+  }
+
+  fn configure(
+    rule: &dyn Rule,
+    options: serde_json::Value,
+  ) -> Result<Box<dyn Check + '_>, Vec<String>> {
+    let meta = rule.meta();
+    let setting = Setting::new(meta.name, Some(&options), meta.primary_option_array);
+    rule
+      .configure(&setting, &LintEnv::default())
+      .map_err(|problems| problems.into_iter().map(InvalidOption::into_text).collect())
+  }
+
+  #[test]
+  fn a_declared_rule_is_configured_from_its_setting() {
     assert_eq!(
-      *per_run("test/once", None, || 1usize),
-      0,
-      "no options is a value too"
+      WordRule.meta(),
+      RuleMeta {
+        name: "test/word",
+        description: "Reports a word",
+        default_severity: Severity::Error,
+        primary_option_array: false,
+      }
+    );
+    assert!(!WordRule.is_legacy());
+    let ctx = context("", Syntax::Css);
+    let check = configure(&WordRule, serde_json::json!("b")).ok().unwrap();
+    assert_eq!(check.check_root(&[], &ctx)[0].message, "b");
+    assert!(
+      check
+        .check(&CssNode::Style(Default::default()), &ctx)
+        .is_empty()
+    );
+    assert_eq!(
+      configure(&WordRule, serde_json::json!("c")).err().unwrap(),
+      ["Invalid option value \"c\" for rule \"test/word\""]
     );
   }
 
-  /// A parse that panics caches nothing, and the next call parses again.
-  #[test]
-  fn per_run_keeps_nothing_from_a_parse_that_panics() {
-    let options = serde_json::json!(["a"]);
-    let caught = crate::panic_guard::catch(|| {
-      per_run("test/panics", Some(&options), || -> usize {
-        panic!("bad options")
-      })
-    })
-    .unwrap_err();
-    assert_eq!(caught.message, "bad options");
-    assert_eq!(*per_run("test/panics", Some(&options), || 1usize), 1);
-    assert_eq!(*per_run("test/panics", Some(&options), || 2usize), 1);
+  /// A legacy rule, which reads its options from the context.
+  struct ReportsOptions;
+
+  impl LegacyRule for ReportsOptions {
+    fn name(&self) -> &'static str {
+      "test/legacy"
+    }
+
+    fn description(&self) -> &'static str {
+      "Reports its options"
+    }
+
+    fn default_severity(&self) -> Severity {
+      Severity::Warning
+    }
+
+    fn check(&self, _node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+      vec![Diagnostic::new(
+        "test/legacy",
+        format!("{:?}", context.options),
+      )]
+    }
   }
 
-  /// Only the latest few options values of a rule are kept.
   #[test]
-  fn per_run_keeps_the_latest_options_values() {
-    let parses = Cell::new(0);
-    let values: Vec<serde_json::Value> = (0..=PARSED_OPTIONS_PER_RULE)
-      .map(|n| serde_json::json!(vec![0; n]))
-      .collect();
-    for value in &values {
-      parse_counting("test/latest", value, &parses);
-    }
-    assert_eq!(parses.get(), values.len());
-    // The newest are still there; the oldest was dropped.
-    parse_counting("test/latest", &values[values.len() - 1], &parses);
-    assert_eq!(parses.get(), values.len());
-    parse_counting("test/latest", &values[0], &parses);
-    assert_eq!(parses.get(), values.len() + 1);
+  fn a_legacy_rule_takes_any_options_and_reads_them_as_it_checks() {
+    assert!(ReportsOptions.is_legacy());
+    assert_eq!(Rule::name(&ReportsOptions), "test/legacy");
+    assert_eq!(Rule::default_severity(&ReportsOptions), Severity::Warning);
+    let check = configure(&ReportsOptions, serde_json::json!("anything"))
+      .ok()
+      .unwrap();
+    let options = serde_json::json!(3);
+    let ctx = RuleContext {
+      options: Some(&options),
+      ..context("", Syntax::Css)
+    };
+    let found = check.check(&CssNode::Style(Default::default()), &ctx);
+    assert_eq!(found[0].message, "Some(Number(3))");
   }
 }

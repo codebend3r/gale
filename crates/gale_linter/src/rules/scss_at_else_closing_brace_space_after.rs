@@ -1,29 +1,46 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after the closing brace of `@else` when
-/// followed by `@else if`.
-///
-/// Default: `"always-intermediate"`.
-///
-/// Equivalent to `scss/at-else-closing-brace-space-after`.
-pub struct ScssAtElseClosingBraceSpaceAfter;
+const NAME: &str = "scss/at-else-closing-brace-space-after";
 
-impl Rule for ScssAtElseClosingBraceSpaceAfter {
-  fn name(&self) -> &'static str {
-    "scss/at-else-closing-brace-space-after"
+declare_rule! {
+  /// Require or disallow a space after the closing brace of `@else` when
+  /// followed by `@else if`.
+  ///
+  /// Default: `"always-intermediate"`.
+  ///
+  /// Equivalent to `scss/at-else-closing-brace-space-after`.
+  pub struct ScssAtElseClosingBraceSpaceAfter => ScssAtElseClosingBraceSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the closing brace of @else before @else",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the closing brace of @else before @else"
+/// `scss/at-else-closing-brace-space-after` as configured.
+pub struct ScssAtElseClosingBraceSpaceAfterCheck {
+  /// The primary option; `"always-intermediate"` when none is given.
+  option: &'static str,
+}
+
+impl ScssAtElseClosingBraceSpaceAfterCheck {
+  /// stylelint-scss's options: `"always-intermediate"` or
+  /// `"never-intermediate"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always-intermediate", "never-intermediate"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-intermediate"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtElseClosingBraceSpaceAfterCheck {
   /// Scans the SCSS source for `@else` chains and flags a closing brace whose
   /// following space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -31,7 +48,7 @@ impl Rule for ScssAtElseClosingBraceSpaceAfter {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("always-intermediate");
+    let option = self.option;
     let source = ctx.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -68,11 +85,10 @@ impl Rule for ScssAtElseClosingBraceSpaceAfter {
                   if space_count != 1 {
                     diagnostics.push(
                       Diagnostic::new(
-                        self.name(),
+                        NAME,
                         "Expected single space after closing brace of @else if before @else"
                           .to_string(),
                       )
-                      .severity(self.default_severity())
                       .span(Span::new(close_brace, 1)),
                     );
                   }
@@ -81,10 +97,9 @@ impl Rule for ScssAtElseClosingBraceSpaceAfter {
                   if space_count > 0 {
                     diagnostics.push(
                       Diagnostic::new(
-                        self.name(),
+                        NAME,
                         "Unexpected space after closing brace of @else if before @else".to_string(),
                       )
-                      .severity(self.default_severity())
                       .span(Span::new(close_brace, 1)),
                     );
                   }
@@ -138,29 +153,38 @@ fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_space_between_else_if_and_else() {
+    let rule = configured(&ScssAtElseClosingBraceSpaceAfter, None);
     let ctx = scss_ctx_with_source("@if $a { a: b; } @else if $b { c: d; } @else { e: f; }");
-    let d = ScssAtElseClosingBraceSpaceAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_no_space_between_else_if_and_else() {
+    let rule = configured(&ScssAtElseClosingBraceSpaceAfter, None);
     let ctx = scss_ctx_with_source("@if $a { a: b; } @else if $b { c: d; }@else { e: f; }");
-    let d = ScssAtElseClosingBraceSpaceAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtElseClosingBraceSpaceAfter, None);
     let ctx = ctx_with_source("@else if { }@else { }");
-    assert!(
-      ScssAtElseClosingBraceSpaceAfter
-        .check_root(&[], &ctx)
-        .is_empty()
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint_scss() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(NAME, serde_json::json!("never-intermediate")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"scss/at-else-closing-brace-space-after\""]
     );
   }
 }

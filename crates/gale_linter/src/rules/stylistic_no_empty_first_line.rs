@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow empty first lines.
-///
-/// Equivalent to `@stylistic/no-empty-first-line`.
-pub struct StylisticNoEmptyFirstLine;
+const NAME: &str = "@stylistic/no-empty-first-line";
 
-impl Rule for StylisticNoEmptyFirstLine {
-  fn name(&self) -> &'static str {
-    "@stylistic/no-empty-first-line"
+declare_rule! {
+  /// Disallow empty first lines.
+  ///
+  /// Equivalent to `@stylistic/no-empty-first-line`.
+  pub struct StylisticNoEmptyFirstLine => StylisticNoEmptyFirstLineCheck {
+    name: NAME,
+    description: "Disallow empty first lines",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow empty first lines"
+/// `@stylistic/no-empty-first-line`, which takes no options.
+pub struct StylisticNoEmptyFirstLineCheck;
+
+impl StylisticNoEmptyFirstLineCheck {
+  /// The plugin validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticNoEmptyFirstLineCheck {
   /// Flags a file that opens with a blank line.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if ctx.source.is_empty() {
@@ -50,8 +62,7 @@ impl Rule for StylisticNoEmptyFirstLine {
       }
 
       vec![
-        Diagnostic::new(self.name(), "Unexpected empty first line")
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, "Unexpected empty first line")
           .span(Span::new(0, 1))
           .fix(Fix::new(
             "Remove empty first line",
@@ -68,11 +79,11 @@ impl Rule for StylisticNoEmptyFirstLine {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_empty_first_line_lf() {
-    let rule = StylisticNoEmptyFirstLine;
+    let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("\na { color: red; }\n");
     let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
@@ -82,7 +93,7 @@ mod tests {
 
   #[test]
   fn reports_empty_first_line_crlf() {
-    let rule = StylisticNoEmptyFirstLine;
+    let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("\r\na { color: red; }\n");
     let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
@@ -91,7 +102,7 @@ mod tests {
 
   #[test]
   fn allows_non_empty_first_line() {
-    let rule = StylisticNoEmptyFirstLine;
+    let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("a { color: red; }\n");
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
@@ -99,9 +110,18 @@ mod tests {
 
   #[test]
   fn allows_empty_source() {
-    let rule = StylisticNoEmptyFirstLine;
+    let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("");
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"@stylistic/no-empty-first-line\""]
+    );
   }
 }

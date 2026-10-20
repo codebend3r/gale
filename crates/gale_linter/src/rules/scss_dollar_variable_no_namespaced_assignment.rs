@@ -1,38 +1,50 @@
 use std::sync::LazyLock;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow assigning to a variable of another module
-/// (`imported.$foo: 10px`).
-///
-/// Equivalent to stylelint-scss's
-/// `scss/dollar-variable-no-namespaced-assignment`, which tests every
-/// declaration's property with `/^[^$.]+\.\$./` and reports the whole
-/// declaration.
-pub struct ScssDollarVariableNoNamespacedAssignment;
+const NAME: &str = "scss/dollar-variable-no-namespaced-assignment";
+
+declare_rule! {
+  /// Disallow assigning to a variable of another module
+  /// (`imported.$foo: 10px`).
+  ///
+  /// Equivalent to stylelint-scss's
+  /// `scss/dollar-variable-no-namespaced-assignment`, which tests every
+  /// declaration's property with `/^[^$.]+\.\$./` and reports the whole
+  /// declaration.
+  pub struct ScssDollarVariableNoNamespacedAssignment => ScssDollarVariableNoNamespacedAssignmentCheck {
+    name: NAME,
+    description: "Disallow assignment to namespaced variables",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/dollar-variable-no-namespaced-assignment`, which takes no options.
+pub struct ScssDollarVariableNoNamespacedAssignmentCheck;
+
+impl ScssDollarVariableNoNamespacedAssignmentCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Upstream's `/^[^$.]+\.\$./`, with JavaScript's `.`, which matches
 /// anything but a line terminator.
 static NAMESPACED: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r"^[^$.]+\.\$[^\n\r\x{2028}\x{2029}]").expect("valid regex"));
 
-impl Rule for ScssDollarVariableNoNamespacedAssignment {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-no-namespaced-assignment"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow assignment to namespaced variables"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariableNoNamespacedAssignmentCheck {
   /// Reports every declaration whose property is a `namespace.$variable`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -43,12 +55,8 @@ impl Rule for ScssDollarVariableNoNamespacedAssignment {
       .decls()
       .filter(|decl| NAMESPACED.is_match(&decl.name))
       .map(|decl| {
-        Diagnostic::new(
-          self.name(),
-          "Unexpected assignment to a namespaced $ variable",
-        )
-        .severity(self.default_severity())
-        .span(Span::from_range(decl.start, decl.end))
+        Diagnostic::new(NAME, "Unexpected assignment to a namespaced $ variable")
+          .span(Span::from_range(decl.start, decl.end))
       })
       .collect()
   }
@@ -56,11 +64,12 @@ impl Rule for ScssDollarVariableNoNamespacedAssignment {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/dollar-variable-no-namespaced-assignment";
 
@@ -120,5 +129,18 @@ mod tests {
   #[test]
   fn ignores_plain_css() {
     assert_eq!(ranges("a { imported.$foo: 1; }", Syntax::Css), vec![]);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"scss/dollar-variable-no-namespaced-assignment\""
+      ]
+    );
   }
 }

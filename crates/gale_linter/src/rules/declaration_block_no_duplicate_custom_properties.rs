@@ -1,28 +1,43 @@
 use std::collections::HashSet;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow duplicate custom properties within declaration blocks.
-///
-/// Equivalent to Stylelint's `declaration-block-no-duplicate-custom-properties` rule.
-pub struct DeclarationBlockNoDuplicateCustomProperties;
+const NAME: &str = "declaration-block-no-duplicate-custom-properties";
 
-impl Rule for DeclarationBlockNoDuplicateCustomProperties {
-  fn name(&self) -> &'static str {
-    "declaration-block-no-duplicate-custom-properties"
+declare_rule! {
+  /// Disallow duplicate custom properties within declaration blocks.
+  ///
+  /// Equivalent to Stylelint's `declaration-block-no-duplicate-custom-properties` rule.
+  pub struct DeclarationBlockNoDuplicateCustomProperties => DeclarationBlockNoDuplicateCustomPropertiesCheck {
+    name: NAME,
+    description: "Disallow duplicate custom properties within declaration blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow duplicate custom properties within declaration blocks"
+/// `declaration-block-no-duplicate-custom-properties` as configured.
+pub struct DeclarationBlockNoDuplicateCustomPropertiesCheck {
+  /// `ignoreProperties`: custom properties that may repeat.
+  ignore_properties: Matchers,
+}
+
+impl DeclarationBlockNoDuplicateCustomPropertiesCheck {
+  /// Stylelint's options: `true`, then `ignoreProperties`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_properties = options.matchers("ignoreProperties");
+    options.finish()?;
+    Ok(Self { ignore_properties })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationBlockNoDuplicateCustomPropertiesCheck {
   /// Flags a custom property declared more than once in the same block.
   /// Interpolated names are skipped, as they cannot be resolved.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
@@ -47,13 +62,15 @@ impl Rule for DeclarationBlockNoDuplicateCustomProperties {
       if is_preprocessor && decl.property.contains("#{") {
         continue;
       }
+      if self.ignore_properties.matches(&decl.property) {
+        continue;
+      }
       if !seen.insert(decl.property.clone()) {
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected duplicate custom property \"{}\"", decl.property),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -68,11 +85,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   #[test]
   fn reports_duplicate_custom_properties() {
-    let rule = DeclarationBlockNoDuplicateCustomProperties;
+    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
     let node = CssNode::Style(StyleRule {
       selector: ":root".to_string(),
       declarations: vec![
@@ -108,7 +125,7 @@ mod tests {
 
   #[test]
   fn ignores_duplicate_non_custom_properties() {
-    let rule = DeclarationBlockNoDuplicateCustomProperties;
+    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![
@@ -134,7 +151,7 @@ mod tests {
 
   #[test]
   fn ignores_unique_custom_properties() {
-    let rule = DeclarationBlockNoDuplicateCustomProperties;
+    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
     let node = CssNode::Style(StyleRule {
       selector: ":root".to_string(),
       declarations: vec![
@@ -156,5 +173,51 @@ mod tests {
     });
     let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn ignore_properties_may_repeat() {
+    let rule = configured(
+      &DeclarationBlockNoDuplicateCustomProperties,
+      serde_json::json!([true, { "ignoreProperties": ["/^--x/"] }]),
+    );
+    let decl = |property: &str| Declaration {
+      property: property.to_string(),
+      value: "1".to_string(),
+      span: ParserSpan::new(0, 4),
+      important: false,
+    };
+    let node = CssNode::Style(StyleRule {
+      selector: "a".to_string(),
+      declarations: vec![decl("--x-a"), decl("--x-a"), decl("--y"), decl("--y")],
+      span: ParserSpan::new(0, 0),
+      ..Default::default()
+    });
+    let d = rule.check(&node, &ctx());
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("--y"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreProperties": "--x" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"declaration-block-no-duplicate-custom-properties\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["--x"] }])),
+      [
+        "Invalid option name \"ignore\" for rule \"declaration-block-no-duplicate-custom-properties\""
+      ]
+    );
   }
 }

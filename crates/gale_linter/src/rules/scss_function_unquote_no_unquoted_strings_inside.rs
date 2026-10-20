@@ -1,24 +1,36 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow unquoted strings inside `unquote()`.
-pub struct ScssFunctionUnquoteNoUnquotedStringsInside;
+const NAME: &str = "scss/function-unquote-no-unquoted-strings-inside";
 
-impl Rule for ScssFunctionUnquoteNoUnquotedStringsInside {
-  fn name(&self) -> &'static str {
-    "scss/function-unquote-no-unquoted-strings-inside"
+declare_rule! {
+  /// Disallow unquoted strings inside `unquote()`.
+  pub struct ScssFunctionUnquoteNoUnquotedStringsInside => ScssFunctionUnquoteNoUnquotedStringsInsideCheck {
+    name: NAME,
+    description: "Disallow unquoted strings inside unquote()",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unquoted strings inside unquote()"
+/// `scss/function-unquote-no-unquoted-strings-inside`, which takes no options.
+pub struct ScssFunctionUnquoteNoUnquotedStringsInsideCheck;
+
+impl ScssFunctionUnquoteNoUnquotedStringsInsideCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssFunctionUnquoteNoUnquotedStringsInsideCheck {
   /// Flags `unquote()` calls whose argument is already unquoted.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -41,8 +53,7 @@ impl Rule for ScssFunctionUnquoteNoUnquotedStringsInside {
         && !trimmed.starts_with(')')
       {
         return vec![
-          Diagnostic::new(self.name(), "Unexpected unquoted string inside unquote()")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected unquoted string inside unquote()")
             .span(Span::new(decl.span.offset, decl.span.length)),
         ];
       }
@@ -57,7 +68,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  use crate::testing::scss_ctx;
+  use crate::testing::{configured, invalid_options, scss_ctx};
 
   fn decl(value: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -70,20 +81,35 @@ mod tests {
 
   #[test]
   fn reports_unquoted_string_inside_unquote() {
-    let d = ScssFunctionUnquoteNoUnquotedStringsInside.check(&decl("unquote(bold)"), &scss_ctx());
+    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
+    let d = rule.check(&decl("unquote(bold)"), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_quoted_inside_unquote() {
-    let d =
-      ScssFunctionUnquoteNoUnquotedStringsInside.check(&decl("unquote(\"bold\")"), &scss_ctx());
+    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
+    let d = rule.check(&decl("unquote(\"bold\")"), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_variable_inside_unquote() {
-    let d = ScssFunctionUnquoteNoUnquotedStringsInside.check(&decl("unquote($var)"), &scss_ctx());
+    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
+    let d = rule.check(&decl("unquote($var)"), &scss_ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"scss/function-unquote-no-unquoted-strings-inside\""
+      ]
+    );
   }
 }

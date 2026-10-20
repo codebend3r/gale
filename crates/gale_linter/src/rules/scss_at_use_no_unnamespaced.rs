@@ -1,20 +1,44 @@
 use std::sync::LazyLock;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow `@use` rules that load a module without a namespace
-/// (`@use "foo" as *`).
-///
-/// Equivalent to stylelint-scss's `scss/at-use-no-unnamespaced`.  Like
-/// upstream it tests the params of every `@use` with
-/// `/(as\s*\*)\s*(?:$|with\s*\()/` and reports the first place the matched
-/// `as *` appears in the at-rule.
-pub struct ScssAtUseNoUnnamespaced;
+const NAME: &str = "scss/at-use-no-unnamespaced";
+
+declare_rule! {
+  /// Disallow `@use` rules that load a module without a namespace
+  /// (`@use "foo" as *`).
+  ///
+  /// Equivalent to stylelint-scss's `scss/at-use-no-unnamespaced`.  Like
+  /// upstream it tests the params of every `@use` with
+  /// `/(as\s*\*)\s*(?:$|with\s*\()/` and reports the first place the matched
+  /// `as *` appears in the at-rule.
+  pub struct ScssAtUseNoUnnamespaced => ScssAtUseNoUnnamespacedCheck {
+    name: NAME,
+    description: "Disallow @use without a namespace",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/at-use-no-unnamespaced`, which takes no options.
+pub struct ScssAtUseNoUnnamespacedCheck;
+
+impl ScssAtUseNoUnnamespacedCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The characters JavaScript's `\s` matches, for a regex character class.
 const JS_SPACE: &str =
@@ -28,19 +52,7 @@ static UNNAMESPACED: LazyLock<Regex> = LazyLock::new(|| {
   .expect("valid regex")
 });
 
-impl Rule for ScssAtUseNoUnnamespaced {
-  fn name(&self) -> &'static str {
-    "scss/at-use-no-unnamespaced"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow @use without a namespace"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtUseNoUnnamespacedCheck {
   /// Reports the `as *` of every `@use` that loads a module into the global
   /// namespace.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -70,11 +82,7 @@ impl Rule for ScssAtUseNoUnnamespaced {
         .map_or(Span::from_range(at_rule.start, at_rule.end), |at| {
           Span::new(at_rule.start + at, word.len())
         });
-      diags.push(
-        Diagnostic::new(self.name(), "Unexpected @use without namespace")
-          .severity(self.default_severity())
-          .span(span),
-      );
+      diags.push(Diagnostic::new(NAME, "Unexpected @use without namespace").span(span));
     }
     diags
   }
@@ -82,11 +90,12 @@ impl Rule for ScssAtUseNoUnnamespaced {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/at-use-no-unnamespaced";
 
@@ -148,6 +157,17 @@ mod tests {
     assert_eq!(
       ranges("@use \"foo\" as /* c */ *;", Syntax::Scss),
       vec![(1, 1, 1, 25)]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/at-use-no-unnamespaced\""]
     );
   }
 }

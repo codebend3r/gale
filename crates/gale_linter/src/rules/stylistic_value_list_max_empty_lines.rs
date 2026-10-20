@@ -1,29 +1,47 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of adjacent empty lines within value lists.
-///
-/// Primary option: integer (default 0).
-pub struct StylisticValueListMaxEmptyLines;
+const NAME: &str = "@stylistic/value-list-max-empty-lines";
 
-impl Rule for StylisticValueListMaxEmptyLines {
-  fn name(&self) -> &'static str {
-    "@stylistic/value-list-max-empty-lines"
+declare_rule! {
+  /// Limit the number of adjacent empty lines within value lists.
+  ///
+  /// Primary option: integer (default 0).
+  pub struct StylisticValueListMaxEmptyLines => StylisticValueListMaxEmptyLinesCheck {
+    name: NAME,
+    description: "Limit the number of adjacent empty lines within value lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Limit the number of adjacent empty lines within value lists"
+/// `@stylistic/value-list-max-empty-lines` as configured.
+pub struct StylisticValueListMaxEmptyLinesCheck {
+  /// The most empty lines allowed in a row.
+  max: usize,
+}
+
+impl StylisticValueListMaxEmptyLinesCheck {
+  /// The plugin's options: a number (`possible: isNumber`).  Gale reads no
+  /// number as 0, and a number that is not a whole number of zero or more as 0
+  /// too, as it always has.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(serde_json::Value::is_number);
+    options.finish()?;
+    Ok(Self {
+      max: max.and_then(serde_json::Value::as_u64).unwrap_or(0) as usize,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticValueListMaxEmptyLinesCheck {
   /// Flags runs of blank lines inside a declaration value longer than the maximum.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let max = ctx.primary_option().and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let max = self.max;
 
     let CssNode::Style(rule) = node else {
       return vec![];
@@ -50,10 +68,9 @@ impl Rule for StylisticValueListMaxEmptyLines {
       if max_found > max {
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Expected no more than {max} empty line(s) in value list"),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -68,11 +85,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_options;
+  use crate::testing::{configured, ctx_with_options, invalid_options};
 
   fn check_value(value: &str, max: u64) -> Vec<Diagnostic> {
-    let rule = StylisticValueListMaxEmptyLines;
     let opts = serde_json::json!(max);
+    let rule = configured(&StylisticValueListMaxEmptyLines, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -111,5 +128,15 @@ mod tests {
   fn reports_two_empty_lines_when_max_one() {
     let d = check_value("Arial,\n\n\nsans-serif", 1);
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(0)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!(2)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("2")),
+      ["Invalid option \"2\" for rule \"@stylistic/value-list-max-empty-lines\""]
+    );
   }
 }

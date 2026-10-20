@@ -1,20 +1,44 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow non-standard direction values in `linear-gradient()` calls.
-///
-/// The standard syntax uses `to top`, `to right`, etc. Non-standard
-/// (legacy WebKit) syntax uses `top`, `left`, etc. without the `to` keyword.
-///
-/// This rule only checks **unprefixed** `linear-gradient()` and
-/// `repeating-linear-gradient()`.  Vendor-prefixed versions
-/// (`-webkit-linear-gradient`, `-moz-linear-gradient`, `-o-linear-gradient`)
-/// legitimately use the old syntax, so they are **not** flagged.
-///
-/// Equivalent to Stylelint's `function-linear-gradient-no-nonstandard-direction` rule.
-pub struct FunctionLinearGradientNoNonstandardDirection;
+const NAME: &str = "function-linear-gradient-no-nonstandard-direction";
+
+declare_rule! {
+  /// Disallow non-standard direction values in `linear-gradient()` calls.
+  ///
+  /// The standard syntax uses `to top`, `to right`, etc. Non-standard
+  /// (legacy WebKit) syntax uses `top`, `left`, etc. without the `to` keyword.
+  ///
+  /// This rule only checks **unprefixed** `linear-gradient()` and
+  /// `repeating-linear-gradient()`.  Vendor-prefixed versions
+  /// (`-webkit-linear-gradient`, `-moz-linear-gradient`, `-o-linear-gradient`)
+  /// legitimately use the old syntax, so they are **not** flagged.
+  ///
+  /// Equivalent to Stylelint's `function-linear-gradient-no-nonstandard-direction` rule.
+  pub struct FunctionLinearGradientNoNonstandardDirection => FunctionLinearGradientNoNonstandardDirectionCheck {
+    name: NAME,
+    description: "Disallow direction values in linear-gradient() calls that are not valid according to the standard syntax",
+    default_severity: Warning,
+  }
+}
+
+/// `function-linear-gradient-no-nonstandard-direction`, which takes no options.
+pub struct FunctionLinearGradientNoNonstandardDirectionCheck;
+
+impl FunctionLinearGradientNoNonstandardDirectionCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Direction keywords that are non-standard when used without `to`
 /// in the **standard** (unprefixed) gradient syntax.
@@ -36,19 +60,7 @@ const NON_STANDARD_DIRECTIONS: &[&str] = &[
 /// Unprefixed gradient function names that should use the standard syntax.
 const STANDARD_GRADIENT_FUNCTIONS: &[&str] = &["linear-gradient", "repeating-linear-gradient"];
 
-impl Rule for FunctionLinearGradientNoNonstandardDirection {
-  fn name(&self) -> &'static str {
-    "function-linear-gradient-no-nonstandard-direction"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow direction values in linear-gradient() calls that are not valid according to the standard syntax"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FunctionLinearGradientNoNonstandardDirectionCheck {
   /// Checks declaration values, preferring source text so the original direction
   /// keywords survive parser normalisation.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -66,7 +78,7 @@ impl Rule for FunctionLinearGradientNoNonstandardDirection {
       } else {
         &decl.value
       };
-      check_value(search_area, decl_start, self, &mut diags);
+      check_value(search_area, decl_start, &mut diags);
     }
     diags
   }
@@ -74,12 +86,7 @@ impl Rule for FunctionLinearGradientNoNonstandardDirection {
 
 /// Flags unprefixed `linear-gradient()` calls whose direction omits `to`.
 /// Vendor-prefixed calls legitimately use the old syntax and are skipped.
-fn check_value(
-  value: &str,
-  base_offset: usize,
-  rule: &FunctionLinearGradientNoNonstandardDirection,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_value(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
   let lower = value.to_ascii_lowercase();
   let bytes = lower.as_bytes();
   let len = bytes.len();
@@ -130,10 +137,9 @@ fn check_value(
         if is_nonstandard_direction(first_arg) {
           diags.push(
             Diagnostic::new(
-              rule.name(),
+              NAME,
               format!("Unexpected non-standard direction \"{}\"", first_arg),
             )
-            .severity(rule.default_severity())
             .span(Span::new(base_offset + start, close + 1 - start)),
           );
         }
@@ -222,7 +228,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -249,15 +255,16 @@ mod tests {
 
   #[test]
   fn reports_nonstandard_direction() {
-    let d = FunctionLinearGradientNoNonstandardDirection
-      .check(&style_with_value("linear-gradient(top, red, blue)"), &ctx());
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(&style_with_value("linear-gradient(top, red, blue)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("top"));
   }
 
   #[test]
   fn accepts_standard_direction() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("linear-gradient(to top, red, blue)"),
       &ctx(),
     );
@@ -266,7 +273,8 @@ mod tests {
 
   #[test]
   fn accepts_angle() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("linear-gradient(45deg, red, blue)"),
       &ctx(),
     );
@@ -275,7 +283,8 @@ mod tests {
 
   #[test]
   fn reports_nonstandard_in_declaration_node() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &decl_with_value("linear-gradient(bottom, red, blue)"),
       &ctx(),
     );
@@ -284,7 +293,8 @@ mod tests {
 
   #[test]
   fn reports_two_word_direction() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("linear-gradient(top right, red, blue)"),
       &ctx(),
     );
@@ -294,15 +304,16 @@ mod tests {
 
   #[test]
   fn ignores_non_gradient() {
-    let d = FunctionLinearGradientNoNonstandardDirection
-      .check(&style_with_value("rgb(255, 0, 0)"), &ctx());
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(&style_with_value("rgb(255, 0, 0)"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_vendor_prefixed_gradient() {
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
     // Vendor-prefixed gradients use the old syntax legitimately
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let d = rule.check(
       &style_with_value("-webkit-linear-gradient(top, red, blue)"),
       &ctx(),
     );
@@ -311,7 +322,8 @@ mod tests {
 
   #[test]
   fn ignores_moz_prefixed_gradient() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("-moz-linear-gradient(top, red, blue)"),
       &ctx(),
     );
@@ -320,7 +332,8 @@ mod tests {
 
   #[test]
   fn reports_repeating_linear_gradient() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("repeating-linear-gradient(top, red, blue)"),
       &ctx(),
     );
@@ -329,10 +342,22 @@ mod tests {
 
   #[test]
   fn accepts_standard_repeating() {
-    let d = FunctionLinearGradientNoNonstandardDirection.check(
+    let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
+    let d = rule.check(
       &style_with_value("repeating-linear-gradient(to top, red, blue)"),
       &ctx(),
     );
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"function-linear-gradient-no-nonstandard-direction\""
+      ]
+    );
   }
 }

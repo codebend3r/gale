@@ -1,20 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::postcss::{self, Kind, Visit};
 use crate::standard_syntax::is_standard_syntax_selector;
 
-/// Require lowercase or uppercase for type selectors.
-///
-/// Equivalent to Stylelint's `selector-type-case` rule: every type selector
-/// in a style rule's selector as written, nested ones included, is checked
-/// against the `"lower"` (default) or `"upper"` option, and the fix
-/// rewrites its case in place.  Case-sensitive SVG element names, the
-/// arguments of `:nth-*()`, `:lang()`, `:dir()` and `::part()`, and names
-/// in `ignoreTypes` are left alone.
-pub struct SelectorTypeCase;
+const NAME: &str = "selector-type-case";
+
+declare_rule! {
+  /// Require lowercase or uppercase for type selectors.
+  ///
+  /// Equivalent to Stylelint's `selector-type-case` rule: every type selector
+  /// in a style rule's selector as written, nested ones included, is checked
+  /// against the `"lower"` (default) or `"upper"` option, and the fix
+  /// rewrites its case in place.  Case-sensitive SVG element names, the
+  /// arguments of `:nth-*()`, `:lang()`, `:dir()` and `::part()`, and names
+  /// in `ignoreTypes` are left alone.
+  pub struct SelectorTypeCase => SelectorTypeCaseCheck {
+    name: NAME,
+    description: "Specify lowercase or uppercase for type selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-type-case` as configured.
+pub struct SelectorTypeCaseCheck {
+  /// Whether type selectors must be upper case.
+  upper: bool,
+  /// The `ignoreTypes` option.
+  ignore_types: Matchers,
+}
+
+impl SelectorTypeCaseCheck {
+  /// Stylelint's options: `"lower"` or `"upper"`, then `ignoreTypes` (names
+  /// or `/regex/` entries).  Gale reads no option as `"lower"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["lower", "upper"]);
+    let ignore_types = options.matchers("ignoreTypes");
+    options.finish()?;
+    Ok(Self {
+      upper: option.unwrap_or("lower") == "upper",
+      ignore_types,
+    })
+  }
+}
 
 /// Stylelint's `mixedCaseSvgTypeSelectors`.
 const SVG_CASE_SENSITIVE: &[&str] = &[
@@ -82,24 +114,11 @@ const TIMELINE_RANGES: &[&str] = &[
   "exit-crossing",
 ];
 
-impl Rule for SelectorTypeCase {
-  fn name(&self) -> &'static str {
-    "selector-type-case"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify lowercase or uppercase for type selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorTypeCaseCheck {
   /// Flags type selectors not in the configured case, reading every style
   /// rule's selector as written.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let upper = ctx.primary_option_str() == Some("upper");
-    let ignore_types = ctx.secondary_options().and_then(|v| v.get("ignoreTypes"));
+    let upper = self.upper;
 
     let mut diags = Vec::new();
     for rule in &ctx.scanned_rules().style_rules {
@@ -129,8 +148,7 @@ impl Rule for SelectorTypeCase {
         if tag.kind != Kind::Tag || !is_standard_syntax_type_selector(visit) {
           return;
         }
-        if SVG_CASE_SENSITIVE.contains(&tag.value.as_str())
-          || pattern::option_matches(ignore_types, &tag.value)
+        if SVG_CASE_SENSITIVE.contains(&tag.value.as_str()) || self.ignore_types.matches(&tag.value)
         {
           return;
         }
@@ -145,10 +163,9 @@ impl Rule for SelectorTypeCase {
         let span = Span::new(tag.start, tag.value.len());
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Expected \"{}\" to be \"{expected}\"", tag.value),
           )
-          .severity(self.default_severity())
           .span(span)
           .fix(Fix::new(
             format!("Change \"{}\" to \"{expected}\"", tag.value),
@@ -230,7 +247,7 @@ fn is_standard_syntax_type_selector(visit: &Visit) -> bool {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-type-case";
 
@@ -316,5 +333,24 @@ mod tests {
     let options = serde_json::json!(["lower", { "disableFix": true }]);
     assert_eq!(lint(RULE, options.clone(), "A {}", Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, "A {}", Syntax::Css), "A {}");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!(["upper", { "ignoreTypes": ["$childClass", "/^my-/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("camel")),
+      ["Invalid option value \"camel\" for rule \"selector-type-case\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!(["lower", { "ignoreTypes": [1] }])),
+      ["Invalid value \"1\" for option \"ignoreTypes\" of rule \"selector-type-case\""]
+    );
   }
 }

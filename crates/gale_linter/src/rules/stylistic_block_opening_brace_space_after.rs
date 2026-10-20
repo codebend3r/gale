@@ -1,29 +1,57 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after the opening brace of blocks.
-///
-/// Primary option: "always" | "never" | "always-single-line" | "always-multi-line"
-pub struct StylisticBlockOpeningBraceSpaceAfter;
+const NAME: &str = "@stylistic/block-opening-brace-space-after";
 
-impl Rule for StylisticBlockOpeningBraceSpaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-opening-brace-space-after"
+declare_rule! {
+  /// Require or disallow a space after the opening brace of blocks.
+  ///
+  /// Primary option: "always" | "never" | "always-single-line" | "always-multi-line"
+  pub struct StylisticBlockOpeningBraceSpaceAfter => StylisticBlockOpeningBraceSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the opening brace of blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the opening brace of blocks"
+/// `@stylistic/block-opening-brace-space-after` as configured.
+pub struct StylisticBlockOpeningBraceSpaceAfterCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticBlockOpeningBraceSpaceAfterCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.  Gale
+  /// reads no option as `"always"`.  `"never-single-line"`, `"never-multi-line"`
+  /// and `ignore` are accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&[
+      "always",
+      "never",
+      "always-single-line",
+      "never-single-line",
+      "always-multi-line",
+      "never-multi-line",
+    ]);
+    options.keywords("ignore", &["at-rules"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockOpeningBraceSpaceAfterCheck {
   /// Flags an opening brace whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -157,11 +185,7 @@ impl Rule for StylisticBlockOpeningBraceSpaceAfter {
             "never" => "Unexpected space after the opening brace",
             _ => "Expected a space after the opening brace",
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(brace_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(brace_pos, 1)));
         }
       }
 
@@ -176,11 +200,11 @@ impl Rule for StylisticBlockOpeningBraceSpaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticBlockOpeningBraceSpaceAfter;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticBlockOpeningBraceSpaceAfter, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -236,5 +260,28 @@ mod tests {
 
     // Multi-line block without space or newline — should flag
     // (this is a contrived case but tests the logic)
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never-single-line", { "ignore": ["at-rules"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-opening-brace-space-after\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["always", { "ignore": ["rules"] }])),
+      [
+        "Invalid value \"rules\" for option \"ignore\" of rule \"@stylistic/block-opening-brace-space-after\""
+      ]
+    );
   }
 }

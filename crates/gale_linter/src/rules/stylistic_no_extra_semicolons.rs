@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow extra semicolons.
-///
-/// Equivalent to `@stylistic/no-extra-semicolons`.
-pub struct StylisticNoExtraSemicolons;
+const NAME: &str = "@stylistic/no-extra-semicolons";
 
-impl Rule for StylisticNoExtraSemicolons {
-  fn name(&self) -> &'static str {
-    "@stylistic/no-extra-semicolons"
+declare_rule! {
+  /// Disallow extra semicolons.
+  ///
+  /// Equivalent to `@stylistic/no-extra-semicolons`.
+  pub struct StylisticNoExtraSemicolons => StylisticNoExtraSemicolonsCheck {
+    name: NAME,
+    description: "Disallow extra semicolons",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow extra semicolons"
+/// `@stylistic/no-extra-semicolons`, which takes no options.
+pub struct StylisticNoExtraSemicolonsCheck;
+
+impl StylisticNoExtraSemicolonsCheck {
+  /// The plugin validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticNoExtraSemicolonsCheck {
   /// Flags semicolons that terminate nothing.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
@@ -61,11 +73,8 @@ impl Rule for StylisticNoExtraSemicolons {
       if bytes[i] == b';' {
         // Check for ;; (double semicolons)
         if i + 1 < len && bytes[i + 1] == b';' {
-          diagnostics.push(
-            Diagnostic::new(self.name(), "Unexpected extra semicolon")
-              .severity(self.default_severity())
-              .span(Span::new(i + 1, 1)),
-          );
+          diagnostics
+            .push(Diagnostic::new(NAME, "Unexpected extra semicolon").span(Span::new(i + 1, 1)));
           i += 1;
           continue;
         }
@@ -136,11 +145,8 @@ impl Rule for StylisticNoExtraSemicolons {
             // Already reported as ;; or separated by whitespace
             let already_reported = diagnostics.iter().any(|d| d.span.offset == i);
             if !already_reported {
-              diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected extra semicolon")
-                  .severity(self.default_severity())
-                  .span(Span::new(i, 1)),
-              );
+              diagnostics
+                .push(Diagnostic::new(NAME, "Unexpected extra semicolon").span(Span::new(i, 1)));
             }
           }
         }
@@ -157,19 +163,19 @@ impl Rule for StylisticNoExtraSemicolons {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_normal_semicolons() {
     let source = "a { color: red; display: block; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_double_semicolons() {
     let source = "a { color: red;; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("extra semicolon"));
   }
@@ -177,7 +183,16 @@ mod tests {
   #[test]
   fn reports_semicolons_separated_by_whitespace() {
     let source = "a { color: red; ; }";
-    let d = StylisticNoExtraSemicolons.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
     assert!(!d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"@stylistic/no-extra-semicolons\""]
+    );
   }
 }

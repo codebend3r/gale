@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports empty CSS comments (`/* */` or `/**/`).
-///
-/// Equivalent to Stylelint's `comment-no-empty` rule.
-pub struct CommentNoEmpty;
+const NAME: &str = "comment-no-empty";
 
-impl Rule for CommentNoEmpty {
-  fn name(&self) -> &'static str {
-    "comment-no-empty"
+declare_rule! {
+  /// Reports empty CSS comments (`/* */` or `/**/`).
+  ///
+  /// Equivalent to Stylelint's `comment-no-empty` rule.
+  pub struct CommentNoEmpty => CommentNoEmptyCheck {
+    name: NAME,
+    description: "Disallow empty comments",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow empty comments"
+/// `comment-no-empty`, which takes no options.
+pub struct CommentNoEmptyCheck;
+
+impl CommentNoEmptyCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CommentNoEmptyCheck {
   /// Flags block comments with no content, fixing by deleting the comment and its
   /// trailing newline. SCSS/Less `//` comments are left alone.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
@@ -62,8 +74,7 @@ impl Rule for CommentNoEmpty {
           );
 
           vec![
-            Diagnostic::new(self.name(), "Unexpected empty comment")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected empty comment")
               .span(Span::new(comment.span.offset, comment.span.length))
               .fix(fix),
           ]
@@ -81,11 +92,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Comment, Span as ParserSpan};
 
-  use crate::testing::{ctx, ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_empty_comment() {
-    let rule = CommentNoEmpty;
+    let rule = configured(&CommentNoEmpty, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
@@ -98,7 +109,7 @@ mod tests {
 
   #[test]
   fn reports_minimal_empty_comment() {
-    let rule = CommentNoEmpty;
+    let rule = configured(&CommentNoEmpty, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/**/".to_string(),
@@ -110,7 +121,7 @@ mod tests {
 
   #[test]
   fn ignores_non_empty_comment() {
-    let rule = CommentNoEmpty;
+    let rule = configured(&CommentNoEmpty, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* hello */".to_string(),
@@ -122,7 +133,7 @@ mod tests {
 
   #[test]
   fn skips_scss_double_slash_comments() {
-    let rule = CommentNoEmpty;
+    let rule = configured(&CommentNoEmpty, None);
     let ctx = scss_ctx_with_source("//\n// \n");
     // Empty double-slash comment
     let node = CssNode::Comment(gale_css_parser::Comment {
@@ -146,7 +157,7 @@ mod tests {
   #[test]
   fn fix_removes_empty_comment() {
     let source = "/* */\na { color: red; }";
-    let rule = CommentNoEmpty;
+    let rule = configured(&CommentNoEmpty, None);
     let ctx = ctx_with_source(source);
     let node = CssNode::Comment(Comment {
       is_line: false,

@@ -1,22 +1,50 @@
 use gale_css_parser::{AtRule, CssNode, Declaration};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
 use crate::pattern::{self, Regex};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 use crate::value_parser::{self, ValueNode};
 
-/// Enforces a naming pattern for container names.
-///
-/// Checks the names in `container-name` and `container` declarations (up to
-/// the `/` that starts the container type) and in `@container` params.  The
-/// primary option is the pattern, a regex string.
-///
-/// Equivalent to Stylelint's `container-name-pattern` rule.  Like it, names
-/// with Sass or Less syntax in them (`$name`, `#{$prefix}name`, `@name`)
-/// are left alone, and so are the CSS-wide keywords in declarations and
-/// `and`, `or`, `not` and `none` in `@container` params.
-pub struct ContainerNamePattern;
+const NAME: &str = "container-name-pattern";
+
+declare_rule! {
+  /// Enforces a naming pattern for container names.
+  ///
+  /// Checks the names in `container-name` and `container` declarations (up to
+  /// the `/` that starts the container type) and in `@container` params.  The
+  /// primary option is the pattern, a regex string.
+  ///
+  /// Equivalent to Stylelint's `container-name-pattern` rule.  Like it, names
+  /// with Sass or Less syntax in them (`$name`, `#{$prefix}name`, `@name`)
+  /// are left alone, and so are the CSS-wide keywords in declarations and
+  /// `and`, `or`, `not` and `none` in `@container` params.
+  pub struct ContainerNamePattern => ContainerNamePatternCheck {
+    name: NAME,
+    description: "Specify a pattern for container names",
+    default_severity: Warning,
+  }
+}
+
+/// `container-name-pattern` as configured.
+pub struct ContainerNamePatternCheck {
+  /// The pattern container names must match; `None` when the config gives
+  /// none, and the rule checks nothing.
+  pattern: Option<Pattern>,
+}
+
+impl ContainerNamePatternCheck {
+  /// Stylelint's option: a regular expression, as a string or `/regex/`.
+  /// One that does not compile is an invalid option.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    Ok(Self { pattern })
+  }
+}
 
 /// CSS-wide keywords, never container names (Stylelint's `basicKeywords`).
 const CSS_WIDE_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
@@ -79,14 +107,13 @@ fn has_webextension_keyword(text: &str) -> bool {
   })
 }
 
-impl ContainerNamePattern {
+impl ContainerNamePatternCheck {
   /// The report for one name that does not match `pattern`.
   fn report(&self, name: &str, pattern: &str, offset: usize) -> Diagnostic {
     Diagnostic::new(
-      self.name(),
+      NAME,
       format!("Expected \"{name}\" to match pattern \"{pattern}\""),
     )
-    .severity(self.default_severity())
     .span(Span::new(offset, name.len()))
     .message_args([name, pattern])
   }
@@ -162,41 +189,23 @@ impl ContainerNamePattern {
   }
 }
 
-impl Rule for ContainerNamePattern {
-  fn name(&self) -> &'static str {
-    "container-name-pattern"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a pattern for container names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ContainerNamePatternCheck {
   /// Flags container names in declarations and `@container` params that do
   /// not match the configured pattern.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let Some(pattern_str) = ctx.primary_option_str() else {
+    let Some(pattern) = &self.pattern else {
       return vec![];
     };
-
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
+    let (re, pattern_str) = (&pattern.regex, pattern.source.as_str());
 
     match node {
       CssNode::Style(rule) => rule
         .declarations
         .iter()
-        .flat_map(|decl| self.check_declaration(decl, &re, pattern_str, ctx))
+        .flat_map(|decl| self.check_declaration(decl, re, pattern_str, ctx))
         .collect(),
-      CssNode::Declaration(decl) => self.check_declaration(decl, &re, pattern_str, ctx),
-      CssNode::AtRule(at) => self.check_at_rule(at, &re, pattern_str, ctx),
+      CssNode::Declaration(decl) => self.check_declaration(decl, re, pattern_str, ctx),
+      CssNode::AtRule(at) => self.check_at_rule(at, re, pattern_str, ctx),
       CssNode::Comment(_) => vec![],
     }
   }
@@ -205,6 +214,7 @@ impl Rule for ContainerNamePattern {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
   use gale_css_parser::Syntax;
 
   const KEBAB: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
@@ -213,18 +223,19 @@ mod tests {
   /// each report.
   fn lint(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<(usize, String)> {
     let parsed = gale_css_parser::parse(source, syntax).expect("parses");
+    let rule = configured(&ContainerNamePattern, options);
     let ctx = RuleContext {
       env: Default::default(),
       file_path: "t.scss",
       source,
       syntax,
-      options: Some(&options),
+      options: None,
       cache: None,
     };
     let mut out = Vec::new();
     let mut stack: Vec<CssNode> = parsed.nodes.clone();
     while let Some(node) = stack.pop() {
-      for d in ContainerNamePattern.check(&node, &ctx) {
+      for d in rule.check(&node, &ctx) {
         out.push((d.span.offset, d.message));
       }
       match &node {
@@ -318,5 +329,15 @@ mod tests {
     ] {
       assert!(!is_standard_syntax_value(value), "{value}");
     }
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(KEBAB)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("/^[a-z]+$/i")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"container-name-pattern\""]
+    );
   }
 }

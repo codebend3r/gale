@@ -1,35 +1,52 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow or require an empty line before `@else`.
-///
-/// Primary option: `"never"` (default) or `"always"`.
-///
-/// Equivalent to `scss/at-else-empty-line-before`.
-pub struct ScssAtElseEmptyLineBefore;
+const NAME: &str = "scss/at-else-empty-line-before";
 
-impl Rule for ScssAtElseEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "scss/at-else-empty-line-before"
+declare_rule! {
+  /// Disallow or require an empty line before `@else`.
+  ///
+  /// Primary option: `"never"` (default) or `"always"`.
+  ///
+  /// Equivalent to `scss/at-else-empty-line-before`.
+  pub struct ScssAtElseEmptyLineBefore => ScssAtElseEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Disallow or require an empty line before @else",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow or require an empty line before @else"
+/// `scss/at-else-empty-line-before` as configured.
+pub struct ScssAtElseEmptyLineBeforeCheck {
+  /// The primary option: `"never"` or `"always"`.
+  expectation: &'static str,
+}
+
+impl ScssAtElseEmptyLineBeforeCheck {
+  /// Stylelint's options: `"never"` (also when not given).  Gale also takes
+  /// the `"always"` it has always implemented, which upstream does not.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&["never", "always"])
+      .unwrap_or("never");
+    options.finish()?;
+    Ok(Self { expectation })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtElseEmptyLineBeforeCheck {
   /// Flags an `@else` whose preceding blank line does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.expectation;
     let source = ctx.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -87,8 +104,7 @@ impl Rule for ScssAtElseEmptyLineBefore {
           "never" => {
             if has_empty_line {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Unexpected empty line before @else")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected empty line before @else")
                   .span(Span::new(at_else_offset, 5)),
               );
             }
@@ -96,8 +112,7 @@ impl Rule for ScssAtElseEmptyLineBefore {
           "always" => {
             if !has_empty_line {
               diagnostics.push(
-                Diagnostic::new(self.name(), "Expected empty line before @else")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Expected empty line before @else")
                   .span(Span::new(at_else_offset, 5)),
               );
             }
@@ -157,19 +172,24 @@ fn has_empty_line_before(source: &str, offset: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source, scss_ctx_with_source_and_options};
+  use crate::testing::{
+    configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+    scss_ctx_with_source_and_options,
+  };
 
   #[test]
   fn never_allows_no_empty_line() {
+    let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; }\n@else { color: blue; }";
-    let d = ScssAtElseEmptyLineBefore.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn never_reports_empty_line() {
+    let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; }\n\n@else { color: blue; }";
-    let d = ScssAtElseEmptyLineBefore.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected empty line"));
   }
@@ -177,32 +197,45 @@ mod tests {
   #[test]
   fn always_allows_empty_line() {
     let opts = serde_json::json!("always");
+    let rule = configured(&ScssAtElseEmptyLineBefore, opts.clone());
     let src = "@if $a { color: red; }\n\n@else { color: blue; }";
-    let d =
-      ScssAtElseEmptyLineBefore.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_reports_no_empty_line() {
     let opts = serde_json::json!("always");
+    let rule = configured(&ScssAtElseEmptyLineBefore, opts.clone());
     let src = "@if $a { color: red; }\n@else { color: blue; }";
-    let d =
-      ScssAtElseEmptyLineBefore.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
+    let d = rule.check_root(&[], &scss_ctx_with_source_and_options(src, &opts));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected empty line"));
   }
 
   #[test]
   fn never_same_line_no_report() {
+    let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; } @else { color: blue; }";
-    let d = ScssAtElseEmptyLineBefore.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_root(&[], &scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let ctx = ctx_with_source("@if $a {}\n\n@else {}");
-    assert!(ScssAtElseEmptyLineBefore.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/at-else-empty-line-before\""]
+    );
+    // Gale keeps the `"always"` it has always implemented.
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
   }
 }

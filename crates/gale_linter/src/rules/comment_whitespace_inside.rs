@@ -1,19 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::installed_at_least;
 
-/// Require or disallow whitespace on the inside of comment markers.
-///
-/// Equivalent to Stylelint's `comment-whitespace-inside` rule, autofix
-/// included, with primary option `"always"` or `"never"`.  Only `/* */`
-/// comments that are statements of their own count: `//` comments and
-/// comments inside selectors, values or at-rule params are not comment
-/// nodes to PostCSS.  `/*! ...` and `/*# ...` (copyright and source map
-/// comments) are left alone.
-pub struct CommentWhitespaceInside;
+const NAME: &str = "comment-whitespace-inside";
+
+declare_rule! {
+  /// Require or disallow whitespace on the inside of comment markers.
+  ///
+  /// Equivalent to Stylelint's `comment-whitespace-inside` rule, autofix
+  /// included, with primary option `"always"` or `"never"`.  Only `/* */`
+  /// comments that are statements of their own count: `//` comments and
+  /// comments inside selectors, values or at-rule params are not comment
+  /// nodes to PostCSS.  `/*! ...` and `/*# ...` (copyright and source map
+  /// comments) are left alone.
+  pub struct CommentWhitespaceInside => CommentWhitespaceInsideCheck {
+    name: NAME,
+    description: "Require or disallow whitespace on the inside of comment markers",
+    default_severity: Warning,
+  }
+}
+
+/// `comment-whitespace-inside` as configured.
+pub struct CommentWhitespaceInsideCheck {
+  /// `"never"` rather than `"always"`.
+  never: bool,
+}
+
+impl CommentWhitespaceInsideCheck {
+  /// Stylelint's option: `"always"` or `"never"`.  Gale reads no option as
+  /// `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      never: expectation == Some("never"),
+    })
+  }
+}
 
 /// One of the four problems the rule reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,22 +75,10 @@ impl Problem {
   }
 }
 
-impl Rule for CommentWhitespaceInside {
-  fn name(&self) -> &'static str {
-    "comment-whitespace-inside"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow whitespace on the inside of comment markers"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CommentWhitespaceInsideCheck {
   /// Checks every comment node in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let never = ctx.primary_option_str() == Some("never");
+    let never = self.never;
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -79,8 +96,7 @@ impl Rule for CommentWhitespaceInside {
           )],
         );
         diags.push(
-          Diagnostic::new(self.name(), problem.message())
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, problem.message())
             .span(Span::from_range(node.start + start, node.start + end))
             .fix(fix),
         );
@@ -251,14 +267,13 @@ mod tests {
   }
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix, lint};
+  use crate::testing::{configured, context, fix, invalid_options, lint};
 
   /// The messages for `source` in `syntax` with `option`, with their
   /// offsets.
   fn messages(source: &str, syntax: Syntax, option: &str) -> Vec<(String, usize)> {
-    let options = serde_json::json!(option);
-    let ctx = context(source, syntax, &options);
-    CommentWhitespaceInside
+    let ctx = context(source, syntax, &serde_json::Value::Null);
+    configured(&CommentWhitespaceInside, serde_json::json!(option))
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| (d.message, d.span.offset))
@@ -365,6 +380,15 @@ mod tests {
     assert_eq!(
       fix("/*comment\n *comment\n *comment\n */", "never"),
       "/*comment\n *comment\n *comment*/"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"comment-whitespace-inside\""]
     );
   }
 }

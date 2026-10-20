@@ -1,11 +1,51 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_unit;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-pub struct UnitNoUnknown;
+const NAME: &str = "unit-no-unknown";
+
+declare_rule! {
+  pub struct UnitNoUnknown => UnitNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown units",
+    default_severity: Warning,
+  }
+}
+
+/// `unit-no-unknown` as configured.
+pub struct UnitNoUnknownCheck {
+  opts: Options,
+}
+
+impl UnitNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreUnits` and `ignoreFunctions`.
+  /// Which units are known also depends on the project's Stylelint, from
+  /// `env`.
+  fn from_setting(setting: &Setting, env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_units = options.strings("ignoreUnits");
+    let ignore_functions = options.strings("ignoreFunctions");
+    options.finish()?;
+    let additional_unknown_units = if env.stylelint_older_than(15) {
+      UNITS_UNKNOWN_BEFORE_STYLELINT_15
+    } else {
+      &[]
+    };
+    Ok(Self {
+      opts: Options {
+        ignore_units,
+        ignore_functions,
+        additional_unknown_units,
+      },
+    })
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Unit extraction with byte offsets
@@ -237,22 +277,11 @@ fn matches_pattern_ci(value: &str, pattern: &str) -> bool {
   pattern::match_regex_entry(pattern, value).unwrap_or_else(|| value.eq_ignore_ascii_case(pattern))
 }
 
-/// Normalises a string or array-of-strings option into a `Vec`.
-fn parse_string_list(val: &serde_json::Value) -> Vec<String> {
-  match val {
-    serde_json::Value::Array(arr) => arr
-      .iter()
-      .filter_map(|v| v.as_str().map(|s| s.to_string()))
-      .collect(),
-    serde_json::Value::String(s) => vec![s.clone()],
-    _ => Vec::new(),
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
+/// The rule's options, with what the project's Stylelint knows.
 struct Options {
   ignore_units: Vec<String>,
   ignore_functions: Vec<String>,
@@ -269,35 +298,6 @@ const UNITS_UNKNOWN_BEFORE_STYLELINT_15: &[&str] = &[
   "svh", "svw", "svb", "svi", "svmax", "svmin", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
   "cap", "ic", "rcap", "rch", "rex", "ric", "vb", "vi",
 ];
-
-/// Reads the `ignoreUnits` and `ignoreFunctions` secondaries, and the units
-/// the project's Stylelint version does not know.
-fn parse_options(ctx: &RuleContext) -> Options {
-  let secondary = ctx.secondary_options();
-  let mut ignore_units = Vec::new();
-  let mut ignore_functions = Vec::new();
-
-  if let Some(sec) = secondary {
-    if let Some(v) = sec.get("ignoreUnits") {
-      ignore_units = parse_string_list(v);
-    }
-    if let Some(v) = sec.get("ignoreFunctions") {
-      ignore_functions = parse_string_list(v);
-    }
-  }
-
-  let additional_unknown_units = if ctx.env.stylelint_older_than(15) {
-    UNITS_UNKNOWN_BEFORE_STYLELINT_15
-  } else {
-    &[]
-  };
-
-  Options {
-    ignore_units,
-    ignore_functions,
-    additional_unknown_units,
-  }
-}
 
 /// Whether any `ignoreUnits` pattern matches this unit.
 fn unit_is_ignored(unit: &str, patterns: &[String]) -> bool {
@@ -362,23 +362,11 @@ fn find_params_offset(source: &str, at_rule_offset: usize) -> usize {
 // Rule implementation
 // ---------------------------------------------------------------------------
 
-impl Rule for UnitNoUnknown {
-  fn name(&self) -> &'static str {
-    "unit-no-unknown"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown units"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for UnitNoUnknownCheck {
   /// Flags units that are not standard CSS. `content`, `unicode-range` and SCSS
   /// variable declarations are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let opts = parse_options(ctx);
+    let opts = &self.opts;
     let mut diags = Vec::new();
 
     match node {
@@ -395,15 +383,7 @@ impl Rule for UnitNoUnknown {
             continue;
           }
           let value_offset = find_value_offset(ctx.source, decl.span.offset, decl.span.length);
-          check_value(
-            &decl.value,
-            &opts,
-            false,
-            value_offset,
-            self.name(),
-            self.default_severity(),
-            &mut diags,
-          );
+          check_value(&decl.value, opts, false, value_offset, NAME, &mut diags);
         }
       }
       CssNode::AtRule(at_rule) => {
@@ -435,14 +415,7 @@ impl Rule for UnitNoUnknown {
             // skip
           } else {
             let params_offset = find_params_offset(ctx.source, at_rule.span.offset);
-            check_at_rule_params(
-              &at_rule.params,
-              &opts,
-              params_offset,
-              self.name(),
-              self.default_severity(),
-              &mut diags,
-            );
+            check_at_rule_params(&at_rule.params, opts, params_offset, NAME, &mut diags);
           }
         }
       }
@@ -454,15 +427,7 @@ impl Rule for UnitNoUnknown {
           return vec![];
         }
         let value_offset = find_value_offset(ctx.source, decl.span.offset, decl.span.length);
-        check_value(
-          &decl.value,
-          &opts,
-          false,
-          value_offset,
-          self.name(),
-          self.default_severity(),
-          &mut diags,
-        );
+        check_value(&decl.value, opts, false, value_offset, NAME, &mut diags);
       }
       _ => {}
     }
@@ -479,7 +444,6 @@ fn check_value(
   in_media_resolution: bool,
   value_base_offset: usize,
   rule_name: &str,
-  severity: Severity,
   diags: &mut Vec<Diagnostic>,
 ) {
   let occurrences = extract_units_with_context(value);
@@ -520,7 +484,6 @@ fn check_value(
         rule_name,
         format!("Unexpected unknown unit \"{}\"", occ.unit),
       )
-      .severity(severity)
       .span(Span::new(abs_offset, occ.unit_byte_len)),
     );
   }
@@ -532,7 +495,6 @@ fn check_at_rule_params(
   opts: &Options,
   params_base_offset: usize,
   rule_name: &str,
-  severity: Severity,
   diags: &mut Vec<Diagnostic>,
 ) {
   let features = extract_media_features(params);
@@ -542,27 +504,11 @@ fn check_at_rule_params(
       || feature_name == "min-resolution"
       || feature_name == "max-resolution";
     let base = params_base_offset + value_byte_offset;
-    check_value(
-      feature_value,
-      opts,
-      is_resolution,
-      base,
-      rule_name,
-      severity,
-      diags,
-    );
+    check_value(feature_value, opts, is_resolution, base, rule_name, diags);
   }
 
   if features.is_empty() {
-    check_value(
-      params,
-      opts,
-      false,
-      params_base_offset,
-      rule_name,
-      severity,
-      diags,
-    );
+    check_value(params, opts, false, params_base_offset, rule_name, diags);
   }
 }
 
@@ -660,7 +606,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, configured_in, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -678,33 +624,24 @@ mod tests {
 
   #[test]
   fn reports_unknown_unit() {
-    let d = UnitNoUnknown.check(&style_with_value("10xyz"), &ctx());
+    let rule = configured(&UnitNoUnknown, None);
+    let d = rule.check(&style_with_value("10xyz"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("xyz"));
   }
 
   #[test]
   fn allows_known_units() {
-    assert!(
-      UnitNoUnknown
-        .check(&style_with_value("10px"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      UnitNoUnknown
-        .check(&style_with_value("2rem"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      UnitNoUnknown
-        .check(&style_with_value("50%"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&UnitNoUnknown, None);
+    assert!(rule.check(&style_with_value("10px"), &ctx()).is_empty());
+    assert!(rule.check(&style_with_value("2rem"), &ctx()).is_empty());
+    assert!(rule.check(&style_with_value("50%"), &ctx()).is_empty());
   }
 
   #[test]
   fn does_not_extract_unit_from_function_names() {
-    let d = UnitNoUnknown.check(&style_with_value("scale3d(1.1, 1.1, 1.1)"), &ctx());
+    let rule = configured(&UnitNoUnknown, None);
+    let d = rule.check(&style_with_value("scale3d(1.1, 1.1, 1.1)"), &ctx());
     assert!(d.is_empty());
   }
 
@@ -746,6 +683,37 @@ mod tests {
       unit_names.contains(&"xl"),
       "should extract 'xl' when not followed by colon; got: {:?}",
       unit_names
+    );
+  }
+
+  #[test]
+  fn units_newer_than_the_projects_stylelint_are_unknown() {
+    let older = LintEnv {
+      stylelint_version: Some((14, 16, 1)),
+    };
+    let node = style_with_value("100dvh");
+    assert!(
+      configured(&UnitNoUnknown, None)
+        .check(&node, &ctx())
+        .is_empty()
+    );
+    let d = configured_in(&UnitNoUnknown, None, older).check(&node, &ctx());
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].message, "Unexpected unknown unit \"dvh\"");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreUnits": ["/^my-/", "x"], "ignoreFunctions": "image-set" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreUnits": [true] }])),
+      ["Invalid value \"true\" for option \"ignoreUnits\" of rule \"unit-no-unknown\""]
     );
   }
 }

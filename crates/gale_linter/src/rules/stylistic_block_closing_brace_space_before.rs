@@ -1,29 +1,55 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space before the closing brace of blocks.
-///
-/// Equivalent to `@stylistic/block-closing-brace-space-before`.
-pub struct StylisticBlockClosingBraceSpaceBefore;
+const NAME: &str = "@stylistic/block-closing-brace-space-before";
 
-impl Rule for StylisticBlockClosingBraceSpaceBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-closing-brace-space-before"
+declare_rule! {
+  /// Require or disallow a space before the closing brace of blocks.
+  ///
+  /// Equivalent to `@stylistic/block-closing-brace-space-before`.
+  pub struct StylisticBlockClosingBraceSpaceBefore => StylisticBlockClosingBraceSpaceBeforeCheck {
+    name: NAME,
+    description: "Require or disallow a space before the closing brace of blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space before the closing brace of blocks"
+/// `@stylistic/block-closing-brace-space-before` as configured.
+pub struct StylisticBlockClosingBraceSpaceBeforeCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticBlockClosingBraceSpaceBeforeCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"`,
+  /// `"never-single-line"`, `"always-multi-line"` or `"never-multi-line"`.  Gale
+  /// reads no option as `"always-single-line"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&[
+      "always",
+      "never",
+      "always-single-line",
+      "never-single-line",
+      "always-multi-line",
+      "never-multi-line",
+    ]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-single-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockClosingBraceSpaceBeforeCheck {
   /// Flags a closing brace whose preceding space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always-single-line");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -116,11 +142,7 @@ impl Rule for StylisticBlockClosingBraceSpaceBefore {
               continue;
             }
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(brace_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(brace_pos, 1)));
         }
       }
 
@@ -155,11 +177,11 @@ fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticBlockClosingBraceSpaceBefore;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticBlockClosingBraceSpaceBefore, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -218,5 +240,16 @@ mod tests {
   fn never_rejects_space() {
     let d = check("a { color: red; }", "never");
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/block-closing-brace-space-before\""
+      ]
+    );
   }
 }

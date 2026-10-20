@@ -1,34 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before the closing brace of blocks.
-///
-/// Equivalent to `@stylistic/block-closing-brace-empty-line-before`.
-///
-/// This rule checks whether there is an empty line (blank line) immediately
-/// before the closing `}` of a block.  With the `"never"` option, any empty
-/// line is rejected.  With `"always-multi-line"`, multi-line blocks must have
-/// an empty line before `}`.
-pub struct StylisticBlockClosingBraceEmptyLineBefore;
+const NAME: &str = "@stylistic/block-closing-brace-empty-line-before";
 
-impl Rule for StylisticBlockClosingBraceEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/block-closing-brace-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before the closing brace of blocks.
+  ///
+  /// Equivalent to `@stylistic/block-closing-brace-empty-line-before`.
+  ///
+  /// This rule checks whether there is an empty line (blank line) immediately
+  /// before the closing `}` of a block.  With the `"never"` option, any empty
+  /// line is rejected.  With `"always-multi-line"`, multi-line blocks must have
+  /// an empty line before `}`.
+  pub struct StylisticBlockClosingBraceEmptyLineBefore => StylisticBlockClosingBraceEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before the closing brace of blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before the closing brace of blocks"
+/// `@stylistic/block-closing-brace-empty-line-before` as configured.
+pub struct StylisticBlockClosingBraceEmptyLineBeforeCheck {
+  /// The primary option: `"always-multi-line"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticBlockClosingBraceEmptyLineBeforeCheck {
+  /// The plugin's options: `"always-multi-line"` or `"never"`.  Gale reads no
+  /// option as `"never"`.  `except` is accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always-multi-line", "never"]);
+    options.keywords("except", &["after-closing-brace", "last-nested"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticBlockClosingBraceEmptyLineBeforeCheck {
   /// Flags a closing brace whose preceding blank line does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -121,11 +139,7 @@ impl Rule for StylisticBlockClosingBraceEmptyLineBefore {
               continue;
             }
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(brace_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(brace_pos, 1)));
         }
       }
 
@@ -230,11 +244,11 @@ fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticBlockClosingBraceEmptyLineBefore;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticBlockClosingBraceEmptyLineBefore, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -288,5 +302,25 @@ mod tests {
   fn always_multi_line_accepts_single_line() {
     let d = check("a { color: red; }", "always-multi-line");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(["always-multi-line", { "except": ["after-closing-brace", "last-nested"] }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Invalid option value \"always\" for rule \"@stylistic/block-closing-brace-empty-line-before\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["never", { "except": ["first-nested"] }])
+      ),
+      [
+        "Invalid value \"first-nested\" for option \"except\" of rule \"@stylistic/block-closing-brace-empty-line-before\""
+      ]
+    );
   }
 }

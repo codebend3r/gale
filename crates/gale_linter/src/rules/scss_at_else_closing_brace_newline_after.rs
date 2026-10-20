@@ -1,29 +1,48 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline after the closing brace of `@else` statements.
-///
-/// Default: `"always-last-in-chain"` — require a newline after the closing
-/// brace of the last `@else` in a chain.
-///
-/// Equivalent to `scss/at-else-closing-brace-newline-after`.
-pub struct ScssAtElseClosingBraceNewlineAfter;
+const NAME: &str = "scss/at-else-closing-brace-newline-after";
 
-impl Rule for ScssAtElseClosingBraceNewlineAfter {
-  fn name(&self) -> &'static str {
-    "scss/at-else-closing-brace-newline-after"
+declare_rule! {
+  /// Require a newline after the closing brace of `@else` statements.
+  ///
+  /// Default: `"always-last-in-chain"` — require a newline after the closing
+  /// brace of the last `@else` in a chain.
+  ///
+  /// Equivalent to `scss/at-else-closing-brace-newline-after`.
+  pub struct ScssAtElseClosingBraceNewlineAfter => ScssAtElseClosingBraceNewlineAfterCheck {
+    name: NAME,
+    description: "Require or disallow a newline after the closing brace of @else statements",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a newline after the closing brace of @else statements"
+/// `scss/at-else-closing-brace-newline-after` as configured.
+pub struct ScssAtElseClosingBraceNewlineAfterCheck {
+  /// The primary option; `"always-last-in-chain"` when none is given.
+  option: &'static str,
+}
+
+impl ScssAtElseClosingBraceNewlineAfterCheck {
+  /// stylelint-scss's options: `"always-last-in-chain"`, then a secondary
+  /// object whose only key is `disableFix` (which every rule takes), so any
+  /// other key is unknown.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always-last-in-chain"]);
+    options.flag("disableFix");
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-last-in-chain"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
   /// Scans the SCSS source for `@else` chains and flags a closing brace whose
   /// following newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -31,7 +50,7 @@ impl Rule for ScssAtElseClosingBraceNewlineAfter {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("always-last-in-chain");
+    let option = self.option;
     let source = ctx.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -64,10 +83,9 @@ impl Rule for ScssAtElseClosingBraceNewlineAfter {
             {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   "Expected newline after closing brace of @else".to_string(),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(close_brace, 1)),
               );
             }
@@ -117,29 +135,46 @@ fn find_closing_brace(source: &str, start: usize) -> Option<usize> {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_newline_after_else() {
+    let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $c { a: b; } @else { c: d; }\n.foo {}");
-    let d = ScssAtElseClosingBraceNewlineAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_eof_after_else() {
+    let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $c { a: b; } @else { c: d; }");
-    let d = ScssAtElseClosingBraceNewlineAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = ctx_with_source("@else { } .foo {}");
-    assert!(
-      ScssAtElseClosingBraceNewlineAfter
-        .check_root(&[], &ctx)
-        .is_empty()
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint_scss() {
+    use crate::testing::invalid_options;
+    let valid = serde_json::json!(["always-last-in-chain", { "disableFix": true }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"scss/at-else-closing-brace-newline-after\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always-last-in-chain", { "ignore": ["x"] }])
+      ),
+      ["Invalid option name \"ignore\" for rule \"scss/at-else-closing-brace-newline-after\""]
     );
   }
 }

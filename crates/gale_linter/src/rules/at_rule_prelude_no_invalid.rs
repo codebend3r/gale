@@ -1,39 +1,57 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow invalid preludes (params) for at-rules.
-///
-/// Checks for clearly invalid prelude values on common at-rules:
-/// - `@media` with empty prelude
-/// - `@import` with non-string/non-url prelude
-/// - `@keyframes` with empty name
-/// - `@layer` with invalid layer name
-/// - `@supports` with empty condition
-///
-/// Equivalent to Stylelint's `at-rule-prelude-no-invalid` rule.
-pub struct AtRulePreludeNoInvalid;
+const NAME: &str = "at-rule-prelude-no-invalid";
 
-impl Rule for AtRulePreludeNoInvalid {
-  fn name(&self) -> &'static str {
-    "at-rule-prelude-no-invalid"
+declare_rule! {
+  /// Disallow invalid preludes (params) for at-rules.
+  ///
+  /// Checks for clearly invalid prelude values on common at-rules:
+  /// - `@media` with empty prelude
+  /// - `@import` with non-string/non-url prelude
+  /// - `@keyframes` with empty name
+  /// - `@layer` with invalid layer name
+  /// - `@supports` with empty condition
+  ///
+  /// Equivalent to Stylelint's `at-rule-prelude-no-invalid` rule.
+  pub struct AtRulePreludeNoInvalid => AtRulePreludeNoInvalidCheck {
+    name: NAME,
+    description: "Disallow invalid preludes for at-rules",
+    default_severity: Error,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow invalid preludes for at-rules"
+/// `at-rule-prelude-no-invalid` as configured.
+pub struct AtRulePreludeNoInvalidCheck {
+  /// `ignoreAtRules`: at-rules whose prelude is not checked.
+  ignore_at_rules: Matchers,
+}
+
+impl AtRulePreludeNoInvalidCheck {
+  /// Stylelint's options: `true`, then `ignoreAtRules`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_at_rules = options.matchers("ignoreAtRules");
+    options.finish()?;
+    Ok(Self { ignore_at_rules })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for AtRulePreludeNoInvalidCheck {
   /// Validates the prelude of the at-rules this rule knows about — empty or
   /// unbalanced `@media`, malformed `@import`, unnamed `@keyframes`, and so on.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::AtRule(at) = node else {
       return vec![];
     };
+    if self.ignore_at_rules.matches(&at.name) {
+      return vec![];
+    }
 
     let name = at.name.to_ascii_lowercase();
     let params = at.params.trim();
@@ -42,8 +60,7 @@ impl Rule for AtRulePreludeNoInvalid {
       "media" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(self.name(), "Unexpected empty prelude for @media")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected empty prelude for @media")
               .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
@@ -56,12 +73,8 @@ impl Rule for AtRulePreludeNoInvalid {
               depth -= 1;
               if depth < 0 {
                 return vec![
-                  Diagnostic::new(
-                    self.name(),
-                    "Unexpected unbalanced parentheses in @media prelude",
-                  )
-                  .severity(self.default_severity())
-                  .span(Span::new(at.span.offset, at.span.length)),
+                  Diagnostic::new(NAME, "Unexpected unbalanced parentheses in @media prelude")
+                    .span(Span::new(at.span.offset, at.span.length)),
                 ];
               }
             }
@@ -70,23 +83,15 @@ impl Rule for AtRulePreludeNoInvalid {
         }
         if depth != 0 {
           return vec![
-            Diagnostic::new(
-              self.name(),
-              "Unexpected unbalanced parentheses in @media prelude",
-            )
-            .severity(self.default_severity())
-            .span(Span::new(at.span.offset, at.span.length)),
+            Diagnostic::new(NAME, "Unexpected unbalanced parentheses in @media prelude")
+              .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
         // Check for empty parentheses
         if params.contains("()") {
           return vec![
-            Diagnostic::new(
-              self.name(),
-              "Unexpected empty parentheses in @media prelude",
-            )
-            .severity(self.default_severity())
-            .span(Span::new(at.span.offset, at.span.length)),
+            Diagnostic::new(NAME, "Unexpected empty parentheses in @media prelude")
+              .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
         vec![]
@@ -94,8 +99,7 @@ impl Rule for AtRulePreludeNoInvalid {
       "import" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(self.name(), "Unexpected empty prelude for @import")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected empty prelude for @import")
               .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
@@ -110,8 +114,7 @@ impl Rule for AtRulePreludeNoInvalid {
       "keyframes" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(self.name(), "Unexpected empty prelude for @keyframes")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected empty prelude for @keyframes")
               .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
@@ -128,8 +131,7 @@ impl Rule for AtRulePreludeNoInvalid {
             let layer_name = layer_name.trim();
             if layer_name.is_empty() {
               return vec![
-                Diagnostic::new(self.name(), "Unexpected empty layer name in @layer prelude")
-                  .severity(self.default_severity())
+                Diagnostic::new(NAME, "Unexpected empty layer name in @layer prelude")
                   .span(Span::new(at.span.offset, at.span.length)),
               ];
             }
@@ -140,8 +142,7 @@ impl Rule for AtRulePreludeNoInvalid {
       "supports" => {
         if params.is_empty() {
           return vec![
-            Diagnostic::new(self.name(), "Unexpected empty prelude for @supports")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected empty prelude for @supports")
               .span(Span::new(at.span.offset, at.span.length)),
           ];
         }
@@ -157,7 +158,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn at(name: &str, params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -170,20 +171,22 @@ mod tests {
 
   #[test]
   fn reports_empty_media_prelude() {
-    let d = AtRulePreludeNoInvalid.check(&at("media", ""), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("media", ""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty prelude"));
   }
 
   #[test]
   fn allows_valid_media_prelude() {
+    let rule = configured(&AtRulePreludeNoInvalid, None);
     assert!(
-      AtRulePreludeNoInvalid
+      rule
         .check(&at("media", "(min-width: 768px)"), &ctx())
         .is_empty()
     );
     assert!(
-      AtRulePreludeNoInvalid
+      rule
         .check(&at("media", "screen and (color)"), &ctx())
         .is_empty()
     );
@@ -191,44 +194,41 @@ mod tests {
 
   #[test]
   fn reports_unbalanced_parens_in_media() {
-    let d = AtRulePreludeNoInvalid.check(&at("media", "(min-width: 768px"), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("media", "(min-width: 768px"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("unbalanced"));
   }
 
   #[test]
   fn reports_empty_parens_in_media() {
-    let d = AtRulePreludeNoInvalid.check(&at("media", "screen and ()"), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("media", "screen and ()"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty parentheses"));
   }
 
   #[test]
   fn allows_import_with_bare_url() {
+    let rule = configured(&AtRulePreludeNoInvalid, None);
     // The parser (lightningcss/raffia) strips quotes from @import URLs,
     // so a non-empty params value from a parsed @import is always valid.
-    let d = AtRulePreludeNoInvalid.check(&at("import", "foo.css"), &ctx());
+    let d = rule.check(&at("import", "foo.css"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_import_with_string() {
-    assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("import", "\"foo.css\""), &ctx())
-        .is_empty()
-    );
-    assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("import", "'foo.css'"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    assert!(rule.check(&at("import", "\"foo.css\""), &ctx()).is_empty());
+    assert!(rule.check(&at("import", "'foo.css'"), &ctx()).is_empty());
   }
 
   #[test]
   fn allows_import_with_url() {
+    let rule = configured(&AtRulePreludeNoInvalid, None);
     assert!(
-      AtRulePreludeNoInvalid
+      rule
         .check(&at("import", "url(\"foo.css\")"), &ctx())
         .is_empty()
     );
@@ -236,38 +236,39 @@ mod tests {
 
   #[test]
   fn reports_empty_import_prelude() {
-    let d = AtRulePreludeNoInvalid.check(&at("import", ""), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("import", ""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty prelude"));
   }
 
   #[test]
   fn reports_empty_keyframes_name() {
-    let d = AtRulePreludeNoInvalid.check(&at("keyframes", ""), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("keyframes", ""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty prelude"));
   }
 
   #[test]
   fn allows_keyframes_with_name() {
-    assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("keyframes", "slide-in"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    assert!(rule.check(&at("keyframes", "slide-in"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_empty_supports_prelude() {
-    let d = AtRulePreludeNoInvalid.check(&at("supports", ""), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("supports", ""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty prelude"));
   }
 
   #[test]
   fn allows_valid_supports_prelude() {
+    let rule = configured(&AtRulePreludeNoInvalid, None);
     assert!(
-      AtRulePreludeNoInvalid
+      rule
         .check(&at("supports", "(display: flex)"), &ctx())
         .is_empty()
     );
@@ -275,35 +276,56 @@ mod tests {
 
   #[test]
   fn allows_anonymous_layer() {
-    assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("layer", ""), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    assert!(rule.check(&at("layer", ""), &ctx()).is_empty());
   }
 
   #[test]
   fn allows_named_layer() {
-    assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("layer", "utilities"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    assert!(rule.check(&at("layer", "utilities"), &ctx()).is_empty());
   }
 
   #[test]
   fn reports_empty_layer_name_in_list() {
-    let d = AtRulePreludeNoInvalid.check(&at("layer", "base, , utilities"), &ctx());
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    let d = rule.check(&at("layer", "base, , utilities"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty layer name"));
   }
 
   #[test]
   fn ignores_unknown_at_rules() {
+    let rule = configured(&AtRulePreludeNoInvalid, None);
+    assert!(rule.check(&at("custom-rule", ""), &ctx()).is_empty());
+  }
+
+  #[test]
+  fn ignore_at_rules_skips_listed_names() {
+    let rule = configured(
+      &AtRulePreludeNoInvalid,
+      serde_json::json!([true, { "ignoreAtRules": ["media"] }]),
+    );
+    assert!(rule.check(&at("media", ""), &ctx()).is_empty());
+    assert_eq!(rule.check(&at("keyframes", ""), &ctx()).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
     assert!(
-      AtRulePreludeNoInvalid
-        .check(&at("custom-rule", ""), &ctx())
-        .is_empty()
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreAtRules": ["/^x/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"at-rule-prelude-no-invalid\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["media"] }])),
+      ["Invalid option name \"ignore\" for rule \"at-rule-prelude-no-invalid\""]
     );
   }
 }

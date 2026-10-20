@@ -1,13 +1,37 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow unmatchable An+B selectors like `:nth-child(0n+0)` or
-/// `:nth-child(-n+0)` which can never match any element.
-///
-/// Equivalent to Stylelint's `selector-anb-no-unmatchable` rule.
-pub struct SelectorAnbNoUnmatchable;
+const NAME: &str = "selector-anb-no-unmatchable";
+
+declare_rule! {
+  /// Disallow unmatchable An+B selectors like `:nth-child(0n+0)` or
+  /// `:nth-child(-n+0)` which can never match any element.
+  ///
+  /// Equivalent to Stylelint's `selector-anb-no-unmatchable` rule.
+  pub struct SelectorAnbNoUnmatchable => SelectorAnbNoUnmatchableCheck {
+    name: NAME,
+    description: "Disallow unmatchable An+B selectors",
+    default_severity: Error,
+  }
+}
+
+/// `selector-anb-no-unmatchable`, which takes no options.
+pub struct SelectorAnbNoUnmatchableCheck;
+
+impl SelectorAnbNoUnmatchableCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The pseudo-class functions that take An+B notation.
 const ANB_PSEUDOS: &[&str] = &[
@@ -136,19 +160,7 @@ fn extract_anb_expressions(selector: &str) -> Vec<String> {
   exprs
 }
 
-impl Rule for SelectorAnbNoUnmatchable {
-  fn name(&self) -> &'static str {
-    "selector-anb-no-unmatchable"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unmatchable An+B selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for SelectorAnbNoUnmatchableCheck {
   /// Flags An+B expressions such as `:nth-child(0n+0)` that can never match.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -160,10 +172,9 @@ impl Rule for SelectorAnbNoUnmatchable {
       if is_unmatchable(&expr) {
         diags.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected unmatchable An+B selector \"{}\"", expr.trim()),
           )
-          .severity(self.default_severity())
           .span(Span::new(rule.span.offset, rule.span.length)),
         );
       }
@@ -177,7 +188,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -195,27 +206,31 @@ mod tests {
 
   #[test]
   fn reports_zero() {
-    let d = SelectorAnbNoUnmatchable.check(&style_with_selector("li:nth-child(0)"), &ctx());
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
+    let d = rule.check(&style_with_selector("li:nth-child(0)"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0"));
   }
 
   #[test]
   fn reports_0n_plus_0() {
-    let d = SelectorAnbNoUnmatchable.check(&style_with_selector("li:nth-child(0n+0)"), &ctx());
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
+    let d = rule.check(&style_with_selector("li:nth-child(0n+0)"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_negative_n_plus_0() {
-    let d = SelectorAnbNoUnmatchable.check(&style_with_selector("li:nth-child(-n+0)"), &ctx());
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
+    let d = rule.check(&style_with_selector("li:nth-child(-n+0)"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_odd() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(odd)"), &ctx())
         .is_empty()
     );
@@ -223,8 +238,9 @@ mod tests {
 
   #[test]
   fn allows_even() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(even)"), &ctx())
         .is_empty()
     );
@@ -232,8 +248,9 @@ mod tests {
 
   #[test]
   fn allows_2n_plus_1() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(2n+1)"), &ctx())
         .is_empty()
     );
@@ -241,8 +258,9 @@ mod tests {
 
   #[test]
   fn allows_n_plus_3() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(n+3)"), &ctx())
         .is_empty()
     );
@@ -250,9 +268,10 @@ mod tests {
 
   #[test]
   fn allows_negative_n_plus_5() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     // -n+5 matches elements 1 through 5
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(-n+5)"), &ctx())
         .is_empty()
     );
@@ -260,8 +279,9 @@ mod tests {
 
   #[test]
   fn allows_positive_integer() {
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
-      SelectorAnbNoUnmatchable
+      rule
         .check(&style_with_selector("li:nth-child(3)"), &ctx())
         .is_empty()
     );
@@ -269,13 +289,26 @@ mod tests {
 
   #[test]
   fn works_with_nth_of_type() {
-    let d = SelectorAnbNoUnmatchable.check(&style_with_selector("li:nth-of-type(0)"), &ctx());
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
+    let d = rule.check(&style_with_selector("li:nth-of-type(0)"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn works_with_nth_last_child() {
-    let d = SelectorAnbNoUnmatchable.check(&style_with_selector("li:nth-last-child(0)"), &ctx());
+    let rule = configured(&SelectorAnbNoUnmatchable, None);
+    let d = rule.check(&style_with_selector("li:nth-last-child(0)"), &ctx());
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"selector-anb-no-unmatchable\""]
+    );
   }
 }

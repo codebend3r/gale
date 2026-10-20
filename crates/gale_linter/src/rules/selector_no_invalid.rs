@@ -1,17 +1,41 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::{
   Pseudo, PseudoArg, Selector, SelectorList, SelectorNode, any_pseudo, is_standard_syntax_selector,
   parse_selector_list, walk_pseudos,
 };
 
-/// Disallow invalid selectors.
-///
-/// Equivalent to Stylelint's `selector-no-invalid` rule. Selectors defined in
-/// the CSS specifications, up to and including Editor's Drafts, are valid.
-pub struct SelectorNoInvalid;
+const NAME: &str = "selector-no-invalid";
+
+declare_rule! {
+  /// Disallow invalid selectors.
+  ///
+  /// Equivalent to Stylelint's `selector-no-invalid` rule. Selectors defined in
+  /// the CSS specifications, up to and including Editor's Drafts, are valid.
+  pub struct SelectorNoInvalid => SelectorNoInvalidCheck {
+    name: NAME,
+    description: "Disallow invalid selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-no-invalid`, which takes no options.
+pub struct SelectorNoInvalidCheck;
+
+impl SelectorNoInvalidCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Pseudo-selectors whose arguments are unforgiving, excluding the deprecated
 /// `:host-context()`; see
@@ -41,19 +65,7 @@ const SUB_PSEUDO_ELEMENTS: &[&str] = &["marker", "scroll-marker"];
 /// The identifiers `:dir()` accepts.
 const DIR_IDENTIFIERS: &[&str] = &["ltr", "rtl"];
 
-impl Rule for SelectorNoInvalid {
-  fn name(&self) -> &'static str {
-    "selector-no-invalid"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow invalid selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNoInvalidCheck {
   /// Checks every style rule prelude, reporting selectors that fail to parse
   /// or that break a structural rule of the selector grammar.
   ///
@@ -69,7 +81,7 @@ impl Rule for SelectorNoInvalid {
   }
 }
 
-impl SelectorNoInvalid {
+impl SelectorNoInvalidCheck {
   fn check_prelude(&self, selector: &str, base: usize, diagnostics: &mut Vec<Diagnostic>) {
     if !is_standard_syntax_selector(selector) {
       return;
@@ -101,12 +113,7 @@ impl SelectorNoInvalid {
   }
 
   fn diagnostic(&self, selector: &str, reason: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(
-      self.name(),
-      format!("Invalid selector \"{selector}\", {reason}"),
-    )
-    .severity(self.default_severity())
-    .span(span)
+    Diagnostic::new(NAME, format!("Invalid selector \"{selector}\", {reason}")).span(span)
   }
 }
 
@@ -245,6 +252,7 @@ fn is_valid_dir_argument(arg: &PseudoArg) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
   use gale_css_parser::{Syntax, parse};
   use gale_diagnostics::SourceLineIndex;
 
@@ -256,11 +264,11 @@ mod tests {
       file_path: "t.css",
       source: css,
       syntax,
-      options: Some(&serde_json::Value::Bool(true)),
+      options: None,
       cache: None,
     };
     let index = SourceLineIndex::build(css);
-    SelectorNoInvalid
+    configured(&SelectorNoInvalid, None)
       .check_root(&parsed.nodes, &ctx)
       .into_iter()
       .map(|d| {
@@ -696,6 +704,16 @@ mod tests {
           23
         ),
       ]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The rule takes no options but `true`, and ignores secondary ones.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "severity": "error" }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"selector-no-invalid\""]
     );
   }
 }

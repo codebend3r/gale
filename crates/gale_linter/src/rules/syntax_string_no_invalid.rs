@@ -1,16 +1,40 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow invalid syntax strings in `@property` descriptors.
-///
-/// The `syntax` descriptor in a `@property` rule must be a quoted string
-/// containing a valid CSS syntax definition. This rule checks that the value
-/// is quoted, non-empty, and uses only known CSS type names.
-///
-/// Equivalent to Stylelint's `syntax-string-no-invalid` rule.
-pub struct SyntaxStringNoInvalid;
+const NAME: &str = "syntax-string-no-invalid";
+
+declare_rule! {
+  /// Disallow invalid syntax strings in `@property` descriptors.
+  ///
+  /// The `syntax` descriptor in a `@property` rule must be a quoted string
+  /// containing a valid CSS syntax definition. This rule checks that the value
+  /// is quoted, non-empty, and uses only known CSS type names.
+  ///
+  /// Equivalent to Stylelint's `syntax-string-no-invalid` rule.
+  pub struct SyntaxStringNoInvalid => SyntaxStringNoInvalidCheck {
+    name: NAME,
+    description: "Disallow invalid syntax strings in @property descriptors",
+    default_severity: Error,
+  }
+}
+
+/// `syntax-string-no-invalid`, which takes no options.
+pub struct SyntaxStringNoInvalidCheck;
+
+impl SyntaxStringNoInvalidCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Known CSS syntax component types that can appear inside `< >`.
 const KNOWN_SYNTAX_TYPES: &[&str] = &[
@@ -74,19 +98,7 @@ fn validate_syntax_string(value: &str) -> Option<String> {
   None
 }
 
-impl Rule for SyntaxStringNoInvalid {
-  fn name(&self) -> &'static str {
-    "syntax-string-no-invalid"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow invalid syntax strings in @property descriptors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for SyntaxStringNoInvalidCheck {
   /// Flags a `@property` `syntax` descriptor that is unquoted, empty, or names a
   /// CSS type this rule does not know.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -117,15 +129,13 @@ impl Rule for SyntaxStringNoInvalid {
         let inner = &value[1..value.len() - 1];
         if let Some(reason) = validate_syntax_string(inner) {
           diags.push(
-            Diagnostic::new(self.name(), format!("Invalid syntax string: {reason}"))
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, format!("Invalid syntax string: {reason}"))
               .span(Span::new(decl.span.offset, decl.span.length)),
           );
         }
       } else {
         diags.push(
-          Diagnostic::new(self.name(), "Syntax string must be quoted".to_string())
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Syntax string must be quoted".to_string())
             .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -140,7 +150,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, CssNode, Declaration, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn property_rule(syntax_value: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -159,7 +169,7 @@ mod tests {
   #[test]
   fn allows_valid_length() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"<length>\""), &ctx())
         .is_empty()
     );
@@ -168,7 +178,7 @@ mod tests {
   #[test]
   fn allows_valid_color() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"<color>\""), &ctx())
         .is_empty()
     );
@@ -177,7 +187,7 @@ mod tests {
   #[test]
   fn allows_universal() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"*\""), &ctx())
         .is_empty()
     );
@@ -186,7 +196,7 @@ mod tests {
   #[test]
   fn allows_pipe_separated() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"<length> | <color>\""), &ctx())
         .is_empty()
     );
@@ -195,7 +205,7 @@ mod tests {
   #[test]
   fn allows_plus_suffix() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"<length>+\""), &ctx())
         .is_empty()
     );
@@ -204,7 +214,7 @@ mod tests {
   #[test]
   fn allows_hash_suffix() {
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"<length>#\""), &ctx())
         .is_empty()
     );
@@ -212,7 +222,7 @@ mod tests {
 
   #[test]
   fn reports_unknown_type() {
-    let d = SyntaxStringNoInvalid.check(&property_rule("\"<foo>\""), &ctx());
+    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("\"<foo>\""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unknown syntax type"));
     assert!(d[0].message.contains("<foo>"));
@@ -220,14 +230,14 @@ mod tests {
 
   #[test]
   fn reports_unquoted_value() {
-    let d = SyntaxStringNoInvalid.check(&property_rule("<length>"), &ctx());
+    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("<length>"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("must be quoted"));
   }
 
   #[test]
   fn reports_empty_string() {
-    let d = SyntaxStringNoInvalid.check(&property_rule("\"\""), &ctx());
+    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("\"\""), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Empty syntax string"));
   }
@@ -245,16 +255,29 @@ mod tests {
         important: false,
       })],
     });
-    assert!(SyntaxStringNoInvalid.check(&node, &ctx()).is_empty());
+    assert!(
+      configured(&SyntaxStringNoInvalid, None)
+        .check(&node, &ctx())
+        .is_empty()
+    );
   }
 
   #[test]
   fn allows_keyword_idents() {
     // Plain keywords like "auto" are valid in syntax descriptors
     assert!(
-      SyntaxStringNoInvalid
+      configured(&SyntaxStringNoInvalid, None)
         .check(&property_rule("\"auto\""), &ctx())
         .is_empty()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"syntax-string-no-invalid\""]
     );
   }
 }

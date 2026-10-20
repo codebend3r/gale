@@ -1,8 +1,9 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::stylelint_major_version;
 
 const DEFAULT_PATTERN: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
@@ -98,26 +99,55 @@ fn extract_var_first_token(value: &str) -> Option<(&str, usize)> {
   Some((&value[token_start..pos], token_start))
 }
 
-/// Enforce a naming pattern for custom properties (CSS variables).
-///
-/// Equivalent to Stylelint's `custom-property-pattern` rule.
-/// Accepts a regex string as the primary option.
-/// Default pattern: kebab-case (`^([a-z][a-z0-9]*)(-[a-z0-9]+)*$`).
-pub struct CustomPropertyPattern;
+const NAME: &str = "custom-property-pattern";
 
-impl Rule for CustomPropertyPattern {
-  fn name(&self) -> &'static str {
-    "custom-property-pattern"
+declare_rule! {
+  /// Enforce a naming pattern for custom properties (CSS variables).
+  ///
+  /// Equivalent to Stylelint's `custom-property-pattern` rule.
+  /// Accepts a regex string as the primary option.
+  /// Default pattern: kebab-case (`^([a-z][a-z0-9]*)(-[a-z0-9]+)*$`).
+  pub struct CustomPropertyPattern => CustomPropertyPatternCheck {
+    name: NAME,
+    description: "Specify a pattern for custom properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for custom properties"
+/// `custom-property-pattern` as configured.
+pub struct CustomPropertyPatternCheck {
+  /// The pattern every custom property name must match.
+  pattern: Pattern,
+  /// The `message` every rule accepts, which this rule fills in with the
+  /// property's name itself.
+  custom_message: Option<String>,
+}
+
+impl CustomPropertyPatternCheck {
+  /// Stylelint's options: a regular expression, as a string or `/regex/`.
+  /// Gale reads no option as kebab-case, and a pattern that does not
+  /// compile is an invalid option.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    options.finish()?;
+    let pattern = match pattern {
+      Some(pattern) => pattern,
+      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
+    };
+    let custom_message = setting
+      .secondary()
+      .and_then(|secondary| secondary.get("message"))
+      .and_then(|message| message.as_str())
+      .map(String::from);
+    Ok(Self {
+      pattern,
+      custom_message,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for CustomPropertyPatternCheck {
   /// Flags custom property names that do not match the configured regex,
   /// defaulting to kebab-case and honouring a custom `message`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -125,24 +155,8 @@ impl Rule for CustomPropertyPattern {
       return vec![];
     };
 
-    // Read the user-supplied regex pattern from options, or use the default kebab-case pattern.
-    // Options may be a plain string (`"^pattern$"`) or an array where the
-    // first element is the pattern and the second is a secondary options
-    // object (e.g. `["^pattern$", { "message": "..." }]`).
-    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
-
-    // Check for custom message in secondary options
-    let custom_message = ctx
-      .secondary_options()
-      .and_then(|v| v.get("message"))
-      .and_then(|v| v.as_str());
+    let pattern_str = self.pattern.source.as_str();
+    let custom_message = self.custom_message.as_deref();
 
     let is_scss = matches!(
       ctx.syntax,
@@ -159,12 +173,11 @@ impl Rule for CustomPropertyPattern {
         // Mirrors Stylelint's isStandardSyntaxProperty check.
         if is_scss && has_complete_scss_interpolation(name) {
           // skip — non-standard syntax
-        } else if !pattern::is_match(&re, name) {
+        } else if !self.pattern.is_match(name) {
           let full_name = format!("--{name}");
           let message = build_message(&full_name, custom_message, pattern_str, stylelint_major);
           diags.push(
-            Diagnostic::new(self.name(), message)
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, message)
               .span(Span::new(decl.span.offset, decl.span.length))
               .message_args([full_name.as_str(), pattern_str]),
           );
@@ -180,7 +193,7 @@ impl Rule for CustomPropertyPattern {
             if let Some(name) = prop_name.strip_prefix("--") {
               // Same SCSS interpolation skip as above
               let skip = is_scss && has_complete_scss_interpolation(name);
-              if !skip && !pattern::is_match(&re, name) {
+              if !skip && !self.pattern.is_match(name) {
                 // Compute absolute byte offset of the token in the source.
                 let decl_start = decl.span.offset;
                 let decl_end = (decl.span.offset + decl.span.length).min(ctx.source.len());
@@ -191,8 +204,7 @@ impl Rule for CustomPropertyPattern {
                 let message =
                   build_message(prop_name, custom_message, pattern_str, stylelint_major);
                 diags.push(
-                  Diagnostic::new(self.name(), message)
-                    .severity(self.default_severity())
+                  Diagnostic::new(NAME, message)
                     .span(Span::new(token_abs_offset, prop_name.len()))
                     .message_args([prop_name, pattern_str]),
                 );
@@ -211,7 +223,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn style_with_property(prop: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -229,43 +241,48 @@ mod tests {
 
   #[test]
   fn reports_non_kebab_custom_property() {
-    let d = CustomPropertyPattern.check(&style_with_property("--myColor"), &ctx());
+    let rule = configured(&CustomPropertyPattern, None);
+    let d = rule.check(&style_with_property("--myColor"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myColor"));
   }
 
   #[test]
   fn allows_kebab_case_custom_property() {
-    let d = CustomPropertyPattern.check(&style_with_property("--my-color"), &ctx());
+    let rule = configured(&CustomPropertyPattern, None);
+    let d = rule.check(&style_with_property("--my-color"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_regular_properties() {
-    let d = CustomPropertyPattern.check(&style_with_property("color"), &ctx());
+    let rule = configured(&CustomPropertyPattern, None);
+    let d = rule.check(&style_with_property("color"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn custom_pattern() {
     let opts = serde_json::json!("^pf-(v[56]|t-)-(color|global|chart|[lcud])-.+$");
+    let rule = configured(&CustomPropertyPattern, opts.clone());
     let c = ctx_with_options(&opts);
     // Should pass: matches the custom pattern
     assert!(
-      CustomPropertyPattern
+      rule
         .check(&style_with_property("--pf-v5-color-primary"), &c)
         .is_empty()
     );
     // Should fail: doesn't match the custom pattern
-    let d = CustomPropertyPattern.check(&style_with_property("--my-color"), &c);
+    let d = rule.check(&style_with_property("--my-color"), &c);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn custom_pattern_in_message() {
     let opts = serde_json::json!("^pf-");
+    let rule = configured(&CustomPropertyPattern, opts.clone());
     let c = ctx_with_options(&opts);
-    let d = CustomPropertyPattern.check(&style_with_property("--my-color"), &c);
+    let d = rule.check(&style_with_property("--my-color"), &c);
     assert!(d[0].message.contains("^pf-"));
   }
 
@@ -273,16 +290,34 @@ mod tests {
   fn array_format_options_with_secondary() {
     // Config like: ["^sds|slds-c|kx-...", { "message": "..." }]
     let opts = serde_json::json!(["^sds|slds-c|kx-([a-z][a-z0-9]*)(-[a-z0-9]+)*$", { "message": "Custom msg" }]);
+    let rule = configured(&CustomPropertyPattern, opts.clone());
     let c = ctx_with_options(&opts);
     // _slds-c-... should match via the `slds-c` alternative
     assert!(
-      CustomPropertyPattern
+      rule
         .check(&style_with_property("--_slds-c-accordion-spacing"), &c)
         .is_empty(),
       "Should not flag --_slds-c-... with the SLDS pattern"
     );
     // my-color should be flagged (doesn't match the pattern)
-    let d = CustomPropertyPattern.check(&style_with_property("--my-color"), &c);
+    let d = rule.check(&style_with_property("--my-color"), &c);
     assert_eq!(d.len(), 1);
+    assert_eq!(d[0].message, "Custom msg");
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The rule takes no secondary options of its own, so Stylelint does not
+    // look at them.
+    assert!(invalid_options(NAME, serde_json::json!(["^a", { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["a", "b"])),
+      Vec::<String>::new(),
+      "the second entry is the secondary options"
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"custom-property-pattern\""]
+    );
   }
 }

@@ -1,31 +1,43 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow unspaced operators in SCSS expressions.
-///
-/// Checks `+`, `-`, `*`, `/`, `%` operators and comparison operators
-/// (`==`, `!=`, `<`, `>`, `>=`, `<=`) in declaration values, variable
-/// assignments, function defaults, media queries, selectors (inside
-/// interpolation), and comments (inside interpolation).
-///
-/// Equivalent to `scss/operator-no-unspaced`.
-pub struct ScssOperatorNoUnspaced;
+const NAME: &str = "scss/operator-no-unspaced";
 
-impl Rule for ScssOperatorNoUnspaced {
-  fn name(&self) -> &'static str {
-    "scss/operator-no-unspaced"
+declare_rule! {
+  /// Disallow unspaced operators in SCSS expressions.
+  ///
+  /// Checks `+`, `-`, `*`, `/`, `%` operators and comparison operators
+  /// (`==`, `!=`, `<`, `>`, `>=`, `<=`) in declaration values, variable
+  /// assignments, function defaults, media queries, selectors (inside
+  /// interpolation), and comments (inside interpolation).
+  ///
+  /// Equivalent to `scss/operator-no-unspaced`.
+  pub struct ScssOperatorNoUnspaced => ScssOperatorNoUnspacedCheck {
+    name: NAME,
+    description: "Disallow unspaced Sass operators",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unspaced Sass operators"
+/// `scss/operator-no-unspaced`, which takes no options.
+pub struct ScssOperatorNoUnspacedCheck;
+
+impl ScssOperatorNoUnspacedCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssOperatorNoUnspacedCheck {
   /// Checks declaration values, and interpolations inside property names, for
   /// operators missing their surrounding spaces.
   fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
@@ -43,7 +55,6 @@ impl Rule for ScssOperatorNoUnspaced {
       check_interpolations_only(
         &decl.property,
         find_prop_offset(context.source, &decl.property, decl.span.offset),
-        self,
         &mut diagnostics,
       );
       check_value(
@@ -51,7 +62,6 @@ impl Rule for ScssOperatorNoUnspaced {
         decl.span.offset,
         slash_is_sep,
         false,
-        self,
         &mut diagnostics,
       );
     }
@@ -65,8 +75,8 @@ impl Rule for ScssOperatorNoUnspaced {
       return vec![];
     }
     let mut diagnostics = Vec::new();
-    check_source_level(context.source, self, &mut diagnostics);
-    check_calc_multi_space(context.source, self, &mut diagnostics);
+    check_source_level(context.source, &mut diagnostics);
+    check_calc_multi_space(context.source, &mut diagnostics);
     diagnostics
   }
 }
@@ -122,7 +132,7 @@ fn is_shorthand_with_slash(property: &str) -> bool {
 /// Scan the full source for contexts the per-node check misses:
 /// interpolation in selectors/comments, variable declarations,
 /// function/mixin defaults, media queries, and @import url() expressions.
-fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut Vec<Diagnostic>) {
+fn check_source_level(source: &str, diags: &mut Vec<Diagnostic>) {
   let b = source.as_bytes();
   let len = b.len();
   let mut i = 0;
@@ -146,7 +156,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
       // An unterminated comment runs to the end of the file.
       let terminated = i + 1 < len;
       let ce = if terminated { i } else { len };
-      check_interpolations_only(&source[cs.min(ce)..ce], cs, rule, diags);
+      check_interpolations_only(&source[cs.min(ce)..ce], cs, diags);
       i = if terminated { i + 2 } else { len };
       continue;
     }
@@ -161,7 +171,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
         }
         if b[i] == b'#' && i + 1 < len && b[i + 1] == b'{' {
           let (inner, end) = extract_interpolation(source, i + 2);
-          check_value(inner, i + 2, false, true, rule, diags);
+          check_value(inner, i + 2, false, true, diags);
           i = end;
           continue;
         }
@@ -186,7 +196,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
         skip_ws(b, &mut i);
         let val_start = i;
         let val_end = find_stmt_end(source, i);
-        check_value_expr(&source[val_start..val_end], val_start, rule, diags);
+        check_value_expr(&source[val_start..val_end], val_start, diags);
         i = val_end;
       }
       continue;
@@ -221,7 +231,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
               skip_ws(b, &mut i);
               let ds = i;
               let de = find_param_end(source, i, depth);
-              check_value_expr(&source[ds..de], ds, rule, diags);
+              check_value_expr(&source[ds..de], ds, diags);
               i = de;
               continue;
             }
@@ -254,8 +264,8 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
         }
         let me = i;
         let mt = &source[ms..me];
-        check_interpolations_only(mt, ms, rule, diags);
-        check_media_values(mt, ms, rule, diags);
+        check_interpolations_only(mt, ms, diags);
+        check_media_values(mt, ms, diags);
         continue;
       }
       if kw == "import" {
@@ -300,7 +310,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
               .next()
               .is_some_and(|c| c.is_ascii_digit() || c == b'$')
             {
-              check_value_expr(content, us, rule, diags);
+              check_value_expr(content, us, diags);
             }
             i = j;
           }
@@ -312,7 +322,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
     // Interpolation at source level (selectors, etc.)
     if b[i] == b'#' && i + 1 < len && b[i + 1] == b'{' {
       let (inner, end) = extract_interpolation(source, i + 2);
-      check_value(inner, i + 2, false, true, rule, diags);
+      check_value(inner, i + 2, false, true, diags);
       i = end;
       continue;
     }
@@ -324,11 +334,7 @@ fn check_source_level(source: &str, rule: &ScssOperatorNoUnspaced, diags: &mut V
 /// The per-node check skips calc() content entirely, but
 /// `scss/operator-no-unspaced` should still flag multiple-space violations
 /// inside calc().
-fn check_calc_multi_space(
-  source: &str,
-  rule: &ScssOperatorNoUnspaced,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_calc_multi_space(source: &str, diags: &mut Vec<Diagnostic>) {
   let b = source.as_bytes();
   let len = b.len();
   let mut i = 0;
@@ -440,11 +446,7 @@ fn check_calc_multi_space(
               } else {
                 format!("Expected single space after \"{op}\"")
               };
-              diags.push(
-                Diagnostic::new(rule.name(), msg)
-                  .severity(rule.default_severity())
-                  .span(Span::new(k, 1)),
-              );
+              diags.push(Diagnostic::new(NAME, msg).span(Span::new(k, 1)));
             }
           }
         }
@@ -548,12 +550,7 @@ fn find_param_end(source: &str, start: usize, init_depth: i32) -> usize {
 }
 
 /// Checks the parenthesised value of each media feature in `mt`.
-fn check_media_values(
-  mt: &str,
-  base: usize,
-  rule: &ScssOperatorNoUnspaced,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_media_values(mt: &str, base: usize, diags: &mut Vec<Diagnostic>) {
   let b = mt.as_bytes();
   let len = b.len();
   let mut i = 0;
@@ -588,7 +585,7 @@ fn check_media_values(
             }
             end += 1;
           }
-          check_value_expr(&mt[vs..end], base + vs, rule, diags);
+          check_value_expr(&mt[vs..end], base + vs, diags);
           i = end;
           break;
         }
@@ -601,19 +598,14 @@ fn check_media_values(
 }
 
 /// Check only interpolation blocks inside a text for unspaced operators.
-fn check_interpolations_only(
-  text: &str,
-  base: usize,
-  rule: &ScssOperatorNoUnspaced,
-  diags: &mut Vec<Diagnostic>,
-) {
+fn check_interpolations_only(text: &str, base: usize, diags: &mut Vec<Diagnostic>) {
   let b = text.as_bytes();
   let len = b.len();
   let mut i = 0;
   while i + 1 < len {
     if b[i] == b'#' && b[i + 1] == b'{' {
       let (inner, end_rel) = extract_interpolation(text, i + 2);
-      check_value(inner, base + i + 2, false, true, rule, diags);
+      check_value(inner, base + i + 2, false, true, diags);
       i = end_rel;
     } else {
       i += 1;
@@ -630,7 +622,6 @@ fn check_value(
   base_offset: usize,
   slash_is_sep: bool,
   in_interp: bool,
-  rule: &ScssOperatorNoUnspaced,
   diags: &mut Vec<Diagnostic>,
 )
 // Default: expr_ctx = in_interp
@@ -641,19 +632,13 @@ fn check_value(
     slash_is_sep,
     in_interp,
     in_interp,
-    rule,
     diags,
   );
 }
 
 /// Checks a value known to be an expression, such as a variable assignment.
-fn check_value_expr(
-  value: &str,
-  base_offset: usize,
-  rule: &ScssOperatorNoUnspaced,
-  diags: &mut Vec<Diagnostic>,
-) {
-  check_value_inner(value, base_offset, false, false, true, rule, diags);
+fn check_value_expr(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
+  check_value_inner(value, base_offset, false, false, true, diags);
 }
 
 /// Walks `value` byte by byte and reports operators used as binary operators
@@ -664,7 +649,6 @@ fn check_value_inner(
   slash_is_sep: bool,
   in_interp: bool,
   expr_ctx: bool,
-  rule: &ScssOperatorNoUnspaced,
   diags: &mut Vec<Diagnostic>,
 ) {
   let b = value.as_bytes();
@@ -711,7 +695,7 @@ fn check_value_inner(
         }
         if b[i] == b'#' && i + 1 < len && b[i + 1] == b'{' {
           let (inner, end) = extract_interp_local(value, i + 2);
-          check_value(inner, base_offset + i + 2, false, true, rule, diags);
+          check_value(inner, base_offset + i + 2, false, true, diags);
           i = end;
           continue;
         }
@@ -726,7 +710,7 @@ fn check_value_inner(
     // SCSS interpolation: check operators INSIDE
     if ch == b'#' && i + 1 < len && b[i + 1] == b'{' {
       let (inner, end) = extract_interp_local(value, i + 2);
-      check_value(inner, base_offset + i + 2, false, true, rule, diags);
+      check_value(inner, base_offset + i + 2, false, true, diags);
       i = end;
       continue;
     }
@@ -783,7 +767,7 @@ fn check_value_inner(
       // Still check interpolation inside url()
       if b[i] == b'#' && i + 1 < len && b[i + 1] == b'{' {
         let (inner, end) = extract_interp_local(value, i + 2);
-        check_value(inner, base_offset + i + 2, false, true, rule, diags);
+        check_value(inner, base_offset + i + 2, false, true, diags);
         i = end;
         continue;
       }
@@ -802,7 +786,7 @@ fn check_value_inner(
     if ch == b'=' && i + 1 < len && b[i + 1] == b'=' {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 2 < len && is_space_or_nl(b[i + 2]));
       if !ok {
-        emit(rule, diags, base_offset + i, 2, "==");
+        emit(diags, base_offset + i, 2, "==");
       }
       i += 2;
       continue;
@@ -810,7 +794,7 @@ fn check_value_inner(
     if ch == b'!' && i + 1 < len && b[i + 1] == b'=' {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 2 < len && is_space_or_nl(b[i + 2]));
       if !ok {
-        emit(rule, diags, base_offset + i, 2, "!=");
+        emit(diags, base_offset + i, 2, "!=");
       }
       i += 2;
       continue;
@@ -818,7 +802,7 @@ fn check_value_inner(
     if ch == b'>' && i + 1 < len && b[i + 1] == b'=' {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 2 < len && is_space_or_nl(b[i + 2]));
       if !ok {
-        emit(rule, diags, base_offset + i, 2, ">=");
+        emit(diags, base_offset + i, 2, ">=");
       }
       i += 2;
       continue;
@@ -826,7 +810,7 @@ fn check_value_inner(
     if ch == b'<' && i + 1 < len && b[i + 1] == b'=' {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 2 < len && is_space_or_nl(b[i + 2]));
       if !ok {
-        emit(rule, diags, base_offset + i, 2, "<=");
+        emit(diags, base_offset + i, 2, "<=");
       }
       i += 2;
       continue;
@@ -834,7 +818,7 @@ fn check_value_inner(
     if ch == b'<' && is_comparison_ctx(b, i) {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 1 < len && is_space_or_nl(b[i + 1]));
       if !ok {
-        emit(rule, diags, base_offset + i, 1, "<");
+        emit(diags, base_offset + i, 1, "<");
       }
       i += 1;
       continue;
@@ -842,7 +826,7 @@ fn check_value_inner(
     if ch == b'>' && is_comparison_ctx(b, i) {
       let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 1 < len && is_space_or_nl(b[i + 1]));
       if !ok {
-        emit(rule, diags, base_offset + i, 1, ">");
+        emit(diags, base_offset + i, 1, ">");
       }
       i += 1;
       continue;
@@ -853,7 +837,7 @@ fn check_value_inner(
       if is_modulo(b, i) {
         let ok = (i > 0 && is_space_or_nl(b[i - 1])) && (i + 1 < len && is_space_or_nl(b[i + 1]));
         if !ok {
-          emit(rule, diags, base_offset + i, 1, "%");
+          emit(diags, base_offset + i, 1, "%");
         }
       }
       i += 1;
@@ -924,7 +908,7 @@ fn check_value_inner(
             i += 1;
             continue;
           }
-          emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+          emit(diags, base_offset + i, 1, &(ch as char).to_string());
           i += 1;
           continue;
         }
@@ -936,14 +920,14 @@ fn check_value_inner(
           // Exceptions: `$var` and `fn()` targets are still operators.
           if in_css_slash_ctx(b, i) {
             if next == b'$' || is_fn_call_next(b, i + 1) {
-              emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+              emit(diags, base_offset + i, 1, &(ch as char).to_string());
             }
             i += 1;
             continue;
           }
           // Inside interpolation: always operator
           if in_interp {
-            emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+            emit(diags, base_offset + i, 1, &(ch as char).to_string());
             i += 1;
             continue;
           }
@@ -956,7 +940,7 @@ fn check_value_inner(
               i += 1;
               continue;
             }
-            emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+            emit(diags, base_offset + i, 1, &(ch as char).to_string());
             i += 1;
             continue;
           }
@@ -965,7 +949,7 @@ fn check_value_inner(
               i += 1;
               continue; // `1 +1` → list (only in non-expression context)
             }
-            emit(rule, diags, base_offset + i, 1, "+");
+            emit(diags, base_offset + i, 1, "+");
             i += 1;
             continue;
           }
@@ -975,7 +959,7 @@ fn check_value_inner(
             continue;
           } // negative number → list
           if next == b'$' {
-            emit(rule, diags, base_offset + i, 1, "-");
+            emit(diags, base_offset + i, 1, "-");
             i += 1;
             continue;
           }
@@ -986,7 +970,7 @@ fn check_value_inner(
             } // -#{} → sign
             // -#hex: check if prev is hex color
             if prev_is_hex(b, i) {
-              emit(rule, diags, base_offset + i, 1, "-");
+              emit(diags, base_offset + i, 1, "-");
               i += 1;
               continue;
             }
@@ -994,7 +978,7 @@ fn check_value_inner(
             continue; // -#ffc → list
           }
           if next == b'(' {
-            emit(rule, diags, base_offset + i, 1, "-");
+            emit(diags, base_offset + i, 1, "-");
             i += 1;
             continue;
           }
@@ -1002,7 +986,7 @@ fn check_value_inner(
             i += 1;
             continue;
           } // -ident → list
-          emit(rule, diags, base_offset + i, 1, "-");
+          emit(diags, base_offset + i, 1, "-");
           i += 1;
           continue;
         }
@@ -1017,7 +1001,7 @@ fn check_value_inner(
             i += 1;
             continue;
           }
-          emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+          emit(diags, base_offset + i, 1, &(ch as char).to_string());
           i += 1;
           continue;
         }
@@ -1026,7 +1010,7 @@ fn check_value_inner(
           let sb = count_ws_before(b, i);
           let sa = count_ws_after(b, i);
           if (sb > 1 || sa > 1) && !has_nl_before(b, i) && !has_nl_after(b, i) {
-            emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+            emit(diags, base_offset + i, 1, &(ch as char).to_string());
           }
           i += 1;
           continue;
@@ -1040,7 +1024,7 @@ fn check_value_inner(
         continue;
       }
       if !sp_before || !sp_after {
-        emit(rule, diags, base_offset + i, 1, &(ch as char).to_string());
+        emit(diags, base_offset + i, 1, &(ch as char).to_string());
       }
     }
     i += 1;
@@ -1068,20 +1052,10 @@ fn extract_interp_local(value: &str, start: usize) -> (&str, usize) {
 }
 
 /// Pushes a diagnostic for one unspaced operator.
-fn emit(
-  rule: &ScssOperatorNoUnspaced,
-  diags: &mut Vec<Diagnostic>,
-  offset: usize,
-  len: usize,
-  op: &str,
-) {
+fn emit(diags: &mut Vec<Diagnostic>, offset: usize, len: usize, op: &str) {
   diags.push(
-    Diagnostic::new(
-      rule.name(),
-      format!("Expected spaces around operator '{op}'"),
-    )
-    .severity(rule.default_severity())
-    .span(Span::new(offset, len)),
+    Diagnostic::new(NAME, format!("Expected spaces around operator '{op}'"))
+      .span(Span::new(offset, len)),
   );
 }
 
@@ -1660,7 +1634,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, scss_ctx, scss_ctx_with_source};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx, scss_ctx_with_source};
 
   fn make_node(property: &str, value: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -1678,37 +1652,37 @@ mod tests {
 
   #[test]
   fn skips_css_files() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "10px+5px");
     assert!(rule.check(&node, &ctx()).is_empty());
   }
   #[test]
   fn reports_unspaced_plus() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a+$b");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn reports_unspaced_multiply() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a*2");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn allows_spaced_operators() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a + $b");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_unary_minus() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("margin", "-10px");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_calc_operators() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "calc(100%+20px)");
     assert!(
       rule.check(&node, &scss_ctx()).is_empty(),
@@ -1717,73 +1691,73 @@ mod tests {
   }
   #[test]
   fn skips_font_shorthand_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("font", "14px/1.5 sans-serif");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_unary_after_operator() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a * -1");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_border_radius_shorthand_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "10px 5px / 20px 15px");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_border_radius_unspaced_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "10px/5px");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_shorthand_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid", "auto-flow / 1fr 1fr 1fr");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_column_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-column", "1 / 3");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_row_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-row", "1/3");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_area_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-area", "1 / 1 / 3 / 3");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_grid_template_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-template", "'a a' 100px / 1fr 1fr");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_background_shorthand_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("background", "url(img.png) center/cover no-repeat");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_list_style_shorthand_slash() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("list-style", "disc outside/inside");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_in_url() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node(
       "background-image",
       "url(https://example.com/path/to/image.png)",
@@ -1792,7 +1766,7 @@ mod tests {
   }
   #[test]
   fn skips_slash_in_url_with_quotes() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node(
       "background-image",
       "url('https://example.com/path/to/image.png')",
@@ -1801,25 +1775,25 @@ mod tests {
   }
   #[test]
   fn skips_vendor_prefixed_border_radius() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("-webkit-border-radius", "10px/5px");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_slash_in_math() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a/2");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_inline_comment() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("box-shadow", "0 0 0 3px blue, // comment");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_negative_value_after_space() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("margin", "-10px");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
     let node = make_node("top", "-2px");
@@ -1829,13 +1803,13 @@ mod tests {
   }
   #[test]
   fn flags_negative_variable_as_subtraction() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("box-shadow", "0 -$offset red");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_subtraction() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a-$b");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
     let node = make_node("width", "$a -$b");
@@ -1843,73 +1817,73 @@ mod tests {
   }
   #[test]
   fn still_reports_unspaced_operators_in_shorthand() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "$a+$b");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(255 0 0 / 0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_unspaced() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(255 0 0/0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgba() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgba(255 0 0 / 50%)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsl() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hsl(120 100% 50% / .5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsla() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hsla(120 100% 50% / 0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hwb() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hwb(120 0% 0% / 0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_oklch() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "oklch(0.5 0.2 240 / 0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_with_var() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(from var(--color) r g b / 50%)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_color_function() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "color(srgb 1 0 0 / 0.5)");
     assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn still_reports_unspaced_division_outside_color_fn() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a/2");
     assert!(!rule.check(&node, &scss_ctx()).is_empty());
   }
   #[test]
   fn skips_slash_alpha_in_rgb_variable_assignment() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let source = "$color: rgb(255 0 0 / 0.5);\n";
     let ctx = scss_ctx_with_source(source);
     let diags = rule.check_root(&[], &ctx);
@@ -1922,7 +1896,7 @@ mod tests {
 
   #[test]
   fn skips_block_comments_in_values() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     // Block comment inside a value should not trigger on * or /
     let node = make_node("color", "red /* fallback */ blue");
     assert!(
@@ -1933,7 +1907,7 @@ mod tests {
 
   #[test]
   fn skips_jsdoc_style_comments_at_source_level() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let source =
       "/**\n * @summary Focus state\n * @selector .slds-has-focus\n */\n.foo { color: red; }\n";
     let ctx = scss_ctx_with_source(source);
@@ -1947,7 +1921,7 @@ mod tests {
 
   #[test]
   fn skips_block_comment_with_asterisks_in_value() {
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     // Simulates a value containing a block comment with star-prefixed lines
     let node = make_node("color", "/* * * * */ red");
     assert!(
@@ -1961,7 +1935,7 @@ mod tests {
     // Operator at end of line with value on next line — Stylelint allows this.
     // This pattern appears in multi-line SCSS expressions.
     let scss = "$x: 4 *\n  $y;";
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
     let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
@@ -1977,7 +1951,7 @@ mod tests {
     // `== \n    'string'` pattern from _density.scss — the space before `==` is present,
     // and a newline follows — Stylelint does not flag this.
     let scss = "$x: $a ==\n  'string';";
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
     let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
@@ -2003,7 +1977,7 @@ mod tests {
   #[test]
   fn checks_declarations_below_box_drawing_comments() {
     let scss = "// \u{2500}\u{2500} geometry \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n.a {\n  width: 10px;\n}";
-    let rule = ScssOperatorNoUnspaced;
+    let rule = configured(&ScssOperatorNoUnspaced, None);
     let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
     let ctx = scss_ctx_with_source(scss);
     let diags: Vec<_> = result
@@ -2015,6 +1989,17 @@ mod tests {
       diags.is_empty(),
       "clean declaration should not be flagged, got: {:?}",
       diags
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/operator-no-unspaced\""]
     );
   }
 }

@@ -1,9 +1,36 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-pub struct FunctionNoUnknown;
+const NAME: &str = "function-no-unknown";
+
+declare_rule! {
+  pub struct FunctionNoUnknown => FunctionNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown CSS functions",
+    default_severity: Error,
+  }
+}
+
+/// `function-no-unknown` as configured.
+pub struct FunctionNoUnknownCheck {
+  /// `ignoreFunctions`.
+  ignore_functions: Matchers,
+}
+
+impl FunctionNoUnknownCheck {
+  /// Stylelint's options: `true`, then `ignoreFunctions`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_functions = options.matchers("ignoreFunctions");
+    options.finish()?;
+    Ok(Self { ignore_functions })
+  }
+}
 
 /// Known CSS functions (sorted alphabetically for binary search).
 static KNOWN_FUNCTIONS: &[&str] = &[
@@ -234,19 +261,7 @@ fn extract_functions(value: &str) -> Vec<String> {
   functions
 }
 
-impl Rule for FunctionNoUnknown {
-  fn name(&self) -> &'static str {
-    "function-no-unknown"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow unknown CSS functions"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for FunctionNoUnknownCheck {
   /// Flags function names that are neither standard CSS nor, in SCSS files, a
   /// built-in SCSS function. Vendor-prefixed names are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -263,7 +278,7 @@ impl Rule for FunctionNoUnknown {
     for decl in &rule.declarations {
       for func_name in extract_functions(&decl.value) {
         // Skip vendor-prefixed functions
-        if func_name.starts_with('-') {
+        if func_name.starts_with('-') || self.ignore_functions.matches(&func_name) {
           continue;
         }
         if is_known_function(&func_name) {
@@ -274,12 +289,8 @@ impl Rule for FunctionNoUnknown {
           continue;
         }
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected unknown function \"{func_name}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(decl.span.offset, decl.span.length)),
+          Diagnostic::new(NAME, format!("Unexpected unknown function \"{func_name}\""))
+            .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
     }
@@ -292,7 +303,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn style_node(props: &[(&str, &str)]) -> CssNode {
     CssNode::Style(StyleRule {
@@ -313,53 +324,95 @@ mod tests {
 
   #[test]
   fn reports_unknown_function() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "unknownfn(red)")]);
-    let d = FunctionNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("unknownfn"));
   }
 
   #[test]
   fn allows_known_functions() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[
       ("width", "calc(100% - 20px)"),
       ("color", "rgb(255, 0, 0)"),
       ("background", "linear-gradient(red, blue)"),
       ("--x", "var(--color)"),
     ]);
-    assert!(FunctionNoUnknown.check(&node, &ctx()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn allows_vendor_prefixed_functions() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("background", "-webkit-linear-gradient(red, blue)")]);
-    assert!(FunctionNoUnknown.check(&node, &ctx()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn allows_scss_functions_in_scss() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "darken(#000, 10%)")]);
-    assert!(FunctionNoUnknown.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_scss_functions_in_css() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "darken(#000, 10%)")]);
-    let d = FunctionNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("darken"));
   }
 
   #[test]
   fn ignores_values_without_functions() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "red"), ("margin", "10px")]);
-    assert!(FunctionNoUnknown.check(&node, &ctx()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn extracts_multiple_functions() {
+    let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("background", "unknownA(1) unknownB(2)")]);
-    let d = FunctionNoUnknown.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 2);
+  }
+
+  #[test]
+  fn ignore_functions_skips_listed_names() {
+    let rule = configured(
+      &FunctionNoUnknown,
+      serde_json::json!([true, { "ignoreFunctions": ["theme", "/^my-/"] }]),
+    );
+    let node = style_node(&[
+      ("color", "theme(red)"),
+      ("top", "my-fn(1)"),
+      ("left", "other(1)"),
+    ]);
+    let d = rule.check(&node, &ctx());
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("other"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreFunctions": "theme" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"function-no-unknown\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreFunctions": [1] }])),
+      ["Invalid value \"1\" for option \"ignoreFunctions\" of rule \"function-no-unknown\""]
+    );
   }
 }

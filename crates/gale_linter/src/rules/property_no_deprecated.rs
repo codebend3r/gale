@@ -1,8 +1,9 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Stylelint's `DEPRECATED_PROPS_REMAP`: deprecated properties and their
@@ -80,32 +81,42 @@ fn find_deprecated_property(name: &str) -> Option<Option<&'static str>> {
     .map(|idx| DEPRECATED_PROPERTIES[idx].1)
 }
 
-/// Disallow deprecated properties.
-///
-/// Equivalent to Stylelint's `property-no-deprecated` rule.  A property
-/// with a standard replacement is fixed to it (`page-break-before: always`
-/// becomes `break-before: page`); the others are reported without a fix.
-pub struct PropertyNoDeprecated;
+const NAME: &str = "property-no-deprecated";
 
-impl Rule for PropertyNoDeprecated {
-  fn name(&self) -> &'static str {
-    "property-no-deprecated"
+declare_rule! {
+  /// Disallow deprecated properties.
+  ///
+  /// Equivalent to Stylelint's `property-no-deprecated` rule.  A property
+  /// with a standard replacement is fixed to it (`page-break-before: always`
+  /// becomes `break-before: page`); the others are reported without a fix.
+  pub struct PropertyNoDeprecated => PropertyNoDeprecatedCheck {
+    name: NAME,
+    description: "Disallow deprecated properties",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow deprecated properties"
+/// `property-no-deprecated` as configured.
+pub struct PropertyNoDeprecatedCheck {
+  /// `ignoreProperties`: names or `/regex/` entries.
+  ignore_properties: Matchers,
+}
+
+impl PropertyNoDeprecatedCheck {
+  /// Stylelint's options: `true`, then `ignoreProperties`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_properties = options.matchers("ignoreProperties");
+    options.finish()?;
+    Ok(Self { ignore_properties })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PropertyNoDeprecatedCheck {
   /// Flags deprecated properties, naming the replacement when one exists,
   /// and skipping `ignoreProperties`.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreProperties"));
     let mut diags = Vec::new();
     for &decl in ctx.written_declarations(node).iter() {
       let prop = decl.prop;
@@ -113,7 +124,7 @@ impl Rule for PropertyNoDeprecated {
       if prop.starts_with('$') || (prop.starts_with('@') && !prop.starts_with("@{")) {
         continue;
       }
-      if pattern::option_matches(ignore, prop) {
+      if self.ignore_properties.matches(prop) {
         continue;
       }
       let lower = prop.to_ascii_lowercase();
@@ -125,13 +136,12 @@ impl Rule for PropertyNoDeprecated {
       }
       let span = Span::new(decl.prop_start, prop.len());
       let mut diag = Diagnostic::new(
-        self.name(),
+        NAME,
         match replacement {
           Some(repl) => format!("Expected \"{prop}\" to be \"{repl}\""),
           None => format!("Unexpected deprecated property \"{prop}\""),
         },
       )
-      .severity(self.default_severity())
       .span(span);
       if let Some(repl) = replacement {
         let mut edits = vec![Edit::new(span, repl)];
@@ -260,5 +270,25 @@ mod tests {
     let css = "a { grid-gap: 1px; }";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!([true, { "ignoreProperties": "/^-webkit-/" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"property-no-deprecated\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!([true, { "ignore": ["a"] }])),
+      ["Invalid option name \"ignore\" for rule \"property-no-deprecated\""]
+    );
   }
 }

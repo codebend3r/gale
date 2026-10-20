@@ -1,25 +1,61 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::js_number::parse_number;
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::Node;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Require numeric or named (where possible) `font-weight` values.
-///
-/// Equivalent to Stylelint's `font-weight-notation` rule, including its
-/// autofix.  Checks `font-weight` (every weight, as in `@font-face` ranges)
-/// and the weight in the `font` shorthand.
-///
-/// - `"numeric"`: `normal` and `bold` become `400` and `700`; `bolder` and
-///   `lighter` are reported without a fix.
-/// - `"named-where-possible"`: `400` and `700` become `normal` and `bold`.
-///
-/// Secondary option `ignore: ["relative"]` skips `bolder` and `lighter`.
-pub struct FontWeightNotation;
+const NAME: &str = "font-weight-notation";
+
+declare_rule! {
+  /// Require numeric or named (where possible) `font-weight` values.
+  ///
+  /// Equivalent to Stylelint's `font-weight-notation` rule, including its
+  /// autofix.  Checks `font-weight` (every weight, as in `@font-face` ranges)
+  /// and the weight in the `font` shorthand.
+  ///
+  /// - `"numeric"`: `normal` and `bold` become `400` and `700`; `bolder` and
+  ///   `lighter` are reported without a fix.
+  /// - `"named-where-possible"`: `400` and `700` become `normal` and `bold`.
+  ///
+  /// Secondary option `ignore: ["relative"]` skips `bolder` and `lighter`.
+  pub struct FontWeightNotation => FontWeightNotationCheck {
+    name: NAME,
+    description: "Require numeric or named font-weight values",
+    default_severity: Warning,
+  }
+}
+
+/// `font-weight-notation` as configured.
+pub struct FontWeightNotationCheck {
+  /// The notation weights should use; `None` when the config names
+  /// neither, and the rule checks nothing.
+  notation: Option<Notation>,
+  /// `ignore: ["relative"]`.
+  ignore_relative: bool,
+}
+
+impl FontWeightNotationCheck {
+  /// Stylelint's options: `"numeric"` or `"named-where-possible"`, then
+  /// `ignore: ["relative"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["numeric", "named-where-possible"]);
+    let ignore = options.keywords("ignore", &["relative"]);
+    options.finish()?;
+    Ok(Self {
+      notation: notation.map(|notation| match notation {
+        "numeric" => Notation::Numeric,
+        _ => Notation::NamedWherePossible,
+      }),
+      ignore_relative: ignore.contains(&"relative"),
+    })
+  }
+}
 
 /// Keywords that name a weight relative to the parent's.
 const RELATIVE_KEYWORDS: &[&str] = &["bolder", "lighter"];
@@ -34,31 +70,14 @@ enum Notation {
   NamedWherePossible,
 }
 
-impl Rule for FontWeightNotation {
-  fn name(&self) -> &'static str {
-    "font-weight-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require numeric or named font-weight values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FontWeightNotationCheck {
   /// Reports font weights in the other notation, with a fix wherever the
   /// weight has an equivalent.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let notation = match ctx.primary_option_str() {
-      Some("numeric") => Notation::Numeric,
-      Some("named-where-possible") => Notation::NamedWherePossible,
-      _ => return Vec::new(),
+    let Some(notation) = self.notation else {
+      return Vec::new();
     };
-    let ignore_relative = option_matches(
-      ctx.secondary_options().and_then(|s| s.get("ignore")),
-      "relative",
-    );
+    let ignore_relative = self.ignore_relative;
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for decl in tree.decls() {
@@ -68,7 +87,7 @@ impl Rule for FontWeightNotation {
   }
 }
 
-impl FontWeightNotation {
+impl FontWeightNotationCheck {
   /// Checks one `font` or `font-weight` declaration.
   fn check_decl(
     &self,
@@ -174,9 +193,7 @@ impl FontWeightNotation {
         )
       }
     };
-    let diag = Diagnostic::new(self.name(), message)
-      .severity(self.default_severity())
-      .span(span);
+    let diag = Diagnostic::new(NAME, message).span(span);
     Some(match replacement {
       Some(text) => diag.fix(Fix::new(
         format!("Replace \"{weight}\" with \"{text}\""),
@@ -219,7 +236,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "font-weight-notation";
 
@@ -323,5 +340,18 @@ mod tests {
     let source = "a { font-weight: bold; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, json!(["numeric", { "ignore": ["relative"] }])).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("named")),
+      ["Invalid option value \"named\" for rule \"font-weight-notation\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, json!(["numeric", { "ignore": ["bolder"] }])),
+      ["Invalid value \"bolder\" for option \"ignore\" of rule \"font-weight-notation\""]
+    );
   }
 }

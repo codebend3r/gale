@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow non-space characters for descendant combinators.
-///
-/// Descendant combinators should be a single space, not tabs or multiple spaces.
-pub struct StylisticSelectorDescendantCombinatorNoNonSpace;
+const NAME: &str = "@stylistic/selector-descendant-combinator-no-non-space";
 
-impl Rule for StylisticSelectorDescendantCombinatorNoNonSpace {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-descendant-combinator-no-non-space"
+declare_rule! {
+  /// Disallow non-space characters for descendant combinators.
+  ///
+  /// Descendant combinators should be a single space, not tabs or multiple spaces.
+  pub struct StylisticSelectorDescendantCombinatorNoNonSpace => StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
+    name: NAME,
+    description: "Disallow non-space characters for descendant combinators",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow non-space characters for descendant combinators"
+/// `@stylistic/selector-descendant-combinator-no-non-space`, which takes no options.
+pub struct StylisticSelectorDescendantCombinatorNoNonSpaceCheck;
+
+impl StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
+  /// The plugin validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
   /// Flags a descendant combinator written as anything but one space.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -155,12 +167,8 @@ impl Rule for StylisticSelectorDescendantCombinatorNoNonSpace {
         // Flag if the whitespace contains a tab or is more than one space
         if ws_slice.contains('\t') || ws_len > 1 {
           diagnostics.push(
-            Diagnostic::new(
-              self.name(),
-              "Expected single space for descendant combinator",
-            )
-            .severity(self.default_severity())
-            .span(Span::new(rule.span.offset + ws_start, ws_len)),
+            Diagnostic::new(NAME, "Expected single space for descendant combinator")
+              .span(Span::new(rule.span.offset + ws_start, ws_len)),
           );
         }
         continue;
@@ -178,10 +186,10 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn check_selector(selector: &str) -> Vec<Diagnostic> {
-    let rule = StylisticSelectorDescendantCombinatorNoNonSpace;
+    let rule = configured(&StylisticSelectorDescendantCombinatorNoNonSpace, None);
     let ctx = ctx();
     let node = CssNode::Style(StyleRule {
       selector: selector.to_string(),
@@ -226,5 +234,16 @@ mod tests {
   fn allows_single_space_around_adjacent_combinator() {
     let d = check_selector("a + b");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"@stylistic/selector-descendant-combinator-no-non-space\""
+      ]
+    );
   }
 }
