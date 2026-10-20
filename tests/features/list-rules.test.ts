@@ -22,25 +22,25 @@ function lint(rules: Record<string, unknown>, css: string): string[] {
 }
 
 describe("disallowed lists read the configured list", () => {
-  test.failing("property-disallowed-list flags a listed property", () => {
+  test("property-disallowed-list flags a listed property", () => {
     expect(lint({ "property-disallowed-list": ["color"] }, "a { color: red; margin: 0; }\n")).toEqual([
       "property-disallowed-list@1:5",
     ]);
   });
 
-  test.failing("property-disallowed-list matches a /regex/ entry", () => {
+  test("property-disallowed-list matches a /regex/ entry", () => {
     expect(
       lint({ "property-disallowed-list": ["/^border/"] }, "a { border-top: 0; margin: 0; }\n"),
     ).toEqual(["property-disallowed-list@1:5"]);
   });
 
-  test.failing("selector-disallowed-list flags a listed selector", () => {
+  test("selector-disallowed-list flags a listed selector", () => {
     expect(lint({ "selector-disallowed-list": ["a > b"] }, "a > b { color: red; }\n")).toEqual([
       "selector-disallowed-list@1:1",
     ]);
   });
 
-  test.failing("function-disallowed-list flags a listed function", () => {
+  test("function-disallowed-list flags a listed function", () => {
     expect(
       lint({ "function-disallowed-list": ["rgba"] }, "a { color: rgba(0, 0, 0, 0); }\n"),
     ).toEqual(["function-disallowed-list@1:12"]);
@@ -48,7 +48,7 @@ describe("disallowed lists read the configured list", () => {
 });
 
 describe("allowed lists read the configured list", () => {
-  test.failing("at-rule-allowed-list flags an at-rule missing from the list", () => {
+  test("at-rule-allowed-list flags an at-rule missing from the list", () => {
     expect(
       lint({ "at-rule-allowed-list": ["media"] }, "@supports (display: grid) {}\n@media screen {}\n"),
     ).toEqual(["at-rule-allowed-list@1:1"]);
@@ -71,7 +71,7 @@ describe("a list followed by secondary options", () => {
     ).toEqual(["property-allowed-list@1:28"]);
   });
 
-  test.failing("property-disallowed-list still flags the listed properties", () => {
+  test("property-disallowed-list still flags the listed properties", () => {
     expect(
       lint(
         { "property-disallowed-list": [["color"], { severity: "warning" }] },
@@ -83,7 +83,7 @@ describe("a list followed by secondary options", () => {
   test("unit-allowed-list still allows the listed units", () => {
     expect(
       lint({ "unit-allowed-list": [["px"], { severity: "warning" }] }, "a { width: 1px; height: 1em; }\n"),
-    ).toEqual(["unit-allowed-list@1:25"]);
+    ).toEqual(["unit-allowed-list@1:26"]);
   });
 
   test("the secondary severity applies to the list rule's warnings", () => {

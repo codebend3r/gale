@@ -1,120 +1,110 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::Span;
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+use crate::list_rules::{Found, List, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-/// Disallow specified words in comments.
-///
-/// Options: an array of strings (or regex-like patterns) that are disallowed
-/// inside CSS comments.
-///
-/// Equivalent to Stylelint's `comment-word-disallowed-list` rule.
-pub struct CommentWordDisallowedList;
+const NAME: &str = "comment-word-disallowed-list";
 
-impl Rule for CommentWordDisallowedList {
-  fn name(&self) -> &'static str {
-    "comment-word-disallowed-list"
+declare_rule! {
+  /// Disallow words in comments.
+  ///
+  /// Options: a string or `/regex/`, or a list of them.  A comment is
+  /// reported when its text equals a string or contains it, or when a
+  /// regex matches it, case-sensitively as Stylelint does; the problem
+  /// points at the word.  Source map comments (`/*# ... */`) are skipped.
+  ///
+  /// Equivalent to Stylelint's `comment-word-disallowed-list` rule.
+  pub struct CommentWordDisallowedList => ListCheck<CommentWordDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed words within comments",
+    default_severity: Warning,
+    primary_option_array: true,
+  }
+}
+
+impl ListRule for CommentWordDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  type Options = ();
+
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::comment_texts(tree, found);
   }
 
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed words within comments"
+  /// `matchesStringOrRegExp(text, list) || containsString(text, list)`.
+  fn listed<'l>(list: &'l List, _: &(), found: &Found, _: &PostcssTree) -> Option<&'l str> {
+    list
+      .find(&found.name)
+      .or_else(|| list.find_within(&found.name))
   }
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
+  fn message(_: &Found, entry: Option<&str>) -> String {
+    format!("Unexpected word \"{}\" in comment", entry.unwrap_or(""))
   }
 
-  /// Flags comments containing any of the configured words, case-insensitively.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Comment(comment) = node else {
-      return vec![];
-    };
-
-    let disallowed: Vec<String> = match ctx.options {
-      Some(serde_json::Value::Array(arr)) => arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect(),
-      _ => return vec![],
-    };
-
-    let text_lower = comment.text.to_ascii_lowercase();
-    let mut diags = Vec::new();
-
-    for word in &disallowed {
-      let word_lower = word.to_ascii_lowercase();
-      if text_lower.contains(&word_lower) {
-        diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected word \"{word}\" in comment"),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(comment.span.offset, comment.span.length)),
-        );
-      }
+  /// The word the entry matched.
+  fn span(list: &List, found: &Found, entry: Option<&str>) -> Span {
+    match entry.and_then(|entry| list.matched_text(entry, &found.name)) {
+      Some((at, word)) => Span::new(found.span.offset + at, word.len()),
+      None => found.span,
     }
-
-    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Comment, Span as ParserSpan};
+  use serde_json::json;
 
-  use crate::testing::ctx_with_options;
+  use super::NAME;
+  use crate::list_rules::testing::{check, check_css};
+  use crate::testing::invalid_options;
 
-  fn comment_node(text: &str) -> CssNode {
-    CssNode::Comment(Comment {
-      text: text.to_string(),
-      span: ParserSpan::new(0, text.len() + 4), // +4 for /* */
-      is_line: false,
-    })
+  #[test]
+  fn reports_comments_holding_a_listed_word() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!(["TODO", "FIXME"]),
+          "/* TODO: fix */\na {}",
+          &["1:4 Unexpected word \"TODO\" in comment"],
+        ),
+        (
+          json!(["/^todo/i"]),
+          "/* todo later */",
+          &["1:4 Unexpected word \"/^todo/i\" in comment"],
+        ),
+        (json!(["todo"]), "/* TODO */", &[]),
+        (json!(["TODO"]), "/* fine */", &[]),
+        (
+          json!(["sourceMappingURL"]),
+          "/*# sourceMappingURL=a.map */",
+          &[],
+        ),
+        (
+          json!(["TODO", "HACK"]),
+          "/* TODO and HACK */",
+          &["1:4 Unexpected word \"TODO\" in comment"],
+        ),
+      ],
+    );
+    check(
+      NAME,
+      gale_css_parser::Syntax::Scss,
+      &[(
+        json!(["hack"]),
+        "a {\n  // a hack\n}",
+        &["2:8 Unexpected word \"hack\" in comment"],
+      )],
+    );
   }
 
   #[test]
-  fn allows_all_when_no_options() {
-    let ctx = ctx_with_options(None);
-    let d = CommentWordDisallowedList.check(&comment_node("TODO: fix this"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn flags_disallowed_word() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["TODO", "FIXME"])));
-    let d = CommentWordDisallowedList.check(&comment_node("TODO: fix this"), &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("TODO"));
-  }
-
-  #[test]
-  fn flags_multiple_disallowed_words() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["TODO", "HACK"])));
-    let d = CommentWordDisallowedList.check(&comment_node("TODO: HACK around it"), &ctx);
-    assert_eq!(d.len(), 2);
-  }
-
-  #[test]
-  fn allows_comment_without_disallowed_words() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["TODO"])));
-    let d = CommentWordDisallowedList.check(&comment_node("This is fine"), &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn case_insensitive_match() {
-    let ctx = ctx_with_options(Some(serde_json::json!(["todo"])));
-    let d = CommentWordDisallowedList.check(&comment_node("TODO: fix this"), &ctx);
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
+  fn options_are_validated_like_stylelint() {
     assert_eq!(
-      CommentWordDisallowedList.name(),
-      "comment-word-disallowed-list"
+      invalid_options(NAME, json!([3])),
+      ["Invalid option value \"3\" for rule \"comment-word-disallowed-list\""]
     );
   }
 }

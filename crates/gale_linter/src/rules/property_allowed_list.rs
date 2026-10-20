@@ -1,20 +1,19 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Span};
-
-use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "property-allowed-list";
 
 declare_rule! {
-  /// Only allow specified CSS properties.
+  /// Only allow the properties listed.
   ///
-  /// Options: an array of property names that are allowed. All other properties
-  /// are flagged.
+  /// Options: a property name or `/regex/`, or a list of them, matched
+  /// exactly as written, as Stylelint 17 does: `-webkit-transform` needs
+  /// an entry of its own.  Sass and Less variables, Less merges and
+  /// interpolated properties are not checked.
   ///
   /// Equivalent to Stylelint's `property-allowed-list` rule.
-  pub struct PropertyAllowedList => PropertyAllowedListCheck {
+  pub struct PropertyAllowedList => ListCheck<PropertyAllowedList> {
     name: NAME,
     description: "Specify a list of allowed properties",
     default_severity: Warning,
@@ -22,152 +21,77 @@ declare_rule! {
   }
 }
 
-/// `property-allowed-list` as configured.
-pub struct PropertyAllowedListCheck {
-  /// The properties allowed, or `None` when the config lists none (a preset
-  /// enabling the rule), which allows every property.
-  allowed: Option<Vec<String>>,
-}
+impl ListRule for PropertyAllowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Allowed;
+  type Options = ();
 
-impl PropertyAllowedListCheck {
-  /// Stylelint's options: a property name or `/regex/`, or a list of them.
-  /// Names are compared exactly; `/regex/` entries are not matched yet.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let allowed = options.primary_strings();
-    options.finish()?;
-    Ok(Self { allowed })
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<Found>) {
+    subjects::property_names(tree, found);
   }
-}
 
-impl Check for PropertyAllowedListCheck {
-  /// Flags properties outside the configured allow list.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let Some(allowed) = &self.allowed else {
-      return vec![];
-    };
-
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
-    let mut diags = Vec::new();
-
-    for decl in declarations {
-      if !allowed.iter().any(|a| a == &decl.property) {
-        diags.push(
-          Diagnostic::new(NAME, format!("Unexpected property \"{}\"", decl.property))
-            .span(Span::new(decl.span.offset, decl.span.length)),
-        );
-      }
-    }
-
-    diags
+  fn message(found: &Found, _: Option<&str>) -> String {
+    format!("Unexpected property \"{}\"", found.name)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options, lint};
-
-  fn style_with_prop(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 10),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::{check, check_css};
+  use crate::testing::invalid_options;
 
   #[test]
-  fn allows_all_when_no_options() {
-    let d = configured(&PropertyAllowedList, None).check(&style_with_prop("color", "red"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_listed_property() {
-    let d = configured(&PropertyAllowedList, serde_json::json!(["color", "margin"]))
-      .check(&style_with_prop("color", "red"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn flags_unlisted_property() {
-    let d = configured(&PropertyAllowedList, serde_json::json!(["color"]))
-      .check(&style_with_prop("margin", "0"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("margin"));
-  }
-
-  #[test]
-  fn case_sensitive() {
-    let d = configured(&PropertyAllowedList, serde_json::json!(["color"]))
-      .check(&style_with_prop("Color", "red"), &ctx());
-    // "color" does not match "Color" -- strict matching
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn vendor_prefixed_not_matched_by_unprefixed() {
-    let d = configured(&PropertyAllowedList, serde_json::json!(["transform"])).check(
-      &style_with_prop("-webkit-transform", "rotate(45deg)"),
-      &ctx(),
-    );
-    // "-webkit-transform" is not "transform" -- strict matching
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
-    assert_eq!(PropertyAllowedList::META.name, "property-allowed-list");
-    assert!(PropertyAllowedList::META.primary_option_array);
-  }
-
-  #[test]
-  fn a_list_followed_by_secondary_options_is_still_the_list() {
-    let options = serde_json::json!([["color", "margin"], { "severity": "warning" }]);
-    let found = lint(
+  fn reports_properties_missing_from_the_list() {
+    check_css(
       NAME,
-      options,
-      "a { color: red; margin: 0; padding: 0; }",
-      gale_css_parser::Syntax::Css,
+      &[
+        (
+          json!(["color"]),
+          "a { color: red; margin: 0; }",
+          &["1:17 Unexpected property \"margin\""],
+        ),
+        (
+          json!([["color", "margin"], { "severity": "warning" }]),
+          "a { color: red; margin: 0; padding: 0; }",
+          &["1:28 Unexpected property \"padding\""],
+        ),
+        (
+          json!("color"),
+          "a { Color: red; }",
+          &["1:5 Unexpected property \"Color\""],
+        ),
+        (
+          json!(["transform"]),
+          "a { -webkit-transform: none; }",
+          &["1:5 Unexpected property \"-webkit-transform\""],
+        ),
+        (
+          json!(["/^border/", "--x"]),
+          "a { border-top: 0; --x: 1; }",
+          &[],
+        ),
+      ],
     );
-    assert_eq!(found.len(), 1);
-    assert!(found[0].message.contains("padding"));
-  }
-
-  #[test]
-  fn a_single_name_is_a_list_of_one() {
-    let found = lint(
+    check(
       NAME,
-      serde_json::json!("color"),
-      "a { color: red; margin: 0; }",
-      gale_css_parser::Syntax::Css,
+      gale_css_parser::Syntax::Scss,
+      &[(json!(["color"]), "$size: 1px;\na { color: red; }", &[])],
     );
-    assert_eq!(found.len(), 1);
   }
 
   #[test]
   fn options_are_validated_like_stylelint() {
     assert_eq!(
-      invalid_options(NAME, serde_json::json!(5)),
+      invalid_options(NAME, json!(5)),
       ["Invalid option value \"5\" for rule \"property-allowed-list\""]
     );
     assert_eq!(
-      invalid_options(NAME, serde_json::json!(["color", true])),
+      invalid_options(NAME, json!(["color", true])),
       ["Invalid option value \"true\" for rule \"property-allowed-list\""]
     );
-    assert!(invalid_options(NAME, serde_json::json!(["color", "/^margin/"])).is_empty());
+    assert!(invalid_options(NAME, json!(["color", "/^margin/"])).is_empty());
   }
 }

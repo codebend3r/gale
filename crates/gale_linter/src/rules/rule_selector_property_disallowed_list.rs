@@ -1,162 +1,105 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{KeyedCheck, KeyedFound, KeyedListRule, Polarity, subjects};
+use crate::options::Options;
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::pattern;
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "rule-selector-property-disallowed-list";
 
-/// Disallow specific properties within rules matching certain selectors.
-///
-/// Options: an object mapping selector patterns to arrays of disallowed
-/// property names. Selector patterns can be plain strings (exact match) or
-/// regex patterns (strings starting and ending with `/`).
-///
-/// Example config:
-/// ```json
-/// { "/^my-/": ["color", "background"], ".foo": ["margin"] }
-/// ```
-///
-/// Equivalent to Stylelint's `rule-selector-property-disallowed-list` rule.
-pub struct RuleSelectorPropertyDisallowedList;
-
-impl Rule for RuleSelectorPropertyDisallowedList {
-  fn name(&self) -> &'static str {
-    "rule-selector-property-disallowed-list"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed properties within rules matching certain selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags properties disallowed for a rule whose selector matches one of the
-  /// configured string or regex patterns.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(style_rule) = node else {
-      return vec![];
-    };
-
-    let entries = match parse_options(ctx.options) {
-      Some(e) => e,
-      None => return vec![],
-    };
-
-    let selector = style_rule.selector.trim();
-    let mut diags = Vec::new();
-
-    for (key, disallowed_props) in &entries {
-      let matches =
-        pattern::match_regex_entry(key, selector).unwrap_or_else(|| selector == key.as_str());
-
-      if matches {
-        for decl in &style_rule.declarations {
-          let prop_lower = decl.property.to_ascii_lowercase();
-          if disallowed_props.contains(&prop_lower) {
-            diags.push(
-              Diagnostic::new(
-                self.name(),
-                format!(
-                  "Unexpected property \"{prop}\" for selector \"{selector}\"",
-                  prop = decl.property,
-                ),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(decl.span.offset, decl.span.length)),
-            );
-          }
-        }
-      }
-    }
-
-    diags
+declare_rule! {
+  /// Disallow the properties listed for rules with a selector.
+  ///
+  /// Options: an object mapping a selector or `/regex/` to the properties
+  /// (names or `/regex/`) disallowed in rules with that selector.  The first
+  /// key that matches the rule's whole selector applies to the declarations
+  /// directly in the rule, not those in rules nested inside it.
+  /// `ignore: ["keyframe-selectors"]` skips the selectors in `@keyframes`.
+  ///
+  /// Equivalent to Stylelint's `rule-selector-property-disallowed-list` rule.
+  pub struct RuleSelectorPropertyDisallowedList => KeyedCheck<RuleSelectorPropertyDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed properties for selectors within rules",
+    default_severity: Warning,
   }
 }
 
-/// A selector pattern paired with its disallowed properties.
-type PatternEntry = (String, Vec<String>);
+impl KeyedListRule for RuleSelectorPropertyDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  /// `ignore: ["keyframe-selectors"]`.
+  type Options = bool;
 
-/// Parse the rule options as `{ "selector-pattern": ["prop1", "prop2"] }`.
-fn parse_options(options: Option<&serde_json::Value>) -> Option<Vec<PatternEntry>> {
-  let obj = options?.as_object()?;
-  let mut entries = Vec::new();
-  for (key, val) in obj {
-    if let Some(arr) = val.as_array() {
-      let props: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-        .collect();
-      entries.push((key.clone(), props));
-    }
+  fn options(options: &mut Options<'_>) -> bool {
+    !options
+      .keywords("ignore", &["keyframe-selectors"])
+      .is_empty()
   }
-  Some(entries)
+
+  fn find(
+    tree: &PostcssTree,
+    _: &RuleContext,
+    ignore_keyframes: &bool,
+    found: &mut Vec<KeyedFound>,
+  ) {
+    subjects::rule_properties(tree, *ignore_keyframes, found);
+  }
+
+  fn message(found: &KeyedFound) -> String {
+    format!(
+      "Unexpected property \"{}\" for selector \"{}\"",
+      found.name, found.key
+    )
+  }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
+  use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
+  use super::NAME;
+  use crate::list_rules::testing::{check, check_css};
+  use crate::testing::invalid_options;
 
-  fn style_with_selector_and_decl(sel: &str, prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 10),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 30),
-      ..Default::default()
-    })
+  #[test]
+  fn reports_properties_listed_for_the_selector() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!({ "/\\.foo/": ["color", "/^margin/"], "a": ["padding"] }),
+          "a.foo { color: red; margin-top: 0; }\na { padding: 0; }",
+          &[
+            "1:9 Unexpected property \"color\" for selector \"a.foo\"",
+            "1:21 Unexpected property \"margin-top\" for selector \"a.foo\"",
+            "2:5 Unexpected property \"padding\" for selector \"a\"",
+          ],
+        ),
+        (json!({ "a": ["color"] }), "a { COLOR: red; }", &[]),
+        (json!({ "a": ["color"] }), "a, b { color: red; }", &[]),
+        (
+          json!([{ "from": ["color"] }, { "ignore": ["keyframe-selectors"] }]),
+          "@keyframes k { from { color: red; } }",
+          &[],
+        ),
+      ],
+    );
+    check(
+      NAME,
+      gale_css_parser::Syntax::Scss,
+      &[(
+        json!({ "a": ["color"] }),
+        "a {\n  @media print { color: red; }\n  b { color: blue; }\n}",
+        &["2:18 Unexpected property \"color\" for selector \"a\""],
+      )],
+    );
   }
 
   #[test]
-  fn reports_disallowed_property_with_regex_selector() {
-    let opts = serde_json::json!({ "/^my-/": ["color", "background"] });
-    let ctx = ctx_with_options(&opts);
-    let node = style_with_selector_and_decl("my-component", "color", "red");
-    let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("color"));
-  }
-
-  #[test]
-  fn allows_non_matching_selector() {
-    let opts = serde_json::json!({ "/^my-/": ["color"] });
-    let ctx = ctx_with_options(&opts);
-    let node = style_with_selector_and_decl(".other", "color", "red");
-    let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_non_disallowed_property() {
-    let opts = serde_json::json!({ "/^my-/": ["color"] });
-    let ctx = ctx_with_options(&opts);
-    let node = style_with_selector_and_decl("my-component", "display", "block");
-    let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn supports_exact_selector_match() {
-    let opts = serde_json::json!({ ".foo": ["margin"] });
-    let ctx = ctx_with_options(&opts);
-    let node = style_with_selector_and_decl(".foo", "margin", "10px");
-    let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("margin"));
-  }
-
-  #[test]
-  fn returns_empty_when_no_options() {
-    let ctx = ctx();
-    let node = style_with_selector_and_decl(".foo", "color", "red");
-    let d = RuleSelectorPropertyDisallowedList.check(&node, &ctx);
-    assert!(d.is_empty());
+  fn options_are_validated_like_stylelint() {
+    assert_eq!(
+      invalid_options(NAME, json!([{ "a": ["color"] }, { "ignore": "nested" }])),
+      [
+        "Invalid value \"nested\" for option \"ignore\" of rule \"rule-selector-property-disallowed-list\""
+      ]
+    );
   }
 }

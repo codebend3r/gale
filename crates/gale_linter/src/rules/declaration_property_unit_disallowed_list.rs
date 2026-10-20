@@ -1,203 +1,90 @@
-use std::collections::HashMap;
+use std::borrow::Cow;
 
-use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use crate::list_rules::{Entries, KeyedCheck, KeyedFound, KeyedListRule, Polarity, subjects};
+use crate::postcss_tree::PostcssTree;
+use crate::rule::{RuleContext, declare_rule};
 
-use crate::rule::{LegacyRule as Rule, RuleContext};
+const NAME: &str = "declaration-property-unit-disallowed-list";
 
-/// Disallow specified units for specific properties.
-///
-/// Options: an object mapping property names to arrays of disallowed units.
-/// Example: `{"font-size": ["px"], "margin": ["em"]}`
-///
-/// Equivalent to Stylelint's `declaration-property-unit-disallowed-list` rule.
-pub struct DeclarationPropertyUnitDisallowedList;
-
-/// Extract all units from a CSS value string.
-fn extract_units(value: &str) -> Vec<String> {
-  let mut units = Vec::new();
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i < len {
-    if bytes[i].is_ascii_digit()
-      || (bytes[i] == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit())
-    {
-      while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-        i += 1;
-      }
-      let unit_start = i;
-      while i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'%') {
-        i += 1;
-      }
-      if i > unit_start {
-        units.push(value[unit_start..i].to_string());
-      }
-    } else {
-      i += 1;
-    }
+declare_rule! {
+  /// Disallow the units listed for a property.
+  ///
+  /// Options: an object mapping a property name or `/regex/` to the units
+  /// disallowed in its value; the first key that matches the property
+  /// applies.  Units are compared lowercased; those inside `url()` are not
+  /// checked.
+  ///
+  /// Equivalent to Stylelint's `declaration-property-unit-disallowed-list` rule.
+  pub struct DeclarationPropertyUnitDisallowedList => KeyedCheck<DeclarationPropertyUnitDisallowedList> {
+    name: NAME,
+    description: "Specify a list of disallowed property and unit pairs within declarations",
+    default_severity: Warning,
   }
-
-  units
 }
 
-/// Reads the property-to-disallowed-units map from the options object.
-fn parse_options(options: Option<&serde_json::Value>) -> HashMap<String, Vec<String>> {
-  let Some(val) = options else {
-    return HashMap::new();
-  };
-  let Some(obj) = val.as_object() else {
-    return HashMap::new();
-  };
-  let mut map = HashMap::new();
-  for (prop, units_val) in obj {
-    if let Some(arr) = units_val.as_array() {
-      let units: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-      map.insert(prop.to_string(), units);
-    }
-  }
-  map
-}
+impl KeyedListRule for DeclarationPropertyUnitDisallowedList {
+  const NAME: &'static str = NAME;
+  const POLARITY: Polarity = Polarity::Disallowed;
+  const ENTRIES: Entries = Entries::Names;
+  type Options = ();
 
-impl Rule for DeclarationPropertyUnitDisallowedList {
-  fn name(&self) -> &'static str {
-    "declaration-property-unit-disallowed-list"
+  fn find(tree: &PostcssTree, _: &RuleContext, _: &(), found: &mut Vec<KeyedFound>) {
+    subjects::declaration_units(tree, false, found);
   }
 
-  fn description(&self) -> &'static str {
-    "Specify a list of disallowed property and unit pairs within declarations"
+  fn normalize(unit: &str) -> Cow<'_, str> {
+    Cow::Owned(unit.to_ascii_lowercase())
   }
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Flags units used by a listed property that are in its disallowed list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let disallowed_map = parse_options(ctx.options);
-    if disallowed_map.is_empty() {
-      return vec![];
-    }
-
-    let mut diags = Vec::new();
-    let declarations: Vec<&gale_css_parser::Declaration> = match node {
-      CssNode::Style(rule) => rule.declarations.iter().collect(),
-      CssNode::Declaration(decl) => vec![decl],
-      _ => return vec![],
-    };
-
-    for decl in declarations {
-      if let Some(disallowed_units) = disallowed_map.get(&decl.property) {
-        let units = extract_units(&decl.value);
-        for unit in units {
-          if disallowed_units.contains(&unit) {
-            diags.push(
-              Diagnostic::new(
-                self.name(),
-                format!(
-                  "Unexpected unit \"{unit}\" for property \"{}\"",
-                  decl.property
-                ),
-              )
-              .severity(self.default_severity())
-              .span(Span::new(decl.span.offset, decl.span.length)),
-            );
-          }
-        }
-      }
-    }
-    diags
+  fn message(found: &KeyedFound) -> String {
+    format!(
+      "Unexpected unit \"{}\" for property \"{}\"",
+      found.name, found.key
+    )
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
-
-  fn style_with_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: ParserSpan::new(0, 10),
-        important: false,
-      }],
-      span: ParserSpan::new(0, 0),
-      ..Default::default()
-    })
-  }
+  use super::NAME;
+  use crate::list_rules::testing::check_css;
+  use crate::testing::invalid_options;
 
   #[test]
-  fn allows_all_when_no_options() {
-    let d =
-      DeclarationPropertyUnitDisallowedList.check(&style_with_decl("font-size", "16px"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_non_disallowed_unit() {
-    let opts = json!({"font-size": ["px"]});
-    let d = DeclarationPropertyUnitDisallowedList.check(
-      &style_with_decl("font-size", "1.5rem"),
-      &ctx_with_options(&opts),
+  fn reports_units_listed_for_the_property() {
+    check_css(
+      NAME,
+      &[
+        (
+          json!({ "font-size": ["px"], "/^animation/": ["s"] }),
+          "a { font-size: 12PX; animation: x 2s 300ms; }",
+          &[
+            "1:16 Unexpected unit \"PX\" for property \"font-size\"",
+            "1:35 Unexpected unit \"s\" for property \"animation\"",
+          ],
+        ),
+        (
+          json!({ "width": ["em"] }),
+          "a { width: 1px; height: 1em; }",
+          &[],
+        ),
+        (
+          json!({ "background": ["px"] }),
+          "a { background: url(a-1px.png) 2px; }",
+          &["1:32 Unexpected unit \"px\" for property \"background\""],
+        ),
+      ],
     );
-    assert!(d.is_empty());
   }
 
   #[test]
-  fn rejects_disallowed_unit() {
-    let opts = json!({"font-size": ["px"]});
-    let d = DeclarationPropertyUnitDisallowedList.check(
-      &style_with_decl("font-size", "16px"),
-      &ctx_with_options(&opts),
-    );
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("px"));
-  }
-
-  #[test]
-  fn case_sensitive_unit_match() {
-    let opts = json!({"font-size": ["PX"]});
-    let d = DeclarationPropertyUnitDisallowedList.check(
-      &style_with_decl("font-size", "16px"),
-      &ctx_with_options(&opts),
-    );
-    // "PX" does not match "px" -- strict matching
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn vendor_prefixed_property_not_matched() {
-    let opts = json!({"font-size": ["px"]});
-    let d = DeclarationPropertyUnitDisallowedList.check(
-      &style_with_decl("-webkit-font-size", "16px"),
-      &ctx_with_options(&opts),
-    );
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn ignores_unconfigured_properties() {
-    let opts = json!({"font-size": ["px"]});
-    let d = DeclarationPropertyUnitDisallowedList
-      .check(&style_with_decl("margin", "10px"), &ctx_with_options(&opts));
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn rule_name_is_correct() {
+  fn options_are_validated_like_stylelint() {
     assert_eq!(
-      DeclarationPropertyUnitDisallowedList.name(),
-      "declaration-property-unit-disallowed-list"
+      invalid_options(NAME, json!(["width"])),
+      ["Invalid option value \"width\" for rule \"declaration-property-unit-disallowed-list\""]
     );
+    assert!(invalid_options(NAME, json!([{ "width": "px" }, { "anything": true }])).is_empty());
   }
 }
