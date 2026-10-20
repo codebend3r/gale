@@ -1,31 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after combinators of selectors.
-///
-/// Equivalent to `@stylistic/selector-combinator-space-after`.
-pub struct StylisticSelectorCombinatorSpaceAfter;
+const NAME: &str = "@stylistic/selector-combinator-space-after";
+
+declare_rule! {
+  /// Require or disallow a space after combinators of selectors.
+  ///
+  /// Equivalent to `@stylistic/selector-combinator-space-after`.
+  pub struct StylisticSelectorCombinatorSpaceAfter => StylisticSelectorCombinatorSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after combinators of selectors",
+    default_severity: Warning,
+  }
+}
+
+/// `@stylistic/selector-combinator-space-after` as configured.
+pub struct StylisticSelectorCombinatorSpaceAfterCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorCombinatorSpaceAfterCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
+  }
+}
 
 const COMBINATORS: &[u8] = b">~+";
 
-impl Rule for StylisticSelectorCombinatorSpaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-combinator-space-after"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after combinators of selectors"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorCombinatorSpaceAfterCheck {
   /// Flags a selector combinator whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -156,10 +173,9 @@ impl Rule for StylisticSelectorCombinatorSpaceAfter {
             if !has_space_after {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   format!("Expected a space after \"{}\"", char::from(bytes[comb_pos])),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(comb_pos, 1)),
               );
             }
@@ -168,10 +184,9 @@ impl Rule for StylisticSelectorCombinatorSpaceAfter {
             if has_space_after {
               diagnostics.push(
                 Diagnostic::new(
-                  self.name(),
+                  NAME,
                   format!("Unexpected space after \"{}\"", char::from(bytes[comb_pos])),
                 )
-                .severity(self.default_severity())
                 .span(Span::new(comb_pos, 1)),
               );
             }
@@ -191,13 +206,13 @@ impl Rule for StylisticSelectorCombinatorSpaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_allows_space_after_combinator() {
     let opt = serde_json::json!("always");
     let source = "a > b { }";
-    let d = StylisticSelectorCombinatorSpaceAfter
+    let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
@@ -206,7 +221,7 @@ mod tests {
   fn always_reports_missing_space_after() {
     let opt = serde_json::json!("always");
     let source = "a >b { }";
-    let d = StylisticSelectorCombinatorSpaceAfter
+    let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space after"));
@@ -216,7 +231,7 @@ mod tests {
   fn never_reports_space_after() {
     let opt = serde_json::json!("never");
     let source = "a > b { }";
-    let d = StylisticSelectorCombinatorSpaceAfter
+    let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected space after"));
@@ -226,7 +241,7 @@ mod tests {
   fn checks_tilde_combinator() {
     let opt = serde_json::json!("always");
     let source = "a ~b { }";
-    let d = StylisticSelectorCombinatorSpaceAfter
+    let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
   }
@@ -235,8 +250,20 @@ mod tests {
   fn checks_plus_combinator() {
     let opt = serde_json::json!("always");
     let source = "a +b { }";
-    let d = StylisticSelectorCombinatorSpaceAfter
+    let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
       .check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/selector-combinator-space-after\""
+      ]
+    );
   }
 }

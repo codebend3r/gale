@@ -1,32 +1,125 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::empty_lines::newline_of;
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext, per_run};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_order::{
   blocks, comments_after_declaration, comments_before_declaration, is_allowed_to_process,
-  is_property, is_shorthand, js_sort, normalized_property, reorder_edit, split_array_settings,
-  vendor_prefix,
+  is_property, is_shorthand, js_sort, normalized_property, reorder_edit, vendor_prefix,
 };
 
-/// Enforce a specific ordering of properties within declaration blocks.
-///
-/// Equivalent to stylelint-order's `order/properties-order` rule, autofix
-/// included.  The primary option lists property names and groups
-/// (`{ properties, groupName, emptyLineBefore, noEmptyLineBetween, order:
-/// "flexible" }`); secondary options are `unspecified` (`top`, `bottom`,
-/// `ignore`, `bottomAlphabetical`), `emptyLineBeforeUnspecified` and
-/// `emptyLineMinimumPropertyThreshold`.
-///
-/// Every rule, at-rule and SCSS nested property with children is checked
-/// over the [`PostcssTree`] of the source.  The fix sorts the block as
-/// postcss-sorting does, comments travelling with the declaration they
-/// belong to, then the empty lines between groups are fixed on the sorted
-/// block in a later fix pass, as Stylelint fixes them after sorting.
-pub struct OrderPropertiesOrder;
+const NAME: &str = "order/properties-order";
+
+declare_rule! {
+  /// Enforce a specific ordering of properties within declaration blocks.
+  ///
+  /// Equivalent to stylelint-order's `order/properties-order` rule, autofix
+  /// included.  The primary option lists property names and groups
+  /// (`{ properties, groupName, emptyLineBefore, noEmptyLineBetween, order:
+  /// "flexible" }`); secondary options are `unspecified` (`top`, `bottom`,
+  /// `ignore`, `bottomAlphabetical`), `emptyLineBeforeUnspecified` and
+  /// `emptyLineMinimumPropertyThreshold`.
+  ///
+  /// Every rule, at-rule and SCSS nested property with children is checked
+  /// over the [`PostcssTree`] of the source.  The fix sorts the block as
+  /// postcss-sorting does, comments travelling with the declaration they
+  /// belong to, then the empty lines between groups are fixed on the sorted
+  /// block in a later fix pass, as Stylelint fixes them after sorting.
+  pub struct OrderPropertiesOrder => OrderPropertiesOrderCheck {
+    name: NAME,
+    description: "Enforce a specific ordering of properties within declaration blocks",
+    default_severity: Warning,
+    primary_option_array: true,
+  }
+}
+
+/// `order/properties-order` as configured.
+pub struct OrderPropertiesOrderCheck {
+  /// The order, or `None` when the config gives none (a preset enabling
+  /// the rule) or one naming no property, which checks nothing.
+  config: Option<Config>,
+}
+
+impl OrderPropertiesOrderCheck {
+  /// stylelint-order's options: an array of property names and groups,
+  /// checked whole by `validatePrimaryOption`, then `unspecified`,
+  /// `emptyLineBeforeUnspecified` and `emptyLineMinimumPropertyThreshold`.
+  ///
+  /// The order list can run to hundreds of properties; its lookup tables
+  /// are built here, once per rule set.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let items = options.primary_test(is_valid_primary);
+    let unspecified = options.value(
+      "unspecified",
+      &[
+        Accept::Exactly("top"),
+        Accept::Exactly("bottom"),
+        Accept::Exactly("ignore"),
+        Accept::Exactly("bottomAlphabetical"),
+      ],
+    );
+    let empty_line_before_unspecified = options.value(
+      "emptyLineBeforeUnspecified",
+      &[
+        Accept::Exactly("always"),
+        Accept::Exactly("never"),
+        Accept::Exactly("threshold"),
+      ],
+    );
+    let threshold = options.number("emptyLineMinimumPropertyThreshold", &[Accept::Number]);
+    options.finish()?;
+    let unspecified = match unspecified.and_then(|value| value.as_str()) {
+      Some("top") => Unspecified::Top,
+      Some("bottom") => Unspecified::Bottom,
+      Some("bottomAlphabetical") => Unspecified::BottomAlphabetical,
+      _ => Unspecified::Ignore,
+    };
+    let empty_line_before_unspecified = empty_line_before_unspecified
+      .and_then(|value| value.as_str())
+      .map(str::to_string);
+    let config = items.and_then(|items| items.as_array()).and_then(|items| {
+      Config::new(
+        items,
+        unspecified,
+        empty_line_before_unspecified,
+        threshold.unwrap_or(0.0),
+      )
+    });
+    Ok(Self { config })
+  }
+}
+
+/// stylelint-order's `validatePrimaryOption`: an array of property names
+/// and groups whose `properties` are names, whose `emptyLineBefore` is
+/// `always`, `never` or `threshold`, and whose `noEmptyLineBetween` is a
+/// boolean.
+fn is_valid_primary(value: &serde_json::Value) -> bool {
+  let Some(items) = value.as_array() else {
+    return false;
+  };
+  items.iter().all(|item| match item {
+    serde_json::Value::String(_) => true,
+    serde_json::Value::Object(group) => {
+      group
+        .get("properties")
+        .and_then(|p| p.as_array())
+        .is_some_and(|p| p.iter().all(serde_json::Value::is_string))
+        && group
+          .get("emptyLineBefore")
+          .is_none_or(|e| matches!(e.as_str(), Some("always" | "never" | "threshold")))
+        && group
+          .get("noEmptyLineBetween")
+          .is_none_or(serde_json::Value::is_boolean)
+    }
+    _ => false,
+  })
+}
 
 /// stylelint-order's `createOrderInfo` entry for one property.
 #[derive(Debug, Clone)]
@@ -52,7 +145,7 @@ enum Unspecified {
   BottomAlphabetical,
 }
 
-/// The rule's options, read once per file.
+/// The order the rule's options give, with its lookup tables.
 struct Config {
   /// `createOrderInfo`: property name (as configured) to its order data.
   order: HashMap<String, OrderData>,
@@ -67,54 +160,14 @@ struct Config {
 }
 
 impl Config {
-  /// Read the options, or `None` when they are not valid (Stylelint then
-  /// reports the options and skips the rule).
-  fn parse(options: Option<&serde_json::Value>) -> Option<Self> {
-    let (primary, secondary) = split_array_settings(options);
-    let items = primary?.as_array()?;
-    let valid = items.iter().all(|item| match item {
-      serde_json::Value::String(_) => true,
-      serde_json::Value::Object(group) => {
-        group
-          .get("properties")
-          .and_then(|p| p.as_array())
-          .is_some_and(|p| p.iter().all(serde_json::Value::is_string))
-          && group
-            .get("emptyLineBefore")
-            .is_none_or(|e| matches!(e.as_str(), Some("always" | "never" | "threshold")))
-          && group
-            .get("noEmptyLineBetween")
-            .is_none_or(serde_json::Value::is_boolean)
-      }
-      _ => false,
-    });
-    if !valid {
-      return None;
-    }
-
-    let unspecified = match secondary.and_then(|s| s.get("unspecified")) {
-      None => Unspecified::Ignore,
-      Some(value) => match value.as_str()? {
-        "top" => Unspecified::Top,
-        "bottom" => Unspecified::Bottom,
-        "ignore" => Unspecified::Ignore,
-        "bottomAlphabetical" => Unspecified::BottomAlphabetical,
-        _ => return None,
-      },
-    };
-    let empty_line_before_unspecified =
-      match secondary.and_then(|s| s.get("emptyLineBeforeUnspecified")) {
-        None => None,
-        Some(value) => match value.as_str()? {
-          name @ ("always" | "never" | "threshold") => Some(name.to_string()),
-          _ => return None,
-        },
-      };
-    let threshold = match secondary.and_then(|s| s.get("emptyLineMinimumPropertyThreshold")) {
-      None => 0.0,
-      Some(value) => value.as_f64()?,
-    };
-
+  /// The order `items` give, which [`is_valid_primary`] has accepted, or
+  /// `None` when it names no property.
+  fn new(
+    items: &[serde_json::Value],
+    unspecified: Unspecified,
+    empty_line_before_unspecified: Option<String>,
+    threshold: f64,
+  ) -> Option<Self> {
     // createOrderInfo.
     let mut order = HashMap::new();
     let mut expected_position = 0;
@@ -247,26 +300,11 @@ struct PropertyData<'c> {
   order: Option<&'c OrderData>,
 }
 
-impl Rule for OrderPropertiesOrder {
-  fn name(&self) -> &'static str {
-    "order/properties-order"
-  }
-
-  fn description(&self) -> &'static str {
-    "Enforce a specific ordering of properties within declaration blocks"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for OrderPropertiesOrderCheck {
   /// Checks the property order and the empty lines between groups in every
   /// block of the document.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    // The order list can run to hundreds of properties; build the lookup
-    // tables once per run.
-    let parsed = per_run(self.name(), ctx.options, || Config::parse(ctx.options));
-    let Some(config) = parsed.as_ref() else {
+    let Some(config) = &self.config else {
       return vec![];
     };
     let tree = ctx.postcss_tree();
@@ -280,7 +318,7 @@ impl Rule for OrderPropertiesOrder {
   }
 }
 
-impl OrderPropertiesOrder {
+impl OrderPropertiesOrderCheck {
   /// stylelint-order's `checkNodeForOrder`: report every property that
   /// comes too early, each with the fix that sorts the whole block.
   /// Returns whether that fix changes the block.
@@ -325,9 +363,7 @@ impl OrderPropertiesOrder {
       if let Some(group) = second.order.and_then(|o| o.group_name.as_deref()) {
         message.push_str(&format!(" in group \"{group}\""));
       }
-      let mut diag = Diagnostic::new(self.name(), message)
-        .severity(self.default_severity())
-        .span(node_span(tree, second.node));
+      let mut diag = Diagnostic::new(NAME, message).span(node_span(tree, second.node));
       if let Some(edit) = &fix {
         diag = diag.fix(Fix::new("Sort the properties", vec![edit.clone()]));
       }
@@ -365,9 +401,7 @@ impl OrderPropertiesOrder {
           remove_empty_lines_before(tree.before(node), newline),
         )
       };
-      let mut diag = Diagnostic::new(self.name(), message)
-        .severity(self.default_severity())
-        .span(node_span(tree, node));
+      let mut diag = Diagnostic::new(NAME, message).span(node_span(tree, node));
       if fixable {
         let range = &tree.nodes[node].before;
         diag = diag.fix(Fix::new(
@@ -777,14 +811,14 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{ctx_with_source_and_options, fix};
+  use crate::testing::{configured, ctx_with_source, fix, invalid_options};
 
   const RULE: &str = "order/properties-order";
 
   /// The messages for `source` with `options`.
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
-    let ctx = ctx_with_source_and_options(source, &options);
-    OrderPropertiesOrder
+    let ctx = ctx_with_source(source);
+    configured(&OrderPropertiesOrder, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -823,6 +857,40 @@ mod tests {
     assert_eq!(
       messages("a { height: 1px; font-size: 2px; }", grouped),
       vec!["Expected \"font-size\" to come before \"height\" in group \"font\""]
+    );
+  }
+
+  #[test]
+  fn an_order_naming_no_property_checks_nothing() {
+    assert!(messages("a { top: 0; color: pink; }", json!([[]])).is_empty());
+    assert!(invalid_options(RULE, json!([[]])).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        json!([["color"], {
+          "unspecified": "bottomAlphabetical",
+          "emptyLineBeforeUnspecified": "threshold",
+          "emptyLineMinimumPropertyThreshold": 4
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, json!([[{ "properties": "color" }]])),
+      ["Invalid option \"[{\"properties\":\"color\"}]\" for rule \"order/properties-order\""]
+    );
+    assert_eq!(
+      invalid_options(
+        RULE,
+        json!([["color"], { "emptyLineMinimumPropertyThreshold": "4" }])
+      ),
+      [
+        "Invalid value \"4\" for option \"emptyLineMinimumPropertyThreshold\" of rule \"order/properties-order\""
+      ]
     );
   }
 

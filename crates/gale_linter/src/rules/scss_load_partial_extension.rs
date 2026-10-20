@@ -1,24 +1,37 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow file extensions in `@use`, `@forward`, and `@import` paths.
-pub struct ScssLoadPartialExtension;
+const NAME: &str = "scss/load-partial-extension";
 
-impl Rule for ScssLoadPartialExtension {
-  fn name(&self) -> &'static str {
-    "scss/load-partial-extension"
+declare_rule! {
+  /// Disallow file extensions in `@use`, `@forward`, and `@import` paths.
+  pub struct ScssLoadPartialExtension => ScssLoadPartialExtensionCheck {
+    name: NAME,
+    description: "Disallow unnecessary file extensions in @use/@import",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unnecessary file extensions in @use/@import"
+/// `scss/load-partial-extension` as configured.
+pub struct ScssLoadPartialExtensionCheck;
+
+impl ScssLoadPartialExtensionCheck {
+  /// Stylelint's options: `"always"` or `"never"`.  Gale implements only
+  /// `"never"`, whatever the option: `"always"` is accepted but not yet
+  /// applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssLoadPartialExtensionCheck {
   /// Flags a `@use`, `@forward` or `@import` path that carries a file extension.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -42,10 +55,9 @@ impl Rule for ScssLoadPartialExtension {
       if path.ends_with(ext) {
         return vec![
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Unexpected file extension \"{}\" in partial import", ext),
           )
-          .severity(self.default_severity())
           .span(Span::new(at.span.offset, at.span.length)),
         ];
       }
@@ -75,7 +87,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn use_rule(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -88,36 +100,47 @@ mod tests {
 
   #[test]
   fn reports_scss_extension() {
-    let d = ScssLoadPartialExtension.check(&use_rule("\"variables.scss\""), &scss_ctx());
+    let rule = configured(&ScssLoadPartialExtension, None);
+    let d = rule.check(&use_rule("\"variables.scss\""), &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(".scss"));
   }
 
   #[test]
   fn reports_sass_extension() {
-    let d = ScssLoadPartialExtension.check(&use_rule("\"variables.sass\""), &scss_ctx());
+    let rule = configured(&ScssLoadPartialExtension, None);
+    let d = rule.check(&use_rule("\"variables.sass\""), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_css_extension() {
-    let d = ScssLoadPartialExtension.check(&use_rule("\"reset.css\""), &scss_ctx());
+    let rule = configured(&ScssLoadPartialExtension, None);
+    let d = rule.check(&use_rule("\"reset.css\""), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_extension() {
-    let d = ScssLoadPartialExtension.check(&use_rule("\"variables\""), &scss_ctx());
+    let rule = configured(&ScssLoadPartialExtension, None);
+    let d = rule.check(&use_rule("\"variables\""), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssLoadPartialExtension, None);
     let ctx = ctx();
-    assert!(
-      ScssLoadPartialExtension
-        .check(&use_rule("\"variables.scss\""), &ctx)
-        .is_empty()
+    assert!(rule.check(&use_rule("\"variables.scss\""), &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/load-partial-extension\""]
     );
   }
 }

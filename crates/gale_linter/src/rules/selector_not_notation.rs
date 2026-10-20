@@ -1,38 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::selector::postcss::{self, Kind, Node, Selector};
 use crate::standard_syntax::is_standard_syntax_selector;
 
-/// Specify simple or complex notation for `:not()` pseudo-class.
-///
-/// Equivalent to Stylelint's `selector-not-notation` rule.
-///
-/// - `"complex"` (default): prefer list arguments — flag chained
-///   `:not(.a):not(.b)`; the fix merges the chain into `:not(.a, .b)`.
-/// - `"simple"`: prefer chained notation — flag `:not()` whose argument is a
-///   list or anything but one simple selector; the fix splits a list of
-///   simple selectors into `:not(.a):not(.b)`.
-pub struct SelectorNotNotation;
+const NAME: &str = "selector-not-notation";
 
-impl Rule for SelectorNotNotation {
-  fn name(&self) -> &'static str {
-    "selector-not-notation"
+declare_rule! {
+  /// Specify simple or complex notation for `:not()` pseudo-class.
+  ///
+  /// Equivalent to Stylelint's `selector-not-notation` rule.
+  ///
+  /// - `"complex"` (default): prefer list arguments — flag chained
+  ///   `:not(.a):not(.b)`; the fix merges the chain into `:not(.a, .b)`.
+  /// - `"simple"`: prefer chained notation — flag `:not()` whose argument is a
+  ///   list or anything but one simple selector; the fix splits a list of
+  ///   simple selectors into `:not(.a):not(.b)`.
+  pub struct SelectorNotNotation => SelectorNotNotationCheck {
+    name: NAME,
+    description: "Specify simple or complex notation for :not() pseudo-class",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify simple or complex notation for :not() pseudo-class"
+/// `selector-not-notation` as configured.
+pub struct SelectorNotNotationCheck {
+  /// Whether `:not()` must use the simple notation.
+  simple: bool,
+}
+
+impl SelectorNotNotationCheck {
+  /// Stylelint's options: `"simple"` or `"complex"`.  Gale reads no option as `"complex"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["simple", "complex"]);
+    options.finish()?;
+    Ok(Self {
+      simple: option.unwrap_or("complex") == "simple",
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorNotNotationCheck {
   /// Flags `:not()` written in the notation the option forbids, in every
   /// style rule's selector as written. Interpolated selectors are skipped.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let simple = ctx.primary_option_str() == Some("simple");
+    let simple = self.simple;
     let message = if simple {
       "Expected simple :not() pseudo-class notation"
     } else {
@@ -73,9 +89,7 @@ impl Rule for SelectorNotNotation {
             None
           }
         };
-        let mut diag = Diagnostic::new(self.name(), message)
-          .severity(self.default_severity())
-          .span(Span::from_range(not.start, not.end));
+        let mut diag = Diagnostic::new(NAME, message).span(Span::from_range(not.start, not.end));
         if let Some(fix) = fix {
           diag = diag.fix(fix);
         }
@@ -219,7 +233,7 @@ fn complex_fix(source: &str, first: &Node, chain: &[Node]) -> Option<Fix> {
 mod tests {
   use gale_css_parser::Syntax;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-not-notation";
 
@@ -325,6 +339,15 @@ mod tests {
     assert_eq!(
       fix(RULE, options, ":not(a, b) {}", Syntax::Css),
       ":not(a, b) {}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, serde_json::json!("simple")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("compound")),
+      ["Invalid option value \"compound\" for rule \"selector-not-notation\""]
     );
   }
 }

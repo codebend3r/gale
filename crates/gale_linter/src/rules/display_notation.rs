@@ -1,17 +1,50 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 
-/// Specify short or full notation for the `display` property.
-///
-/// Equivalent to Stylelint's `display-notation` rule, including its
-/// autofix.  Primary option `"short"` wants the single-keyword forms
-/// (`block`, `inline-flex`), `"full"` the multi-keyword ones (`block flow`,
-/// `inline flex`).  Only values made purely of keywords are checked; the fix
-/// swaps the keywords and keeps any comments between them.
-pub struct DisplayNotation;
+const NAME: &str = "display-notation";
+
+declare_rule! {
+  /// Specify short or full notation for the `display` property.
+  ///
+  /// Equivalent to Stylelint's `display-notation` rule, including its
+  /// autofix.  Primary option `"short"` wants the single-keyword forms
+  /// (`block`, `inline-flex`), `"full"` the multi-keyword ones (`block flow`,
+  /// `inline flex`).  Only values made purely of keywords are checked; the fix
+  /// swaps the keywords and keeps any comments between them.
+  pub struct DisplayNotation => DisplayNotationCheck {
+    name: NAME,
+    description: "Specify short or long form for display values",
+    default_severity: Warning,
+  }
+}
+
+/// `display-notation` as configured.
+pub struct DisplayNotationCheck {
+  /// The keywords to rewrite, from the notation the config does not want
+  /// to the one it does; `None` when the config names neither, and the
+  /// rule checks nothing.
+  table: Option<&'static [(&'static str, &'static [&'static str])]>,
+}
+
+impl DisplayNotationCheck {
+  /// Stylelint's option: `"short"` or `"full"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["short", "full"]);
+    options.finish()?;
+    Ok(Self {
+      table: notation.map(|notation| match notation {
+        "short" => LONG_TO_SHORT,
+        _ => SHORT_TO_LONG,
+      }),
+    })
+  }
+}
 
 /// `display-outside` keywords, which sort first.
 const OUTSIDE: &[&str] = &["block", "inline", "run-in"];
@@ -79,26 +112,12 @@ const LONG_TO_SHORT: &[(&str, &[&str])] = &[
   ("run-in flow", &["run-in"]),
 ];
 
-impl Rule for DisplayNotation {
-  fn name(&self) -> &'static str {
-    "display-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify short or long form for display values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DisplayNotationCheck {
   /// Reports `display` values in the other notation, with a fix that
   /// rewrites the keywords.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let table = match ctx.primary_option_str() {
-      Some("short") => LONG_TO_SHORT,
-      Some("full") => SHORT_TO_LONG,
-      _ => return Vec::new(),
+    let Some(table) = self.table else {
+      return Vec::new();
     };
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
@@ -145,10 +164,9 @@ impl Rule for DisplayNotation {
       );
       diags.push(
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Expected \"{normalized}\" to be \"{replacement}\""),
         )
-        .severity(self.default_severity())
         .span(span)
         .fix(Fix::new(
           format!("Replace with \"{replacement}\""),
@@ -351,7 +369,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "display-notation";
 
@@ -417,5 +435,14 @@ mod tests {
     let source = "a { display: block flow; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, json!("full")).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("long")),
+      ["Invalid option value \"long\" for rule \"display-notation\""]
+    );
   }
 }

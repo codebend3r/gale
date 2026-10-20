@@ -1,30 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after the commas of value lists.
-///
-/// Primary: "always" | "never" | "always-single-line"
-pub struct StylisticValueListCommaSpaceAfter;
+const NAME: &str = "@stylistic/value-list-comma-space-after";
 
-impl Rule for StylisticValueListCommaSpaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/value-list-comma-space-after"
+declare_rule! {
+  /// Require or disallow a space after the commas of value lists.
+  ///
+  /// Primary: "always" | "never" | "always-single-line"
+  pub struct StylisticValueListCommaSpaceAfter => StylisticValueListCommaSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the commas of value lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the commas of value lists"
+/// `@stylistic/value-list-comma-space-after` as configured.
+pub struct StylisticValueListCommaSpaceAfterCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.
+  option: &'static str,
+}
+
+impl StylisticValueListCommaSpaceAfterCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "never", "always-single-line", "never-single-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticValueListCommaSpaceAfterCheck {
   /// Flags a value list comma whose trailing space does not match the option.
   /// Commas inside function arguments belong to the function-comma rules.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
     let len = bytes.len();
@@ -165,11 +184,7 @@ impl Rule for StylisticValueListCommaSpaceAfter {
               "never" => "Unexpected space after the comma in value list",
               _ => "Expected a space after the comma in value list",
             };
-            diagnostics.push(
-              Diagnostic::new(self.name(), msg)
-                .severity(self.default_severity())
-                .span(Span::new(comma_pos, 1)),
-            );
+            diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(comma_pos, 1)));
           }
         }
         _ => {}
@@ -185,11 +200,11 @@ impl Rule for StylisticValueListCommaSpaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticValueListCommaSpaceAfter;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticValueListCommaSpaceAfter, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -223,5 +238,17 @@ mod tests {
     // Commas inside functions should not be flagged by this rule
     let d = check("a { background: rgb(0,0,0); }", "always");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-single-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-single-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/value-list-comma-space-after\""]
+    );
   }
 }

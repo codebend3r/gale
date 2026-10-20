@@ -1,27 +1,60 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify context or prefix notation for media feature ranges.
-///
-/// Equivalent to Stylelint's `media-feature-range-notation` rule.
-///
-/// Primary option:
-///   - `"context"`: expect range notation (e.g. `width >= 768px`); the fix
-///     rewrites `min-`/`max-` features in place (`(min-width: 1px)` becomes
-///     `(width >= 1px)`).
-///   - `"prefix"`: expect prefix notation (e.g. `min-width: 768px`); range
-///     features are reported but cannot be fixed.
-///
-/// Secondary option `except: ["exact-value"]` flips the expectation for
-/// exact values: `(width: 1px)` under `"prefix"` becomes `(width = 1px)`.
-///
-/// Media queries are read as written and parsed the way
-/// `@csstools/media-query-list-parser` reads them, so invalid queries and
-/// features whose value is not a plain value (preprocessor variables, math)
-/// are skipped.
-pub struct MediaFeatureRangeNotation;
+const NAME: &str = "media-feature-range-notation";
+
+declare_rule! {
+  /// Specify context or prefix notation for media feature ranges.
+  ///
+  /// Equivalent to Stylelint's `media-feature-range-notation` rule.
+  ///
+  /// Primary option:
+  ///   - `"context"`: expect range notation (e.g. `width >= 768px`); the fix
+  ///     rewrites `min-`/`max-` features in place (`(min-width: 1px)` becomes
+  ///     `(width >= 1px)`).
+  ///   - `"prefix"`: expect prefix notation (e.g. `min-width: 768px`); range
+  ///     features are reported but cannot be fixed.
+  ///
+  /// Secondary option `except: ["exact-value"]` flips the expectation for
+  /// exact values: `(width: 1px)` under `"prefix"` becomes `(width = 1px)`.
+  ///
+  /// Media queries are read as written and parsed the way
+  /// `@csstools/media-query-list-parser` reads them, so invalid queries and
+  /// features whose value is not a plain value (preprocessor variables, math)
+  /// are skipped.
+  pub struct MediaFeatureRangeNotation => MediaFeatureRangeNotationCheck {
+    name: NAME,
+    description: "Specify context or prefix notation for media feature ranges",
+    default_severity: Warning,
+  }
+}
+
+/// `media-feature-range-notation` as configured.
+pub struct MediaFeatureRangeNotationCheck {
+  /// `"prefix"` rather than `"context"` (the default).
+  prefix: bool,
+  /// `except: ["exact-value"]`.
+  except_exact_value: bool,
+}
+
+impl MediaFeatureRangeNotationCheck {
+  /// Stylelint's options: `"prefix"` or `"context"`, then
+  /// `except: ["exact-value"]`.  Gale reads no option as `"context"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["prefix", "context"]);
+    let except = options.keywords("except", &["exact-value"]);
+    options.finish()?;
+    Ok(Self {
+      prefix: notation == Some("prefix"),
+      except_exact_value: except.contains(&"exact-value"),
+    })
+  }
+}
 
 /// Stylelint's `rangeTypeMediaFeatureNames`.
 const RANGE_FEATURES: &[&str] = &[
@@ -39,19 +72,7 @@ const RANGE_FEATURES: &[&str] = &[
   "width",
 ];
 
-impl Rule for MediaFeatureRangeNotation {
-  fn name(&self) -> &'static str {
-    "media-feature-range-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify context or prefix notation for media feature ranges"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MediaFeatureRangeNotationCheck {
   /// Flags media features written in the notation the option forbids, in
   /// every `@media` query as written (nested ones included).
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -65,7 +86,7 @@ impl Rule for MediaFeatureRangeNotation {
   }
 }
 
-impl MediaFeatureRangeNotation {
+impl MediaFeatureRangeNotationCheck {
   /// Check the params of one `@media` rule, which start at byte
   /// `params_start` of the source.
   fn check_params(
@@ -75,12 +96,7 @@ impl MediaFeatureRangeNotation {
     ctx: &RuleContext,
     diags: &mut Vec<Diagnostic>,
   ) {
-    let prefix = ctx.primary_option_str() == Some("prefix");
-    let except_exact_value = ctx
-      .secondary_options()
-      .and_then(|v| v.get("except"))
-      .and_then(|v| v.as_array())
-      .is_some_and(|items| items.iter().any(|v| v.as_str() == Some("exact-value")));
+    let (prefix, except_exact_value) = (self.prefix, self.except_exact_value);
 
     // Stylelint only parses params that could hold a problem.
     if !except_exact_value {
@@ -130,9 +146,7 @@ impl MediaFeatureRangeNotation {
           params_start + feature.open,
           params_start + feature.close + 1,
         );
-        let mut diag = Diagnostic::new(self.name(), message(expect_prefix))
-          .severity(self.default_severity())
-          .span(span);
+        let mut diag = Diagnostic::new(NAME, message(expect_prefix)).span(span);
         if let Form::Plain { colon } = feature.form
           && !expect_prefix
         {
@@ -768,5 +782,28 @@ mod tests {
     let css = "@media (min-width: 1px) {}";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        RULE,
+        serde_json::json!(["prefix", { "except": "exact-value" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("range")),
+      ["Invalid option value \"range\" for rule \"media-feature-range-notation\""]
+    );
+    assert_eq!(
+      invalid_options(
+        RULE,
+        serde_json::json!(["context", { "except": ["exact"] }])
+      ),
+      ["Invalid value \"exact\" for option \"except\" of rule \"media-feature-range-notation\""]
+    );
   }
 }

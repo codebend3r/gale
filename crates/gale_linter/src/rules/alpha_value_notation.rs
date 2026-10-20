@@ -1,21 +1,57 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::js_number::{parse_number, to_js_string, to_precision};
-use crate::pattern::option_matches;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Specify percentage or number notation for alpha values.
-///
-/// Equivalent to Stylelint's `alpha-value-notation` rule, including its
-/// autofix.  Checks the alpha channel of color functions (`rgb()`, `hsl()`,
-/// `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`) and the values
-/// of alpha properties such as `opacity`.  Primary option: `"number"` or
-/// `"percentage"`; secondary option `exceptProperties` flips the expectation
-/// for matching properties.
-pub struct AlphaValueNotation;
+const NAME: &str = "alpha-value-notation";
+
+declare_rule! {
+  /// Specify percentage or number notation for alpha values.
+  ///
+  /// Equivalent to Stylelint's `alpha-value-notation` rule, including its
+  /// autofix.  Checks the alpha channel of color functions (`rgb()`, `hsl()`,
+  /// `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`) and the values
+  /// of alpha properties such as `opacity`.  Primary option: `"number"` or
+  /// `"percentage"`; secondary option `exceptProperties` flips the expectation
+  /// for matching properties.
+  pub struct AlphaValueNotation => AlphaValueNotationCheck {
+    name: NAME,
+    description: "Specify percentage or number notation for alpha values",
+    default_severity: Warning,
+  }
+}
+
+/// `alpha-value-notation` as configured.
+pub struct AlphaValueNotationCheck {
+  /// The notation alpha values should use; `None` when the config names
+  /// none, and the rule checks nothing.
+  notation: Option<Notation>,
+  /// `exceptProperties`.
+  except_properties: Matchers,
+}
+
+impl AlphaValueNotationCheck {
+  /// Stylelint's options: `"number"` or `"percentage"`, then
+  /// `exceptProperties`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["number", "percentage"]);
+    let except_properties = options.matchers("exceptProperties");
+    options.finish()?;
+    Ok(Self {
+      notation: notation.map(|notation| match notation {
+        "number" => Notation::Number,
+        _ => Notation::Percentage,
+      }),
+      except_properties,
+    })
+  }
+}
 
 /// Properties whose value is an alpha value.
 const ALPHA_PROPS: &[&str] = &[
@@ -49,28 +85,13 @@ impl Notation {
   }
 }
 
-impl Rule for AlphaValueNotation {
-  fn name(&self) -> &'static str {
-    "alpha-value-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify percentage or number notation for alpha values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for AlphaValueNotationCheck {
   /// Reports every alpha value in the wrong notation, with a fix that
   /// rewrites just that value.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let primary = match ctx.primary_option_str() {
-      Some("number") => Notation::Number,
-      Some("percentage") => Notation::Percentage,
-      _ => return Vec::new(),
+    let Some(primary) = self.notation else {
+      return Vec::new();
     };
-    let secondary = ctx.secondary_options();
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
@@ -85,7 +106,7 @@ impl Rule for AlphaValueNotation {
       if !(is_alpha_prop || mentions_alpha_function(value)) || !has_digit(value) {
         continue;
       }
-      let expected = if option_matches(secondary.and_then(|s| s.get("exceptProperties")), prop) {
+      let expected = if self.except_properties.matches(prop) {
         primary.flipped()
       } else {
         primary
@@ -113,16 +134,12 @@ impl Rule for AlphaValueNotation {
         let start = decl.value_span.start + alpha.source_index;
         let span = Span::new(start, unfixed.len());
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Expected \"{unfixed}\" to be \"{fixed}\""),
-          )
-          .severity(self.default_severity())
-          .span(span)
-          .fix(Fix::new(
-            format!("Replace \"{unfixed}\" with \"{fixed}\""),
-            vec![Edit::new(span, fixed.clone())],
-          )),
+          Diagnostic::new(NAME, format!("Expected \"{unfixed}\" to be \"{fixed}\""))
+            .span(span)
+            .fix(Fix::new(
+              format!("Replace \"{unfixed}\" with \"{fixed}\""),
+              vec![Edit::new(span, fixed.clone())],
+            )),
         );
       };
       value_parser::walk(&parsed, &mut |node| {
@@ -189,7 +206,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "alpha-value-notation";
 
@@ -312,6 +329,25 @@ mod tests {
     assert_eq!(
       lint(RULE, options, "a { opacity: 10% }", Syntax::Css).len(),
       1
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        json!(["percentage", { "exceptProperties": ["opacity", "/^fill/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, json!("decimal")),
+      ["Invalid option value \"decimal\" for rule \"alpha-value-notation\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, json!(["number", { "exceptProperties": [1] }])),
+      ["Invalid value \"1\" for option \"exceptProperties\" of rule \"alpha-value-notation\""]
     );
   }
 }

@@ -1,49 +1,87 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow redundant nesting selectors (`&`).
-///
-/// Reports when `&` appears at the start of a nested selector followed by a
-/// combinator or descendant selector, because the `&` can be removed without
-/// changing the meaning.
-///
-/// A standalone `& { ... }` is **not** flagged — it serves as a scoping
-/// mechanism (e.g. after `@include` or `@extend`).
-///
-/// ```scss
-/// // Bad
-/// .foo {
-///   & .bar { color: red; }   // → `.bar { color: red; }`
-///   & > .bar { color: red; } // → `> .bar { color: red; }`
-/// }
-///
-/// // Good
-/// .foo {
-///   & { color: red; }        // scoping block
-///   &:hover { color: red; }  // pseudo-class append
-///   &.bar { color: red; }    // class append
-///   &__element { ... }       // BEM concatenation
-/// }
-/// ```
-///
-/// Equivalent to `scss/selector-no-redundant-nesting-selector`.
-pub struct ScssSelectorNoRedundantNestingSelector;
+const NAME: &str = "scss/selector-no-redundant-nesting-selector";
 
-impl Rule for ScssSelectorNoRedundantNestingSelector {
-  fn name(&self) -> &'static str {
-    "scss/selector-no-redundant-nesting-selector"
+declare_rule! {
+  /// Disallow redundant nesting selectors (`&`).
+  ///
+  /// Reports when `&` appears at the start of a nested selector followed by a
+  /// combinator or descendant selector, because the `&` can be removed without
+  /// changing the meaning.
+  ///
+  /// A standalone `& { ... }` is **not** flagged — it serves as a scoping
+  /// mechanism (e.g. after `@include` or `@extend`).
+  ///
+  /// ```scss
+  /// // Bad
+  /// .foo {
+  ///   & .bar { color: red; }   // → `.bar { color: red; }`
+  ///   & > .bar { color: red; } // → `> .bar { color: red; }`
+  /// }
+  ///
+  /// // Good
+  /// .foo {
+  ///   & { color: red; }        // scoping block
+  ///   &:hover { color: red; }  // pseudo-class append
+  ///   &.bar { color: red; }    // class append
+  ///   &__element { ... }       // BEM concatenation
+  /// }
+  /// ```
+  ///
+  /// Equivalent to `scss/selector-no-redundant-nesting-selector`.
+  pub struct ScssSelectorNoRedundantNestingSelector => ScssSelectorNoRedundantNestingSelectorCheck {
+    name: NAME,
+    description: "Disallow redundant nesting selectors (&)",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/selector-no-redundant-nesting-selector` as configured.
+pub struct ScssSelectorNoRedundantNestingSelectorCheck {
+  /// `ignoreKeywords`: a type selector after the `&` and its combinator
+  /// that matches one of these (names or `/regex/`es) keeps the `&`: it is
+  /// a keyword (such as Less's `when`) rather than a tag.
+  ignore_keywords: Matchers,
+}
+
+impl ScssSelectorNoRedundantNestingSelectorCheck {
+  /// Stylelint's options: `true`, then `ignoreKeywords`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_keywords = options.matchers("ignoreKeywords");
+    options.finish()?;
+    Ok(Self { ignore_keywords })
   }
 
-  fn description(&self) -> &'static str {
-    "Disallow redundant nesting selectors (&)"
+  /// Whether the selector after a leading `& ` (`after`, trimmed) starts
+  /// with a type selector that `ignoreKeywords` lists, past an explicit
+  /// combinator if there is one.
+  fn is_ignored_keyword(&self, after: &str) -> bool {
+    if self.ignore_keywords.is_empty() {
+      return false;
+    }
+    let compound = after
+      .strip_prefix(['>', '+', '~'])
+      .map_or(after, str::trim_start);
+    let tag_len = compound
+      .find(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || !c.is_ascii()))
+      .unwrap_or(compound.len());
+    let tag = &compound[..tag_len];
+    let starts_like_a_tag = tag
+      .chars()
+      .next()
+      .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '-' || !c.is_ascii());
+    starts_like_a_tag && self.ignore_keywords.matches(tag)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
   /// Flags a nested selector whose leading `&` is followed by a combinator or
   /// descendant, where dropping it changes nothing.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -101,7 +139,7 @@ impl Rule for ScssSelectorNoRedundantNestingSelector {
         if let Some(rest) = selector.strip_prefix('&') {
           let redundant = if rest.starts_with(char::is_whitespace) {
             let after = rest.trim_start();
-            !after.is_empty()
+            !after.is_empty() && !self.is_ignored_keyword(after)
           } else {
             false
           };
@@ -109,8 +147,7 @@ impl Rule for ScssSelectorNoRedundantNestingSelector {
             // Point the span at the `&` character in the source.
             let ampersand_offset = child.span.offset + part_offset_in_selector + trim_offset;
             diags.push(
-              Diagnostic::new(self.name(), "Unnecessary nesting selector (&)".to_string())
-                .severity(self.default_severity())
+              Diagnostic::new(NAME, "Unnecessary nesting selector (&)".to_string())
                 .span(Span::new(ampersand_offset, 1)),
             );
           }
@@ -127,7 +164,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn nested_rule(parent_sel: &str, child_sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -152,129 +189,155 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn allows_standalone_ampersand_block() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // A bare `& { ... }` is a scoping mechanism and should NOT be flagged.
     let node = nested_rule(".foo", "&");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_redundant_ampersand_descendant() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& .bar` is redundant — can be written as `.bar`.
     let node = nested_rule(".foo", "& .bar");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
 
   #[test]
   fn reports_redundant_ampersand_child_combinator() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& > .bar` is redundant — can be written as `> .bar`.
     let node = nested_rule(".foo", "& > .bar");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
 
   #[test]
   fn reports_redundant_ampersand_sibling_combinator() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& + .bar` is redundant — can be written as `+ .bar`.
     let node = nested_rule(".foo", "& + .bar");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
 
   #[test]
   fn allows_ampersand_with_pseudo() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&:hover");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn allows_ampersand_with_class() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&.bar");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn allows_ampersand_concatenation() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&__element` is BEM-style concatenation, NOT redundant.
     let node = nested_rule(".foo", "&__element");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn allows_non_ampersand_selector() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", ".bar");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_redundant_ampersand_in_selector_list() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `.other, & .child` — the `& .child` part is redundant.
     let node = nested_rule(".foo", ".other, & .child");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
 
   #[test]
   fn reports_redundant_ampersand_mixed_with_valid() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&:hover, & .child` — `&:hover` is fine but `& .child` is redundant.
     let node = nested_rule(".foo", "&:hover, & .child");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
 
   #[test]
   fn allows_selector_list_with_no_redundant_parts() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&:hover, &.active` — neither part is redundant.
     let node = nested_rule(".foo", "&:hover, &.active");
-    assert!(
-      ScssSelectorNoRedundantNestingSelector
-        .check(&node, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_all_redundant_parts_in_selector_list() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // Both `& .child1` and `& .child2` are redundant — report 2 diagnostics.
     let node = nested_rule(".foo", "& .child1, & .child2");
-    let d = ScssSelectorNoRedundantNestingSelector.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 2);
     assert!(d[0].message.contains("Unnecessary nesting"));
     assert!(d[1].message.contains("Unnecessary nesting"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreKeywords": ["when", "/^el/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"scss/selector-no-redundant-nesting-selector\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignoreKeywords": [1] }])),
+      [
+        "Invalid value \"1\" for option \"ignoreKeywords\" of rule \"scss/selector-no-redundant-nesting-selector\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["x"] }])),
+      ["Invalid option name \"ignore\" for rule \"scss/selector-no-redundant-nesting-selector\""]
+    );
+  }
+
+  #[test]
+  fn ignore_keywords_keeps_the_nesting_selector() {
+    let source =
+      ".a {\n  & when { color: red; }\n  & > element { color: red; }\n  & .b { color: red; }\n}\n";
+    let lint = |options: serde_json::Value| {
+      crate::testing::lint(NAME, options, source, gale_css_parser::Syntax::Scss).len()
+    };
+    assert_eq!(lint(serde_json::json!(true)), 3);
+    assert_eq!(
+      lint(serde_json::json!([true, { "ignoreKeywords": ["when", "/^el/"] }])),
+      1
+    );
   }
 }

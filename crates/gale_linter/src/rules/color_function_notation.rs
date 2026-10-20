@@ -1,50 +1,66 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern::option_matches;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_color_function;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Specify modern or legacy notation for color functions.
-///
-/// Equivalent to Stylelint's `color-function-notation` rule, including its
-/// autofix.  Checks `rgb()`, `rgba()`, `hsl()` and `hsla()`.  Primary option:
-/// `"modern"` (space-separated channels, `/` before the alpha) or `"legacy"`
-/// (comma-separated); only the move to modern notation is fixable.
-/// Secondary option `ignore: ["with-var-inside"]` skips calls with a direct
-/// `var()` argument.
-pub struct ColorFunctionNotation;
+const NAME: &str = "color-function-notation";
+
+declare_rule! {
+  /// Specify modern or legacy notation for color functions.
+  ///
+  /// Equivalent to Stylelint's `color-function-notation` rule, including its
+  /// autofix.  Checks `rgb()`, `rgba()`, `hsl()` and `hsla()`.  Primary option:
+  /// `"modern"` (space-separated channels, `/` before the alpha) or `"legacy"`
+  /// (comma-separated); only the move to modern notation is fixable.
+  /// Secondary option `ignore: ["with-var-inside"]` skips calls with a direct
+  /// `var()` argument.
+  pub struct ColorFunctionNotation => ColorFunctionNotationCheck {
+    name: NAME,
+    description: "Specify modern or legacy notation for color functions",
+    default_severity: Warning,
+  }
+}
+
+/// `color-function-notation` as configured.
+pub struct ColorFunctionNotationCheck {
+  /// `Some(true)` for `"modern"`, `Some(false)` for `"legacy"`; `None` when
+  /// the config names neither, and the rule checks nothing.
+  modern: Option<bool>,
+  /// `ignore: ["with-var-inside"]`.
+  ignore_with_var: bool,
+}
+
+impl ColorFunctionNotationCheck {
+  /// Stylelint's options: `"modern"` or `"legacy"`, then
+  /// `ignore: ["with-var-inside"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let notation = options.primary_one_of(&["modern", "legacy"]);
+    let ignore = options.keywords("ignore", &["with-var-inside"]);
+    options.finish()?;
+    Ok(Self {
+      modern: notation.map(|notation| notation == "modern"),
+      ignore_with_var: ignore.contains(&"with-var-inside"),
+    })
+  }
+}
 
 /// The color functions that have a legacy, comma-separated notation.
 const LEGACY_FUNCTIONS: &[&str] = &["rgb", "rgba", "hsl", "hsla"];
 
-impl Rule for ColorFunctionNotation {
-  fn name(&self) -> &'static str {
-    "color-function-notation"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify modern or legacy notation for color functions"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ColorFunctionNotationCheck {
   /// Reports color functions in the other notation.  Under `"modern"` the
   /// fix turns the channel commas into spaces, the alpha comma into ` / `,
   /// and drops the `a` of `rgba`/`hsla`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let modern = match ctx.primary_option_str() {
-      Some("modern") => true,
-      Some("legacy") => false,
-      _ => return Vec::new(),
+    let Some(modern) = self.modern else {
+      return Vec::new();
     };
-    let ignore_with_var = option_matches(
-      ctx.secondary_options().and_then(|s| s.get("ignore")),
-      "with-var-inside",
-    );
+    let ignore_with_var = self.ignore_with_var;
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
@@ -78,13 +94,12 @@ impl Rule for ColorFunctionNotation {
         }
         let span = Span::from_range(base + node.source_index, base + node.source_end_index);
         let mut diag = Diagnostic::new(
-          self.name(),
+          NAME,
           format!(
             "Expected {} color-function notation",
             if modern { "modern" } else { "legacy" }
           ),
         )
-        .severity(self.default_severity())
         .span(span);
         if modern {
           diag = diag.fix(Fix::new(
@@ -172,7 +187,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "color-function-notation";
 
@@ -247,5 +262,18 @@ mod tests {
     let source = "a { color: rgb(0, 0, 0) }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(RULE, json!(["legacy", { "ignore": "with-var-inside" }])).is_empty());
+    assert_eq!(
+      invalid_options(RULE, json!("new")),
+      ["Invalid option value \"new\" for rule \"color-function-notation\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, json!(["modern", { "ignore": ["var"] }])),
+      ["Invalid value \"var\" for option \"ignore\" of rule \"color-function-notation\""]
+    );
   }
 }

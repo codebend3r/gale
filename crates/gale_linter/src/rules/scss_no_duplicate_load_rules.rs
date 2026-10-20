@@ -2,26 +2,50 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind as StatementKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Disallow loading the same module twice with `@use`, `@forward` or
-/// `@import`.
-///
-/// Equivalent to stylelint-scss's `scss/no-duplicate-load-rules`.  Each kind
-/// of load rule is compared with its own kind.  An `@import` repeated with a
-/// different media query, `layer` or `supports()` condition is not a
-/// duplicate, nor is a `@forward` with different `as`, `show`, `hide` or
-/// `with` clauses; a `@use` is a duplicate whatever its namespace or
-/// configuration.
-///
-/// Upstream runs on any syntax (its own tests are plain CSS), so this rule
-/// does too.
-pub struct ScssNoDuplicateLoadRules;
+const NAME: &str = "scss/no-duplicate-load-rules";
+
+declare_rule! {
+  /// Disallow loading the same module twice with `@use`, `@forward` or
+  /// `@import`.
+  ///
+  /// Equivalent to stylelint-scss's `scss/no-duplicate-load-rules`.  Each kind
+  /// of load rule is compared with its own kind.  An `@import` repeated with a
+  /// different media query, `layer` or `supports()` condition is not a
+  /// duplicate, nor is a `@forward` with different `as`, `show`, `hide` or
+  /// `with` clauses; a `@use` is a duplicate whatever its namespace or
+  /// configuration.
+  ///
+  /// Upstream runs on any syntax (its own tests are plain CSS), so this rule
+  /// does too.
+  pub struct ScssNoDuplicateLoadRules => ScssNoDuplicateLoadRulesCheck {
+    name: NAME,
+    description: "Disallow duplicate load rules",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/no-duplicate-load-rules`, which takes no options.
+pub struct ScssNoDuplicateLoadRulesCheck;
+
+impl ScssNoDuplicateLoadRulesCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The characters JavaScript's `\s` matches, for a regex character class.
 const JS_SPACE: &str =
@@ -40,19 +64,7 @@ static EXPLICIT_NAMESPACE: LazyLock<Regex> = LazyLock::new(|| {
 static SPACE: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(&format!("[{JS_SPACE}]")).expect("valid regex"));
 
-impl Rule for ScssNoDuplicateLoadRules {
-  fn name(&self) -> &'static str {
-    "scss/no-duplicate-load-rules"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow duplicate load rules"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssNoDuplicateLoadRulesCheck {
   /// Reports every `@use`, `@forward` or `@import` that loads a URL an
   /// earlier one of its kind already loaded under the same conditions.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -110,9 +122,8 @@ impl Rule for ScssNoDuplicateLoadRules {
           at_rule.end
         };
         diags.push(
-          Diagnostic::new(self.name(), format!("Unexpected duplicate load rule {uri}"))
+          Diagnostic::new(NAME, format!("Unexpected duplicate load rule {uri}"))
             .message_args([uri])
-            .severity(self.default_severity())
             .span(Span::from_range(at_rule.start, end)),
         );
         continue;
@@ -174,11 +185,12 @@ fn list_import_conditions(params: &[ValueNode<'_>]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/no-duplicate-load-rules";
 
@@ -434,6 +446,17 @@ mod tests {
         "Unexpected duplicate load rule foo".to_string(),
         (2, 1, 2, 16)
       )]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/no-duplicate-load-rules\""]
     );
   }
 }

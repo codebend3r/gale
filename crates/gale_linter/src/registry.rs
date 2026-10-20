@@ -185,6 +185,7 @@ pub fn resolve_deprecated_alias(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::rule::LegacyRule;
 
   #[test]
   fn default_registry_has_rules() {
@@ -224,7 +225,7 @@ mod tests {
   /// A rule that only differs from another by its description.
   struct Named(&'static str);
 
-  impl Rule for Named {
+  impl LegacyRule for Named {
     fn name(&self) -> &'static str {
       "duplicate-name"
     }

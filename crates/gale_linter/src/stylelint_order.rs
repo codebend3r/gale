@@ -12,32 +12,6 @@ use gale_diagnostics::{Edit, Span};
 
 use crate::postcss_tree::{NodeKind, PostcssTree, has_delimited};
 
-/// Stylelint's `normalizeRuleSettings` for a rule whose primary option may
-/// be an array (`primaryOptionArray`): the primary and secondary options.
-///
-/// `[[...]]` and `[[...], { ... }]` hold the primary array (and the
-/// secondary options); any other array is the primary option itself, as is
-/// a value that is not an array.
-pub fn split_array_settings(
-  options: Option<&serde_json::Value>,
-) -> (Option<&serde_json::Value>, Option<&serde_json::Value>) {
-  let Some(options) = options else {
-    return (None, None);
-  };
-  let Some(items) = options.as_array() else {
-    return (Some(options), None);
-  };
-  match items.as_slice() {
-    [] => (Some(options), None),
-    [first, ..] if first.is_null() => (None, None),
-    [primary] if primary.is_array() => (Some(primary), None),
-    [primary, secondary] if !primary.is_object() && secondary.is_object() => {
-      (Some(primary), Some(secondary))
-    }
-    _ => (Some(options), None),
-  }
-}
-
 /// `vendor.prefix`: the `-\w+-` a property starts with, or `""`.
 pub fn vendor_prefix(prop: &str) -> &str {
   let Some(rest) = prop.strip_prefix('-') else {
@@ -603,25 +577,6 @@ fn shorthand_longhands(shorthand: &str) -> Option<&'static [&'static str]> {
 mod tests {
   use super::*;
   use gale_css_parser::Syntax;
-  use serde_json::json;
-
-  #[test]
-  fn settings_split_like_normalize_rule_settings() {
-    let nested = json!([["a", "b"]]);
-    assert_eq!(
-      split_array_settings(Some(&nested)),
-      (Some(&json!(["a", "b"])), None)
-    );
-    let flat = json!(["a", "b"]);
-    assert_eq!(split_array_settings(Some(&flat)), (Some(&flat), None));
-    let with_secondary = json!([["a"], { "unspecified": "top" }]);
-    assert_eq!(
-      split_array_settings(Some(&with_secondary)),
-      (Some(&json!(["a"])), Some(&json!({ "unspecified": "top" })))
-    );
-    let objects = json!([{ "type": "rule" }, { "type": "at-rule" }]);
-    assert_eq!(split_array_settings(Some(&objects)), (Some(&objects), None));
-  }
 
   #[test]
   fn vendor_prefixes() {

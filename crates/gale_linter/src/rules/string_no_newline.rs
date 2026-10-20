@@ -1,36 +1,50 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports literal newlines inside CSS string values.
-///
-/// CSS strings cannot span multiple lines without escaping. An unescaped
-/// newline inside a quoted string is invalid.
-///
-/// Equivalent to Stylelint's `string-no-newline` rule.
-pub struct StringNoNewline;
+const NAME: &str = "string-no-newline";
 
-impl Rule for StringNoNewline {
-  fn name(&self) -> &'static str {
-    "string-no-newline"
+declare_rule! {
+  /// Reports literal newlines inside CSS string values.
+  ///
+  /// CSS strings cannot span multiple lines without escaping. An unescaped
+  /// newline inside a quoted string is invalid.
+  ///
+  /// Equivalent to Stylelint's `string-no-newline` rule.
+  pub struct StringNoNewline => StringNoNewlineCheck {
+    name: NAME,
+    description: "Disallow newlines in strings",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow newlines in strings"
+/// `string-no-newline`, whose options gale does not apply yet.
+pub struct StringNoNewlineCheck;
+
+impl StringNoNewlineCheck {
+  /// Stylelint's options: nothing but `true`, then `ignore` listing
+  /// `"at-rule-preludes"` and `"declaration-values"`, which gale accepts but
+  /// does not yet apply.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.keywords("ignore", &["at-rule-preludes", "declaration-values"]);
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StringNoNewlineCheck {
   /// Checks declaration values for unescaped newlines inside strings.
   fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     if let CssNode::Style(style_rule) = node {
       for decl in &style_rule.declarations {
-        check_value_for_newlines(&decl.value, decl.span.offset, self, &mut diagnostics);
+        check_value_for_newlines(&decl.value, decl.span.offset, &mut diagnostics);
       }
     }
 
@@ -41,17 +55,13 @@ impl Rule for StringNoNewline {
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     // Source-level scan to catch newlines in strings that the parser
     // may not preserve (e.g., lightningcss discards malformed strings).
-    scan_source_for_string_newlines(ctx.source, ctx.syntax, self)
+    scan_source_for_string_newlines(ctx.source, ctx.syntax)
   }
 }
 
 /// Scan raw source text for strings containing literal newlines.
 /// Handles `//` line comments (SCSS) and `/* */` block comments to avoid FPs.
-fn scan_source_for_string_newlines(
-  source: &str,
-  syntax: Syntax,
-  rule: &StringNoNewline,
-) -> Vec<Diagnostic> {
+fn scan_source_for_string_newlines(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
   let mut diagnostics = Vec::new();
   let bytes = source.as_bytes();
   let len = bytes.len();
@@ -94,8 +104,7 @@ fn scan_source_for_string_newlines(
         }
         if bytes[i] == b'\n' || bytes[i] == b'\r' {
           diagnostics.push(
-            Diagnostic::new(rule.name(), "Unexpected newline in string")
-              .severity(rule.default_severity())
+            Diagnostic::new(NAME, "Unexpected newline in string")
               .span(Span::new(string_start, i - string_start)),
           );
           // Skip past the newline and break out of string
@@ -116,12 +125,7 @@ fn scan_source_for_string_newlines(
 }
 
 /// Reports each unescaped newline inside a quoted string in `value`.
-fn check_value_for_newlines(
-  value: &str,
-  base_offset: usize,
-  rule: &StringNoNewline,
-  diagnostics: &mut Vec<Diagnostic>,
-) {
+fn check_value_for_newlines(value: &str, base_offset: usize, diagnostics: &mut Vec<Diagnostic>) {
   let bytes = value.as_bytes();
   let len = bytes.len();
   let mut i = 0;
@@ -140,8 +144,7 @@ fn check_value_for_newlines(
         }
         if bytes[i] == b'\n' || bytes[i] == b'\r' {
           diagnostics.push(
-            Diagnostic::new(rule.name(), "Unexpected newline in string")
-              .severity(rule.default_severity())
+            Diagnostic::new(NAME, "Unexpected newline in string")
               .span(Span::new(base_offset + string_start, i - string_start)),
           );
           break;
@@ -162,11 +165,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   #[test]
   fn reports_newline_in_string_value() {
-    let rule = StringNoNewline;
+    let rule = configured(&StringNoNewline, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -185,7 +188,7 @@ mod tests {
 
   #[test]
   fn ignores_string_without_newline() {
-    let rule = StringNoNewline;
+    let rule = configured(&StringNoNewline, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -203,7 +206,7 @@ mod tests {
 
   #[test]
   fn ignores_escaped_newline() {
-    let rule = StringNoNewline;
+    let rule = configured(&StringNoNewline, None);
     let node = CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -217,5 +220,24 @@ mod tests {
     });
     let diags = rule.check(&node, &ctx());
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignore": ["at-rule-preludes", "declaration-values"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"string-no-newline\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["comments"] }])),
+      ["Invalid value \"comments\" for option \"ignore\" of rule \"string-no-newline\""]
+    );
   }
 }

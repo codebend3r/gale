@@ -1,26 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow end-of-line whitespace.
-///
-/// Equivalent to `@stylistic/no-eol-whitespace`.
-pub struct StylisticNoEolWhitespace;
+const NAME: &str = "@stylistic/no-eol-whitespace";
 
-impl Rule for StylisticNoEolWhitespace {
-  fn name(&self) -> &'static str {
-    "@stylistic/no-eol-whitespace"
+declare_rule! {
+  /// Disallow end-of-line whitespace.
+  ///
+  /// Equivalent to `@stylistic/no-eol-whitespace`.
+  pub struct StylisticNoEolWhitespace => StylisticNoEolWhitespaceCheck {
+    name: NAME,
+    description: "Disallow end-of-line whitespace",
+    default_severity: Warning,
+  }
+}
+
+/// `@stylistic/no-eol-whitespace` as configured.
+pub struct StylisticNoEolWhitespaceCheck {
+  /// `ignore: ["empty-lines"]`: a line holding only whitespace is allowed.
+  ignore_empty_lines: bool,
+}
+
+impl StylisticNoEolWhitespaceCheck {
+  /// The plugin's options: `true`, then `ignore: ["empty-lines"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.keywords("ignore", &["empty-lines"]);
+    options.finish()?;
+    Ok(Self {
+      ignore_empty_lines: ignore.contains(&"empty-lines"),
+    })
   }
 
-  fn description(&self) -> &'static str {
-    "Disallow end-of-line whitespace"
+  /// Whether the whitespace run `start..end` is a problem: with
+  /// `ignore: ["empty-lines"]` a run that fills its whole line is not.
+  fn flags(&self, bytes: &[u8], start: usize, end: usize) -> bool {
+    start < end && !(self.ignore_empty_lines && (start == 0 || bytes[start - 1] == b'\n'))
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticNoEolWhitespaceCheck {
   /// Flags whitespace at the end of a line, skipping string literals.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
@@ -66,10 +89,9 @@ impl Rule for StylisticNoEolWhitespace {
         {
           trail_start -= 1;
         }
-        if trail_start < trail_end {
+        if self.flags(bytes, trail_start, trail_end) {
           diagnostics.push(
-            Diagnostic::new(self.name(), "Unexpected end-of-line whitespace")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected end-of-line whitespace")
               .span(Span::new(trail_start, trail_end - trail_start)),
           );
         }
@@ -84,10 +106,9 @@ impl Rule for StylisticNoEolWhitespace {
       while trail_start > 0 && (bytes[trail_start - 1] == b' ' || bytes[trail_start - 1] == b'\t') {
         trail_start -= 1;
       }
-      if trail_start < len {
+      if self.flags(bytes, trail_start, len) {
         diagnostics.push(
-          Diagnostic::new(self.name(), "Unexpected end-of-line whitespace")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected end-of-line whitespace")
             .span(Span::new(trail_start, len - trail_start)),
         );
       }
@@ -101,34 +122,62 @@ impl Rule for StylisticNoEolWhitespace {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_no_trailing_whitespace() {
     let source = "a {\n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_trailing_spaces() {
     let source = "a {  \n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("end-of-line whitespace"));
   }
 
   #[test]
+  fn ignore_empty_lines_allows_whitespace_only_lines() {
+    let source = "a {\n  \n  color: red; \n\t\n}\n  ";
+    let all = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    assert_eq!(all.len(), 4);
+    let options = serde_json::json!([true, { "ignore": ["empty-lines"] }]);
+    let d =
+      configured(&StylisticNoEolWhitespace, options).check_root(&[], &ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span.offset, 20);
+  }
+
+  #[test]
   fn reports_trailing_tab() {
     let source = "a {\t\n  color: red;\n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_lines() {
     let source = "a { \n  color: red; \n}\n";
-    let d = StylisticNoEolWhitespace.check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
     assert_eq!(d.len(), 2);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert!(
+      invalid_options(NAME, serde_json::json!([true, {"ignore": ["empty-lines"]}])).is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"@stylistic/no-eol-whitespace\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, {"ignore": ["comments"]}])),
+      ["Invalid value \"comments\" for option \"ignore\" of rule \"@stylistic/no-eol-whitespace\""]
+    );
   }
 }

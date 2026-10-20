@@ -1,40 +1,86 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 use std::collections::HashSet;
 
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Pattern, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
-/// Specify a pattern for SCSS `$variable` names.
-///
-/// Accepts a regex string as the primary option. Defaults to kebab-case.
-/// The `$` prefix is stripped before matching.
-///
-/// Secondary option `ignoreInside`:
-/// - `"at-rule"` or `"inside-at-rule"` — ignore variables declared inside any
-///   at-rule (`@each`, `@for`, `@while`, `@if`, `@mixin`, `@function`, etc.)
-///
-/// By default, variables that are loop iterators in `@each` and `@for`
-/// declarations are always ignored (they are not real variable declarations).
-///
-/// Equivalent to `scss/dollar-variable-pattern`.
-pub struct ScssDollarVariablePattern;
+const NAME: &str = "scss/dollar-variable-pattern";
 
-impl Rule for ScssDollarVariablePattern {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-pattern"
+declare_rule! {
+  /// Specify a pattern for SCSS `$variable` names.
+  ///
+  /// Accepts a regex string as the primary option. Defaults to kebab-case.
+  /// The `$` prefix is stripped before matching.
+  ///
+  /// Secondary option `ignore`: `"local"` skips variables declared inside a
+  /// block, `"global"` those at the top level.
+  ///
+  /// Secondary option `ignoreInside` (a gale extension, which upstream does
+  /// not take):
+  /// - `"at-rule"` or `"inside-at-rule"` — ignore variables declared inside any
+  ///   at-rule (`@each`, `@for`, `@while`, `@if`, `@mixin`, `@function`, etc.)
+  ///
+  /// By default, variables that are loop iterators in `@each` and `@for`
+  /// declarations are always ignored (they are not real variable declarations).
+  ///
+  /// Equivalent to `scss/dollar-variable-pattern`.
+  pub struct ScssDollarVariablePattern => ScssDollarVariablePatternCheck {
+    name: NAME,
+    description: "Specify a pattern for SCSS dollar variable names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Specify a pattern for SCSS dollar variable names"
+/// `scss/dollar-variable-pattern` as configured.
+pub struct ScssDollarVariablePatternCheck {
+  /// The pattern every variable name (without the `$`) must match.
+  pattern: Pattern,
+  /// `ignoreInside: "at-rule"`: variables inside any at-rule are skipped.
+  ignore_inside_at_rule: bool,
+  /// `ignore: ["local"]`: variables inside a block are skipped.
+  ignore_local: bool,
+  /// `ignore: ["global"]`: top-level variables are skipped.
+  ignore_global: bool,
+  /// The `message` every rule accepts, which this rule words its problems
+  /// with itself.
+  custom_message: Option<String>,
+}
+
+impl ScssDollarVariablePatternCheck {
+  /// Stylelint's options: a regular expression, then `ignore: ["local",
+  /// "global"]`.  Gale also keeps the `ignoreInside` it has always taken.
+  /// A pattern that does not compile is an invalid option, as Stylelint
+  /// reports it.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = options.primary_pattern();
+    let ignore = options.keywords("ignore", &["local", "global"]);
+    let ignore_inside = options.keywords("ignoreInside", &["at-rule", "inside-at-rule"]);
+    options.finish()?;
+    let pattern = match pattern {
+      Some(pattern) => pattern,
+      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
+    };
+    let custom_message = setting
+      .secondary()
+      .and_then(|secondary| secondary.get("message"))
+      .and_then(|message| message.as_str())
+      .map(str::to_string);
+    Ok(Self {
+      pattern,
+      ignore_inside_at_rule: !ignore_inside.is_empty(),
+      ignore_local: ignore.contains(&"local"),
+      ignore_global: ignore.contains(&"global"),
+      custom_message,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariablePatternCheck {
   /// Flags `$variable` names that do not match the configured regex. Loop
   /// iterators in `@each`/`@for` are never checked, being bindings, not declarations.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -42,47 +88,14 @@ impl Rule for ScssDollarVariablePattern {
       return vec![];
     }
 
-    let pattern_str = ctx.primary_option_str().unwrap_or(DEFAULT_PATTERN);
-    // A pattern that does not compile is reported as an invalid option,
-    // as Stylelint does, rather than silently switching the rule off.
-    let re = match pattern::for_rule(self.name(), pattern_str) {
-      Ok(re) => re,
-      Err(invalid) => return vec![invalid],
-    };
-
-    let secondary = ctx.secondary_options();
-    let ignore_inside_at_rule = match &secondary {
-      Some(obj) => match obj.get("ignoreInside").and_then(|v| v.as_str()) {
-        Some("at-rule" | "inside-at-rule") => true,
-        _ => false,
-      },
-      None => false,
-    };
-    let ignore_local = match &secondary {
-      Some(obj) => match obj.get("ignore").and_then(|v| v.as_str()) {
-        Some("local") => true,
-        _ => false,
-      },
-      None => false,
-    };
-    let custom_message = secondary
-      .and_then(|obj| obj.get("message"))
-      .and_then(|v| v.as_str())
-      .map(|s| s.to_string());
-
     let mut diagnostics = Vec::new();
 
     for node in nodes {
       self.walk(
         node,
-        &re,
-        pattern_str,
         false, // not inside an at-rule at top level
         false, // not inside any block at top level
         &HashSet::new(),
-        ignore_inside_at_rule,
-        ignore_local,
-        custom_message.as_deref(),
         &mut diagnostics,
       );
     }
@@ -91,20 +104,14 @@ impl Rule for ScssDollarVariablePattern {
   }
 }
 
-impl ScssDollarVariablePattern {
+impl ScssDollarVariablePatternCheck {
   /// Recursively walk the AST, tracking at-rule context and loop variables.
-  #[allow(clippy::too_many_arguments)]
   fn walk(
     &self,
     node: &CssNode,
-    re: &pattern::Regex,
-    pattern_str: &str,
     inside_at_rule: bool,
     inside_block: bool,
     loop_vars: &HashSet<String>,
-    ignore_inside_at_rule: bool,
-    ignore_local: bool,
-    custom_message: Option<&str>,
     diagnostics: &mut Vec<Diagnostic>,
   ) {
     match node {
@@ -126,23 +133,23 @@ impl ScssDollarVariablePattern {
         }
 
         // Skip all variables inside at-rules when ignoreInside is set
-        if ignore_inside_at_rule && inside_at_rule {
+        if self.ignore_inside_at_rule && inside_at_rule {
           return;
         }
 
-        // Skip local (non-top-level) variables when ignore: "local"
-        if ignore_local && inside_block {
+        // Skip local (non-top-level) variables when ignore: "local", and
+        // top-level ones when ignore: "global"
+        if (self.ignore_local && inside_block) || (self.ignore_global && !inside_block) {
           return;
         }
 
-        if !pattern::is_match(&re, var_name) {
-          let message = custom_message
-            .map(|s| s.to_string())
+        if !self.pattern.is_match(var_name) {
+          let message = self
+            .custom_message
+            .clone()
             .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());
           diagnostics.push(
-            Diagnostic::new(self.name(), message)
-              .severity(self.default_severity())
-              .span(Span::new(decl.span.offset, decl.span.length)),
+            Diagnostic::new(NAME, message).span(Span::new(decl.span.offset, decl.span.length)),
           );
         }
       }
@@ -161,18 +168,12 @@ impl ScssDollarVariablePattern {
           // params: "$i from 1 through 10"
           extract_for_var(&at_rule.params, &mut child_loop_vars);
         }
-
         for child in &at_rule.children {
           self.walk(
             child,
-            re,
-            pattern_str,
             true, // inside an at-rule
             true, // inside a block
             &child_loop_vars,
-            ignore_inside_at_rule,
-            ignore_local,
-            custom_message,
             diagnostics,
           );
         }
@@ -184,14 +185,9 @@ impl ScssDollarVariablePattern {
           let decl_node = CssNode::Declaration(decl.clone());
           self.walk(
             &decl_node,
-            re,
-            pattern_str,
             inside_at_rule,
             true, // inside a style rule block
             loop_vars,
-            ignore_inside_at_rule,
-            ignore_local,
-            custom_message,
             diagnostics,
           );
         }
@@ -200,14 +196,9 @@ impl ScssDollarVariablePattern {
           let child_node = CssNode::Style(child.clone());
           self.walk(
             &child_node,
-            re,
-            pattern_str,
             inside_at_rule,
             true, // inside a style rule block
             loop_vars,
-            ignore_inside_at_rule,
-            ignore_local,
-            custom_message,
             diagnostics,
           );
         }
@@ -257,7 +248,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as ParserAtRule, Declaration, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx, scss_ctx_with_options};
 
   fn dollar_var(name: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -270,24 +261,23 @@ mod tests {
 
   #[test]
   fn allows_kebab_case() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     let nodes = vec![dollar_var("$my-var")];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_non_matching_pattern() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     let nodes = vec![dollar_var("$myVar")];
-    let d = ScssDollarVariablePattern.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
   }
 
   #[test]
   fn skips_non_dollar_declarations() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     let node = CssNode::Declaration(Declaration {
       property: "color".to_string(),
       value: "red".to_string(),
@@ -295,28 +285,22 @@ mod tests {
       important: false,
     });
     let nodes = vec![node];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     let css_ctx = ctx();
     let nodes = vec![dollar_var("$myVar")];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &css_ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &css_ctx).is_empty());
   }
 
   // -- Loop variable tests --
 
   #[test]
   fn ignores_each_loop_variable() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @each $breakpoint-name in $list { $breakpoint-name: "test"; }
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
@@ -329,15 +313,12 @@ mod tests {
         important: false,
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn ignores_each_loop_multiple_variables() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @each $name, $value in $map { $name: ...; $value: ...; }
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "each".to_string(),
@@ -358,15 +339,12 @@ mod tests {
         }),
       ],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn ignores_for_loop_variable() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @for $i from 1 through 10 { $i: "override"; }
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "for".to_string(),
@@ -379,15 +357,12 @@ mod tests {
         important: false,
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn reports_non_loop_vars_inside_each_loop() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @each $name in $list { $otherBad: "test"; }
     // $otherBad is NOT the loop iterator — should still be checked.
     let nodes = vec![CssNode::AtRule(ParserAtRule {
@@ -401,7 +376,7 @@ mod tests {
         important: false,
       })],
     })];
-    let d = ScssDollarVariablePattern.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
   }
@@ -412,6 +387,7 @@ mod tests {
   fn ignore_inside_at_rule_skips_all_vars_in_at_rules() {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
+    let rule = configured(&ScssDollarVariablePattern, opts.clone());
     let ctx = scss_ctx_with_options(&opts);
 
     // Variable inside a @mixin — should be ignored
@@ -426,22 +402,19 @@ mod tests {
         important: false,
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &ctx).is_empty());
   }
 
   #[test]
   fn ignore_inside_at_rule_still_reports_top_level() {
     use serde_json::json;
     let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
+    let rule = configured(&ScssDollarVariablePattern, opts.clone());
     let ctx = scss_ctx_with_options(&opts);
 
     // Top-level variable that doesn't match — should still be reported
     let nodes = vec![dollar_var("$bad-name")];
-    let d = ScssDollarVariablePattern.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
   }
@@ -450,6 +423,7 @@ mod tests {
   fn ignore_inside_inside_at_rule_synonym() {
     use serde_json::json;
     let opts = json!(["^pf-", {"ignoreInside": "inside-at-rule"}]);
+    let rule = configured(&ScssDollarVariablePattern, opts.clone());
     let ctx = scss_ctx_with_options(&opts);
 
     let nodes = vec![CssNode::AtRule(ParserAtRule {
@@ -463,11 +437,7 @@ mod tests {
         important: false,
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &ctx).is_empty());
   }
 
   // -- Helper extraction tests --
@@ -501,6 +471,7 @@ mod tests {
 
   #[test]
   fn ignores_local_var_and_reassignment_inside_each() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @each $breakpoint, $breakpoint-value in $map {
     //   $breakpoint-name: "";           <- local var, not iterator
     //   $breakpoint: "md";              <- reassignment of iterator
@@ -524,15 +495,12 @@ mod tests {
         }),
       ],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn ignores_vars_in_nested_at_rule_inside_each() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @each $name in $list {
     //   @if $name != "base" {
     //     $breakpoint-name: -on-#{$name};
@@ -554,15 +522,12 @@ mod tests {
         })],
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn ignores_vars_inside_for_loop() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // @for $i from 1 through 10 {
     //   $width: $i * 10%;
     // }
@@ -577,15 +542,12 @@ mod tests {
         important: false,
       })],
     })];
-    assert!(
-      ScssDollarVariablePattern
-        .check_root(&nodes, &scss_ctx())
-        .is_empty()
-    );
+    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn still_reports_non_matching_vars_inside_and_outside_loop() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // $myBadVar: red;  (top-level, camelCase, doesn't match default kebab pattern)
     // @each $name in $list { $localVar: "test"; }  ($localVar also doesn't match)
     let nodes = vec![
@@ -602,13 +564,14 @@ mod tests {
         })],
       }),
     ];
-    let d = ScssDollarVariablePattern.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     // Both $myBadVar and $localVar should be reported (neither is a loop iterator)
     assert_eq!(d.len(), 2);
   }
 
   #[test]
   fn reports_non_matching_var_inside_mixin_without_ignore_option() {
+    let rule = configured(&ScssDollarVariablePattern, None);
     // Without ignoreInside, vars in @mixin (non-loop) should still be checked
     let nodes = vec![CssNode::AtRule(ParserAtRule {
       name: "mixin".to_string(),
@@ -621,8 +584,71 @@ mod tests {
         important: false,
       })],
     })];
-    let d = ScssDollarVariablePattern.check_root(&nodes, &scss_ctx());
+    let d = rule.check_root(&nodes, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("^[a-z]+$")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("/^[a-z]+$/i")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(5)),
+      ["Invalid option value \"5\" for rule \"scss/dollar-variable-pattern\""]
+    );
+    let broken = invalid_options(NAME, serde_json::json!("^[a-z"));
+    assert_eq!(broken.len(), 1);
+    assert!(
+      broken[0]
+        .starts_with("Invalid option value \"^[a-z\" for rule \"scss/dollar-variable-pattern\": "),
+      "{broken:?}"
+    );
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["^[a-z]", { "ignore": ["local", "global"] }])
+      )
+      .is_empty()
+    );
+    // `ignoreInside` is a gale extension, kept accepted.
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["^[a-z]", { "ignoreInside": "at-rule" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["^[a-z]", { "ignore": "inside" }])),
+      ["Invalid value \"inside\" for option \"ignore\" of rule \"scss/dollar-variable-pattern\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["^[a-z]", { "except": ["local"] }])),
+      ["Invalid option name \"except\" for rule \"scss/dollar-variable-pattern\""]
+    );
+  }
+
+  #[test]
+  fn ignore_local_and_global() {
+    let source = "$Top: 1;\na {\n  $Inner: 2;\n}\n";
+    let lint = |options: serde_json::Value| {
+      crate::testing::lint(NAME, options, source, gale_css_parser::Syntax::Scss).len()
+    };
+    // A bare object is how the config gives `true` with secondary options:
+    // the default pattern.
+    assert_eq!(lint(serde_json::json!({})), 2);
+    assert_eq!(
+      lint(serde_json::json!([DEFAULT_PATTERN, { "ignore": ["local"] }])),
+      1
+    );
+    assert_eq!(
+      lint(serde_json::json!([DEFAULT_PATTERN, { "ignore": "global" }])),
+      1
+    );
+    assert_eq!(
+      lint(serde_json::json!([DEFAULT_PATTERN, { "ignore": ["local", "global"] }])),
+      0
+    );
   }
 }

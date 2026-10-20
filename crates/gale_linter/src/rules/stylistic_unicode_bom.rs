@@ -1,38 +1,54 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow Unicode BOM.
-///
-/// Equivalent to `@stylistic/unicode-bom`.
-pub struct StylisticUnicodeBom;
+const NAME: &str = "@stylistic/unicode-bom";
+
+declare_rule! {
+  /// Require or disallow Unicode BOM.
+  ///
+  /// Equivalent to `@stylistic/unicode-bom`.
+  pub struct StylisticUnicodeBom => StylisticUnicodeBomCheck {
+    name: NAME,
+    description: "Require or disallow Unicode BOM",
+    default_severity: Warning,
+  }
+}
+
+/// `@stylistic/unicode-bom` as configured.
+pub struct StylisticUnicodeBomCheck {
+  /// The primary option: `"always"` or `"never"`.
+  option: &'static str,
+}
+
+impl StylisticUnicodeBomCheck {
+  /// The plugin's options: `"always"` or `"never"`.  Gale reads no option as
+  /// `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
+  }
+}
 
 const BOM: &str = "\u{FEFF}";
 
-impl Rule for StylisticUnicodeBom {
-  fn name(&self) -> &'static str {
-    "@stylistic/unicode-bom"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow Unicode BOM"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticUnicodeBomCheck {
   /// Flags a file whose byte-order mark does not match the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let option = ctx.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let has_bom = ctx.source.starts_with(BOM);
 
     match option {
       "always" if !has_bom => {
         vec![
-          Diagnostic::new(self.name(), "Expected Unicode BOM")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Expected Unicode BOM")
             .span(Span::new(0, 0))
             .fix(Fix::new(
               "Add Unicode BOM",
@@ -42,8 +58,7 @@ impl Rule for StylisticUnicodeBom {
       }
       "never" if has_bom => {
         vec![
-          Diagnostic::new(self.name(), "Unexpected Unicode BOM")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected Unicode BOM")
             .span(Span::new(0, BOM.len()))
             .fix(Fix::new(
               "Remove Unicode BOM",
@@ -60,11 +75,11 @@ impl Rule for StylisticUnicodeBom {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_bom_when_never() {
-    let rule = StylisticUnicodeBom;
+    let rule = configured(&StylisticUnicodeBom, None);
     let source = format!("\u{FEFF}a {{ color: red; }}");
     let ctx = ctx_with_source(&source);
     let d = rule.check_root(&[], &ctx);
@@ -74,9 +89,19 @@ mod tests {
 
   #[test]
   fn allows_no_bom_when_never() {
-    let rule = StylisticUnicodeBom;
+    let rule = configured(&StylisticUnicodeBom, None);
     let ctx = ctx_with_source("a { color: red; }");
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"@stylistic/unicode-bom\""]
+    );
   }
 }

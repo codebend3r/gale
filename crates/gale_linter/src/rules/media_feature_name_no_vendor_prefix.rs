@@ -1,16 +1,44 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
-use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow vendor prefixes in media feature names.
-///
-/// Equivalent to Stylelint's `media-feature-name-no-vendor-prefix` rule.
-/// E.g., `@media (-webkit-min-device-pixel-ratio: 2)` is flagged, and the
-/// fix removes the vendor prefix, keeping the rest of the name as written.
-pub struct MediaFeatureNameNoVendorPrefix;
+const NAME: &str = "media-feature-name-no-vendor-prefix";
+
+declare_rule! {
+  /// Disallow vendor prefixes in media feature names.
+  ///
+  /// Equivalent to Stylelint's `media-feature-name-no-vendor-prefix` rule.
+  /// E.g., `@media (-webkit-min-device-pixel-ratio: 2)` is flagged, and the
+  /// fix removes the vendor prefix, keeping the rest of the name as written.
+  pub struct MediaFeatureNameNoVendorPrefix => MediaFeatureNameNoVendorPrefixCheck {
+    name: NAME,
+    description: "Disallow vendor prefixes for media feature names",
+    default_severity: Warning,
+  }
+}
+
+/// `media-feature-name-no-vendor-prefix` as configured.
+pub struct MediaFeatureNameNoVendorPrefixCheck {
+  /// `ignoreMediaFeatureNames`: names or `/regex/` entries.
+  ignore_media_feature_names: Matchers,
+}
+
+impl MediaFeatureNameNoVendorPrefixCheck {
+  /// Stylelint's options: `true`, then `ignoreMediaFeatureNames`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_media_feature_names = options.matchers("ignoreMediaFeatureNames");
+    options.finish()?;
+    Ok(Self {
+      ignore_media_feature_names,
+    })
+  }
+}
 
 /// Stylelint's `FEATURES`: the prefixed media features it flags, in the
 /// order its regex tries them.  Only these are flagged, not every vendor
@@ -27,25 +55,10 @@ const VENDOR_PREFIXED_FEATURES: &[&str] = &[
   "max--moz-device-pixel-ratio",
 ];
 
-impl Rule for MediaFeatureNameNoVendorPrefix {
-  fn name(&self) -> &'static str {
-    "media-feature-name-no-vendor-prefix"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow vendor prefixes for media feature names"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MediaFeatureNameNoVendorPrefixCheck {
   /// Flags each vendor-prefixed media feature in every `@media` query as
   /// written (nested ones included), skipping `ignoreMediaFeatureNames`.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignoreMediaFeatureNames"));
     let mut diags = Vec::new();
     for at in &ctx.scanned_rules().at_rules {
       if !at.name.eq_ignore_ascii_case("media") || !autoprefixable::media_feature_name(&at.params) {
@@ -57,7 +70,7 @@ impl Rule for MediaFeatureNameNoVendorPrefix {
         .source_slice(at.offset, at.params_offset + at.params.len())
         .unwrap_or("");
       for (index, feature) in find_features(&at.params) {
-        if pattern::option_matches(ignore, feature) {
+        if self.ignore_media_feature_names.matches(feature) {
           continue;
         }
         let reported = prelude
@@ -65,8 +78,7 @@ impl Rule for MediaFeatureNameNoVendorPrefix {
           .map_or(at.params_offset + index, |i| at.offset + i);
         let fixed = strip_first_prefix(feature);
         diags.push(
-          Diagnostic::new(self.name(), "Unexpected vendor-prefix")
-            .severity(self.default_severity())
+          Diagnostic::new(NAME, "Unexpected vendor-prefix")
             .span(Span::new(reported, feature.len()))
             .fix(Fix::new(
               format!("Change \"{feature}\" to \"{fixed}\""),
@@ -237,5 +249,33 @@ mod tests {
     let css = "@media (-webkit-device-pixel-ratio: 2) {}";
     assert_eq!(lint(RULE, options.clone(), css, Syntax::Css).len(), 1);
     assert_eq!(fix(RULE, options, css, Syntax::Css), css);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        "media-feature-name-no-vendor-prefix",
+        serde_json::json!([true, { "ignoreMediaFeatureNames": ["/device-pixel-ratio$/"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        "media-feature-name-no-vendor-prefix",
+        serde_json::json!("always")
+      ),
+      ["Unexpected option value \"always\" for rule \"media-feature-name-no-vendor-prefix\""]
+    );
+    assert_eq!(
+      invalid_options(
+        "media-feature-name-no-vendor-prefix",
+        serde_json::json!([true, { "ignoreMediaFeatureNames": [true] }])
+      ),
+      [
+        "Invalid value \"true\" for option \"ignoreMediaFeatureNames\" of rule \"media-feature-name-no-vendor-prefix\""
+      ]
+    );
   }
 }

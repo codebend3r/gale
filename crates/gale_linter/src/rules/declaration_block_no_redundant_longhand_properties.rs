@@ -1,23 +1,54 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
 use crate::postcss_tree::{Node, NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::installed_at_least_patch;
 use crate::value_parser;
 
-/// Disallow longhand properties that can be combined into one shorthand
-/// property, and longhands that repeat an earlier shorthand's value.
-///
-/// Equivalent to Stylelint's `declaration-block-no-redundant-longhand-properties`
-/// rule, including its autofix: the first longhand becomes the shorthand
-/// (keeping its `!important`) and the others are removed; a longhand equal to
-/// its shorthand's value is removed.  Secondary options `ignoreShorthands`
-/// (strings or `/regex/`) and `ignoreLonghands` (strings).
-pub struct DeclarationBlockNoRedundantLonghandProperties;
+const NAME: &str = "declaration-block-no-redundant-longhand-properties";
+
+declare_rule! {
+  /// Disallow longhand properties that can be combined into one shorthand
+  /// property, and longhands that repeat an earlier shorthand's value.
+  ///
+  /// Equivalent to Stylelint's `declaration-block-no-redundant-longhand-properties`
+  /// rule, including its autofix: the first longhand becomes the shorthand
+  /// (keeping its `!important`) and the others are removed; a longhand equal to
+  /// its shorthand's value is removed.  Secondary options `ignoreShorthands`
+  /// (strings or `/regex/`) and `ignoreLonghands` (strings).
+  pub struct DeclarationBlockNoRedundantLonghandProperties => DeclarationBlockNoRedundantLonghandPropertiesCheck {
+    name: NAME,
+    description: "Disallow longhand properties that can be combined into one shorthand property",
+    default_severity: Warning,
+  }
+}
+
+/// `declaration-block-no-redundant-longhand-properties` as configured.
+pub struct DeclarationBlockNoRedundantLonghandPropertiesCheck {
+  /// The shorthand table, less what `ignoreShorthands` and
+  /// `ignoreLonghands` leave out.
+  options: Options,
+}
+
+impl DeclarationBlockNoRedundantLonghandPropertiesCheck {
+  /// Stylelint's options: `true`, then `ignoreShorthands` and
+  /// `ignoreLonghands`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore_shorthands = options.matchers("ignoreShorthands");
+    let ignore_longhands = options.strings("ignoreLonghands");
+    options.finish()?;
+    Ok(Self {
+      options: Options::new(&ignore_shorthands, ignore_longhands),
+    })
+  }
+}
 
 /// CSS-wide keywords, which no shorthand can absorb.
 const BASIC_KEYWORDS: &[&str] = &["initial", "inherit", "revert", "revert-layer", "unset"];
@@ -400,24 +431,12 @@ const SHORTHANDS: &[(&str, &[&str])] = &[
   ),
 ];
 
-impl Rule for DeclarationBlockNoRedundantLonghandProperties {
-  fn name(&self) -> &'static str {
-    "declaration-block-no-redundant-longhand-properties"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow longhand properties that can be combined into one shorthand property"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationBlockNoRedundantLonghandPropertiesCheck {
   /// Checks every declaration block (rule, at-rule and the root), reporting
   /// what Stylelint reports and attaching, to each problem, one edit that
   /// rewrites the block the way Stylelint's fix leaves it.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let options = Options::new(ctx.secondary_options());
+    let options = &self.options;
     let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     // Stylelint visits blocks through rules and at-rules only, so nothing
@@ -434,14 +453,14 @@ impl Rule for DeclarationBlockNoRedundantLonghandProperties {
     );
     for parent in containers {
       if let Some(block) = Block::read(&tree, ctx, parent) {
-        self.check_block(&block, &options, &mut diags);
+        self.check_block(&block, options, &mut diags);
       }
     }
     diags
   }
 }
 
-impl DeclarationBlockNoRedundantLonghandProperties {
+impl DeclarationBlockNoRedundantLonghandPropertiesCheck {
   /// Reports the problems of one block, each carrying the block's fix.
   fn check_block(&self, block: &Block<'_>, options: &Options, diags: &mut Vec<Diagnostic>) {
     let report = simulate(block, options, false);
@@ -452,9 +471,7 @@ impl DeclarationBlockNoRedundantLonghandProperties {
       .rendered
       .and_then(|fixed| block.edit_to(&fixed));
     for problem in report.problems {
-      let mut diag = Diagnostic::new(self.name(), problem.message)
-        .severity(self.default_severity())
-        .span(problem.span);
+      let mut diag = Diagnostic::new(NAME, problem.message).span(problem.span);
       if let Some(edit) = &edit {
         diag = diag.fix(Fix::new("Use the shorthand property", vec![edit.clone()]));
       }
@@ -484,19 +501,11 @@ struct Options {
 }
 
 impl Options {
-  /// Builds the table from the secondary options.
-  fn new(secondary: Option<&serde_json::Value>) -> Self {
-    let ignore_longhands: Vec<String> = match secondary.and_then(|s| s.get("ignoreLonghands")) {
-      Some(serde_json::Value::String(one)) => vec![one.clone()],
-      Some(serde_json::Value::Array(many)) => many
-        .iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect(),
-      _ => Vec::new(),
-    };
+  /// Builds the table from `ignoreShorthands` and `ignoreLonghands`.
+  fn new(ignore_shorthands: &Matchers, ignore_longhands: Vec<String>) -> Self {
     let mut longhand_to_shorthands: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
     for (shorthand, longhands) in SHORTHANDS {
-      if option_matches(secondary.and_then(|s| s.get("ignoreShorthands")), shorthand) {
+      if ignore_shorthands.matches(shorthand) {
         continue;
       }
       for longhand in *longhands {
@@ -1096,7 +1105,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{fix, lint};
+  use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "declaration-block-no-redundant-longhand-properties";
 
@@ -1232,5 +1241,28 @@ mod tests {
     let source = "a { overflow-x: hidden; overflow-y: auto; }";
     assert_eq!(fix(RULE, options.clone(), source, Syntax::Css), source);
     assert_eq!(lint(RULE, options, source, Syntax::Css).len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        RULE,
+        json!([true, { "ignoreShorthands": ["/^margin/"], "ignoreLonghands": "padding-top" }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(RULE, json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"declaration-block-no-redundant-longhand-properties\""
+      ]
+    );
+    assert_eq!(
+      invalid_options(RULE, json!([true, { "ignoreLonghands": [1] }])),
+      [
+        "Invalid value \"1\" for option \"ignoreLonghands\" of rule \"declaration-block-no-redundant-longhand-properties\""
+      ]
+    );
   }
 }

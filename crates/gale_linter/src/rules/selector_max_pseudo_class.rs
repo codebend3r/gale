@@ -1,40 +1,56 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of pseudo-classes in a selector.
-///
-/// Equivalent to Stylelint's `selector-max-pseudo-class` rule.
-/// Default maximum: 1.
-pub struct SelectorMaxPseudoClass;
+const NAME: &str = "selector-max-pseudo-class";
+
+declare_rule! {
+  /// Limit the number of pseudo-classes in a selector.
+  ///
+  /// Equivalent to Stylelint's `selector-max-pseudo-class` rule.
+  /// Default maximum: 1.
+  pub struct SelectorMaxPseudoClass => SelectorMaxPseudoClassCheck {
+    name: NAME,
+    description: "Limit the number of pseudo-classes in a selector",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-max-pseudo-class` as configured.
+pub struct SelectorMaxPseudoClassCheck {
+  /// The most pseudo-classes allowed.
+  max: usize,
+}
+
+impl SelectorMaxPseudoClassCheck {
+  /// Stylelint's options: a whole number of zero or more (tested by a
+  /// function, so a problem reads `Invalid option`).
+  /// Gale reads no number as 1.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
+    options.finish()?;
+    Ok(Self {
+      max: max
+        .and_then(serde_json::Value::as_u64)
+        .map_or(DEFAULT_MAX, |max| max as usize),
+    })
+  }
+}
 
 const DEFAULT_MAX: usize = 1;
 
-impl Rule for SelectorMaxPseudoClass {
-  fn name(&self) -> &'static str {
-    "selector-max-pseudo-class"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the number of pseudo-classes in a selector"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorMaxPseudoClassCheck {
   /// Flags a selector holding more pseudo-classes than allowed.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
       return vec![];
     };
 
-    let max = ctx
-      .options
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(DEFAULT_MAX);
+    let max = self.max;
 
     let mut diags = Vec::new();
     for sel in rule.selector.split(',') {
@@ -43,12 +59,11 @@ impl Rule for SelectorMaxPseudoClass {
       if count > max {
         diags.push(
                     Diagnostic::new(
-                        self.name(),
+                        NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} pseudo-class(es), found {count}"
                         ),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(rule.span.offset, rule.span.length)),
                 );
       }
@@ -138,7 +153,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -156,40 +171,48 @@ mod tests {
 
   #[test]
   fn reports_too_many_pseudo_classes() {
+    let rule = configured(&SelectorMaxPseudoClass, None);
     // 2 pseudo-classes: :hover:focus
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:hover:focus"), &ctx());
+    let d = rule.check(&style_with_selector("a:hover:focus"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
   }
 
   #[test]
   fn allows_within_default_limit() {
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:hover"), &ctx());
+    let rule = configured(&SelectorMaxPseudoClass, None);
+    let d = rule.check(&style_with_selector("a:hover"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn respects_configured_max() {
+    let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
     let ctx = ctx_with_options(serde_json::json!(2));
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:hover:focus"), &ctx);
+    let d = rule.check(&style_with_selector("a:hover:focus"), &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn does_not_count_pseudo_elements() {
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a::before:hover"), &ctx());
+    let rule = configured(&SelectorMaxPseudoClass, None);
+    let d = rule.check(&style_with_selector("a::before:hover"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn rule_name_is_correct() {
-    assert_eq!(SelectorMaxPseudoClass.name(), "selector-max-pseudo-class");
+    assert_eq!(
+      SelectorMaxPseudoClass::META.name,
+      "selector-max-pseudo-class"
+    );
   }
 
   #[test]
   fn counts_pseudo_classes_inside_not() {
+    let rule = configured(&SelectorMaxPseudoClass, None);
     // Stylelint v17: `:not(:hover)` counts as 2 pseudo-classes (`:not` and `:hover`).
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:not(:hover)"), &ctx());
+    let d = rule.check(&style_with_selector("a:not(:hover)"), &ctx());
     assert_eq!(
       d.len(),
       1,
@@ -200,8 +223,9 @@ mod tests {
 
   #[test]
   fn counts_pseudo_classes_inside_is() {
+    let rule = configured(&SelectorMaxPseudoClass, None);
     // Stylelint v17: `a:is(:hover)` counts as 2 pseudo-classes (`:is` and `:hover`).
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:is(:hover)"), &ctx());
+    let d = rule.check(&style_with_selector("a:is(:hover)"), &ctx());
     assert_eq!(
       d.len(),
       1,
@@ -212,9 +236,21 @@ mod tests {
 
   #[test]
   fn allows_pseudo_classes_inside_functional_within_limit() {
+    let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
     // `:not(:hover)` = 2 pseudo-classes, max 2 should be OK
     let ctx = ctx_with_options(serde_json::json!(2));
-    let d = SelectorMaxPseudoClass.check(&style_with_selector("a:not(:hover)"), &ctx);
+    let d = rule.check(&style_with_selector("a:not(:hover)"), &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The primary option is tested by a function, so Stylelint words its
+    // problem without "value"; the rule validates no secondary options.
+    assert!(invalid_options(NAME, serde_json::json!([2, { "anything": true }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(-1)),
+      ["Invalid option \"-1\" for rule \"selector-max-pseudo-class\""]
+    );
   }
 }

@@ -1,22 +1,55 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::source_text;
 use crate::value_parser::{self, NodeKind, ValueNode};
 
-/// Require or disallow quotes around `url()` values.
-///
-/// Equivalent to Stylelint's `function-url-quotes` rule: every `url()` in
-/// declaration values and at-rule params, as written, is checked; the fix
-/// wraps an unquoted argument in `"` or unwraps a quoted one, leaving the
-/// whitespace inside the parentheses alone.
-///
-/// Primary option: `"always"` (default) or `"never"`.
-///
-/// Secondary options:
-///   - `except`: `["empty"]` — invert the primary for empty `url()` calls.
-pub struct FunctionUrlQuotes;
+const NAME: &str = "function-url-quotes";
+
+declare_rule! {
+  /// Require or disallow quotes around `url()` values.
+  ///
+  /// Equivalent to Stylelint's `function-url-quotes` rule: every `url()` in
+  /// declaration values and at-rule params, as written, is checked; the fix
+  /// wraps an unquoted argument in `"` or unwraps a quoted one, leaving the
+  /// whitespace inside the parentheses alone.
+  ///
+  /// Primary option: `"always"` (default) or `"never"`.
+  ///
+  /// Secondary options:
+  ///   - `except`: `["empty"]` — invert the primary for empty `url()` calls.
+  pub struct FunctionUrlQuotes => FunctionUrlQuotesCheck {
+    name: NAME,
+    description: "Require or disallow quotes around url() values",
+    default_severity: Warning,
+  }
+}
+
+/// `function-url-quotes` as configured.
+pub struct FunctionUrlQuotesCheck {
+  /// `"always"` (the default) rather than `"never"`.
+  always: bool,
+  /// `except: ["empty"]`: the primary option is inverted for empty URLs.
+  except_empty: bool,
+}
+
+impl FunctionUrlQuotesCheck {
+  /// Stylelint's options: `"always"` or `"never"`, then
+  /// `except: ["empty"]`.  Gale reads no option as `"always"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options.primary_one_of(&["always", "never"]);
+    let except = options.keywords("except", &["empty"]);
+    options.finish()?;
+    Ok(Self {
+      always: expectation != Some("never"),
+      except_empty: except.contains(&"empty"),
+    })
+  }
+}
 
 /// Whether a reported `url()` needs quotes added or removed.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,29 +58,12 @@ enum Problem {
   Rejected,
 }
 
-impl Rule for FunctionUrlQuotes {
-  fn name(&self) -> &'static str {
-    "function-url-quotes"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require or disallow quotes around url() values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for FunctionUrlQuotesCheck {
   /// Flags `url()` arguments whose quoting does not match the option, in
   /// declaration values and at-rule params. With `except: ["empty"]` the
   /// primary is inverted for empty URLs.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let always = ctx.primary_option_str() != Some("never");
-    let except_empty = ctx
-      .secondary_options()
-      .and_then(|v| v.get("except"))
-      .and_then(|v| v.as_array())
-      .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("empty")));
+    let (always, except_empty) = (self.always, self.except_empty);
 
     let mut diags = Vec::new();
     if let CssNode::AtRule(at) = node
@@ -71,7 +87,7 @@ impl Rule for FunctionUrlQuotes {
   }
 }
 
-impl FunctionUrlQuotes {
+impl FunctionUrlQuotesCheck {
   /// Check every `url()` in `text`, which starts at byte `start` of the
   /// source, as Stylelint's `functionArgumentsSearch` finds them.
   fn check_text(
@@ -129,8 +145,7 @@ impl FunctionUrlQuotes {
         ),
       };
       diags.push(
-        Diagnostic::new(self.name(), message)
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, message)
           .span(span)
           .fix(Fix::new(description, edits)),
       );
@@ -467,6 +482,20 @@ mod tests {
     assert_eq!(
       fix(RULE, options, "a { b: url(x) }", Syntax::Css),
       "a { b: url(x) }"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(RULE, serde_json::json!(["never", { "except": "empty" }])).is_empty());
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!("double")),
+      ["Invalid option value \"double\" for rule \"function-url-quotes\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, serde_json::json!(["always", { "except": ["blank"] }])),
+      ["Invalid value \"blank\" for option \"except\" of rule \"function-url-quotes\""]
     );
   }
 }

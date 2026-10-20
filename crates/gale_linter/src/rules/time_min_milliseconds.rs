@@ -1,17 +1,52 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Specify the minimum number of milliseconds for time values.
-///
-/// Equivalent to Stylelint's `time-min-milliseconds` rule.
-/// Default minimum: 100ms.
-///
-/// Secondary options:
-/// - `ignore: ["delay"]`: ignore delay-related properties and delay
-///   positions in shorthand properties.
-pub struct TimeMinMilliseconds;
+const NAME: &str = "time-min-milliseconds";
+
+declare_rule! {
+  /// Specify the minimum number of milliseconds for time values.
+  ///
+  /// Equivalent to Stylelint's `time-min-milliseconds` rule.
+  /// Default minimum: 100ms.
+  ///
+  /// Secondary options:
+  /// - `ignore: ["delay"]`: ignore delay-related properties and delay
+  ///   positions in shorthand properties.
+  pub struct TimeMinMilliseconds => TimeMinMillisecondsCheck {
+    name: NAME,
+    description: "Specify the minimum number of milliseconds for time values",
+    default_severity: Warning,
+  }
+}
+
+/// `time-min-milliseconds` as configured.
+pub struct TimeMinMillisecondsCheck {
+  /// The shortest time allowed, in milliseconds.
+  min: f64,
+  /// `ignore: ["delay"]`: delays are not checked.
+  ignore_delay: bool,
+}
+
+impl TimeMinMillisecondsCheck {
+  /// Stylelint's options: a number (`possible: isNumber`), then
+  /// `ignore: ["delay"]`.  Gale reads no number as 100.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let min = options.primary_test(serde_json::Value::is_number);
+    let ignore = options.keywords("ignore", &["delay"]);
+    options.finish()?;
+    Ok(Self {
+      min: min
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(DEFAULT_MIN),
+      ignore_delay: ignore.contains(&"delay"),
+    })
+  }
+}
 
 const DEFAULT_MIN: f64 = 100.0;
 
@@ -283,19 +318,7 @@ fn find_value_offset(source: &str, decl_offset: usize, property_len: usize) -> u
   start + off
 }
 
-impl Rule for TimeMinMilliseconds {
-  fn name(&self) -> &'static str {
-    "time-min-milliseconds"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify the minimum number of milliseconds for time values"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for TimeMinMillisecondsCheck {
   /// Flags time values below the minimum. With `ignore: ["delay"]`, delay
   /// properties and the delay slot of shorthands are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -303,17 +326,8 @@ impl Rule for TimeMinMilliseconds {
       return vec![];
     };
 
-    let min = ctx
-      .primary_option()
-      .and_then(|v| v.as_f64())
-      .unwrap_or(DEFAULT_MIN);
-
-    let ignore_delay = ctx
-      .secondary_options()
-      .and_then(|v| v.get("ignore"))
-      .and_then(|v| v.as_array())
-      .map(|arr| arr.iter().any(|v| v.as_str() == Some("delay")))
-      .unwrap_or(false);
+    let min = self.min;
+    let ignore_delay = self.ignore_delay;
 
     let mut diags = Vec::new();
     for decl in &rule.declarations {
@@ -365,10 +379,9 @@ impl Rule for TimeMinMilliseconds {
           let abs_offset = value_offset + tv.offset;
           diags.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!("Expected a minimum of {min}ms, found {abs_ms}ms"),
             )
-            .severity(self.default_severity())
             .span(Span::new(abs_offset, tv.length)),
           );
         }
@@ -383,7 +396,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -401,50 +414,70 @@ mod tests {
 
   #[test]
   fn reports_time_below_minimum() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("transition-duration", "50ms"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("transition-duration", "50ms"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("50ms"));
   }
 
   #[test]
   fn allows_time_above_minimum() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("transition-duration", "200ms"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("transition-duration", "200ms"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn converts_seconds_to_ms() {
     // 0.01s = 10ms, should flag with default minimum 100ms
-    let d = TimeMinMilliseconds.check(&style_with_decl("transition-duration", "0.01s"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("transition-duration", "0.01s"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_zero() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("animation-delay", "0ms"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("animation-delay", "0ms"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_negative_values() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("animation-delay", "-20ms"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("animation-delay", "-20ms"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn rule_name_is_correct() {
-    assert_eq!(TimeMinMilliseconds.name(), "time-min-milliseconds");
+    assert_eq!(NAME, "time-min-milliseconds");
   }
 
   #[test]
   fn does_not_flag_non_time_properties() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("color", "red"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None).check(&style_with_decl("color", "red"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn handles_transition_shorthand() {
-    let d = TimeMinMilliseconds.check(&style_with_decl("transition", "foo 0.008s linear"), &ctx());
+    let d = configured(&TimeMinMilliseconds, None)
+      .check(&style_with_decl("transition", "foo 0.008s linear"), &ctx());
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(200)).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!([200, {"ignore": ["delay"]}])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("200")),
+      ["Invalid option \"200\" for rule \"time-min-milliseconds\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([200, {"ignore": ["duration"]}])),
+      ["Invalid value \"duration\" for option \"ignore\" of rule \"time-min-milliseconds\""]
+    );
   }
 }

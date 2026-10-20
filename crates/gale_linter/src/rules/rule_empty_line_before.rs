@@ -1,45 +1,78 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity};
+use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
-use crate::pattern::option_matches;
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow an empty line before rules.
-///
-/// Equivalent to Stylelint's `rule-empty-line-before` rule, autofix
-/// included.  Primary option `"always"`, `"never"`, `"always-multi-line"` or
-/// `"never-multi-line"`; secondary options:
-///   - `except`: `after-rule`, `after-single-line-comment`, `first-nested`,
-///     `inside-block-and-after-rule`, `inside-block`
-///   - `ignore`: `after-comment`, `first-nested`, `inside-block`
-///
-/// Works on the [`PostcssTree`] of the source, so comments (which the CSS
-/// parser drops) and keyframe selectors count as Stylelint counts them.
-pub struct RuleEmptyLineBefore;
+const NAME: &str = "rule-empty-line-before";
 
-impl Rule for RuleEmptyLineBefore {
-  fn name(&self) -> &'static str {
-    "rule-empty-line-before"
+declare_rule! {
+  /// Require or disallow an empty line before rules.
+  ///
+  /// Equivalent to Stylelint's `rule-empty-line-before` rule, autofix
+  /// included.  Primary option `"always"`, `"never"`, `"always-multi-line"` or
+  /// `"never-multi-line"`; secondary options:
+  ///   - `except`: `after-rule`, `after-single-line-comment`, `first-nested`,
+  ///     `inside-block-and-after-rule`, `inside-block`
+  ///   - `ignore`: `after-comment`, `first-nested`, `inside-block`
+  ///
+  /// Works on the [`PostcssTree`] of the source, so comments (which the CSS
+  /// parser drops) and keyframe selectors count as Stylelint counts them.
+  pub struct RuleEmptyLineBefore => RuleEmptyLineBeforeCheck {
+    name: NAME,
+    description: "Require or disallow an empty line before rules",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow an empty line before rules"
+/// `rule-empty-line-before` as configured.
+pub struct RuleEmptyLineBeforeCheck {
+  /// The primary option; `"always"` when none is given.
+  expectation: &'static str,
+  /// The `except` keywords.
+  except: Vec<&'static str>,
+  /// The `ignore` keywords.
+  ignore: Vec<&'static str>,
+}
+
+impl RuleEmptyLineBeforeCheck {
+  /// Stylelint's options: `"always"`, `"never"`, `"always-multi-line"` or
+  /// `"never-multi-line"`, then `except` and `ignore` keywords.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation =
+      options.primary_one_of(&["always", "never", "always-multi-line", "never-multi-line"]);
+    let ignore = options.keywords("ignore", &["after-comment", "first-nested", "inside-block"]);
+    let except = options.keywords(
+      "except",
+      &[
+        "after-rule",
+        "after-single-line-comment",
+        "first-nested",
+        "inside-block-and-after-rule",
+        "inside-block",
+      ],
+    );
+    options.finish()?;
+    Ok(Self {
+      expectation: expectation.unwrap_or("always"),
+      except,
+      ignore,
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for RuleEmptyLineBeforeCheck {
   /// Checks every rule in the document, in source order.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expectation = ctx.primary_option_str().unwrap_or("always");
+    let expectation = self.expectation;
     let multi_line_only = expectation.contains("multi-line");
-    let always = expectation.contains("always") || !expectation.contains("never");
-    let secondary = ctx.secondary_options();
-    let except = |name: &str| option_matches(secondary.and_then(|s| s.get("except")), name);
-    let ignore = |name: &str| option_matches(secondary.and_then(|s| s.get("ignore")), name);
+    let always = expectation.contains("always");
+    let except = |name: &str| self.except.contains(&name);
+    let ignore = |name: &str| self.ignore.contains(&name);
     let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
@@ -70,8 +103,8 @@ impl Rule for RuleEmptyLineBefore {
         continue;
       }
       diags.push(empty_line_report(
-        self.name(),
-        self.default_severity(),
+        NAME,
+        RuleEmptyLineBefore::META.default_severity,
         &tree,
         i,
         expect_empty_line,
@@ -95,12 +128,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
     let ctx = context(source, syntax, &options);
-    RuleEmptyLineBefore
+    configured(&RuleEmptyLineBefore, options.clone())
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -211,6 +244,30 @@ mod tests {
         Syntax::Css,
       ),
       "a {}\n\n b {}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    let valid = serde_json::json!(["always-multi-line", {
+      "except": ["after-single-line-comment", "first-nested"],
+      "ignore": "after-comment"
+    }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      ["Invalid option value \"sometimes\" for rule \"rule-empty-line-before\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!(["always", { "except": ["after-comment"], "ignore": ["after-rule"] }])
+      ),
+      [
+        "Invalid value \"after-comment\" for option \"except\" of rule \"rule-empty-line-before\"",
+        "Invalid value \"after-rule\" for option \"ignore\" of rule \"rule-empty-line-before\"",
+      ]
     );
   }
 }

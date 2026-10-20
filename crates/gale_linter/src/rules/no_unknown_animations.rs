@@ -1,28 +1,40 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Warn when an `animation-name` or `animation` shorthand references a name
-/// that doesn't have a corresponding `@keyframes` definition in the same file.
-///
-/// Equivalent to Stylelint's `no-unknown-animations` rule.
-/// Detection-only (no autofix).
-pub struct NoUnknownAnimations;
+const NAME: &str = "no-unknown-animations";
 
-impl Rule for NoUnknownAnimations {
-  fn name(&self) -> &'static str {
-    "no-unknown-animations"
+declare_rule! {
+  /// Warn when an `animation-name` or `animation` shorthand references a name
+  /// that doesn't have a corresponding `@keyframes` definition in the same file.
+  ///
+  /// Equivalent to Stylelint's `no-unknown-animations` rule.
+  /// Detection-only (no autofix).
+  pub struct NoUnknownAnimations => NoUnknownAnimationsCheck {
+    name: NAME,
+    description: "Disallow unknown animation names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown animation names"
+/// `no-unknown-animations`, which takes no options.
+pub struct NoUnknownAnimationsCheck;
+
+impl NoUnknownAnimationsCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoUnknownAnimationsCheck {
   /// Collects the `@keyframes` names in the file, then flags animation values
   /// referencing a name none of them define.
   fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -37,7 +49,7 @@ impl Rule for NoUnknownAnimations {
 
     // Second pass: find animation-name and animation declarations.
     let mut diags = Vec::new();
-    collect_animation_issues(nodes, &keyframe_names, self, &mut diags, is_preprocessor);
+    collect_animation_issues(nodes, &keyframe_names, &mut diags, is_preprocessor);
     diags
   }
 }
@@ -59,7 +71,6 @@ fn collect_keyframe_names(nodes: &[CssNode], names: &mut Vec<String>) {
 fn collect_animation_issues(
   nodes: &[CssNode],
   keyframe_names: &[String],
-  rule: &NoUnknownAnimations,
   diags: &mut Vec<Diagnostic>,
   is_preprocessor: bool,
 ) {
@@ -79,8 +90,7 @@ fn collect_animation_issues(
               }
               if !name.is_empty() && name != "none" && !keyframe_names.contains(&name.to_string()) {
                 diags.push(
-                  Diagnostic::new(rule.name(), format!("Unknown animation name \"{name}\""))
-                    .severity(rule.default_severity())
+                  Diagnostic::new(NAME, format!("Unknown animation name \"{name}\""))
                     .span(Span::new(decl.span.offset, decl.span.length)),
                 );
               }
@@ -98,8 +108,7 @@ fn collect_animation_issues(
               && !keyframe_names.contains(&name.to_string())
             {
               diags.push(
-                Diagnostic::new(rule.name(), format!("Unknown animation name \"{name}\""))
-                  .severity(rule.default_severity())
+                Diagnostic::new(NAME, format!("Unknown animation name \"{name}\""))
                   .span(Span::new(decl.span.offset, decl.span.length)),
               );
             }
@@ -110,20 +119,13 @@ fn collect_animation_issues(
           collect_animation_issues(
             &[CssNode::Style(child.clone())],
             keyframe_names,
-            rule,
             diags,
             is_preprocessor,
           );
         }
       }
       CssNode::AtRule(at_rule) => {
-        collect_animation_issues(
-          &at_rule.children,
-          keyframe_names,
-          rule,
-          diags,
-          is_preprocessor,
-        );
+        collect_animation_issues(&at_rule.children, keyframe_names, diags, is_preprocessor);
       }
       _ => {}
     }
@@ -186,10 +188,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   #[test]
   fn reports_unknown_animation_name() {
+    let rule = configured(&NoUnknownAnimations, None);
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -201,13 +204,14 @@ mod tests {
       span: ParserSpan::new(0, 30),
       ..Default::default()
     })];
-    let d = NoUnknownAnimations.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("fadeIn"));
   }
 
   #[test]
   fn allows_known_animation_name() {
+    let rule = configured(&NoUnknownAnimations, None);
     let nodes = vec![
       CssNode::AtRule(AtRule {
         name: "keyframes".to_string(),
@@ -227,12 +231,13 @@ mod tests {
         ..Default::default()
       }),
     ];
-    let d = NoUnknownAnimations.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_unknown_in_animation_shorthand() {
+    let rule = configured(&NoUnknownAnimations, None);
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
       declarations: vec![Declaration {
@@ -244,8 +249,26 @@ mod tests {
       span: ParserSpan::new(0, 35),
       ..Default::default()
     })];
-    let d = NoUnknownAnimations.check_root(&nodes, &ctx());
+    let d = rule.check_root(&nodes, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("slideUp"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options("no-unknown-animations", serde_json::json!(true)).is_empty());
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "no-unknown-animations",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options("no-unknown-animations", serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"no-unknown-animations\""]
+    );
   }
 }

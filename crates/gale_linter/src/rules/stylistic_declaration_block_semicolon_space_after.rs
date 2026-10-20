@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require or disallow a space after the semicolons of declaration blocks.
-///
-/// Equivalent to `@stylistic/declaration-block-semicolon-space-after`.
-pub struct StylisticDeclarationBlockSemicolonSpaceAfter;
+const NAME: &str = "@stylistic/declaration-block-semicolon-space-after";
 
-impl Rule for StylisticDeclarationBlockSemicolonSpaceAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-block-semicolon-space-after"
+declare_rule! {
+  /// Require or disallow a space after the semicolons of declaration blocks.
+  ///
+  /// Equivalent to `@stylistic/declaration-block-semicolon-space-after`.
+  pub struct StylisticDeclarationBlockSemicolonSpaceAfter => StylisticDeclarationBlockSemicolonSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the semicolons of declaration blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the semicolons of declaration blocks"
+/// `@stylistic/declaration-block-semicolon-space-after` as configured.
+pub struct StylisticDeclarationBlockSemicolonSpaceAfterCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.
+  option: &'static str,
+}
+
+impl StylisticDeclarationBlockSemicolonSpaceAfterCheck {
+  /// The plugin's options: `"always"`, `"never"`, `"always-single-line"` or
+  /// `"never-single-line"`.  Gale reads no option as `"always-single-line"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "never", "always-single-line", "never-single-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always-single-line"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationBlockSemicolonSpaceAfterCheck {
   /// Flags a declaration semicolon whose trailing space does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always-single-line");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -124,11 +143,7 @@ impl Rule for StylisticDeclarationBlockSemicolonSpaceAfter {
             "never" | "never-single-line" => "Unexpected whitespace after \";\"",
             _ => unreachable!(),
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(semi_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(semi_pos, 1)));
         }
       }
 
@@ -186,14 +201,14 @@ fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_single_line_allows_space_after_semicolon() {
     let opt = serde_json::json!("always-single-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -204,9 +219,9 @@ mod tests {
   #[test]
   fn always_single_line_reports_missing_space() {
     let opt = serde_json::json!("always-single-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;display: block; }";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -214,9 +229,9 @@ mod tests {
   #[test]
   fn always_single_line_ignores_multiline_block() {
     let opt = serde_json::json!("always-single-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a {\n  color: red;display: block;\n}";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "should not report in multi-line block, got: {:?}",
@@ -227,9 +242,9 @@ mod tests {
   #[test]
   fn never_reports_space_after_semicolon() {
     let opt = serde_json::json!("never");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a {\n  color: red; display: block;\n}";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected whitespace"));
   }
@@ -237,9 +252,9 @@ mod tests {
   #[test]
   fn always_requires_space_after_semicolon() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;display: block; }";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected single space"));
   }
@@ -247,9 +262,9 @@ mod tests {
   #[test]
   fn skips_last_declaration_before_closing_brace() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red;}";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "should skip semicolon before }}, got: {:?}",
@@ -260,10 +275,21 @@ mod tests {
   #[test]
   fn never_single_line_reports_space_in_single_line() {
     let opt = serde_json::json!("never-single-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = StylisticDeclarationBlockSemicolonSpaceAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected whitespace"));
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("never-single-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always-multi-line")),
+      [
+        "Invalid option value \"always-multi-line\" for rule \"@stylistic/declaration-block-semicolon-space-after\""
+      ]
+    );
   }
 }

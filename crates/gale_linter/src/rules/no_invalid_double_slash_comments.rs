@@ -1,26 +1,38 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports `//` comments in CSS files (valid in SCSS but not CSS).
-///
-/// Equivalent to Stylelint's `no-invalid-double-slash-comments` rule.
-pub struct NoInvalidDoubleSlashComments;
+const NAME: &str = "no-invalid-double-slash-comments";
 
-impl Rule for NoInvalidDoubleSlashComments {
-  fn name(&self) -> &'static str {
-    "no-invalid-double-slash-comments"
+declare_rule! {
+  /// Reports `//` comments in CSS files (valid in SCSS but not CSS).
+  ///
+  /// Equivalent to Stylelint's `no-invalid-double-slash-comments` rule.
+  pub struct NoInvalidDoubleSlashComments => NoInvalidDoubleSlashCommentsCheck {
+    name: NAME,
+    description: "Disallow double-slash comments (//...) which are not supported in CSS",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow double-slash comments (//...) which are not supported in CSS"
+/// `no-invalid-double-slash-comments`, which takes no options.
+pub struct NoInvalidDoubleSlashCommentsCheck;
+
+impl NoInvalidDoubleSlashCommentsCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoInvalidDoubleSlashCommentsCheck {
   /// Flags `//` comments, which are invalid in plain CSS. String literals are
   /// skipped so URLs are not mistaken for comments.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
@@ -77,8 +89,7 @@ impl Rule for NoInvalidDoubleSlashComments {
           // Find end of line.
           let end = source[i..].find('\n').map(|pos| i + pos).unwrap_or(len);
           diagnostics.push(
-            Diagnostic::new(self.name(), "Unexpected double-slash CSS comment")
-              .severity(self.default_severity())
+            Diagnostic::new(NAME, "Unexpected double-slash CSS comment")
               .span(Span::new(start, end - start)),
           );
           i = end;
@@ -97,11 +108,11 @@ impl Rule for NoInvalidDoubleSlashComments {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn reports_double_slash_comment_in_css() {
-    let rule = NoInvalidDoubleSlashComments;
+    let rule = configured(&NoInvalidDoubleSlashComments, None);
     let context = ctx_with_source("a { color: red; } // bad comment");
     let diags = rule.check_root(&[], &context);
     assert_eq!(diags.len(), 1);
@@ -110,7 +121,7 @@ mod tests {
 
   #[test]
   fn ignores_double_slash_in_scss() {
-    let rule = NoInvalidDoubleSlashComments;
+    let rule = configured(&NoInvalidDoubleSlashComments, None);
     let context = scss_ctx_with_source("// this is fine in SCSS");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -118,7 +129,7 @@ mod tests {
 
   #[test]
   fn ignores_block_comments() {
-    let rule = NoInvalidDoubleSlashComments;
+    let rule = configured(&NoInvalidDoubleSlashComments, None);
     let context = ctx_with_source("/* this is fine */ a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -126,7 +137,7 @@ mod tests {
 
   #[test]
   fn ignores_double_slash_inside_string() {
-    let rule = NoInvalidDoubleSlashComments;
+    let rule = configured(&NoInvalidDoubleSlashComments, None);
     let context = ctx_with_source("a { content: \"//not-a-comment\"; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
@@ -134,9 +145,32 @@ mod tests {
 
   #[test]
   fn ignores_double_slash_inside_block_comment() {
-    let rule = NoInvalidDoubleSlashComments;
+    let rule = configured(&NoInvalidDoubleSlashComments, None);
     let context = ctx_with_source("/* // inside block */ a { color: red; }");
     let diags = rule.check_root(&[], &context);
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options("no-invalid-double-slash-comments", serde_json::json!(true)).is_empty()
+    );
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "no-invalid-double-slash-comments",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(
+        "no-invalid-double-slash-comments",
+        serde_json::json!("always")
+      ),
+      ["Unexpected option value \"always\" for rule \"no-invalid-double-slash-comments\""]
+    );
   }
 }

@@ -1,32 +1,44 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow invalid named grid areas in `grid-template-areas`.
-///
-/// Validates that:
-/// - Each row string has the same number of cell tokens
-/// - Named areas form contiguous rectangles
-///
-/// Equivalent to Stylelint's `named-grid-areas-no-invalid` rule.
-pub struct NamedGridAreasNoInvalid;
+const NAME: &str = "named-grid-areas-no-invalid";
 
-impl Rule for NamedGridAreasNoInvalid {
-  fn name(&self) -> &'static str {
-    "named-grid-areas-no-invalid"
+declare_rule! {
+  /// Disallow invalid named grid areas in `grid-template-areas`.
+  ///
+  /// Validates that:
+  /// - Each row string has the same number of cell tokens
+  /// - Named areas form contiguous rectangles
+  ///
+  /// Equivalent to Stylelint's `named-grid-areas-no-invalid` rule.
+  pub struct NamedGridAreasNoInvalid => NamedGridAreasNoInvalidCheck {
+    name: NAME,
+    description: "Disallow invalid named grid areas",
+    default_severity: Error,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow invalid named grid areas"
+/// `named-grid-areas-no-invalid`, which takes no options.
+pub struct NamedGridAreasNoInvalidCheck;
+
+impl NamedGridAreasNoInvalidCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for NamedGridAreasNoInvalidCheck {
   /// Flags `grid-template-areas` whose rows differ in cell count or whose named
   /// areas do not form contiguous rectangles.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -58,7 +70,7 @@ impl Rule for NamedGridAreasNoInvalid {
       if row.len() != col_count {
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!(
               "Expected row {} to have {} cell tokens but found {}",
               i + 1,
@@ -66,7 +78,6 @@ impl Rule for NamedGridAreasNoInvalid {
               row.len()
             ),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
         // If row counts don't match, skip rectangle check
@@ -89,10 +100,9 @@ impl Rule for NamedGridAreasNoInvalid {
       if !is_rectangle(positions) {
         diagnostics.push(
           Diagnostic::new(
-            self.name(),
+            NAME,
             format!("Named grid area \"{}\" does not form a rectangle", name),
           )
-          .severity(self.default_severity())
           .span(Span::new(decl.span.offset, decl.span.length)),
         );
       }
@@ -164,7 +174,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx};
 
   fn decl(property: &str, value: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -177,30 +187,34 @@ mod tests {
 
   #[test]
   fn allows_valid_rectangle_areas() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a a" "a a""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_valid_multiple_named_areas() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a b" "a b""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_valid_with_null_cells() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a . b" "a . b""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_non_rectangle_area() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     // "a" occupies (0,0), (0,1), (1,1) — not a rectangle
     let node = decl("grid-template-areas", r#""a a" "b a""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("does not form a rectangle"));
     assert!(d[0].message.contains("\"a\""));
@@ -208,49 +222,73 @@ mod tests {
 
   #[test]
   fn reports_l_shaped_area() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     // "a" occupies (0,0), (1,0), (1,1) — L-shape, not a rectangle
     let node = decl("grid-template-areas", r#""a b" "a a""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("does not form a rectangle"));
   }
 
   #[test]
   fn reports_unequal_row_lengths() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a a" "b b b""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("cell tokens"));
   }
 
   #[test]
   fn allows_none_value() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", "none");
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_other_properties() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("display", "grid");
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_single_row() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""header header sidebar""#);
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_complex_valid_grid() {
+    let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl(
       "grid-template-areas",
       r#""header header header" "nav content sidebar" "footer footer footer""#,
     );
-    let d = NamedGridAreasNoInvalid.check(&node, &ctx());
+    let d = rule.check(&node, &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options("named-grid-areas-no-invalid", serde_json::json!(true)).is_empty());
+    // The rule takes nothing but `true`, and ignores secondary options.
+    assert!(
+      invalid_options(
+        "named-grid-areas-no-invalid",
+        serde_json::json!([true, { "foo": 1 }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options("named-grid-areas-no-invalid", serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"named-grid-areas-no-invalid\""]
+    );
   }
 }

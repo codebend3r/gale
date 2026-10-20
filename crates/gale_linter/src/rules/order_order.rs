@@ -1,32 +1,84 @@
 use std::sync::Arc;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern::{self, Regex};
 use crate::postcss_tree::{NodeKind, PostcssTree};
-use crate::rule::{Rule, RuleContext, per_run};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_order::{
   blocks, comments_after_node, comments_before_node, is_allowed_to_process,
-  is_standard_syntax_property, js_sort, reorder_edit, split_array_settings,
+  is_standard_syntax_property, js_sort, reorder_edit,
 };
 
-/// Specify the order of content within declaration blocks.
-///
-/// Equivalent to stylelint-order's `order/order` rule, autofix included.
-/// The primary option is an array of keywords (`custom-properties`,
-/// `dollar-variables`, `at-variables`, `declarations`, `rules`, `at-rules`,
-/// `less-mixins`) and patterns (`{ type: "rule", selector, name }`, `{ type:
-/// "at-rule", name, parameter, hasBlock }`), written as `[[...]]`, `[[...],
-/// { unspecified }]` or as a bare `[...]`.  `unspecified` is `top`,
-/// `bottom` or `ignore` (the default).
-///
-/// Every rule, at-rule and SCSS nested property with children is checked
-/// over the [`PostcssTree`] of the source.  The fix sorts the block as
-/// postcss-sorting does: comments travel with the node they belong to,
-/// anything the order does not mention goes to the bottom, and the last
-/// declaration ends with a `;`.
-pub struct OrderOrder;
+const NAME: &str = "order/order";
+
+declare_rule! {
+  /// Specify the order of content within declaration blocks.
+  ///
+  /// Equivalent to stylelint-order's `order/order` rule, autofix included.
+  /// The primary option is an array of keywords (`custom-properties`,
+  /// `dollar-variables`, `at-variables`, `declarations`, `rules`, `at-rules`,
+  /// `less-mixins`) and patterns (`{ type: "rule", selector, name }`, `{ type:
+  /// "at-rule", name, parameter, hasBlock }`), written as `[[...]]`, `[[...],
+  /// { unspecified }]` or as a bare `[...]`.  `unspecified` is `top`,
+  /// `bottom` or `ignore` (the default).
+  ///
+  /// Every rule, at-rule and SCSS nested property with children is checked
+  /// over the [`PostcssTree`] of the source.  The fix sorts the block as
+  /// postcss-sorting does: comments travel with the node they belong to,
+  /// anything the order does not mention goes to the bottom, and the last
+  /// declaration ends with a `;`.
+  pub struct OrderOrder => OrderOrderCheck {
+    name: NAME,
+    description: "Specify the order of content within declaration blocks",
+    default_severity: Warning,
+    primary_option_array: true,
+  }
+}
+
+/// `order/order` as configured.
+pub struct OrderOrderCheck {
+  /// The order, or `None` when the config gives none (a preset enabling
+  /// the rule), which checks nothing.
+  config: Option<Config>,
+}
+
+impl OrderOrderCheck {
+  /// stylelint-order's options: an array of keywords and patterns, checked
+  /// whole by `validatePrimaryOption`, then `unspecified`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let items = options.primary_test(is_valid_primary);
+    let unspecified = options.value(
+      "unspecified",
+      &[
+        Accept::Exactly("top"),
+        Accept::Exactly("bottom"),
+        Accept::Exactly("ignore"),
+      ],
+    );
+    options.finish()?;
+    let unspecified = match unspecified.and_then(|value| value.as_str()) {
+      Some("top") => Unspecified::Top,
+      Some("bottom") => Unspecified::Bottom,
+      _ => Unspecified::Ignore,
+    };
+    let config = items
+      .and_then(|items| items.as_array())
+      .map(|items| Config::new(items, unspecified));
+    Ok(Self { config })
+  }
+}
+
+/// stylelint-order's `validatePrimaryOption`: an array of valid items.
+fn is_valid_primary(value: &serde_json::Value) -> bool {
+  value
+    .as_array()
+    .is_some_and(|items| items.iter().all(is_valid_item))
+}
 
 /// A `rule` pattern.
 #[derive(Debug, Clone)]
@@ -54,8 +106,8 @@ enum Unspecified {
   Ignore,
 }
 
-/// The rule's options, read once per file: stylelint-order's
-/// `createOrderInfo` and postcss-sorting's `createExpectedOrder`.
+/// The order the rule's options give: stylelint-order's `createOrderInfo`
+/// and postcss-sorting's `createExpectedOrder`.
 struct Config {
   /// Keyword to its position and description.
   keywords: Vec<(String, usize, &'static str)>,
@@ -74,23 +126,8 @@ struct OrderData<'c> {
 }
 
 impl Config {
-  /// Read the options, or `None` when they are not valid (Stylelint then
-  /// reports the options and skips the rule).
-  fn parse(options: Option<&serde_json::Value>) -> Option<Self> {
-    let (primary, secondary) = split_array_settings(options);
-    let items = primary?.as_array()?;
-    if !items.iter().all(is_valid_item) {
-      return None;
-    }
-    let unspecified = match secondary.and_then(|s| s.get("unspecified")) {
-      None => Unspecified::Ignore,
-      Some(value) => match value.as_str()? {
-        "top" => Unspecified::Top,
-        "bottom" => Unspecified::Bottom,
-        "ignore" => Unspecified::Ignore,
-        _ => return None,
-      },
-    };
+  /// The order `items` give, which [`is_valid_primary`] has accepted.
+  fn new(items: &[serde_json::Value], unspecified: Unspecified) -> Self {
     let mut config = Self {
       keywords: Vec::new(),
       rules: Vec::new(),
@@ -133,7 +170,7 @@ impl Config {
         _ => {}
       }
     }
-    Some(config)
+    config
   }
 
   /// The position and description the order gives `node`.  `for_fixer`
@@ -403,23 +440,10 @@ fn node_description(tree: &PostcssTree, node: usize) -> String {
   }
 }
 
-impl Rule for OrderOrder {
-  fn name(&self) -> &'static str {
-    "order/order"
-  }
-
-  fn description(&self) -> &'static str {
-    "Specify the order of content within declaration blocks"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for OrderOrderCheck {
   /// Checks the order of the nodes in every block of the document.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let parsed = per_run(self.name(), ctx.options, || Config::parse(ctx.options));
-    let Some(config) = parsed.as_ref() else {
+    let Some(config) = &self.config else {
       return vec![];
     };
     let tree = ctx.postcss_tree();
@@ -431,7 +455,7 @@ impl Rule for OrderOrder {
   }
 }
 
-impl OrderOrder {
+impl OrderOrderCheck {
   /// stylelint-order's `checkNode`: report every node that comes before
   /// one the order puts ahead of it, each with the fix that sorts the
   /// whole block.
@@ -487,9 +511,8 @@ impl OrderOrder {
         describe(prior, prior_data)
       );
       let n = &tree.nodes[child];
-      let mut diag = Diagnostic::new(self.name(), message)
-        .severity(self.default_severity())
-        .span(Span::from_range(n.start, n.end.max(n.start)));
+      let mut diag =
+        Diagnostic::new(NAME, message).span(Span::from_range(n.start, n.end.max(n.start)));
       if let Some(edit) = &edit {
         diag = diag.fix(Fix::new("Sort the block", vec![edit.clone()]));
       }
@@ -598,14 +621,14 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{context, fix};
+  use crate::testing::{configured, context, fix, invalid_options};
 
   const RULE: &str = "order/order";
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
-    let ctx = context(source, syntax, &options);
-    OrderOrder
+    let ctx = context(source, syntax, None);
+    configured(&OrderOrder, options)
       .check_root(&[], &ctx)
       .into_iter()
       .map(|d| d.message)
@@ -625,13 +648,15 @@ mod tests {
         vec!["Expected custom property to come before declaration"]
       );
     }
-    assert!(
-      messages(
-        source,
-        Syntax::Css,
-        json!([["custom-properties", "nonsense"]])
-      )
-      .is_empty()
+    // An item stylelint-order does not know makes the whole option
+    // invalid, tested by a function, so the problem reads `Invalid option`.
+    assert_eq!(
+      invalid_options(RULE, json!([["custom-properties", "nonsense"]])),
+      ["Invalid option \"[\"custom-properties\",\"nonsense\"]\" for rule \"order/order\""]
+    );
+    assert_eq!(
+      invalid_options(RULE, json!([["declarations"], { "unspecified": "last" }])),
+      ["Invalid value \"last\" for option \"unspecified\" of rule \"order/order\""]
     );
   }
 

@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow missing end-of-source newlines.
-///
-/// Equivalent to `@stylistic/no-missing-end-of-source-newline`.
-pub struct StylisticNoMissingEndOfSourceNewline;
+const NAME: &str = "@stylistic/no-missing-end-of-source-newline";
 
-impl Rule for StylisticNoMissingEndOfSourceNewline {
-  fn name(&self) -> &'static str {
-    "@stylistic/no-missing-end-of-source-newline"
+declare_rule! {
+  /// Disallow missing end-of-source newlines.
+  ///
+  /// Equivalent to `@stylistic/no-missing-end-of-source-newline`.
+  pub struct StylisticNoMissingEndOfSourceNewline => StylisticNoMissingEndOfSourceNewlineCheck {
+    name: NAME,
+    description: "Disallow missing end-of-source newlines",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow missing end-of-source newlines"
+/// `@stylistic/no-missing-end-of-source-newline`, which takes no options.
+pub struct StylisticNoMissingEndOfSourceNewlineCheck;
+
+impl StylisticNoMissingEndOfSourceNewlineCheck {
+  /// The plugin validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticNoMissingEndOfSourceNewlineCheck {
   /// Flags a file not ending in a newline. Trailing whitespace does not count,
   /// matching Stylelint.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -34,8 +46,7 @@ impl Rule for StylisticNoMissingEndOfSourceNewline {
     if !ctx.source.ends_with('\n') {
       let offset = ctx.source.len().saturating_sub(1);
       vec![
-        Diagnostic::new(self.name(), "Unexpected missing end-of-source newline")
-          .severity(self.default_severity())
+        Diagnostic::new(NAME, "Unexpected missing end-of-source newline")
           .span(Span::new(offset, 0))
           .fix(Fix::new(
             "Add newline at end of source",
@@ -52,11 +63,11 @@ impl Rule for StylisticNoMissingEndOfSourceNewline {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_missing_newline() {
-    let rule = StylisticNoMissingEndOfSourceNewline;
+    let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("a { color: red; }");
     let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
@@ -66,7 +77,7 @@ mod tests {
 
   #[test]
   fn allows_trailing_newline() {
-    let rule = StylisticNoMissingEndOfSourceNewline;
+    let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("a { color: red; }\n");
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
@@ -74,9 +85,20 @@ mod tests {
 
   #[test]
   fn ignores_empty_source() {
-    let rule = StylisticNoMissingEndOfSourceNewline;
+    let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("");
     let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      [
+        "Unexpected option value \"always\" for rule \"@stylistic/no-missing-end-of-source-newline\""
+      ]
+    );
   }
 }

@@ -1,23 +1,35 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-pub struct ColorNoInvalidHex;
+const NAME: &str = "color-no-invalid-hex";
 
-impl Rule for ColorNoInvalidHex {
-  fn name(&self) -> &'static str {
-    "color-no-invalid-hex"
+declare_rule! {
+  pub struct ColorNoInvalidHex => ColorNoInvalidHexCheck {
+    name: NAME,
+    description: "Disallow invalid hex colors",
+    default_severity: Error,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow invalid hex colors"
+/// `color-no-invalid-hex`, which takes no options.
+pub struct ColorNoInvalidHexCheck;
+
+impl ColorNoInvalidHexCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Error
-  }
-
+impl Check for ColorNoInvalidHexCheck {
   /// Flags hex colors whose digit count is not 3, 4, 6 or 8.
   fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -28,12 +40,8 @@ impl Rule for ColorNoInvalidHex {
       for hex in find_hex_colors(&decl.value) {
         if !is_valid_hex(&hex) {
           diags.push(
-            Diagnostic::new(
-              self.name(),
-              format!("Unexpected invalid hex color \"{hex}\""),
-            )
-            .severity(self.default_severity())
-            .span(Span::new(decl.span.offset, decl.span.length)),
+            Diagnostic::new(NAME, format!("Unexpected invalid hex color \"{hex}\""))
+              .span(Span::new(decl.span.offset, decl.span.length)),
           );
         }
       }
@@ -128,7 +136,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{CssNode, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_value(val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -146,33 +154,37 @@ mod tests {
 
   #[test]
   fn reports_invalid_hex_chars() {
-    let d = ColorNoInvalidHex.check(&style_with_value("#gg0000"), &ctx());
+    let rule = configured(&ColorNoInvalidHex, None);
+    let d = rule.check(&style_with_value("#gg0000"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#gg0000"));
   }
 
   #[test]
   fn reports_invalid_hex_length() {
-    let d = ColorNoInvalidHex.check(&style_with_value("#12345"), &ctx());
+    let rule = configured(&ColorNoInvalidHex, None);
+    let d = rule.check(&style_with_value("#12345"), &ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_valid_hex() {
+    let rule = configured(&ColorNoInvalidHex, None);
+    assert!(rule.check(&style_with_value("#fff"), &ctx()).is_empty());
+    assert!(rule.check(&style_with_value("#ff00ff"), &ctx()).is_empty());
     assert!(
-      ColorNoInvalidHex
-        .check(&style_with_value("#fff"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      ColorNoInvalidHex
-        .check(&style_with_value("#ff00ff"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      ColorNoInvalidHex
+      rule
         .check(&style_with_value("#ff00ff80"), &ctx())
         .is_empty()
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"color-no-invalid-hex\""]
     );
   }
 }

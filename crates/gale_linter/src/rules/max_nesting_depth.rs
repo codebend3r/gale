@@ -1,108 +1,102 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::js_number;
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit nesting depth of CSS rules.
-///
-/// Equivalent to Stylelint's `max-nesting-depth` rule.
-/// Default maximum: 3.
-///
-/// ## Options
-///
-/// Primary option: `<number>` — maximum allowed nesting depth.
-///
-/// Secondary options:
-/// - `ignoreAtRules: [<string>, ...]` — at-rules whose name matches are
-///   completely transparent: they do not count toward nesting, and all content
-///   inside them is also exempt from depth checking.
-/// - `ignore: [<string>, ...]` — a list of selectors/at-rules to ignore:
-///   - `"blockless-at-rules"` — at-rules that wrap content (like `@media`)
-///     don't count toward depth.
-///   - `"pseudo-classes"` — nested selectors that are pseudo-classes (e.g.,
-///     `&:hover`) don't count toward depth.
-pub struct MaxNestingDepth;
+const NAME: &str = "max-nesting-depth";
 
-const MAX_DEPTH: usize = 3;
-
-/// Configuration parsed from rule options.
-struct Config {
-  max: usize,
-  ignore_at_rules: Vec<String>,
-  ignore_blockless_at_rules: bool,
-  ignore_pseudo_classes: bool,
-  is_scss: bool,
+declare_rule! {
+  /// Limit nesting depth of CSS rules.
+  ///
+  /// Equivalent to Stylelint's `max-nesting-depth` rule.
+  /// Default maximum: 3.
+  ///
+  /// ## Options
+  ///
+  /// Primary option: `<number>` — maximum allowed nesting depth.
+  ///
+  /// Secondary options:
+  /// - `ignoreAtRules: [<string>, ...]` — at-rules whose name matches are
+  ///   completely transparent: they do not count toward nesting, and all content
+  ///   inside them is also exempt from depth checking.
+  /// - `ignore: [<string>, ...]` — a list of selectors/at-rules to ignore:
+  ///   - `"blockless-at-rules"` — at-rules that wrap content (like `@media`)
+  ///     don't count toward depth.
+  ///   - `"pseudo-classes"` — nested selectors that are pseudo-classes (e.g.,
+  ///     `&:hover`) don't count toward depth.
+  pub struct MaxNestingDepth => MaxNestingDepthCheck {
+    name: NAME,
+    description: "Limit nesting depth",
+    default_severity: Warning,
+  }
 }
 
-impl Config {
-  /// Reads the maximum depth and the `ignoreAtRules`/`ignore` secondaries.
-  fn from_context(ctx: &RuleContext) -> Self {
-    let max = ctx
-      .primary_option()
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(MAX_DEPTH);
+/// `max-nesting-depth` as configured.
+pub struct MaxNestingDepthCheck {
+  /// The deepest nesting allowed.
+  max: f64,
+  /// `ignoreAtRules`: at-rules, by name, that are transparent.
+  ignore_at_rules: Vec<String>,
+  /// `ignore: ["blockless-at-rules"]`.
+  ignore_blockless_at_rules: bool,
+  /// `ignore: ["pseudo-classes"]`.
+  ignore_pseudo_classes: bool,
+}
 
-    let secondary = ctx.secondary_options();
+/// The depth allowed when the config gives none.
+const MAX_DEPTH: f64 = 3.0;
 
-    let ignore_at_rules: Vec<String> = secondary
-      .and_then(|v| v.get("ignoreAtRules"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
+impl MaxNestingDepthCheck {
+  /// Stylelint's options: a number, then `ignore`, `ignoreAtRules`,
+  /// `ignoreRules` and `ignorePseudoClasses`.  Gale reads no number as 3,
+  /// and accepts but does not yet apply `ignoreRules` and
+  /// `ignorePseudoClasses`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_number(&[Accept::Number]);
+    let ignore = options.keywords("ignore", &["blockless-at-rules", "pseudo-classes"]);
+    let ignore_at_rules = options.strings("ignoreAtRules");
+    options.strings("ignoreRules");
+    options.strings("ignorePseudoClasses");
+    options.finish()?;
+    Ok(Self {
+      max: max.unwrap_or(MAX_DEPTH),
+      ignore_at_rules,
+      ignore_blockless_at_rules: ignore.contains(&"blockless-at-rules"),
+      ignore_pseudo_classes: ignore.contains(&"pseudo-classes"),
+    })
+  }
 
-    let ignore_list: Vec<String> = secondary
-      .and_then(|v| v.get("ignore"))
-      .and_then(|v| v.as_array())
-      .map(|arr| {
-        arr
-          .iter()
-          .filter_map(|v| v.as_str().map(|s| s.to_string()))
-          .collect()
-      })
-      .unwrap_or_default();
+  /// The problem for a node `depth` deep.
+  fn problem(&self, depth: usize, span: Span) -> Diagnostic {
+    Diagnostic::new(
+      NAME,
+      format!(
+        "Expected nesting depth to be no more than {}, found {depth}",
+        js_number::to_js_string(self.max)
+      ),
+    )
+    .span(span)
+  }
 
-    let ignore_blockless_at_rules = ignore_list.iter().any(|s| s == "blockless-at-rules");
-    let ignore_pseudo_classes = ignore_list.iter().any(|s| s == "pseudo-classes");
+  /// Whether `depth` is deeper than allowed.
+  fn too_deep(&self, depth: usize) -> bool {
+    depth as f64 > self.max
+  }
+}
 
+impl Check for MaxNestingDepthCheck {
+  /// Walks the document from depth zero, since depth is a whole-tree property.
+  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
     let is_scss = matches!(
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
     );
-
-    Config {
-      max,
-      ignore_at_rules,
-      ignore_blockless_at_rules,
-      ignore_pseudo_classes,
-      is_scss,
-    }
-  }
-}
-
-impl Rule for MaxNestingDepth {
-  fn name(&self) -> &'static str {
-    "max-nesting-depth"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit nesting depth"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
-  /// Walks the document from depth zero, since depth is a whole-tree property.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let config = Config::from_context(ctx);
     let mut diags = Vec::new();
-    check_nodes_depth(self, nodes, 0, &config, &mut diags);
+    check_nodes_depth(self, nodes, 0, is_scss, &mut diags);
     diags
   }
 }
@@ -122,10 +116,10 @@ fn is_pseudo_class_selector(selector: &str) -> bool {
 /// Recursively walk CssNode trees and check nesting depth.
 /// `depth` is the current nesting depth (0 at the top level).
 fn check_nodes_depth(
-  rule_impl: &MaxNestingDepth,
+  config: &MaxNestingDepthCheck,
   nodes: &[CssNode],
   depth: usize,
-  config: &Config,
+  is_scss: bool,
   diags: &mut Vec<Diagnostic>,
 ) {
   for node in nodes {
@@ -134,7 +128,7 @@ fn check_nodes_depth(
         // Stylelint skips rules whose selector contains SCSS
         // interpolation (`#{...}`) via `isStandardSyntaxRule`.
         // Skip this rule and all its children when that applies.
-        if config.is_scss && style.selector.contains("#{") {
+        if is_scss && style.selector.contains("#{") {
           continue;
         }
 
@@ -147,24 +141,17 @@ fn check_nodes_depth(
 
         // A style rule at depth > 0 contributes to nesting.
         // depth 0 is top-level and doesn't count.
-        if !is_ignored_pseudo && effective_depth > config.max && effective_depth > 0 {
-          diags.push(
-            Diagnostic::new(
-              rule_impl.name(),
-              format!(
-                "Expected nesting depth to be no more than {}, found {effective_depth}",
-                config.max
-              ),
-            )
-            .severity(rule_impl.default_severity())
-            .span(Span::new(style.span.offset, style.span.length)),
-          );
+        if !is_ignored_pseudo && config.too_deep(effective_depth) && effective_depth > 0 {
+          diags.push(config.problem(
+            effective_depth,
+            Span::new(style.span.offset, style.span.length),
+          ));
         }
 
         // Recurse into nested style rule children.
         // If pseudo-class is ignored, don't increment depth.
         let child_depth = if is_ignored_pseudo { depth } else { depth + 1 };
-        check_style_depth(rule_impl, style, child_depth, config, diags);
+        check_style_depth(config, style, child_depth, is_scss, diags);
       }
       CssNode::AtRule(at_rule) => {
         // Check if this at-rule should be completely ignored.
@@ -192,21 +179,11 @@ fn check_nodes_depth(
         };
 
         // If not ignored and nested (depth > 0), check if it exceeds max.
-        if !is_blockless_ignored && depth > 0 && depth > config.max {
-          diags.push(
-            Diagnostic::new(
-              rule_impl.name(),
-              format!(
-                "Expected nesting depth to be no more than {}, found {depth}",
-                config.max
-              ),
-            )
-            .severity(rule_impl.default_severity())
-            .span(Span::new(at_rule.span.offset, at_rule.span.length)),
-          );
+        if !is_blockless_ignored && depth > 0 && config.too_deep(depth) {
+          diags.push(config.problem(depth, Span::new(at_rule.span.offset, at_rule.span.length)));
         }
 
-        check_nodes_depth(rule_impl, &at_rule.children, child_depth, config, diags);
+        check_nodes_depth(config, &at_rule.children, child_depth, is_scss, diags);
       }
       _ => {}
     }
@@ -216,16 +193,16 @@ fn check_nodes_depth(
 /// Recurses into nested rules, flagging those past the limit. Interpolated
 /// selectors and any ignored nesting are skipped along with their descendants.
 fn check_style_depth(
-  rule_impl: &MaxNestingDepth,
+  config: &MaxNestingDepthCheck,
   style: &gale_css_parser::StyleRule,
   depth: usize,
-  config: &Config,
+  is_scss: bool,
   diags: &mut Vec<Diagnostic>,
 ) {
   for child in &style.children {
     // Stylelint skips rules whose selector contains SCSS interpolation.
     // Skip this child and all its descendants.
-    if config.is_scss && child.selector.contains("#{") {
+    if is_scss && child.selector.contains("#{") {
       continue;
     }
 
@@ -236,22 +213,15 @@ fn check_style_depth(
 
     let effective_depth = if is_ignored_pseudo { depth - 1 } else { depth };
 
-    if !is_ignored_pseudo && effective_depth > config.max {
-      diags.push(
-        Diagnostic::new(
-          rule_impl.name(),
-          format!(
-            "Expected nesting depth to be no more than {}, found {effective_depth}",
-            config.max
-          ),
-        )
-        .severity(rule_impl.default_severity())
-        .span(Span::new(child.span.offset, child.span.length)),
-      );
+    if !is_ignored_pseudo && config.too_deep(effective_depth) {
+      diags.push(config.problem(
+        effective_depth,
+        Span::new(child.span.offset, child.span.length),
+      ));
     }
 
     let child_depth = if is_ignored_pseudo { depth } else { depth + 1 };
-    check_style_depth(rule_impl, child, child_depth, config, diags);
+    check_style_depth(config, child, child_depth, is_scss, diags);
   }
 }
 
@@ -260,7 +230,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule as CssAtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options, scss_ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options, invalid_options, scss_ctx_with_options};
 
   fn make_decl() -> Declaration {
     Declaration {
@@ -293,7 +263,7 @@ mod tests {
   fn reports_deep_nesting() {
     // depth 5: .level-5 > .level-4 > .level-3 > .level-2 > .level-1 > .leaf
     let root = CssNode::Style(make_nested(5));
-    let d = MaxNestingDepth.check_root(&[root], &ctx());
+    let d = configured(&MaxNestingDepth, None).check_root(&[root], &ctx());
     assert!(!d.is_empty(), "expected diagnostics for deep nesting");
   }
 
@@ -301,7 +271,7 @@ mod tests {
   fn allows_shallow_nesting() {
     // depth 2: .level-2 > .level-1 > .leaf
     let root = CssNode::Style(make_nested(2));
-    let d = MaxNestingDepth.check_root(&[root], &ctx());
+    let d = configured(&MaxNestingDepth, None).check_root(&[root], &ctx());
     assert!(d.is_empty());
   }
 
@@ -358,7 +328,7 @@ mod tests {
       children: vec![a],
     });
 
-    let diags = MaxNestingDepth.check_root(&[mixin], &ctx_with_opts);
+    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[mixin], &ctx_with_opts);
     assert!(
       diags.is_empty(),
       "expected no diagnostics inside ignored @mixin, got {diags:?}"
@@ -387,7 +357,7 @@ mod tests {
       nested_at_rules: Vec::new(),
     });
 
-    let diags = MaxNestingDepth.check_root(&[top], &ctx_with_opts);
+    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[top], &ctx_with_opts);
     assert!(
       !diags.is_empty(),
       "expected diagnostics for nesting outside @mixin"
@@ -437,7 +407,7 @@ mod tests {
 
     // Simple test: top-level @media with nested rules shouldn't flag
     // because blockless at-rules at any depth don't increment.
-    let diags = MaxNestingDepth.check_root(&[media], &ctx_with_opts);
+    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[media], &ctx_with_opts);
     assert!(
       diags.is_empty(),
       "expected no diagnostics with blockless-at-rules ignore, got {diags:?}"
@@ -476,10 +446,34 @@ mod tests {
       nested_at_rules: Vec::new(),
     });
 
-    let diags = MaxNestingDepth.check_root(&[a], &ctx_with_opts);
+    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[a], &ctx_with_opts);
     assert!(
       diags.is_empty(),
       "expected no diagnostics with pseudo-classes ignore, got {diags:?}"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([2, {
+          "ignore": ["pseudo-classes"],
+          "ignoreAtRules": ["/^my-/"],
+          "ignoreRules": [".a"],
+          "ignorePseudoClasses": ["hover"]
+        }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("deep")),
+      ["Invalid option value \"deep\" for rule \"max-nesting-depth\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([2, { "ignore": ["rules"] }])),
+      ["Invalid value \"rules\" for option \"ignore\" of rule \"max-nesting-depth\""]
     );
   }
 }

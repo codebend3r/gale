@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_html_element;
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports unknown type selectors (HTML element names).
-///
-/// Custom elements (containing a hyphen like `my-component`) are skipped.
-///
-/// Equivalent to Stylelint's `selector-type-no-unknown` rule.
-pub struct SelectorTypeNoUnknown;
+const NAME: &str = "selector-type-no-unknown";
 
-impl Rule for SelectorTypeNoUnknown {
-  fn name(&self) -> &'static str {
-    "selector-type-no-unknown"
+declare_rule! {
+  /// Reports unknown type selectors (HTML element names).
+  ///
+  /// Custom elements (containing a hyphen like `my-component`) are skipped.
+  ///
+  /// Equivalent to Stylelint's `selector-type-no-unknown` rule.
+  pub struct SelectorTypeNoUnknown => SelectorTypeNoUnknownCheck {
+    name: NAME,
+    description: "Disallow unknown type selectors",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown type selectors"
+/// `selector-type-no-unknown` as configured.
+pub struct SelectorTypeNoUnknownCheck {
+  /// The `ignoreTypes` option.
+  ignore_types: Matchers,
+}
+
+impl SelectorTypeNoUnknownCheck {
+  /// Stylelint's options: nothing but `true`, then `ignore`
+  /// (`"custom-elements"`, `"default-namespace"`), `ignoreNamespaces` and
+  /// `ignoreTypes`.  Gale applies `ignoreTypes`; it always passes over
+  /// custom elements, and accepts the rest without applying them yet.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.keywords("ignore", &["custom-elements", "default-namespace"]);
+    options.strings("ignoreNamespaces");
+    let ignore_types = options.matchers("ignoreTypes");
+    options.finish()?;
+    Ok(Self { ignore_types })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorTypeNoUnknownCheck {
   /// Flags type selectors that are not known HTML elements. Custom elements
   /// and preprocessor line comments are skipped.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -50,14 +70,13 @@ impl Rule for SelectorTypeNoUnknown {
       if name.eq_ignore_ascii_case("from") || name.eq_ignore_ascii_case("to") {
         continue;
       }
+      if self.ignore_types.matches(&name) {
+        continue;
+      }
       if !is_known_html_element(&name) {
         diags.push(
-          Diagnostic::new(
-            self.name(),
-            format!("Unexpected unknown type selector \"{name}\""),
-          )
-          .severity(self.default_severity())
-          .span(Span::new(rule.span.offset, rule.span.length)),
+          Diagnostic::new(NAME, format!("Unexpected unknown type selector \"{name}\""))
+            .span(Span::new(rule.span.offset, rule.span.length)),
         );
       }
     }
@@ -245,7 +264,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -263,51 +282,55 @@ mod tests {
 
   #[test]
   fn reports_unknown_type_selector() {
-    let d = SelectorTypeNoUnknown.check(&style("fakeelement"), &ctx());
+    let rule = configured(&SelectorTypeNoUnknown, None);
+    let d = rule.check(&style("fakeelement"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("fakeelement"));
   }
 
   #[test]
+  fn ignore_types_skips_listed_names() {
+    let rule = configured(
+      &SelectorTypeNoUnknown,
+      serde_json::json!([true, { "ignoreTypes": ["fakeelement", "/^my/"] }]),
+    );
+    assert!(rule.check(&style("fakeelement"), &ctx()).is_empty());
+    assert!(rule.check(&style("mything"), &ctx()).is_empty());
+    assert_eq!(rule.check(&style("otherthing"), &ctx()).len(), 1);
+  }
+
+  #[test]
   fn allows_known_html_elements() {
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style("div"), &ctx())
-        .is_empty()
-    );
-    assert!(SelectorTypeNoUnknown.check(&style("a"), &ctx()).is_empty());
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style("span"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&SelectorTypeNoUnknown, None);
+    assert!(rule.check(&style("div"), &ctx()).is_empty());
+    assert!(rule.check(&style("a"), &ctx()).is_empty());
+    assert!(rule.check(&style("span"), &ctx()).is_empty());
   }
 
   #[test]
   fn skips_custom_elements() {
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style("my-component"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style("app-header"), &ctx())
-        .is_empty()
-    );
+    let rule = configured(&SelectorTypeNoUnknown, None);
+    assert!(rule.check(&style("my-component"), &ctx()).is_empty());
+    assert!(rule.check(&style("app-header"), &ctx()).is_empty());
   }
 
   #[test]
   fn ignores_class_and_id_selectors() {
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style(".foo"), &ctx())
-        .is_empty()
+    let rule = configured(&SelectorTypeNoUnknown, None);
+    assert!(rule.check(&style(".foo"), &ctx()).is_empty());
+    assert!(rule.check(&style("#bar"), &ctx()).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "ignore": ["custom-elements", "default-namespace"], "ignoreNamespaces": ["/^svg/"], "ignoreTypes": ["x"] }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"selector-type-no-unknown\""]
     );
-    assert!(
-      SelectorTypeNoUnknown
-        .check(&style("#bar"), &ctx())
-        .is_empty()
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["types"] }])),
+      ["Invalid value \"types\" for option \"ignore\" of rule \"selector-type-no-unknown\""]
     );
   }
 }

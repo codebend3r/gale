@@ -1,41 +1,78 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::pattern;
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require specified at-rules to be nested within style rules.
-///
-/// Options: an array of at-rule names (without `@`) that must appear nested
-/// inside a style rule, not at the top level.
-///
-/// Example config:
-/// ```json
-/// ["media", "supports"]
-/// ```
-///
-/// Equivalent to Stylelint's hypothetical `rule-nesting-at-rule-required-list` rule.
-pub struct RuleNestingAtRuleRequiredList;
+const NAME: &str = "rule-nesting-at-rule-required-list";
 
-impl Rule for RuleNestingAtRuleRequiredList {
-  fn name(&self) -> &'static str {
-    "rule-nesting-at-rule-required-list"
+declare_rule! {
+  /// Require specified at-rules to be nested within style rules.
+  ///
+  /// Options: an array of at-rule names (without `@`) that must appear nested
+  /// inside a style rule, not at the top level.
+  ///
+  /// Example config:
+  /// ```json
+  /// ["media", "supports"]
+  /// ```
+  ///
+  /// Equivalent to Stylelint's hypothetical `rule-nesting-at-rule-required-list` rule.
+  pub struct RuleNestingAtRuleRequiredList => RuleNestingAtRuleRequiredListCheck {
+    name: NAME,
+    description: "Require specified at-rules to be nested within style rules",
+    default_severity: Warning,
+    primary_option_array: true,
+  }
+}
+
+/// `rule-nesting-at-rule-required-list` as configured.
+pub struct RuleNestingAtRuleRequiredListCheck {
+  /// The at-rule names (lowercase) and `/regex/` entries; the rule checks
+  /// nothing without any.
+  required: Vec<String>,
+}
+
+impl RuleNestingAtRuleRequiredListCheck {
+  /// Stylelint's options: a name or `/regex/` entry, or a list of them.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let required = options.primary_strings().unwrap_or_default();
+    options.finish()?;
+    Ok(Self {
+      required: required
+        .into_iter()
+        .map(|entry| {
+          if pattern::split_literal(&entry).is_some() {
+            entry
+          } else {
+            entry.to_ascii_lowercase()
+          }
+        })
+        .collect(),
+    })
   }
 
-  fn description(&self) -> &'static str {
-    "Require specified at-rules to be nested within style rules"
+  /// Whether the at-rule `name` is required to be nested: a `/regex/` entry
+  /// matches by search, a name in any case.
+  fn is_required(&self, name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    self
+      .required
+      .iter()
+      .any(|entry| pattern::match_regex_entry(entry, name).unwrap_or_else(|| *entry == lower))
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for RuleNestingAtRuleRequiredListCheck {
   /// Flags a listed at-rule that sits at the top level rather than nested inside
   /// a style rule.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let required = match parse_options(ctx.options) {
-      Some(r) => r,
-      None => return vec![],
-    };
+  fn check_root(&self, nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
+    if self.required.is_empty() {
+      return vec![];
+    }
 
     let mut diags = Vec::new();
 
@@ -43,17 +80,15 @@ impl Rule for RuleNestingAtRuleRequiredList {
     // required list should have been nested inside a style rule instead.
     for node in nodes {
       if let CssNode::AtRule(at_rule) = node {
-        let name_lower = at_rule.name.to_ascii_lowercase();
-        if required.contains(&name_lower) {
+        if self.is_required(&at_rule.name) {
           diags.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!(
                 "Expected at-rule \"@{name}\" to be nested within a style rule",
                 name = at_rule.name,
               ),
             )
-            .severity(self.default_severity())
             .span(Span::new(at_rule.span.offset, at_rule.span.length)),
           );
         }
@@ -64,22 +99,12 @@ impl Rule for RuleNestingAtRuleRequiredList {
   }
 }
 
-/// Parse the rule options as `["at-rule-name", ...]`.
-fn parse_options(options: Option<&serde_json::Value>) -> Option<Vec<String>> {
-  let arr = options?.as_array()?;
-  let names: Vec<String> = arr
-    .iter()
-    .filter_map(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-    .collect();
-  if names.is_empty() { None } else { Some(names) }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options};
 
   fn top_level_at_rule(name: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -107,9 +132,10 @@ mod tests {
   #[test]
   fn reports_top_level_at_rule_that_should_be_nested() {
     let opts = serde_json::json!(["media", "supports"]);
+    let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("media"), style_rule_node()];
-    let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("@media"));
   }
@@ -117,35 +143,65 @@ mod tests {
   #[test]
   fn allows_at_rules_not_in_list() {
     let opts = serde_json::json!(["media"]);
+    let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("keyframes"), style_rule_node()];
-    let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_style_rules_at_top_level() {
     let opts = serde_json::json!(["media"]);
+    let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![style_rule_node()];
-    let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn returns_empty_when_no_options() {
+    let rule = configured(&RuleNestingAtRuleRequiredList, None);
     let ctx = ctx();
     let nodes = vec![top_level_at_rule("media")];
-    let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn case_insensitive_matching() {
     let opts = serde_json::json!(["media"]);
+    let rule = configured(&RuleNestingAtRuleRequiredList, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![top_level_at_rule("Media")];
-    let d = RuleNestingAtRuleRequiredList.check_root(&nodes, &ctx);
+    let d = rule.check_root(&nodes, &ctx);
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(invalid_options(NAME, serde_json::json!(["media", "/^supp/"])).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!([["media"], { "foo": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(["media", 1])),
+      ["Invalid option value \"1\" for rule \"rule-nesting-at-rule-required-list\""]
+    );
+  }
+
+  #[test]
+  fn takes_a_single_name_and_regexes() {
+    let nodes = vec![top_level_at_rule("supports"), style_rule_node()];
+    let single = configured(
+      &RuleNestingAtRuleRequiredList,
+      serde_json::json!("supports"),
+    );
+    assert_eq!(single.check_root(&nodes, &ctx()).len(), 1);
+    let regex = configured(
+      &RuleNestingAtRuleRequiredList,
+      serde_json::json!(["/^supp/"]),
+    );
+    assert_eq!(regex.check_root(&nodes, &ctx()).len(), 1);
   }
 }

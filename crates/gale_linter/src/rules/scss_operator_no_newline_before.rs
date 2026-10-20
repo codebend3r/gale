@@ -1,26 +1,50 @@
 use std::sync::LazyLock;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
 use crate::postcss_tree::NodeKind;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 use crate::sass_operators::find_operators;
 
-/// Disallow a line break right before a Sass operator (`10px\n  + 1`).
-///
-/// Equivalent to stylelint-scss's `scss/operator-no-newline-before`, which
-/// runs `operator-no-unspaced`'s `calculationOperatorSpaceChecker` over the
-/// stylesheet and reports each operator with only whitespace, a line break
-/// among it, before it.  Operators are told from signs and hyphens by
-/// [`find_operators`].
-///
-/// The checker also looks inside the `#{...}` interpolation of properties,
-/// selectors and comments, but it finds that with `/#\{(.*?)\}/`, which
-/// never spans a line, so no operator there can follow a line break; only
-/// declaration values and at-rule params are scanned.
-pub struct ScssOperatorNoNewlineBefore;
+const NAME: &str = "scss/operator-no-newline-before";
+
+declare_rule! {
+  /// Disallow a line break right before a Sass operator (`10px\n  + 1`).
+  ///
+  /// Equivalent to stylelint-scss's `scss/operator-no-newline-before`, which
+  /// runs `operator-no-unspaced`'s `calculationOperatorSpaceChecker` over the
+  /// stylesheet and reports each operator with only whitespace, a line break
+  /// among it, before it.  Operators are told from signs and hyphens by
+  /// [`find_operators`].
+  ///
+  /// The checker also looks inside the `#{...}` interpolation of properties,
+  /// selectors and comments, but it finds that with `/#\{(.*?)\}/`, which
+  /// never spans a line, so no operator there can follow a line break; only
+  /// declaration values and at-rule params are scanned.
+  pub struct ScssOperatorNoNewlineBefore => ScssOperatorNoNewlineBeforeCheck {
+    name: NAME,
+    description: "Disallow newlines before Sass operators",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/operator-no-newline-before`, which takes no options.
+pub struct ScssOperatorNoNewlineBeforeCheck;
+
+impl ScssOperatorNoNewlineBeforeCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// The at-rules upstream leaves alone: Sass module loading, `@at-root`,
 /// `@scope` and Tailwind's directives.
@@ -42,19 +66,7 @@ const SKIPPED_AT_RULES: &[&str] = &[
 static DATA_URI: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r#"url\(\s*['"]?data:"#).expect("valid regex"));
 
-impl Rule for ScssOperatorNoNewlineBefore {
-  fn name(&self) -> &'static str {
-    "scss/operator-no-newline-before"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow newlines before Sass operators"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssOperatorNoNewlineBeforeCheck {
   /// Reports each operator in a declaration value or at-rule params that
   /// starts a line.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -72,7 +84,7 @@ impl Rule for ScssOperatorNoNewlineBefore {
           };
           // Sass variable values are where `+` and `/` most often do math.
           let is_after_colon = node.name.starts_with('$');
-          self.check(&node.value, node.start + index, is_after_colon, &mut diags);
+          self.check_string(&node.value, node.start + index, is_after_colon, &mut diags);
         }
         NodeKind::AtRule => {
           if SKIPPED_AT_RULES.contains(&node.name.as_str()) {
@@ -81,10 +93,10 @@ impl Rule for ScssOperatorNoNewlineBefore {
           let params_start = node.start + tree.at_rule_param_index(node);
           if node.name == "media" || node.name == "import" {
             for (offset, value) in media_query_values(&node.params) {
-              self.check(value, params_start + offset, true, &mut diags);
+              self.check_string(value, params_start + offset, true, &mut diags);
             }
           } else {
-            self.check(&node.params, params_start, true, &mut diags);
+            self.check_string(&node.params, params_start, true, &mut diags);
           }
         }
         NodeKind::Rule | NodeKind::Comment => {}
@@ -94,11 +106,17 @@ impl Rule for ScssOperatorNoNewlineBefore {
   }
 }
 
-impl ScssOperatorNoNewlineBefore {
+impl ScssOperatorNoNewlineBeforeCheck {
   /// Reports each operator in `string`, which starts at `start` in the
   /// source, that has a line break in the whitespace before it
   /// (`checkNewlineBefore`).
-  fn check(&self, string: &str, start: usize, is_after_colon: bool, diags: &mut Vec<Diagnostic>) {
+  fn check_string(
+    &self,
+    string: &str,
+    start: usize,
+    is_after_colon: bool,
+    diags: &mut Vec<Diagnostic>,
+  ) {
     let bytes = string.as_bytes();
     for operator in find_operators(string, is_after_colon) {
       // Upstream's scan stops before index 0, so a value never counts its
@@ -113,13 +131,9 @@ impl ScssOperatorNoNewlineBefore {
       }
       let symbol = &string[operator.start..operator.end];
       diags.push(
-        Diagnostic::new(
-          self.name(),
-          format!("Unexpected newline before \"{symbol}\""),
-        )
-        .severity(self.default_severity())
-        .message_args([symbol])
-        .span(Span::new(start + operator.start, symbol.len())),
+        Diagnostic::new(NAME, format!("Unexpected newline before \"{symbol}\""))
+          .message_args([symbol])
+          .span(Span::new(start + operator.start, symbol.len())),
       );
     }
   }
@@ -222,11 +236,12 @@ fn feature_colon(feature: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+  use super::NAME;
   use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::lint;
+  use crate::testing::{invalid_options, lint};
 
   const RULE: &str = "scss/operator-no-newline-before";
 
@@ -336,6 +351,17 @@ mod tests {
     assert_eq!(
       warnings("a { width: 10px\n  + 1; }", Syntax::Css),
       vec![at(2, 3, 4, "+")]
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/operator-no-newline-before\""]
     );
   }
 }

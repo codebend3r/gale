@@ -1,18 +1,42 @@
 use std::collections::{HashMap, HashSet};
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow deprecated global SCSS function calls that should use modules.
-///
-/// e.g. `adjust-color()` should be `color.adjust()`.
-///
-/// Unlike stylelint-scss's rule, this one is fixable in SCSS: `--fix`
-/// renames the call to its module function and adds the `@use` it needs
-/// (see [`Rule::check_root`] below).
-pub struct ScssNoGlobalFunctionNames;
+const NAME: &str = "scss/no-global-function-names";
+
+declare_rule! {
+  /// Disallow deprecated global SCSS function calls that should use modules.
+  ///
+  /// e.g. `adjust-color()` should be `color.adjust()`.
+  ///
+  /// Unlike stylelint-scss's rule, this one is fixable in SCSS: `--fix`
+  /// renames the call to its module function and adds the `@use` it needs
+  /// (see [`Rule::check_root`] below).
+  pub struct ScssNoGlobalFunctionNames => ScssNoGlobalFunctionNamesCheck {
+    name: NAME,
+    description: "Disallow global function names that should use Sass modules",
+    default_severity: Warning,
+  }
+}
+
+/// `scss/no-global-function-names`, which takes no options.
+pub struct ScssNoGlobalFunctionNamesCheck;
+
+impl ScssNoGlobalFunctionNamesCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
+  }
+}
 
 /// Returns the Stylelint-compatible message for a deprecated global function.
 /// Matches the exact format produced by stylelint-scss no-global-function-names.
@@ -423,19 +447,7 @@ impl Loads {
   }
 }
 
-impl Rule for ScssNoGlobalFunctionNames {
-  fn name(&self) -> &'static str {
-    "scss/no-global-function-names"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow global function names that should use Sass modules"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssNoGlobalFunctionNamesCheck {
   /// Reports deprecated global function calls in declaration values.
   ///
   /// In SCSS each report carries a fix, which Stylelint does not have: the
@@ -476,9 +488,7 @@ impl Rule for ScssNoGlobalFunctionNames {
       .iter()
       .map(|(name, offset)| {
         let span = Span::new(*offset, name.len());
-        let diag = Diagnostic::new(self.name(), function_message(name).to_string())
-          .severity(self.default_severity())
-          .span(span);
+        let diag = Diagnostic::new(NAME, function_message(name).to_string()).span(span);
         let Some((module, member)) = module_replacement(name).filter(|_| fixable) else {
           return diag;
         };
@@ -507,7 +517,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn decl(value: &str) -> CssNode {
     CssNode::Declaration(Declaration {
@@ -520,8 +530,9 @@ mod tests {
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
     assert!(
-      ScssNoGlobalFunctionNames
+      rule
         .check_root(&[decl("adjust-color(red, $red: 10)")], &ctx())
         .is_empty()
     );
@@ -529,59 +540,65 @@ mod tests {
 
   #[test]
   fn reports_deprecated_global() {
-    let d =
-      ScssNoGlobalFunctionNames.check_root(&[decl("adjust-color(red, $red: 10)")], &scss_ctx());
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
+    let d = rule.check_root(&[decl("adjust-color(red, $red: 10)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("adjust-color"));
   }
 
   #[test]
   fn reports_map_get() {
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("map-get($map, key)")], &scss_ctx());
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
+    let d = rule.check_root(&[decl("map-get($map, key)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("map-get"));
   }
 
   #[test]
   fn allows_module_function() {
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
     // `color.adjust()` is not a deprecated global.
-    let d =
-      ScssNoGlobalFunctionNames.check_root(&[decl("color.adjust(red, $red: 10)")], &scss_ctx());
+    let d = rule.check_root(&[decl("color.adjust(red, $red: 10)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_namespaced_map_get() {
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
     // `map.get()` should not be flagged — it uses a namespace
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("map.get($map, key)")], &scss_ctx());
+    let d = rule.check_root(&[decl("map.get($map, key)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_css_native_min_max() {
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
     // min() and max() are NOT in stylelint-scss deprecated list, not flagged
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("min(100px, 50vw)")], &scss_ctx());
+    let d = rule.check_root(&[decl("min(100px, 50vw)")], &scss_ctx());
     assert!(d.is_empty());
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("max(100px, 50vw)")], &scss_ctx());
+    let d = rule.check_root(&[decl("max(100px, 50vw)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_css_native_round() {
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
     // round() is NOT in stylelint-scss deprecated list, not flagged
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("round(1.5)")], &scss_ctx());
+    let d = rule.check_root(&[decl("round(1.5)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_function_in_string() {
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("\"use map-get() instead\"")], &scss_ctx());
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
+    let d = rule.check_root(&[decl("\"use map-get() instead\"")], &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_non_deprecated() {
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("rgba(0, 0, 0, 0.5)")], &scss_ctx());
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
+    let d = rule.check_root(&[decl("rgba(0, 0, 0, 0.5)")], &scss_ctx());
     assert!(d.is_empty());
   }
 
@@ -678,11 +695,23 @@ mod tests {
 
   #[test]
   fn darken_message_matches_stylelint() {
-    let d = ScssNoGlobalFunctionNames.check_root(&[decl("darken($color, 10%)")], &scss_ctx());
+    let rule = configured(&ScssNoGlobalFunctionNames, None);
+    let d = rule.check_root(&[decl("darken($color, 10%)")], &scss_ctx());
     assert_eq!(d.len(), 1);
     assert_eq!(
       d[0].message,
       "Expected color.adjust($color, $lightness: -$amount) instead of darken($color, $amount)"
+    );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/no-global-function-names\""]
     );
   }
 }

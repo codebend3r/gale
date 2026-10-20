@@ -1,69 +1,75 @@
 use std::collections::{HashMap, HashSet};
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Matchers, Options, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Report custom properties that are defined but never referenced via `var()`.
-///
-/// This is a `check_root` rule that needs full file context to collect
-/// definitions and usages before comparing.
-///
-/// Options (secondary): an object with an `ignoreProperties` key containing
-/// an array of property patterns to ignore (exact strings or `/regex/`).
-///
-/// Example config:
-/// ```json
-/// ["plugin/no-unused-custom-properties", [true, {
-///   "ignoreProperties": ["/^--external-/"]
-/// }]]
-/// ```
-pub struct PluginNoUnusedCustomProperties;
+const NAME: &str = "plugin/no-unused-custom-properties";
 
-/// A compiled pattern — either a literal string match or a regex.
-enum IgnorePattern {
-  Exact(String),
-  Regex(std::sync::Arc<crate::pattern::Regex>),
-}
-
-impl IgnorePattern {
-  /// Builds a pattern: `/…/` (optionally `i`-flagged) is a regex, else an exact name.
-  fn from_str(s: &str) -> Self {
-    // Patterns wrapped in `/` (optionally flagged, like `/…/i`) are regexes.
-    // One that does not compile is reported as an invalid option by the
-    // runner and compared as a literal here.
-    match crate::pattern::regex_entry(s) {
-      Some(re) => IgnorePattern::Regex(re),
-      None => IgnorePattern::Exact(s.to_string()),
-    }
-  }
-
-  /// Whether the custom property name matches this pattern.
-  fn matches(&self, name: &str) -> bool {
-    match self {
-      IgnorePattern::Exact(s) => name == s,
-      IgnorePattern::Regex(re) => crate::pattern::is_match(re, name),
-    }
+declare_rule! {
+  /// Report custom properties that are defined but never referenced via `var()`.
+  ///
+  /// This is a `check_root` rule that needs full file context to collect
+  /// definitions and usages before comparing.
+  ///
+  /// Options (secondary): an object with an `ignoreProperties` key containing
+  /// an array of property patterns to ignore (exact strings or `/regex/`).
+  ///
+  /// Example config:
+  /// ```json
+  /// ["plugin/no-unused-custom-properties", [true, {
+  ///   "ignoreProperties": ["/^--external-/"]
+  /// }]]
+  /// ```
+  pub struct PluginNoUnusedCustomProperties => PluginNoUnusedCustomPropertiesCheck {
+    name: NAME,
+    description: "Disallow custom properties that are defined but never used",
+    default_severity: Warning,
   }
 }
 
-/// Reads the `ignoreProperties` secondary into patterns.
-fn parse_ignore_properties(context: &RuleContext) -> Vec<IgnorePattern> {
-  let secondary = match context.secondary_options() {
-    Some(opts) => opts,
-    None => return vec![],
-  };
+/// `plugin/no-unused-custom-properties` as configured.
+pub struct PluginNoUnusedCustomPropertiesCheck {
+  /// `ignoreProperties`: custom properties that may go unused.
+  ignore_properties: Matchers,
+}
 
-  let ignore = match secondary.get("ignoreProperties") {
-    Some(serde_json::Value::Array(arr)) => arr,
-    _ => return vec![],
-  };
+impl PluginNoUnusedCustomPropertiesCheck {
+  /// Gale's own rule, standing in for projects' custom plugins, so it is
+  /// lenient: it reads only `ignoreProperties`, a name or `/regex/` entry or a list
+  /// of them, and ignores its primary option and any other key.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let ignore_properties = lenient_strings(setting, &mut options, "ignoreProperties");
+    options.finish()?;
+    Ok(Self {
+      ignore_properties: Matchers::new(&ignore_properties),
+    })
+  }
+}
 
-  ignore
-    .iter()
-    .filter_map(|v| v.as_str().map(IgnorePattern::from_str))
-    .collect()
+/// The secondary option `key`, a name or `/regex/` entry or a list of them,
+/// read without making other keys unknown.  An entry that is not a string
+/// is reported as Stylelint words it.
+fn lenient_strings(setting: &Setting, options: &mut Options<'_>, key: &str) -> Vec<String> {
+  let Some(value) = setting.secondary().and_then(|secondary| secondary.get(key)) else {
+    return Vec::new();
+  };
+  let entries: Vec<&serde_json::Value> = match value {
+    serde_json::Value::Array(items) => items.iter().collect(),
+    other => vec![other],
+  };
+  let mut strings = Vec::new();
+  for entry in entries {
+    match entry.as_str() {
+      Some(text) => strings.push(text.to_string()),
+      None => options.report(InvalidOption::option_value(NAME, key, entry)),
+    }
+  }
+  strings
 }
 
 /// A custom property definition with its location.
@@ -181,24 +187,10 @@ fn collect_var_refs_from_value(value: &str, refs: &mut HashSet<String>) {
   }
 }
 
-impl Rule for PluginNoUnusedCustomProperties {
-  fn name(&self) -> &'static str {
-    "plugin/no-unused-custom-properties"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow custom properties that are defined but never used"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PluginNoUnusedCustomPropertiesCheck {
   /// Flags custom properties that no `var()` in the file references, reporting
   /// each name once at its first definition.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_patterns = parse_ignore_properties(context);
-
     // Collect all definitions
     let mut definitions: Vec<Definition> = Vec::new();
     collect_definitions(nodes, &mut definitions);
@@ -225,16 +217,15 @@ impl Rule for PluginNoUnusedCustomProperties {
       }
 
       // Skip if ignored
-      if ignore_patterns.iter().any(|p| p.matches(&def.name)) {
+      if self.ignore_properties.matches(&def.name) {
         continue;
       }
 
       diagnostics.push(
         Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Unexpected unused custom property \"{}\"", def.name),
         )
-        .severity(self.default_severity())
         .span(Span::new(def.offset, def.length)),
       );
     }
@@ -249,7 +240,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options};
 
   fn make_nodes(decls: Vec<(&str, &str)>) -> Vec<CssNode> {
     vec![CssNode::Style(StyleRule {
@@ -271,7 +262,7 @@ mod tests {
 
   #[test]
   fn no_diagnostic_when_used() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--my-color", "red"), ("color", "var(--my-color)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -280,7 +271,7 @@ mod tests {
 
   #[test]
   fn reports_unused_custom_property() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--unused", "red"), ("color", "blue")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -290,10 +281,10 @@ mod tests {
 
   #[test]
   fn ignored_property_not_reported() {
-    let rule = PluginNoUnusedCustomProperties;
     let opts = json!([true, {
         "ignoreProperties": ["/^--external-/"]
     }]);
+    let rule = configured(&PluginNoUnusedCustomProperties, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = make_nodes(vec![("--external-api", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -302,10 +293,10 @@ mod tests {
 
   #[test]
   fn ignored_exact_property() {
-    let rule = PluginNoUnusedCustomProperties;
     let opts = json!([true, {
         "ignoreProperties": ["--my-var"]
     }]);
+    let rule = configured(&PluginNoUnusedCustomProperties, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = make_nodes(vec![("--my-var", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -314,7 +305,7 @@ mod tests {
 
   #[test]
   fn multiple_unused() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--a", "1"), ("--b", "2"), ("color", "var(--a)")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -324,7 +315,7 @@ mod tests {
 
   #[test]
   fn used_in_fallback() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![
       ("--fallback", "blue"),
@@ -341,7 +332,7 @@ mod tests {
 
   #[test]
   fn no_definitions_no_diagnostics() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("color", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -350,7 +341,7 @@ mod tests {
 
   #[test]
   fn no_options_works() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--unused", "red")]);
     let diags = rule.check_root(&nodes, &ctx);
@@ -359,10 +350,27 @@ mod tests {
 
   #[test]
   fn duplicate_definition_reported_once() {
-    let rule = PluginNoUnusedCustomProperties;
+    let rule = configured(&PluginNoUnusedCustomProperties, None);
     let ctx = ctx();
     let nodes = make_nodes(vec![("--dup", "a"), ("--dup", "b")]);
     let diags = rule.check_root(&nodes, &ctx);
     assert_eq!(diags.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_leniently() {
+    use crate::testing::invalid_options;
+    // Gale's own rule ignores its primary option and keys it does not read.
+    let valid = serde_json::json!(["anything", { "ignoreProperties": "--a", "other": 1 }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignoreProperties": [true] }])
+      ),
+      [
+        "Invalid value \"true\" for option \"ignoreProperties\" of rule \"plugin/no-unused-custom-properties\""
+      ]
+    );
   }
 }

@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline or disallow whitespace before the commas of selector lists.
-///
-/// Equivalent to `@stylistic/selector-list-comma-newline-before`.
-pub struct StylisticSelectorListCommaNewlineBefore;
+const NAME: &str = "@stylistic/selector-list-comma-newline-before";
 
-impl Rule for StylisticSelectorListCommaNewlineBefore {
-  fn name(&self) -> &'static str {
-    "@stylistic/selector-list-comma-newline-before"
+declare_rule! {
+  /// Require a newline or disallow whitespace before the commas of selector lists.
+  ///
+  /// Equivalent to `@stylistic/selector-list-comma-newline-before`.
+  pub struct StylisticSelectorListCommaNewlineBefore => StylisticSelectorListCommaNewlineBeforeCheck {
+    name: NAME,
+    description: "Require a newline or disallow whitespace before the commas of selector lists",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline or disallow whitespace before the commas of selector lists"
+/// `@stylistic/selector-list-comma-newline-before` as configured.
+pub struct StylisticSelectorListCommaNewlineBeforeCheck {
+  /// The primary option: `"always"`, `"always-multi-line"`,
+  /// `"never-multi-line"` or gale's own `"never"`.
+  option: &'static str,
+}
+
+impl StylisticSelectorListCommaNewlineBeforeCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale also accepts `"never"`, which the plugin does
+  /// not.  Gale reads no option as `"never"`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option =
+      options.primary_one_of(&["always", "always-multi-line", "never-multi-line", "never"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("never"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticSelectorListCommaNewlineBeforeCheck {
   /// Flags a selector list comma whose preceding newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("never");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -111,11 +131,7 @@ impl Rule for StylisticSelectorListCommaNewlineBefore {
             "never" => "Unexpected whitespace before \",\"",
             _ => continue,
           };
-          diagnostics.push(
-            Diagnostic::new(self.name(), msg)
-              .severity(self.default_severity())
-              .span(Span::new(comma_pos, 1)),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(Span::new(comma_pos, 1)));
         }
       }
 
@@ -130,11 +146,11 @@ impl Rule for StylisticSelectorListCommaNewlineBefore {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
-    let rule = StylisticSelectorListCommaNewlineBefore;
     let opts = serde_json::json!(option);
+    let rule = configured(&StylisticSelectorListCommaNewlineBefore, opts.clone());
     let ctx = ctx_with_source_and_options(source, &opts);
     rule.check_root(&[], &ctx)
   }
@@ -169,5 +185,19 @@ mod tests {
   fn always_multi_line_allows_single_line() {
     let d = check("a, b { color: red; }", "always-multi-line");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sometimes")),
+      [
+        "Invalid option value \"sometimes\" for rule \"@stylistic/selector-list-comma-newline-before\""
+      ]
+    );
   }
 }

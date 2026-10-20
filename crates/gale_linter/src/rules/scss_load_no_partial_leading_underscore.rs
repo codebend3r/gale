@@ -1,25 +1,37 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow leading underscore in partial names within `@use`, `@forward`,
-/// and `@import`.
-pub struct ScssLoadNoPartialLeadingUnderscore;
+const NAME: &str = "scss/load-no-partial-leading-underscore";
 
-impl Rule for ScssLoadNoPartialLeadingUnderscore {
-  fn name(&self) -> &'static str {
-    "scss/load-no-partial-leading-underscore"
+declare_rule! {
+  /// Disallow leading underscore in partial names within `@use`, `@forward`,
+  /// and `@import`.
+  pub struct ScssLoadNoPartialLeadingUnderscore => ScssLoadNoPartialLeadingUnderscoreCheck {
+    name: NAME,
+    description: "Disallow leading underscore in partial names",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow leading underscore in partial names"
+/// `scss/load-no-partial-leading-underscore`, which takes no options.
+pub struct ScssLoadNoPartialLeadingUnderscoreCheck;
+
+impl ScssLoadNoPartialLeadingUnderscoreCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssLoadNoPartialLeadingUnderscoreCheck {
   /// Flags a `@use`, `@forward` or `@import` path whose partial name starts with
   /// an underscore; Sass adds it implicitly.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -74,10 +86,9 @@ impl Rule for ScssLoadNoPartialLeadingUnderscore {
       };
       vec![
         Diagnostic::new(
-          self.name(),
+          NAME,
           "Unexpected leading underscore in imported partial name".to_string(),
         )
-        .severity(self.default_severity())
         .span(Span::new(path_offset, path.len())),
       ]
     } else {
@@ -152,7 +163,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{AtRule, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   fn use_rule(params: &str) -> CssNode {
     CssNode::AtRule(AtRule {
@@ -174,41 +185,54 @@ mod tests {
 
   #[test]
   fn reports_leading_underscore_in_use() {
-    let d = ScssLoadNoPartialLeadingUnderscore.check(&use_rule("\"_variables\""), &scss_ctx());
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
+    let d = rule.check(&use_rule("\"_variables\""), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_leading_underscore_in_import() {
-    let d = ScssLoadNoPartialLeadingUnderscore.check(&import_rule("\"_mixins\""), &scss_ctx());
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
+    let d = rule.check(&import_rule("\"_mixins\""), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_underscore_in_path() {
-    let d = ScssLoadNoPartialLeadingUnderscore.check(&use_rule("\"path/to/_file\""), &scss_ctx());
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
+    let d = rule.check(&use_rule("\"path/to/_file\""), &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_no_underscore() {
-    let d = ScssLoadNoPartialLeadingUnderscore.check(&use_rule("\"variables\""), &scss_ctx());
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
+    let d = rule.check(&use_rule("\"variables\""), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_path_without_underscore() {
-    let d = ScssLoadNoPartialLeadingUnderscore.check(&use_rule("\"path/to/file\""), &scss_ctx());
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
+    let d = rule.check(&use_rule("\"path/to/file\""), &scss_ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
     let ctx = ctx();
-    assert!(
-      ScssLoadNoPartialLeadingUnderscore
-        .check(&use_rule("\"_variables\""), &ctx)
-        .is_empty()
+    assert!(rule.check(&use_rule("\"_variables\""), &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/load-no-partial-leading-underscore\""]
     );
   }
 }

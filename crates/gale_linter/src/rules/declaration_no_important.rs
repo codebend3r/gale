@@ -1,26 +1,38 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports use of `!important` in declarations.
-///
-/// Equivalent to Stylelint's `declaration-no-important` rule.
-pub struct DeclarationNoImportant;
+const NAME: &str = "declaration-no-important";
 
-impl Rule for DeclarationNoImportant {
-  fn name(&self) -> &'static str {
-    "declaration-no-important"
+declare_rule! {
+  /// Reports use of `!important` in declarations.
+  ///
+  /// Equivalent to Stylelint's `declaration-no-important` rule.
+  pub struct DeclarationNoImportant => DeclarationNoImportantCheck {
+    name: NAME,
+    description: "Disallow !important within declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow !important within declarations"
+/// `declaration-no-important`, which takes no options.
+pub struct DeclarationNoImportantCheck;
+
+impl DeclarationNoImportantCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for DeclarationNoImportantCheck {
   /// Flags `!important` declarations, locating the token in the source so the
   /// fix removes it along with the whitespace in front of it.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -81,10 +93,9 @@ impl Rule for DeclarationNoImportant {
         };
 
         let mut diag = Diagnostic::new(
-          self.name(),
+          NAME,
           format!("Unexpected !important in declaration \"{}\"", decl.property),
         )
-        .severity(self.default_severity())
         .span(diag_span);
 
         if let Some(fix) = fix_opt {
@@ -108,7 +119,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx_with_source;
+  use crate::testing::{configured, ctx_with_source};
 
   fn style_node(prop: &str, val: &str, important: bool, offset: usize, len: usize) -> CssNode {
     CssNode::Style(StyleRule {
@@ -128,7 +139,7 @@ mod tests {
   fn reports_important() {
     let src = "a { color: red !important; }";
     let node = style_node("color", "red", true, 4, 22);
-    let d = DeclarationNoImportant.check(&node, &ctx_with_source(src));
+    let d = configured(&DeclarationNoImportant, None).check(&node, &ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("!important"));
     assert!(d[0].fix.is_some());
@@ -138,7 +149,7 @@ mod tests {
   fn allows_no_important() {
     let src = "a { color: red; }";
     let node = style_node("color", "red", false, 4, 11);
-    let d = DeclarationNoImportant.check(&node, &ctx_with_source(src));
+    let d = configured(&DeclarationNoImportant, None).check(&node, &ctx_with_source(src));
     assert!(d.is_empty());
   }
 }

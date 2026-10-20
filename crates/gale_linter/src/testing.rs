@@ -1,7 +1,9 @@
 //! Shared helpers for rule tests.
 //!
-//! Tests that call a rule's `check` or `check_root` directly build their
-//! [`RuleContext`] with [`ctx`], [`scss_ctx`] and the other builders here.
+//! Tests that call a rule's `check` or `check_root` directly configure it
+//! with [`configured`] and build their [`RuleContext`] with [`ctx`],
+//! [`scss_ctx`] and the other builders here.  [`invalid_options`] is what a
+//! rule set reports for a rule's options.
 //! Tests that start from source text use [`lint`] and [`fix`], which lint a
 //! snippet with one rule through the real parser and runner, then apply fixes
 //! and re-lint until the source settles, the way `gale --fix` does.
@@ -10,7 +12,7 @@ use gale_css_parser::Syntax;
 use gale_diagnostics::{Diagnostic, apply_fixes};
 use serde_json::Value;
 
-use crate::{RuleContext, RuleSet, RuleSetSpec, RuleSetting};
+use crate::{Check, LintEnv, Rule, RuleContext, RuleSet, RuleSetSpec, RuleSetting, Setting};
 
 /// The warnings `rule` (configured with `options`) reports for `source`.
 pub fn lint(rule: &str, options: Value, source: &str, syntax: Syntax) -> Vec<Diagnostic> {
@@ -33,6 +35,33 @@ pub fn fix(rule: &str, options: Value, source: &str, syntax: Syntax) -> String {
     current = fixed;
   }
   current
+}
+
+/// `rule` configured with `options` (or none), for tests that call its
+/// `check` or `check_root` directly.  Panics if the options are invalid.
+pub fn configured(rule: &'static dyn Rule, options: impl Into<Option<Value>>) -> Box<dyn Check> {
+  configured_in(rule, options, LintEnv::default())
+}
+
+/// [`configured`] for a project whose environment is `env`.
+pub fn configured_in(
+  rule: &'static dyn Rule,
+  options: impl Into<Option<Value>>,
+  env: LintEnv,
+) -> Box<dyn Check> {
+  let options = options.into();
+  let meta = rule.meta();
+  let setting = Setting::new(meta.name, options.as_ref(), meta.primary_option_array);
+  match rule.configure(&setting, &env) {
+    Ok(check) => check,
+    Err(problems) => panic!("invalid options for {}: {problems:?}", meta.name),
+  }
+}
+
+/// The invalid-option warnings a rule set running `rule` with `options`
+/// reports on every file.
+pub fn invalid_options(rule: &str, options: Value) -> Vec<String> {
+  rule_set(rule, options).invalid_options().to_vec()
 }
 
 /// A rule set with just `rule` enabled.

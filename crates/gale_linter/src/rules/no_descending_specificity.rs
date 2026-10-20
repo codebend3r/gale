@@ -1,15 +1,45 @@
 use std::collections::HashMap;
 
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Reports when a selector with lower specificity appears after a selector with
-/// higher specificity, which may indicate a specificity ordering issue.
-///
-/// Equivalent to Stylelint's `no-descending-specificity` rule.
-pub struct NoDescendingSpecificity;
+const NAME: &str = "no-descending-specificity";
+
+declare_rule! {
+  /// Reports when a selector with lower specificity appears after a selector with
+  /// higher specificity, which may indicate a specificity ordering issue.
+  ///
+  /// Equivalent to Stylelint's `no-descending-specificity` rule.
+  pub struct NoDescendingSpecificity => NoDescendingSpecificityCheck {
+    name: NAME,
+    description: "Disallow selectors of lower specificity from coming after overriding selectors of higher specificity",
+    default_severity: Warning,
+  }
+}
+
+/// `no-descending-specificity` as configured.
+pub struct NoDescendingSpecificityCheck {
+  /// `ignore: ["selectors-within-list"]`: rules with more than one selector
+  /// are not compared.
+  ignore_selectors_within_list: bool,
+}
+
+impl NoDescendingSpecificityCheck {
+  /// Stylelint's options: `true`, then `ignore: ["selectors-within-list"]`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    let ignore = options.keywords("ignore", &["selectors-within-list"]);
+    options.finish()?;
+    Ok(Self {
+      ignore_selectors_within_list: ignore.contains(&"selectors-within-list"),
+    })
+  }
+}
 
 /// Specificity as an (a, b, c) tuple where:
 /// - a = number of ID selectors
@@ -315,7 +345,7 @@ fn walk_scss_nodes(
   parent_selectors: &[String],
   comparison_ctx: &mut HashMap<String, Vec<(Specificity, String)>>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule_impl: &NoDescendingSpecificity,
+  ignore_selectors_within_list: bool,
   source: &str,
 ) {
   for node in nodes {
@@ -382,7 +412,10 @@ fn walk_scss_nodes(
           // Only check selectors for rules that have actual CSS declarations.
           // Rules with only @include/@mixin calls (no direct properties) are
           // skipped for specificity comparison — matching Stylelint's behaviour.
-          if !style.declarations.is_empty() {
+          // `ignore: ["selectors-within-list"]` skips a rule with more than
+          // one selector, though its nested rules are still checked.
+          let ignored_list = ignore_selectors_within_list && orig_parts.len() > 1;
+          if !style.declarations.is_empty() && !ignored_list {
             for exp in &expanded_for_check {
               // Locate the individual selector part in the source for an
               // accurate span (Stylelint reports the position of the
@@ -410,14 +443,7 @@ fn walk_scss_nodes(
               };
               let span = gale_diagnostics::Span::new(part_offset, part_trimmed.len());
 
-              check_one_selector_with_src(
-                exp,
-                part_trimmed,
-                span,
-                comparison_ctx,
-                diagnostics,
-                rule_impl,
-              );
+              check_one_selector_with_src(exp, part_trimmed, span, comparison_ctx, diagnostics);
             }
           }
         }
@@ -434,7 +460,7 @@ fn walk_scss_nodes(
           &all_expanded_for_children,
           comparison_ctx,
           diagnostics,
-          rule_impl,
+          ignore_selectors_within_list,
           source,
         );
         walk_scss_nodes(
@@ -442,7 +468,7 @@ fn walk_scss_nodes(
           &all_expanded_for_children,
           comparison_ctx,
           diagnostics,
-          rule_impl,
+          ignore_selectors_within_list,
           source,
         );
       }
@@ -456,7 +482,7 @@ fn walk_scss_nodes(
           parent_selectors,
           &mut at_ctx,
           diagnostics,
-          rule_impl,
+          ignore_selectors_within_list,
           source,
         );
       }
@@ -598,7 +624,7 @@ fn check_specificity_walk(
   nodes: &[CssNode],
   comparison_ctx: &mut HashMap<String, Vec<(Specificity, String)>>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule: &NoDescendingSpecificity,
+  ignore_selectors_within_list: bool,
   top_level_only: bool,
   skip_preprocessor: bool,
 ) {
@@ -611,7 +637,7 @@ fn check_specificity_walk(
             gale_diagnostics::Span::new(style.span.offset, style.span.length),
             comparison_ctx,
             diagnostics,
-            rule,
+            ignore_selectors_within_list,
           );
         }
 
@@ -623,7 +649,7 @@ fn check_specificity_walk(
               gale_diagnostics::Span::new(child.span.offset, child.span.length),
               comparison_ctx,
               diagnostics,
-              rule,
+              ignore_selectors_within_list,
             );
           }
         }
@@ -637,7 +663,7 @@ fn check_specificity_walk(
           &at_rule.children,
           &mut at_ctx,
           diagnostics,
-          rule,
+          ignore_selectors_within_list,
           top_level_only,
           skip_preprocessor,
         );
@@ -685,7 +711,6 @@ fn check_one_selector_with_src(
   span: Span,
   comparison_ctx: &mut HashMap<String, Vec<(Specificity, String)>>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule: &NoDescendingSpecificity,
 ) {
   for individual in split_selector_list(selector) {
     if individual.is_empty() {
@@ -709,11 +734,7 @@ fn check_one_selector_with_src(
             display_selector.trim(),
             prior_selector
           );
-          diagnostics.push(
-            Diagnostic::new(rule.name(), msg)
-              .severity(rule.default_severity())
-              .span(span),
-          );
+          diagnostics.push(Diagnostic::new(NAME, msg).span(span));
           break; // report against FIRST prior with higher spec, then stop
         }
       }
@@ -733,24 +754,17 @@ fn check_one_selector(
   span: Span,
   comparison_ctx: &mut HashMap<String, Vec<(Specificity, String)>>,
   diagnostics: &mut Vec<Diagnostic>,
-  rule: &NoDescendingSpecificity,
+  ignore_selectors_within_list: bool,
 ) {
-  check_one_selector_with_src(selector, selector, span, comparison_ctx, diagnostics, rule);
+  // `ignore: ["selectors-within-list"]` skips a rule with more than one
+  // selector.
+  if ignore_selectors_within_list && split_selector_list(selector).len() > 1 {
+    return;
+  }
+  check_one_selector_with_src(selector, selector, span, comparison_ctx, diagnostics);
 }
 
-impl Rule for NoDescendingSpecificity {
-  fn name(&self) -> &'static str {
-    "no-descending-specificity"
-  }
-
-  fn description(&self) -> &'static str {
-    "Disallow selectors of lower specificity from coming after overriding selectors of higher specificity"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for NoDescendingSpecificityCheck {
   /// Groups selectors by their last compound and flags one whose specificity is
   /// lower than an earlier sibling's. Preprocessor files get their `&` expanded first.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
@@ -768,7 +782,7 @@ impl Rule for NoDescendingSpecificity {
         &[],
         &mut comparison_ctx,
         &mut diagnostics,
-        self,
+        self.ignore_selectors_within_list,
         context.source,
       );
     } else {
@@ -777,7 +791,7 @@ impl Rule for NoDescendingSpecificity {
         nodes,
         &mut comparison_ctx,
         &mut diagnostics,
-        self,
+        self.ignore_selectors_within_list,
         false, // top_level_only
         false, // skip_preprocessor
       );
@@ -792,11 +806,11 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule, Syntax};
 
-  use crate::testing::{ctx, ctx_with_source, scss_ctx};
+  use crate::testing::{configured, ctx, ctx_with_source, scss_ctx};
 
   #[test]
   fn reports_descending_specificity() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // `.foo .bar` then `.bar` => same last compound (`.bar`), descending
     let nodes = vec![
       CssNode::Style(StyleRule {
@@ -829,7 +843,7 @@ mod tests {
 
   #[test]
   fn no_report_for_different_last_compound() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // `#id` then `a` => different last compound selectors, not comparable
     let nodes = vec![
       CssNode::Style(StyleRule {
@@ -854,16 +868,13 @@ mod tests {
 
   #[test]
   fn pseudo_elements_belong_to_the_reference_selector() {
+    let rule = configured(&NoDescendingSpecificity, None);
     // docusaurus: `.x::after` then `.x`.  The CSS parser prints the first
     // as `.x:after`; it targets the pseudo-element, not `.x`.
     let source = ".x::after { content: 'a'; }\n.x { color: red; }\n";
     let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
     let ctx = ctx_with_source(source);
-    assert!(
-      NoDescendingSpecificity
-        .check_root(&parsed.nodes, &ctx)
-        .is_empty()
-    );
+    assert!(rule.check_root(&parsed.nodes, &ctx).is_empty());
     assert_eq!(
       last_compound_selector_without_pseudo_classes(".x:after"),
       ".x:after"
@@ -876,7 +887,7 @@ mod tests {
 
   #[test]
   fn ignores_ascending_specificity() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // a { } then .class { } then #id { }
     let nodes = vec![
       CssNode::Style(StyleRule {
@@ -943,7 +954,7 @@ mod tests {
 
   #[test]
   fn scss_reports_top_level_descending_specificity() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // Top-level selectors in SCSS with same last compound — should be checked
     let nodes = vec![
       CssNode::Style(StyleRule {
@@ -979,7 +990,7 @@ mod tests {
 
   #[test]
   fn scss_skips_nested_children() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // A top-level `.foo .bar` with a nested `.bar` child — the nested `.bar`
     // should NOT be compared in SCSS because nested selectors compose with parent.
     let nodes = vec![CssNode::Style(StyleRule {
@@ -1014,7 +1025,7 @@ mod tests {
 
   #[test]
   fn scss_skips_interpolation_selectors() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
@@ -1038,7 +1049,7 @@ mod tests {
 
   #[test]
   fn scss_skips_ampersand_selectors() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
@@ -1059,7 +1070,7 @@ mod tests {
 
   #[test]
   fn scss_skips_placeholder_selectors() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     let nodes = vec![
       CssNode::Style(StyleRule {
         selector: "#id".to_string(),
@@ -1083,7 +1094,7 @@ mod tests {
 
   #[test]
   fn less_uses_same_selective_approach() {
-    let rule = NoDescendingSpecificity;
+    let rule = configured(&NoDescendingSpecificity, None);
     // Same last compound selector `.bar` — should report in Less
     let source = ".foo .bar { color: red; }\n.bar { color: blue; }";
     let nodes = vec![
@@ -1124,5 +1135,36 @@ mod tests {
       1,
       "should report top-level descending specificity in Less"
     );
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "ignore": ["selectors-within-list"] }])
+      )
+      .is_empty()
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"no-descending-specificity\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "ignore": ["lists"] }])),
+      ["Invalid value \"lists\" for option \"ignore\" of rule \"no-descending-specificity\""]
+    );
+  }
+
+  #[test]
+  fn ignore_selectors_within_list_skips_rules_with_several_selectors() {
+    use crate::testing::lint;
+    let source = "#a b { color: red; }\nb, c { color: blue; }";
+    for syntax in [Syntax::Css, Syntax::Scss] {
+      assert_eq!(lint(NAME, serde_json::json!(true), source, syntax).len(), 1);
+      let ignore = serde_json::json!([true, { "ignore": ["selectors-within-list"] }]);
+      assert!(lint(NAME, ignore, source, syntax).is_empty());
+    }
   }
 }

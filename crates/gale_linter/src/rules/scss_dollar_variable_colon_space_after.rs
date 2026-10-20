@@ -1,38 +1,59 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a single space or disallow whitespace after the colon in `$variable`
-/// declarations.
-///
-/// Default: `"always"` (a single space after the colon).
-///
-/// ```scss
-/// // Good (always)
-/// $var: value;
-///
-/// // Bad (always)
-/// $var:value;
-/// $var:  value;
-/// ```
-///
-/// Equivalent to `scss/dollar-variable-colon-space-after`.
-pub struct ScssDollarVariableColonSpaceAfter;
+const NAME: &str = "scss/dollar-variable-colon-space-after";
 
-impl Rule for ScssDollarVariableColonSpaceAfter {
-  fn name(&self) -> &'static str {
-    "scss/dollar-variable-colon-space-after"
+declare_rule! {
+  /// Require a single space or disallow whitespace after the colon in `$variable`
+  /// declarations.
+  ///
+  /// Default: `"always"` (a single space after the colon).
+  ///
+  /// ```scss
+  /// // Good (always)
+  /// $var: value;
+  ///
+  /// // Bad (always)
+  /// $var:value;
+  /// $var:  value;
+  /// ```
+  ///
+  /// Equivalent to `scss/dollar-variable-colon-space-after`.
+  pub struct ScssDollarVariableColonSpaceAfter => ScssDollarVariableColonSpaceAfterCheck {
+    name: NAME,
+    description: "Require or disallow a space after the colon in $variable declarations",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require or disallow a space after the colon in $variable declarations"
+/// `scss/dollar-variable-colon-space-after` as configured.
+pub struct ScssDollarVariableColonSpaceAfterCheck {
+  /// The primary option: `"always"`, `"never"`, `"always-single-line"`, `"at-least-one-space"`.
+  expectation: &'static str,
+}
+
+impl ScssDollarVariableColonSpaceAfterCheck {
+  /// Stylelint's options: `"always"`, `"never"`, `"always-single-line"`, `"at-least-one-space"`, `"always"` when not given.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let expectation = options
+      .primary_one_of(&[
+        "always",
+        "never",
+        "always-single-line",
+        "at-least-one-space",
+      ])
+      .unwrap_or("always");
+    options.finish()?;
+    Ok(Self { expectation })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssDollarVariableColonSpaceAfterCheck {
   /// Flags a `$variable` declaration whose space after the colon does not match
   /// the option.
   fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
@@ -40,7 +61,7 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
       return vec![];
     }
 
-    let option = ctx.primary_option_str().unwrap_or("always");
+    let option = self.expectation;
     let mut diagnostics = Vec::new();
 
     // Scan source text for $variable: patterns
@@ -137,20 +158,18 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
           if after_colon >= len || bytes[after_colon] != b' ' {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Expected single space after \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, colon_pos - dollar_pos + 1)),
             );
           } else if after_colon + 1 < len && bytes[after_colon + 1] == b' ' {
             // Multiple spaces
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Expected single space after \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, colon_pos - dollar_pos + 1)),
             );
           }
@@ -159,10 +178,9 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
           if after_colon < len && (bytes[after_colon] == b' ' || bytes[after_colon] == b'\t') {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Unexpected space after \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, colon_pos - dollar_pos + 1)),
             );
           }
@@ -172,10 +190,9 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
           if after_colon >= len || bytes[after_colon] != b' ' {
             diagnostics.push(
               Diagnostic::new(
-                self.name(),
+                NAME,
                 "Expected space after \":\" in $variable declaration".to_string(),
               )
-              .severity(self.default_severity())
               .span(Span::new(dollar_pos, colon_pos - dollar_pos + 1)),
             );
           }
@@ -194,36 +211,48 @@ impl Rule for ScssDollarVariableColonSpaceAfter {
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn allows_single_space() {
+    let rule = configured(&ScssDollarVariableColonSpaceAfter, None);
     let ctx = scss_ctx_with_source("$color: red;");
-    let d = ScssDollarVariableColonSpaceAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_no_space() {
+    let rule = configured(&ScssDollarVariableColonSpaceAfter, None);
     let ctx = scss_ctx_with_source("$color:red;");
-    let d = ScssDollarVariableColonSpaceAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_spaces() {
+    let rule = configured(&ScssDollarVariableColonSpaceAfter, None);
     let ctx = scss_ctx_with_source("$color:  red;");
-    let d = ScssDollarVariableColonSpaceAfter.check_root(&[], &ctx);
+    let d = rule.check_root(&[], &ctx);
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssDollarVariableColonSpaceAfter, None);
     let ctx = ctx_with_source("$color:red;");
-    assert!(
-      ScssDollarVariableColonSpaceAfter
-        .check_root(&[], &ctx)
-        .is_empty()
+    assert!(rule.check_root(&[], &ctx).is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("always")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("never")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("always-single-line")).is_empty());
+    assert!(invalid_options(NAME, serde_json::json!("at-least-one-space")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("sideways")),
+      ["Invalid option value \"sideways\" for rule \"scss/dollar-variable-colon-space-after\""]
     );
   }
 }

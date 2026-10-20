@@ -1,22 +1,61 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Severity, Span};
+use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require that CSS files begin with a comment matching a specified pattern.
-///
-/// This is a `check_root` rule that inspects the first node in the file.
-///
-/// Options (secondary): an object with a `pattern` key containing a regex
-/// pattern (as a string, optionally wrapped in `/regex/flags`).
-///
-/// Example config:
-/// ```json
-/// ["plugin/require-file-header-comment", [true, {
-///   "pattern": "/Copyright|License/i"
-/// }]]
-/// ```
-pub struct PluginRequireFileHeaderComment;
+const NAME: &str = "plugin/require-file-header-comment";
+
+declare_rule! {
+  /// Require that CSS files begin with a comment matching a specified pattern.
+  ///
+  /// This is a `check_root` rule that inspects the first node in the file.
+  ///
+  /// Options (secondary): an object with a `pattern` key containing a regex
+  /// pattern (as a string, optionally wrapped in `/regex/flags`).
+  ///
+  /// Example config:
+  /// ```json
+  /// ["plugin/require-file-header-comment", [true, {
+  ///   "pattern": "/Copyright|License/i"
+  /// }]]
+  /// ```
+  pub struct PluginRequireFileHeaderComment => PluginRequireFileHeaderCommentCheck {
+    name: NAME,
+    description: "Require a file header comment matching a pattern",
+    default_severity: Warning,
+  }
+}
+
+/// `plugin/require-file-header-comment` as configured.
+pub struct PluginRequireFileHeaderCommentCheck {
+  /// `pattern`; the rule checks nothing without one.
+  pattern: Option<HeaderPattern>,
+}
+
+impl PluginRequireFileHeaderCommentCheck {
+  /// Gale's own rule, standing in for projects' custom plugins, so it is
+  /// lenient: it reads only `pattern`, which must be a string, and ignores
+  /// its primary option and any other key.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let pattern = setting
+      .secondary()
+      .and_then(|secondary| secondary.get("pattern"));
+    if let Some(pattern) = pattern
+      && !pattern.is_string()
+    {
+      options.report(InvalidOption::option_value(NAME, "pattern", pattern));
+    }
+    options.finish()?;
+    Ok(Self {
+      pattern: pattern
+        .and_then(serde_json::Value::as_str)
+        .map(HeaderPattern::from_str),
+    })
+  }
+}
 
 /// A compiled pattern for matching comment text.
 enum HeaderPattern {
@@ -45,32 +84,11 @@ impl HeaderPattern {
   }
 }
 
-/// Reads the `pattern` secondary, if configured.
-fn parse_pattern(context: &RuleContext) -> Option<HeaderPattern> {
-  let secondary = context.secondary_options()?;
-  let pattern_val = secondary.get("pattern")?;
-  let pattern_str = pattern_val.as_str()?;
-  Some(HeaderPattern::from_str(pattern_str))
-}
-
-impl Rule for PluginRequireFileHeaderComment {
-  fn name(&self) -> &'static str {
-    "plugin/require-file-header-comment"
-  }
-
-  fn description(&self) -> &'static str {
-    "Require a file header comment matching a pattern"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PluginRequireFileHeaderCommentCheck {
   /// Flags a file whose first node is not a comment matching the pattern.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let pattern = match parse_pattern(context) {
-      Some(p) => p,
-      None => return vec![],
+  fn check_root(&self, nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+    let Some(pattern) = &self.pattern else {
+      return vec![];
     };
 
     // Find the first non-whitespace node
@@ -84,10 +102,9 @@ impl Rule for PluginRequireFileHeaderComment {
         } else {
           vec![
             Diagnostic::new(
-              self.name(),
+              NAME,
               "File header comment does not match the required pattern",
             )
-            .severity(self.default_severity())
             .span(Span::new(comment.span.offset, comment.span.length)),
           ]
         }
@@ -97,10 +114,9 @@ impl Rule for PluginRequireFileHeaderComment {
         // Use span at the start of the file
         let span = Span::new(0, 0);
         let mut diag = Diagnostic::new(
-          self.name(),
+          NAME,
           "Missing file header comment matching the required pattern",
         )
-        .severity(self.default_severity())
         .span(span);
 
         // Provide autofix: insert a default header comment at the top
@@ -124,14 +140,14 @@ mod tests {
   use gale_css_parser::{Comment, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options};
 
   #[test]
   fn passes_with_matching_comment() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright|License/i"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 Acme Corp ".to_string(),
@@ -144,10 +160,10 @@ mod tests {
 
   #[test]
   fn passes_with_license_comment() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright|License/i"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Comment(Comment {
       text: " MIT License ".to_string(),
@@ -160,10 +176,10 @@ mod tests {
 
   #[test]
   fn fails_with_wrong_comment() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright|License/i"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Comment(Comment {
       text: " This is just a comment ".to_string(),
@@ -177,10 +193,10 @@ mod tests {
 
   #[test]
   fn fails_with_no_comment() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright/"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -197,10 +213,10 @@ mod tests {
 
   #[test]
   fn fails_with_empty_file() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright/"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes: Vec<CssNode> = vec![];
     let diags = rule.check_root(&nodes, &ctx);
@@ -210,7 +226,7 @@ mod tests {
 
   #[test]
   fn no_options_returns_empty() {
-    let rule = PluginRequireFileHeaderComment;
+    let rule = configured(&PluginRequireFileHeaderComment, None);
     let ctx = ctx();
     let nodes: Vec<CssNode> = vec![];
     let diags = rule.check_root(&nodes, &ctx);
@@ -219,10 +235,10 @@ mod tests {
 
   #[test]
   fn literal_pattern() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "Copyright"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Comment(Comment {
       text: " Copyright 2024 ".to_string(),
@@ -235,10 +251,10 @@ mod tests {
 
   #[test]
   fn case_insensitive_regex() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/copyright/i"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Comment(Comment {
       text: " COPYRIGHT 2024 ".to_string(),
@@ -251,10 +267,10 @@ mod tests {
 
   #[test]
   fn autofix_inserts_comment() {
-    let rule = PluginRequireFileHeaderComment;
     let opts = json!([true, {
         "pattern": "/Copyright/"
     }]);
+    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
     let ctx = ctx_with_options(&opts);
     let nodes = vec![CssNode::Style(StyleRule {
       selector: "a".to_string(),
@@ -272,6 +288,20 @@ mod tests {
       fix.edits[0]
         .new_text
         .contains("TODO: Add file header comment")
+    );
+  }
+
+  #[test]
+  fn options_are_validated_leniently() {
+    use crate::testing::invalid_options;
+    // Gale's own rule ignores its primary option and keys it does not read.
+    let valid = serde_json::json!(["anything", { "pattern": "/copyright/i", "other": 1 }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "pattern": ["a"] }])),
+      [
+        "Invalid value \"[\"a\"]\" for option \"pattern\" of rule \"plugin/require-file-header-comment\""
+      ]
     );
   }
 }

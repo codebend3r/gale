@@ -1,29 +1,49 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{Accept, InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Limit the number of class selectors in a selector.
-///
-/// Equivalent to Stylelint's `selector-max-class` rule.
-/// Default maximum: 3. Detection-only.
-pub struct SelectorMaxClass;
+const NAME: &str = "selector-max-class";
+
+declare_rule! {
+  /// Limit the number of class selectors in a selector.
+  ///
+  /// Equivalent to Stylelint's `selector-max-class` rule.
+  /// Default maximum: 3. Detection-only.
+  pub struct SelectorMaxClass => SelectorMaxClassCheck {
+    name: NAME,
+    description: "Limit the number of class selectors in a selector",
+    default_severity: Warning,
+  }
+}
+
+/// `selector-max-class` as configured.
+pub struct SelectorMaxClassCheck {
+  /// The most class selectors allowed.
+  max: usize,
+}
+
+impl SelectorMaxClassCheck {
+  /// Stylelint's options: a whole number of zero or more (tested by a
+  /// function, so a problem reads `Invalid option`).
+  /// Gale reads no number as 3.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
+    options.finish()?;
+    Ok(Self {
+      max: max
+        .and_then(serde_json::Value::as_u64)
+        .map_or(MAX_CLASS, |max| max as usize),
+    })
+  }
+}
 
 const MAX_CLASS: usize = 3;
 
-impl Rule for SelectorMaxClass {
-  fn name(&self) -> &'static str {
-    "selector-max-class"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the number of class selectors in a selector"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SelectorMaxClassCheck {
   /// Flags a selector holding more class selectors than allowed.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     let CssNode::Style(rule) = node else {
@@ -31,11 +51,7 @@ impl Rule for SelectorMaxClass {
     };
 
     // Read configured max from options (primary option is a number).
-    let max = ctx
-      .options
-      .and_then(|v| v.as_u64())
-      .map(|n| n as usize)
-      .unwrap_or(MAX_CLASS);
+    let max = self.max;
 
     // Strip SCSS line comments from the selector text
     let selector = if matches!(
@@ -58,12 +74,11 @@ impl Rule for SelectorMaxClass {
       if count > max {
         diags.push(
                     Diagnostic::new(
-                        self.name(),
+                        NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} class selector(s), found {count}",
                         ),
                     )
-                    .severity(self.default_severity())
                     .span(Span::new(rule.span.offset, rule.span.length)),
                 );
       }
@@ -101,7 +116,7 @@ mod tests {
   use super::*;
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
 
-  use crate::testing::ctx;
+  use crate::testing::{configured, ctx, invalid_options};
 
   fn style_with_selector(sel: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -119,20 +134,38 @@ mod tests {
 
   #[test]
   fn reports_too_many_classes() {
-    let d = SelectorMaxClass.check(&style_with_selector(".a .b .c .d"), &ctx());
+    let rule = configured(&SelectorMaxClass, None);
+    let d = rule.check(&style_with_selector(".a .b .c .d"), &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 4"));
   }
 
   #[test]
   fn allows_within_limit() {
-    let d = SelectorMaxClass.check(&style_with_selector(".a .b .c"), &ctx());
+    let rule = configured(&SelectorMaxClass, None);
+    let d = rule.check(&style_with_selector(".a .b .c"), &ctx());
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_classes() {
-    let d = SelectorMaxClass.check(&style_with_selector("div span"), &ctx());
+    let rule = configured(&SelectorMaxClass, None);
+    let d = rule.check(&style_with_selector("div span"), &ctx());
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    // The primary option is tested by a function, so Stylelint words its
+    // problem without "value"; the rule validates no secondary options.
+    assert!(invalid_options(NAME, serde_json::json!([2, { "anything": true }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!(1.5)),
+      ["Invalid option \"1.5\" for rule \"selector-max-class\""]
+    );
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("3")),
+      ["Invalid option \"3\" for rule \"selector-max-class\""]
+    );
   }
 }

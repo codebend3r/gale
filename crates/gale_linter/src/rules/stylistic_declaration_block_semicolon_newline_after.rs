@@ -1,29 +1,48 @@
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Require a newline after the semicolon of declaration blocks.
-///
-/// Equivalent to `@stylistic/declaration-block-semicolon-newline-after`.
-pub struct StylisticDeclarationBlockSemicolonNewlineAfter;
+const NAME: &str = "@stylistic/declaration-block-semicolon-newline-after";
 
-impl Rule for StylisticDeclarationBlockSemicolonNewlineAfter {
-  fn name(&self) -> &'static str {
-    "@stylistic/declaration-block-semicolon-newline-after"
+declare_rule! {
+  /// Require a newline after the semicolon of declaration blocks.
+  ///
+  /// Equivalent to `@stylistic/declaration-block-semicolon-newline-after`.
+  pub struct StylisticDeclarationBlockSemicolonNewlineAfter => StylisticDeclarationBlockSemicolonNewlineAfterCheck {
+    name: NAME,
+    description: "Require a newline after the semicolon of declaration blocks",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Require a newline after the semicolon of declaration blocks"
+/// `@stylistic/declaration-block-semicolon-newline-after` as configured.
+pub struct StylisticDeclarationBlockSemicolonNewlineAfterCheck {
+  /// The primary option: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.
+  option: &'static str,
+}
+
+impl StylisticDeclarationBlockSemicolonNewlineAfterCheck {
+  /// The plugin's options: `"always"`, `"always-multi-line"` or
+  /// `"never-multi-line"`.  Gale reads no option as `"always"`.
+  /// `"never-multi-line"` is accepted but not yet applied.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let option = options.primary_one_of(&["always", "always-multi-line", "never-multi-line"]);
+    options.finish()?;
+    Ok(Self {
+      option: option.unwrap_or("always"),
+    })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for StylisticDeclarationBlockSemicolonNewlineAfterCheck {
   /// Flags a declaration semicolon whose trailing newline does not match the option.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let option = context.primary_option_str().unwrap_or("always");
+    let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -239,9 +258,7 @@ impl Rule for StylisticDeclarationBlockSemicolonNewlineAfter {
 
         if should_check && !found_newline {
           diagnostics.push(
-            Diagnostic::new(self.name(), "Expected newline after \";\"")
-              .severity(self.default_severity())
-              .span(Span::new(semi_pos, 1)),
+            Diagnostic::new(NAME, "Expected newline after \";\"").span(Span::new(semi_pos, 1)),
           );
         }
       }
@@ -300,14 +317,14 @@ fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::ctx_with_source_and_options;
+  use crate::testing::{configured, ctx_with_source_and_options, invalid_options};
 
   #[test]
   fn always_allows_newline_after_semicolon() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  color: red;\n  display: block;\n}";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -318,9 +335,9 @@ mod tests {
   #[test]
   fn always_reports_missing_newline() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -328,28 +345,28 @@ mod tests {
   #[test]
   fn always_multi_line_allows_single_line() {
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
   }
 
   #[test]
   fn always_multi_line_reports_in_multiline_block() {
     let opt = serde_json::json!("always-multi-line");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  color: red; display: block;\n}";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(!d.is_empty());
   }
 
   #[test]
   fn skips_at_include_with_content_block() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     // @include with a content block ending in ;
     let source = "a {\n  @include mixin { color: red; };\n  display: block;\n}";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(
       d.is_empty(),
       "Should not flag semicolon after @include content block, got: {:?}",
@@ -362,9 +379,20 @@ mod tests {
   #[test]
   fn skips_at_include_semicolon() {
     let opt = serde_json::json!("always");
+    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  @include mixin;\n  color: red;\n}";
-    let d = StylisticDeclarationBlockSemicolonNewlineAfter
-      .check_root(&[], &ctx_with_source_and_options(source, &opt));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(source, &opt));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!("never-multi-line")).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("never")),
+      [
+        "Invalid option value \"never\" for rule \"@stylistic/declaration-block-semicolon-newline-after\""
+      ]
+    );
   }
 }

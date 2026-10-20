@@ -1,51 +1,69 @@
 use std::sync::Arc;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Options, Setting};
 use crate::pattern;
-use crate::rule::{Rule, RuleContext};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Warn when a line exceeds a configurable maximum number of characters.
-///
-/// Equivalent to Stylelint's `max-line-length` rule.
-///
-/// Primary option: the maximum number of characters (integer). Default: 120.
-/// Secondary options:
-///   - `ignorePattern`: a regex pattern string (or array of patterns). Lines
-///     matching any pattern are skipped.
-pub struct MaxLineLength;
+const NAME: &str = "max-line-length";
+
+declare_rule! {
+  /// Warn when a line exceeds a configurable maximum number of characters.
+  ///
+  /// Equivalent to Stylelint's `max-line-length` rule.
+  ///
+  /// Primary option: the maximum number of characters (integer). Default: 120.
+  /// Secondary options:
+  ///   - `ignorePattern`: a regex pattern string (or array of patterns). Lines
+  ///     matching any pattern are skipped.
+  pub struct MaxLineLength => MaxLineLengthCheck {
+    name: NAME,
+    description: "Limit the length of a line",
+    default_severity: Warning,
+  }
+}
+
+/// `max-line-length` as configured.
+pub struct MaxLineLengthCheck {
+  /// The longest a line may be, in characters.
+  max_length: usize,
+  /// `ignorePattern`: lines any of these match may be longer.
+  ignore_patterns: Vec<Arc<pattern::Regex>>,
+}
+
+impl MaxLineLengthCheck {
+  /// The options of Stylelint's former core rule: a number, then
+  /// `ignore: ["non-comments", "comments"]` and `ignorePattern`.  Gale
+  /// reads no option, or one that is not a whole number, as 120, and
+  /// accepts but does not yet apply `ignore`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let max_length = options
+      .primary_test(serde_json::Value::is_number)
+      .and_then(serde_json::Value::as_u64)
+      .map_or(DEFAULT_MAX_LENGTH, |max| max as usize);
+    options.keywords("ignore", &["non-comments", "comments"]);
+    let ignore_patterns = options.strings("ignorePattern");
+    let ignore_patterns = compile_ignore_patterns(&ignore_patterns, &mut options);
+    options.finish()?;
+    Ok(Self {
+      max_length,
+      ignore_patterns,
+    })
+  }
+}
 
 const DEFAULT_MAX_LENGTH: usize = 120;
 
-impl Rule for MaxLineLength {
-  fn name(&self) -> &'static str {
-    "max-line-length"
-  }
-
-  fn description(&self) -> &'static str {
-    "Limit the length of a line"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for MaxLineLengthCheck {
   /// Flags source lines longer than the configured maximum, skipping any that
   /// match an `ignorePattern`.
   fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    // Read the max length from the primary option (integer), defaulting to 120.
-    let max_length = context
-      .primary_option()
-      .and_then(|v| v.as_u64())
-      .map(|v| v as usize)
-      .unwrap_or(DEFAULT_MAX_LENGTH);
-
-    // Read ignorePattern from secondary options.  A pattern that does not
-    // compile is reported as an invalid option.
+    let max_length = self.max_length;
     let mut diags = Vec::new();
-    let ignore_patterns = build_ignore_patterns(self.name(), context, &mut diags);
-
     let mut offset = 0;
 
     for (line_num, line) in context.source.split('\n').enumerate() {
@@ -54,7 +72,8 @@ impl Rule for MaxLineLength {
       let char_count = visible.chars().count();
       if char_count > max_length {
         // Check if the line matches any ignore pattern
-        if ignore_patterns
+        if self
+          .ignore_patterns
           .iter()
           .any(|re| pattern::is_match(re, visible))
         {
@@ -63,16 +82,15 @@ impl Rule for MaxLineLength {
         }
 
         diags.push(
-                    Diagnostic::new(
-                        self.name(),
-                        format!(
-                            "Expected line {num} to be no more than {max_length} characters, but found {char_count}",
-                            num = line_num + 1,
-                        ),
-                    )
-                    .severity(self.default_severity())
-                    .span(Span::new(offset, visible.len())),
-                );
+          Diagnostic::new(
+            NAME,
+            format!(
+              "Expected line {num} to be no more than {max_length} characters, but found {char_count}",
+              num = line_num + 1,
+            ),
+          )
+          .span(Span::new(offset, visible.len())),
+        );
       }
       // +1 for the newline character
       offset += line.len() + 1;
@@ -82,43 +100,24 @@ impl Rule for MaxLineLength {
   }
 }
 
-/// Build compiled regex patterns from the `ignorePattern` secondary option,
-/// pushing an invalid-option report onto `invalid` for each that does not
-/// compile.
-fn build_ignore_patterns(
-  rule_name: &str,
-  context: &RuleContext,
-  invalid: &mut Vec<Diagnostic>,
+/// Compile the `ignorePattern` entries.  Stylelint accepts both a raw regex
+/// and one wrapped in slashes like "/https?://.*/"; `pattern::compile`
+/// understands either.  A raw regex that does not compile is an invalid
+/// option; a `/regex/` literal that does not compile is left out, since the
+/// rule set's scan of every rule's options already reports it.
+fn compile_ignore_patterns(
+  entries: &[String],
+  options: &mut Options<'_>,
 ) -> Vec<Arc<pattern::Regex>> {
-  let secondary = match context.secondary_options() {
-    Some(v) => v,
-    None => return Vec::new(),
-  };
-
-  let obj = match secondary.as_object() {
-    Some(o) => o,
-    None => return Vec::new(),
-  };
-
-  let raw = match obj.get("ignorePattern") {
-    Some(v) => v,
-    None => return Vec::new(),
-  };
-
-  let pattern_strings: Vec<&str> = match raw {
-    serde_json::Value::String(s) => vec![s.as_str()],
-    serde_json::Value::Array(arr) => arr.iter().filter_map(|v| v.as_str()).collect(),
-    _ => return Vec::new(),
-  };
-
-  pattern_strings
-    .into_iter()
-    // Stylelint accepts both a raw regex and one wrapped in slashes like
-    // "/https?://.*/"; `pattern::for_rule` understands either.
-    .filter_map(|s| match pattern::for_rule(rule_name, s.trim()) {
+  entries
+    .iter()
+    .map(|entry| entry.trim())
+    .filter_map(|entry| match pattern::compile(entry) {
       Ok(re) => Some(re),
-      Err(report) => {
-        invalid.push(report);
+      Err(reason) => {
+        if pattern::split_literal(entry).is_none() {
+          options.report(InvalidOption::pattern(NAME, entry, &reason));
+        }
         None
       }
     })
@@ -129,28 +128,31 @@ fn build_ignore_patterns(
 mod tests {
   use super::*;
 
-  use crate::testing::{ctx_with_source, ctx_with_source_and_options};
+  use crate::testing::{configured, ctx_with_source, ctx_with_source_and_options};
 
   #[test]
   fn reports_long_line() {
+    let rule = configured(&MaxLineLength, None);
     let long_line = "a".repeat(121);
     let source = format!(".foo {{ color: {}; }}", long_line);
-    let d = MaxLineLength.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_root(&[], &ctx_with_source(&source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("121") || d[0].message.contains("120"));
   }
 
   #[test]
   fn allows_short_line() {
+    let rule = configured(&MaxLineLength, None);
     let source = ".foo { color: red; }";
-    let d = MaxLineLength.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_root(&[], &ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_correct_line_number() {
+    let rule = configured(&MaxLineLength, None);
     let source = "a { }\n".to_string() + &"b".repeat(121);
-    let d = MaxLineLength.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_root(&[], &ctx_with_source(&source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("line 2"));
   }
@@ -159,8 +161,9 @@ mod tests {
   fn reads_max_length_from_config() {
     // Config: max-line-length: 80
     let opts = serde_json::json!(80);
+    let rule = configured(&MaxLineLength, opts.clone());
     let source = "a".repeat(81);
-    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("80 characters"));
   }
@@ -169,17 +172,52 @@ mod tests {
   fn reads_max_length_from_array_config() {
     // Config: max-line-length: [100, { "ignorePattern": "/https?://.*/" }]
     let opts = serde_json::json!([100, { "ignorePattern": "/https?://.*/" }]);
+    let rule = configured(&MaxLineLength, opts.clone());
     // Line with URL that exceeds 100 chars
     let source = format!("// See https://example.com/{}", "x".repeat(100));
-    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert!(d.is_empty(), "Should ignore lines matching ignorePattern");
   }
 
   #[test]
   fn reports_non_matching_long_line_with_ignore_pattern() {
     let opts = serde_json::json!([100, { "ignorePattern": "/https?://.*/" }]);
+    let rule = configured(&MaxLineLength, opts.clone());
     let source = "a".repeat(101);
-    let d = MaxLineLength.check_root(&[], &ctx_with_source_and_options(&source, &opts));
+    let d = rule.check_root(&[], &ctx_with_source_and_options(&source, &opts));
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    use crate::testing::invalid_options;
+    assert!(
+      invalid_options(
+        NAME,
+        serde_json::json!([80, { "ignore": ["comments"], "ignorePattern": ["/^@import/", "url\\("] }])
+      )
+      .is_empty()
+    );
+    // The primary option is tested by a function, not a list.
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("80")),
+      ["Invalid option \"80\" for rule \"max-line-length\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([80, { "ignore": ["urls"], "tabSize": 2 }])
+      ),
+      [
+        "Invalid value \"urls\" for option \"ignore\" of rule \"max-line-length\"",
+        "Invalid option name \"tabSize\" for rule \"max-line-length\"",
+      ]
+    );
+    let broken = invalid_options(NAME, serde_json::json!([80, { "ignorePattern": "a(" }]));
+    assert_eq!(broken.len(), 1);
+    assert!(
+      broken[0].starts_with("Invalid option value \"a(\" for rule \"max-line-length\""),
+      "{broken:?}"
+    );
   }
 }

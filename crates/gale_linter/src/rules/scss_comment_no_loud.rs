@@ -1,29 +1,41 @@
 use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Disallow loud comments (`/* ... */`) in SCSS files.
-///
-/// SCSS files should use silent comments (`//`) instead of CSS block comments.
-/// This rule reports all block comments in SCSS/Sass files.
-///
-/// Equivalent to `scss/comment-no-loud`.
-pub struct ScssCommentNoLoud;
+const NAME: &str = "scss/comment-no-loud";
 
-impl Rule for ScssCommentNoLoud {
-  fn name(&self) -> &'static str {
-    "scss/comment-no-loud"
+declare_rule! {
+  /// Disallow loud comments (`/* ... */`) in SCSS files.
+  ///
+  /// SCSS files should use silent comments (`//`) instead of CSS block comments.
+  /// This rule reports all block comments in SCSS/Sass files.
+  ///
+  /// Equivalent to `scss/comment-no-loud`.
+  pub struct ScssCommentNoLoud => ScssCommentNoLoudCheck {
+    name: NAME,
+    description: "Disallow loud comments (/* ... */) in SCSS files",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow loud comments (/* ... */) in SCSS files"
+/// `scss/comment-no-loud`, which takes no options.
+pub struct ScssCommentNoLoudCheck;
+
+impl ScssCommentNoLoudCheck {
+  /// Stylelint validates `{ actual: primary }` with nothing possible: the
+  /// rule takes nothing but `true`.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.no_primary();
+    options.finish()?;
+    Ok(Self)
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for ScssCommentNoLoudCheck {
   /// Flags `/* … */` comments in SCSS, where `//` is preferred.
   fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
@@ -59,10 +71,9 @@ impl Rule for ScssCommentNoLoud {
 
     vec![
       Diagnostic::new(
-        self.name(),
+        NAME,
         "Unexpected loud comment (/* ... */). Use // instead in SCSS",
       )
-      .severity(self.default_severity())
       .span(Span::new(comment.span.offset, comment.span.length)),
     ]
   }
@@ -73,59 +84,75 @@ mod tests {
   use super::*;
   use gale_css_parser::{Comment, Span as ParserSpan};
 
-  use crate::testing::{ctx, scss_ctx};
+  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
 
   #[test]
   fn reports_block_comment_in_scss() {
+    let rule = configured(&ScssCommentNoLoud, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* some comment */".to_string(),
       span: ParserSpan::new(0, 18),
     });
-    let d = ScssCommentNoLoud.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("loud comment"));
   }
 
   #[test]
   fn allows_line_comment_in_scss() {
+    let rule = configured(&ScssCommentNoLoud, None);
     let node = CssNode::Comment(Comment {
       is_line: true,
       text: "// some comment".to_string(),
       span: ParserSpan::new(0, 15),
     });
-    assert!(ScssCommentNoLoud.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check(&node, &scss_ctx()).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
+    let rule = configured(&ScssCommentNoLoud, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* some comment */".to_string(),
       span: ParserSpan::new(0, 18),
     });
-    assert!(ScssCommentNoLoud.check(&node, &ctx()).is_empty());
+    assert!(rule.check(&node, &ctx()).is_empty());
   }
 
   #[test]
   fn reports_empty_block_comment_in_scss() {
+    let rule = configured(&ScssCommentNoLoud, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* */".to_string(),
       span: ParserSpan::new(0, 5),
     });
-    let d = ScssCommentNoLoud.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiline_block_comment() {
+    let rule = configured(&ScssCommentNoLoud, None);
     let node = CssNode::Comment(Comment {
       is_line: false,
       text: "/* multi\n   line */".to_string(),
       span: ParserSpan::new(0, 18),
     });
-    let d = ScssCommentNoLoud.check(&node, &scss_ctx());
+    let d = rule.check(&node, &scss_ctx());
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
+    // Upstream validates no secondary options, so it ignores them all.
+    assert!(invalid_options(NAME, serde_json::json!([true, { "anything": 1 }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Unexpected option value \"always\" for rule \"scss/comment-no-loud\""]
+    );
   }
 }

@@ -1,29 +1,78 @@
 use std::collections::HashMap;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Enforce design token/variable usage for specified CSS properties.
-///
-/// A configurable meta-rule that checks whether declaration values match
-/// allowed variable/token patterns. Covers the "variable enforcement" pattern
-/// seen in Primer, Carbon, and Spectrum CSS custom plugins.
-///
-/// Options (secondary): an object with a `properties` key mapping CSS property
-/// names to arrays of allowed value patterns (exact strings or `/regex/`).
-///
-/// Example config:
-/// ```json
-/// ["plugin/enforce-variable-for-property", [true, {
-///   "properties": {
-///     "color": ["/^\\$text-/", "inherit", "currentColor", "transparent"],
-///     "background-color": ["/^\\$bg-/", "inherit", "transparent"]
-///   }
-/// }]]
-/// ```
-pub struct PluginEnforceVariableForProperty;
+const NAME: &str = "plugin/enforce-variable-for-property";
+
+declare_rule! {
+  /// Enforce design token/variable usage for specified CSS properties.
+  ///
+  /// A configurable meta-rule that checks whether declaration values match
+  /// allowed variable/token patterns. Covers the "variable enforcement" pattern
+  /// seen in Primer, Carbon, and Spectrum CSS custom plugins.
+  ///
+  /// Options (secondary): an object with a `properties` key mapping CSS property
+  /// names to arrays of allowed value patterns (exact strings or `/regex/`).
+  ///
+  /// Example config:
+  /// ```json
+  /// ["plugin/enforce-variable-for-property", [true, {
+  ///   "properties": {
+  ///     "color": ["/^\\$text-/", "inherit", "currentColor", "transparent"],
+  ///     "background-color": ["/^\\$bg-/", "inherit", "transparent"]
+  ///   }
+  /// }]]
+  /// ```
+  pub struct PluginEnforceVariableForProperty => PluginEnforceVariableForPropertyCheck {
+    name: NAME,
+    description: "Enforce variable/token usage for specified properties",
+    default_severity: Warning,
+  }
+}
+
+/// `plugin/enforce-variable-for-property` as configured.
+pub struct PluginEnforceVariableForPropertyCheck {
+  /// The allowed value patterns of each property, by lowercase name.
+  property_map: HashMap<String, Vec<Pattern>>,
+}
+
+impl PluginEnforceVariableForPropertyCheck {
+  /// Gale's own meta-rule, standing in for several projects' custom
+  /// plugins, so it is lenient: it reads only `properties`, which must map
+  /// property names to lists of strings, and ignores its primary option and
+  /// any other key.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    let properties = setting
+      .secondary()
+      .and_then(|secondary| secondary.get("properties"));
+    if let Some(properties) = properties
+      && !is_property_map(properties)
+    {
+      options.report(InvalidOption::option_value(NAME, "properties", properties));
+    }
+    options.finish()?;
+    Ok(Self {
+      property_map: parse_properties(properties),
+    })
+  }
+}
+
+/// Whether `value` maps property names to lists of value patterns.
+fn is_property_map(value: &serde_json::Value) -> bool {
+  value.as_object().is_some_and(|map| {
+    map.values().all(|patterns| {
+      patterns
+        .as_array()
+        .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+    })
+  })
+}
 
 /// A compiled pattern — either a literal string match or a regex.
 enum Pattern {
@@ -52,16 +101,10 @@ impl Pattern {
   }
 }
 
-/// Reads the property-to-allowed-patterns map from the `properties` secondary.
-fn parse_options(context: &RuleContext) -> HashMap<String, Vec<Pattern>> {
-  let secondary = match context.secondary_options() {
-    Some(opts) => opts,
-    None => return HashMap::new(),
-  };
-
-  let properties = match secondary.get("properties") {
-    Some(serde_json::Value::Object(obj)) => obj,
-    _ => return HashMap::new(),
+/// Reads the property-to-allowed-patterns map from the `properties` option.
+fn parse_properties(properties: Option<&serde_json::Value>) -> HashMap<String, Vec<Pattern>> {
+  let Some(serde_json::Value::Object(properties)) = properties else {
+    return HashMap::new();
   };
 
   let mut map = HashMap::new();
@@ -143,22 +186,10 @@ fn value_matches_patterns(value: &str, patterns: &[Pattern]) -> bool {
   true
 }
 
-impl Rule for PluginEnforceVariableForProperty {
-  fn name(&self) -> &'static str {
-    "plugin/enforce-variable-for-property"
-  }
-
-  fn description(&self) -> &'static str {
-    "Enforce variable/token usage for specified properties"
-  }
-
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for PluginEnforceVariableForPropertyCheck {
   /// Flags a configured property whose value matches none of its allowed patterns.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let property_map = parse_options(ctx);
+  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let property_map = &self.property_map;
     if property_map.is_empty() {
       return vec![];
     }
@@ -176,13 +207,12 @@ impl Rule for PluginEnforceVariableForProperty {
         if !value_matches_patterns(&decl.value, patterns) {
           diags.push(
             Diagnostic::new(
-              self.name(),
+              NAME,
               format!(
                 "Expected variable or allowed value for '{}', got '{}'",
                 decl.property, decl.value
               ),
             )
-            .severity(self.default_severity())
             .span(Span::new(decl.span.offset, decl.span.length)),
           );
         }
@@ -198,7 +228,7 @@ mod tests {
   use gale_css_parser::{Declaration, Span as ParserSpan, StyleRule};
   use serde_json::json;
 
-  use crate::testing::{ctx, ctx_with_options};
+  use crate::testing::{configured, ctx, ctx_with_options};
 
   fn style_with_decl(prop: &str, val: &str) -> CssNode {
     CssNode::Style(StyleRule {
@@ -217,12 +247,12 @@ mod tests {
 
   #[test]
   fn allows_matching_variable() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["/^\\$text-/", "inherit", "currentColor", "transparent"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("color", "$text-primary");
     let diags = rule.check(&node, &ctx);
@@ -231,12 +261,12 @@ mod tests {
 
   #[test]
   fn allows_exact_value() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["/^\\$text-/", "inherit", "currentColor", "transparent"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("color", "inherit");
     let diags = rule.check(&node, &ctx);
@@ -245,12 +275,12 @@ mod tests {
 
   #[test]
   fn rejects_disallowed_value() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["/^\\$text-/", "inherit", "currentColor", "transparent"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
@@ -266,12 +296,12 @@ mod tests {
 
   #[test]
   fn case_insensitive_property_match() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "Color": ["inherit"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
@@ -280,12 +310,12 @@ mod tests {
 
   #[test]
   fn ignores_unconfigured_property() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["inherit"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("font-size", "16px");
     let diags = rule.check(&node, &ctx);
@@ -294,7 +324,7 @@ mod tests {
 
   #[test]
   fn no_options_returns_empty() {
-    let rule = PluginEnforceVariableForProperty;
+    let rule = configured(&PluginEnforceVariableForProperty, None);
     let ctx = ctx();
     let node = style_with_decl("color", "red");
     let diags = rule.check(&node, &ctx);
@@ -303,12 +333,12 @@ mod tests {
 
   #[test]
   fn regex_with_case_insensitive_flag() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["/^inherit$/i"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = style_with_decl("color", "Inherit");
     let diags = rule.check(&node, &ctx);
@@ -317,13 +347,13 @@ mod tests {
 
   #[test]
   fn multiple_properties() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["inherit"],
             "background-color": ["transparent"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
 
     let node1 = style_with_decl("color", "red");
@@ -338,12 +368,12 @@ mod tests {
 
   #[test]
   fn allows_zero_and_auto_for_margin() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "margin": ["/^\\$spacer/", "0", "auto"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
 
     let node = style_with_decl("margin", "0");
@@ -361,12 +391,12 @@ mod tests {
 
   #[test]
   fn handles_declaration_node_directly() {
-    let rule = PluginEnforceVariableForProperty;
     let opts = json!([true, {
         "properties": {
             "color": ["inherit"]
         }
     }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
     let ctx = ctx_with_options(&opts);
     let node = CssNode::Declaration(Declaration {
       property: "color".to_string(),
@@ -376,5 +406,19 @@ mod tests {
     });
     let diags = rule.check(&node, &ctx);
     assert_eq!(diags.len(), 1);
+  }
+
+  #[test]
+  fn options_are_validated_leniently() {
+    use crate::testing::invalid_options;
+    // Gale's own rule ignores its primary option and keys it does not read.
+    let valid = serde_json::json!(["anything", { "properties": { "color": ["/^\\$text-/", "inherit"] }, "other": 1 }]);
+    assert!(invalid_options(NAME, valid).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!([true, { "properties": ["color"] }])),
+      [
+        "Invalid value \"[\"color\"]\" for option \"properties\" of rule \"plugin/enforce-variable-for-property\""
+      ]
+    );
   }
 }

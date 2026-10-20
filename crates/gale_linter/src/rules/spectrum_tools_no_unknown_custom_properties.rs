@@ -2,35 +2,53 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use gale_css_parser::CssNode;
-use gale_diagnostics::{Diagnostic, Severity, Span};
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::rule::{Rule, RuleContext};
+use crate::lint_env::LintEnv;
+use crate::options::{InvalidOption, Setting};
+use crate::rule::{Check, RuleContext, declare_rule};
 
-/// Adobe Spectrum custom plugin: disallow unknown custom properties in `var()`.
-///
-/// Equivalent to `@spectrum-tools/stylelint-no-unknown-custom-properties`.
-/// Only checks `index.css` files. Collects defined custom properties from:
-/// - The current file
-/// - Sibling `themes/*.css` files in the same component directory
-/// - (Optionally) package dependencies
-///
-/// Reports `var(--name)` references where `--name` is not defined,
-/// respecting `ignoreList` regex patterns and skipping vars with fallbacks.
-pub struct SpectrumToolsNoUnknownCustomProperties;
+const NAME: &str = "spectrum-tools/no-unknown-custom-properties";
 
-impl Rule for SpectrumToolsNoUnknownCustomProperties {
-  fn name(&self) -> &'static str {
-    "spectrum-tools/no-unknown-custom-properties"
+declare_rule! {
+  /// Adobe Spectrum custom plugin: disallow unknown custom properties in `var()`.
+  ///
+  /// Equivalent to `@spectrum-tools/stylelint-no-unknown-custom-properties`.
+  /// Only checks `index.css` files. Collects defined custom properties from:
+  /// - The current file
+  /// - Sibling `themes/*.css` files in the same component directory
+  /// - (Optionally) package dependencies
+  ///
+  /// Reports `var(--name)` references where `--name` is not defined,
+  /// respecting `ignoreList` regex patterns and skipping vars with fallbacks.
+  pub struct SpectrumToolsNoUnknownCustomProperties => SpectrumToolsNoUnknownCustomPropertiesCheck {
+    name: NAME,
+    description: "Disallow unknown custom properties (Spectrum)",
+    default_severity: Warning,
   }
+}
 
-  fn description(&self) -> &'static str {
-    "Disallow unknown custom properties (Spectrum)"
+/// `spectrum-tools/no-unknown-custom-properties` as configured.
+pub struct SpectrumToolsNoUnknownCustomPropertiesCheck {
+  /// The `ignoreList` option: patterns for custom properties to pass over.
+  ignore_list: Vec<String>,
+}
+
+impl SpectrumToolsNoUnknownCustomPropertiesCheck {
+  /// The plugin's options: `true`, then `ignoreList` (strings or `/regex/`
+  /// entries) and `skipDependencies`, which gale accepts but does not apply:
+  /// it never reads package dependencies.
+  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
+    let mut options = setting.options();
+    options.primary_true();
+    let ignore_list = options.strings("ignoreList");
+    options.flag("skipDependencies");
+    options.finish()?;
+    Ok(Self { ignore_list })
   }
+}
 
-  fn default_severity(&self) -> Severity {
-    Severity::Warning
-  }
-
+impl Check for SpectrumToolsNoUnknownCustomPropertiesCheck {
   /// In `index.css` only, collects custom properties from this file and sibling
   /// `themes/*.css`, then flags `var()` references defined by none of them.
   fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
@@ -42,9 +60,6 @@ impl Rule for SpectrumToolsNoUnknownCustomProperties {
     }
 
     let source = context.source;
-
-    // Parse options: ignoreList, skipDependencies
-    let ignore_patterns = parse_ignore_list(context);
 
     // Find the component root directory.
     // The plugin looks for a "components" directory in the path and uses the next
@@ -67,40 +82,12 @@ impl Rule for SpectrumToolsNoUnknownCustomProperties {
       nodes,
       source,
       &known_props,
-      &ignore_patterns,
-      self,
+      &self.ignore_list,
       &mut diagnostics,
     );
 
     diagnostics
   }
-}
-
-// ---------------------------------------------------------------------------
-// Option parsing
-// ---------------------------------------------------------------------------
-
-/// Parse the `ignoreList` option from the rule config.
-/// Returns a list of regex patterns as strings.
-fn parse_ignore_list(context: &RuleContext) -> Vec<String> {
-  let secondary = match context.secondary_options() {
-    Some(opts) => opts,
-    None => return vec![],
-  };
-
-  let ignore_list = match secondary.get("ignoreList") {
-    Some(serde_json::Value::Array(arr)) => arr,
-    _ => return vec![],
-  };
-
-  ignore_list
-    .iter()
-    .filter_map(|v| {
-      // Patterns can be strings or regex objects serialized as strings.
-      // In Gale's config, JS regexps are serialized as strings like "^--mod-".
-      v.as_str().map(|s| s.to_string())
-    })
-    .collect()
 }
 
 /// Check if a property name matches any of the ignore patterns.
@@ -245,21 +232,13 @@ fn walk_nodes_for_vars(
   source: &str,
   known_props: &HashSet<String>,
   ignore_patterns: &[String],
-  rule: &SpectrumToolsNoUnknownCustomProperties,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   for node in nodes {
     match node {
       CssNode::Style(style_rule) => {
         for decl in &style_rule.declarations {
-          check_declaration(
-            decl,
-            source,
-            known_props,
-            ignore_patterns,
-            rule,
-            diagnostics,
-          );
+          check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
         }
         // Recurse into nested style rule children.
         walk_nodes_for_vars(
@@ -271,7 +250,6 @@ fn walk_nodes_for_vars(
           source,
           known_props,
           ignore_patterns,
-          rule,
           diagnostics,
         );
         // Recurse into nested at-rules.
@@ -280,7 +258,6 @@ fn walk_nodes_for_vars(
           source,
           known_props,
           ignore_patterns,
-          rule,
           diagnostics,
         );
       }
@@ -290,19 +267,11 @@ fn walk_nodes_for_vars(
           source,
           known_props,
           ignore_patterns,
-          rule,
           diagnostics,
         );
       }
       CssNode::Declaration(decl) => {
-        check_declaration(
-          decl,
-          source,
-          known_props,
-          ignore_patterns,
-          rule,
-          diagnostics,
-        );
+        check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
       }
       CssNode::Comment(_) => {}
     }
@@ -315,7 +284,6 @@ fn check_declaration(
   source: &str,
   known_props: &HashSet<String>,
   ignore_patterns: &[String],
-  rule: &SpectrumToolsNoUnknownCustomProperties,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   if !decl.value.contains("var(") && !decl.value.contains("VAR(") {
@@ -344,12 +312,8 @@ fn check_declaration(
     // Report at the declaration position (matching Stylelint's behavior
     // which uses `node: decl` in the report call).
     diagnostics.push(
-      Diagnostic::new(
-        rule.name(),
-        format!("Custom property {} not defined", vr.name),
-      )
-      .severity(rule.default_severity())
-      .span(Span::new(decl.span.offset, decl.span.length)),
+      Diagnostic::new(NAME, format!("Custom property {} not defined", vr.name))
+        .span(Span::new(decl.span.offset, decl.span.length)),
     );
   }
 }
@@ -435,6 +399,7 @@ fn is_name_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::testing::{configured, invalid_options};
 
   #[test]
   fn find_component_root_absolute() {
@@ -493,7 +458,7 @@ mod tests {
 
   #[test]
   fn skips_non_index_css() {
-    let rule = SpectrumToolsNoUnknownCustomProperties;
+    let rule = configured(&SpectrumToolsNoUnknownCustomProperties, None);
     let ctx = RuleContext {
       env: Default::default(),
       file_path: "components/foo/themes/spectrum.css",
@@ -505,5 +470,23 @@ mod tests {
     let parsed = gale_css_parser::parse(ctx.source, gale_css_parser::Syntax::Css).unwrap();
     let diags = rule.check_root(&parsed.nodes, &ctx);
     assert!(diags.is_empty());
+  }
+
+  #[test]
+  fn options_are_validated_like_stylelint() {
+    assert!(invalid_options(NAME, serde_json::json!([true, { "ignoreList": ["^--mod-", "/^--x/"], "skipDependencies": false }])).is_empty());
+    assert_eq!(
+      invalid_options(NAME, serde_json::json!("always")),
+      ["Invalid option value \"always\" for rule \"spectrum-tools/no-unknown-custom-properties\""]
+    );
+    assert_eq!(
+      invalid_options(
+        NAME,
+        serde_json::json!([true, { "skipDependencies": "no" }])
+      ),
+      [
+        "Invalid value \"no\" for option \"skipDependencies\" of rule \"spectrum-tools/no-unknown-custom-properties\""
+      ]
+    );
   }
 }
