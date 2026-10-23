@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -37,113 +38,72 @@ impl ScssCommentNoLoudCheck {
 
 impl Check for ScssCommentNoLoudCheck {
   /// Flags `/* … */` comments in SCSS, where `//` is preferred.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::Comment(comment) = node else {
-      return vec![];
-    };
-
-    // Line comments (//) are fine — only block comments (/* */) are "loud"
-    if comment.is_line {
-      return vec![];
+    let mut diags = Vec::new();
+    for comment in tree.walk_comments() {
+      // Line comments (//) are fine — only block comments (/* */) are "loud"
+      if comment.is_inline() {
+        continue;
+      }
+      // Skip stylelint/gale disable/enable control comments — these are not
+      // regular loud comments but tooling directives that must use /* */
+      // syntax.
+      let inner = comment.text();
+      if inner.starts_with("stylelint-disable")
+        || inner.starts_with("stylelint-enable")
+        || inner.starts_with("gale-disable")
+        || inner.starts_with("gale-enable")
+      {
+        continue;
+      }
+      diags.push(
+        Diagnostic::new(
+          NAME,
+          "Unexpected loud comment (/* ... */). Use // instead in SCSS",
+        )
+        .span(comment.span()),
+      );
     }
-
-    // Skip stylelint/gale disable/enable control comments — these are not
-    // regular loud comments but tooling directives that must use /* */ syntax.
-    let trimmed = comment.text.trim();
-    // Strip the leading /* and trailing */ if present, then check the inner text
-    let inner = trimmed
-      .strip_prefix("/*")
-      .unwrap_or(trimmed)
-      .strip_suffix("*/")
-      .unwrap_or(trimmed)
-      .trim();
-    if inner.starts_with("stylelint-disable")
-      || inner.starts_with("stylelint-enable")
-      || inner.starts_with("gale-disable")
-      || inner.starts_with("gale-enable")
-    {
-      return vec![];
-    }
-
-    vec![
-      Diagnostic::new(
-        NAME,
-        "Unexpected loud comment (/* ... */). Use // instead in SCSS",
-      )
-      .span(comment.span),
-    ]
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Comment;
-  use gale_diagnostics::Span;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{invalid_options, lint};
 
-  #[test]
-  fn reports_block_comment_in_scss() {
-    let rule = configured(&ScssCommentNoLoud, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* some comment */".to_string(),
-      span: Span::new(0, 18),
-    });
-    let d = rule.check(&node, &scss_ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("loud comment"));
+  fn scss(source: &str) -> Vec<Diagnostic> {
+    lint(NAME, json!(true), source, Syntax::Scss)
   }
 
   #[test]
-  fn allows_line_comment_in_scss() {
-    let rule = configured(&ScssCommentNoLoud, None);
-    let node = CssNode::Comment(Comment {
-      is_line: true,
-      text: "// some comment".to_string(),
-      span: Span::new(0, 15),
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+  fn reports_block_comments_in_scss() {
+    let d = scss("/* some comment */\na { /* */ }\n/* multi\n   line */");
+    assert_eq!(d.len(), 3);
+    assert!(d[0].message.contains("loud comment"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 18));
+  }
+
+  #[test]
+  fn allows_line_comments_and_directives() {
+    assert!(scss("// some comment\n/* stylelint-disable color-named */").is_empty());
+  }
+
+  #[test]
+  fn ignores_comments_inside_values() {
+    // stylelint-scss walks comment nodes, and PostCSS keeps these in raws.
+    assert!(scss("a { width: 1px /* c */; }").is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssCommentNoLoud, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* some comment */".to_string(),
-      span: Span::new(0, 18),
-    });
-    assert!(rule.check(&node, &ctx()).is_empty());
-  }
-
-  #[test]
-  fn reports_empty_block_comment_in_scss() {
-    let rule = configured(&ScssCommentNoLoud, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* */".to_string(),
-      span: Span::new(0, 5),
-    });
-    let d = rule.check(&node, &scss_ctx());
-    assert_eq!(d.len(), 1);
-  }
-
-  #[test]
-  fn reports_multiline_block_comment() {
-    let rule = configured(&ScssCommentNoLoud, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* multi\n   line */".to_string(),
-      span: Span::new(0, 18),
-    });
-    let d = rule.check(&node, &scss_ctx());
-    assert_eq!(d.len(), 1);
+    assert!(lint(NAME, json!(true), "/* some comment */", Syntax::Css).is_empty());
   }
 
   #[test]

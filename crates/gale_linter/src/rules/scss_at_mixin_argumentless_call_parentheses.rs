@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -48,136 +49,106 @@ impl ScssAtMixinArgumentlessCallParenthesesCheck {
 
 impl Check for ScssAtMixinArgumentlessCallParenthesesCheck {
   /// Flags an argumentless `@include` whose parentheses do not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "include" {
-      return vec![];
-    }
-
-    let option = self.expectation;
-
-    let params = at.params.trim();
-    // An include with arguments (contains `(` with non-empty content before `)`) is not
-    // "argumentless" — skip it.
-    let has_args = if let Some(paren_pos) = params.find('(') {
-      let after_paren = &params[paren_pos + 1..];
-      let inner = after_paren.trim_end_matches(')').trim();
-      !inner.is_empty()
-    } else {
-      false
-    };
-
-    if has_args {
-      return vec![];
-    }
-
-    let has_parens = params.contains('(');
-
-    match option {
-      "always" => {
-        if !has_parens {
-          vec![
-            Diagnostic::new(
-              NAME,
-              format!(
-                "Expected parentheses in argumentless @include \"{}\"",
-                params
-              ),
-            )
-            .span(at.span),
-          ]
-        } else {
-          vec![]
-        }
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if at.name() != "include" {
+        continue;
       }
-      "never" => {
-        if has_parens {
+      let params = at.params().trim();
+      // An include with arguments (contains `(` with non-empty content
+      // before `)`) is not "argumentless" — skip it.
+      let has_args = params.find('(').is_some_and(|paren_pos| {
+        let after_paren = &params[paren_pos + 1..];
+        !after_paren.trim_end_matches(')').trim().is_empty()
+      });
+      if has_args {
+        continue;
+      }
+      let has_parens = params.contains('(');
+      match self.expectation {
+        // Point to the mixin name, as stylelint-scss does.
+        "always" if !has_parens => diags.push(
+          Diagnostic::new(
+            NAME,
+            format!("Expected parentheses in argumentless @include \"{params}\""),
+          )
+          .span(at.word_span(params)),
+        ),
+        "never" if has_parens => {
           let mixin_name = params.trim_end_matches("()");
           // Point to the mixin name, not the `@include` keyword.
-          let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-          let at_src = ctx.source_slice(at.span.offset, at_src_end).unwrap_or("");
-          let name_off = at_src.find(mixin_name).unwrap_or(0);
-          vec![
+          diags.push(
             Diagnostic::new(
               NAME,
-              format!(
-                "Unexpected parentheses in argumentless mixin \"{}\" call",
-                mixin_name
-              ),
+              format!("Unexpected parentheses in argumentless mixin \"{mixin_name}\" call"),
             )
-            .span(Span::new(at.span.offset + name_off, mixin_name.len())),
-          ]
-        } else {
-          vec![]
+            .span(at.word_span(mixin_name)),
+          );
         }
+        _ => {}
       }
-      _ => vec![],
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn include(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "include".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  /// The reports for `a { @include <params>; }` in `syntax`.
+  fn include(options: Option<Value>, params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let source = format!("a {{ @include {params}; }}");
+    configured(&ScssAtMixinArgumentlessCallParentheses, options)
+      .check_source(&context(&source, syntax))
   }
 
   #[test]
   fn reports_missing_parens_always() {
-    let rule = configured(&ScssAtMixinArgumentlessCallParentheses, None);
-    let d = rule.check(&include("mixin-name"), &scss_ctx());
+    let d = include(None, "mixin-name", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("parentheses"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (13, 10));
   }
 
   #[test]
   fn allows_parens_always() {
-    let rule = configured(&ScssAtMixinArgumentlessCallParentheses, None);
-    let d = rule.check(&include("mixin-name()"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(include(None, "mixin-name()", Syntax::Scss).is_empty());
+  }
+
+  #[test]
+  fn reports_parens_never_at_the_name() {
+    let d = include(Some(json!("never")), "mixin-name()", Syntax::Scss);
+    assert_eq!(d.len(), 1);
+    assert_eq!((d[0].span.offset, d[0].span.length), (13, 10));
+    assert!(include(Some(json!("never")), "mixin-name", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_include_with_args() {
-    let rule = configured(&ScssAtMixinArgumentlessCallParentheses, None);
-    let d = rule.check(&include("mixin-name($arg)"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(include(None, "mixin-name($arg)", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtMixinArgumentlessCallParentheses, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&include("mixin-name"), &css_ctx).is_empty());
+    assert!(include(None, "mixin-name", Syntax::Css).is_empty());
   }
 
   #[test]
   fn skips_non_include() {
     let rule = configured(&ScssAtMixinArgumentlessCallParentheses, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "mixin".to_string(),
-      params: "foo".to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(
+      rule
+        .check_source(&context("@mixin foo { }", Syntax::Scss))
+        .is_empty()
+    );
   }
 
   #[test]

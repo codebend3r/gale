@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::braces::scss_block_close;
@@ -44,7 +45,7 @@ impl ScssAtIfClosingBraceSpaceAfterCheck {
 impl Check for ScssAtIfClosingBraceSpaceAfterCheck {
   /// Flags an `@if` closing brace followed by `@else` whose separating space
   /// does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -120,13 +121,13 @@ impl Check for ScssAtIfClosingBraceSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, invalid_options, scss_ctx_with_source};
+  use crate::testing::{CheckSource, configured, invalid_options, scss_ctx_with_source};
 
   #[test]
   fn allows_single_space_before_else() {
     let rule = configured(&ScssAtIfClosingBraceSpaceAfter, None);
     let ctx = scss_ctx_with_source("@if $cond { color: red; } @else { color: blue; }");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -134,7 +135,7 @@ mod tests {
   fn reports_no_space_before_else() {
     let rule = configured(&ScssAtIfClosingBraceSpaceAfter, None);
     let ctx = scss_ctx_with_source("@if $cond { color: red; }@else { color: blue; }");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
   }
 
@@ -142,7 +143,7 @@ mod tests {
   fn skips_if_not_followed_by_else() {
     let rule = configured(&ScssAtIfClosingBraceSpaceAfter, None);
     let ctx = scss_ctx_with_source("@if $cond { color: red; }\n.foo {}");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 

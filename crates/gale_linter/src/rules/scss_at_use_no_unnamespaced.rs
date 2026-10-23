@@ -1,12 +1,12 @@
 use std::sync::LazyLock;
 
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind;
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/at-use-no-unnamespaced";
@@ -55,11 +55,10 @@ static UNNAMESPACED: LazyLock<Regex> = LazyLock::new(|| {
 impl Check for ScssAtUseNoUnnamespacedCheck {
   /// Reports the `as *` of every `@use` that loads a module into the global
   /// namespace.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return Vec::new();
     }
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for at_rule in tree

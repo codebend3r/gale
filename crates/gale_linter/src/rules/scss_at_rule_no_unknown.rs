@@ -1,7 +1,8 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
-use crate::data::is_known_at_rule_for_syntax;
+use crate::data::{is_known_at_rule_for_syntax, is_stylelint_at_keyword};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -13,7 +14,7 @@ declare_rule! {
   ///
   /// Like the core rule but recognises SCSS-specific at-rules (`@mixin`,
   /// `@include`, `@if`, `@each`, `@extend`, `@use`, `@forward`, etc.).
-  /// Only active when syntax is SCSS or Sass.
+  /// Which at-rules are known depends on the file's syntax.
   ///
   /// `ignoreAtRules` lists at-rule names (or `/regex/`es) to leave alone.
   pub struct ScssAtRuleNoUnknown => ScssAtRuleNoUnknownCheck {
@@ -42,85 +43,77 @@ impl ScssAtRuleNoUnknownCheck {
 }
 
 impl Check for ScssAtRuleNoUnknownCheck {
-  /// Flags at-rules that are neither standard CSS nor SCSS. Runs on every syntax,
-  /// as Stylelint does, since configs enable it project-wide.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    // Stylelint runs scss/at-rule-no-unknown on ALL file types (including
-    // plain CSS) when the rule is enabled — typically via
-    // stylelint-config-standard-scss.  Do not filter by syntax.
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    // Skip vendor-prefixed
-    if at.name.starts_with('-') {
-      return vec![];
+  /// Flags at-rules that are neither standard CSS nor SCSS, at the `@name`
+  /// word.  Runs on every syntax, as Stylelint does, since configs enable it
+  /// project-wide, and leaves the Sass at-rules alone in all of them, as
+  /// stylelint-scss does; like the core rule it checks against, it skips
+  /// what `isStandardSyntaxAtRule` rejects (Less mixins and variables among
+  /// them).
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      let name = at.name();
+      if !at.is_standard_syntax()
+        || name.starts_with('-')
+        || self.ignore_at_rules.matches(name)
+        || is_stylelint_at_keyword(name, ctx.syntax)
+        || is_known_at_rule_for_syntax(name, Syntax::Scss)
+      {
+        continue;
+      }
+      diags.push(
+        Diagnostic::new(NAME, format!("Unexpected unknown at-rule \"@{name}\""))
+          .span(Span::new(at.start, name.len() + 1)),
+      );
     }
-
-    if !self.ignore_at_rules.matches(&at.name) && !is_known_at_rule_for_syntax(&at.name, ctx.syntax)
-    {
-      vec![
-        Diagnostic::new(NAME, format!("Unexpected unknown at-rule \"@{}\"", at.name)).span(at.span),
-      ]
-    } else {
-      vec![]
-    }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{invalid_options, lint};
 
-  fn at(name: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: name.to_string(),
-      params: String::new(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `@name x {}` in `syntax`.
+  fn check(name: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    lint(NAME, json!(true), &format!("@{name} x {{}}"), syntax)
   }
 
   #[test]
   fn reports_unknown_in_css() {
-    let rule = configured(&ScssAtRuleNoUnknown, None);
     // Stylelint runs scss/at-rule-no-unknown on CSS files too when enabled
-    // (typically via stylelint-config-standard-scss).
-    assert_eq!(rule.check(&at("tailwind"), &ctx()).len(), 1);
+    // (typically via stylelint-config-standard-scss), Sass at-rules known.
+    assert_eq!(check("tailwind", Syntax::Css).len(), 1);
+    assert!(check("mixin", Syntax::Css).is_empty());
+    assert!(check("top-center", Syntax::Css).is_empty());
   }
 
   #[test]
   fn allows_scss_at_rules() {
-    let rule = configured(&ScssAtRuleNoUnknown, None);
-    let ctx = scss_ctx();
-    assert!(rule.check(&at("mixin"), &ctx).is_empty());
-    assert!(rule.check(&at("include"), &ctx).is_empty());
-    assert!(rule.check(&at("if"), &ctx).is_empty());
-    assert!(rule.check(&at("each"), &ctx).is_empty());
-    assert!(rule.check(&at("extend"), &ctx).is_empty());
-    assert!(rule.check(&at("use"), &ctx).is_empty());
-    assert!(rule.check(&at("forward"), &ctx).is_empty());
-    assert!(rule.check(&at("media"), &ctx).is_empty());
+    for name in [
+      "mixin", "include", "if", "each", "extend", "use", "forward", "media",
+    ] {
+      assert!(check(name, Syntax::Scss).is_empty(), "{name}");
+    }
   }
 
   #[test]
-  fn reports_unknown_in_scss() {
-    let rule = configured(&ScssAtRuleNoUnknown, None);
-    let ctx = scss_ctx();
-    let d = rule.check(&at("tailwind"), &ctx);
+  fn reports_unknown_in_scss_at_the_name() {
+    let d = lint(NAME, json!(true), "a { @tailwind base; }", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("@tailwind"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (4, 9));
   }
 
   #[test]
-  fn skips_vendor_prefixed() {
-    let rule = configured(&ScssAtRuleNoUnknown, None);
-    assert!(rule.check(&at("-webkit-keyframes"), &scss_ctx()).is_empty());
+  fn skips_vendor_prefixed_and_less_mixins() {
+    assert!(check("-webkit-keyframes", Syntax::Scss).is_empty());
+    let less = "@var: 1px;\na { .m(); }";
+    assert!(lint(NAME, json!(true), less, Syntax::Less).is_empty());
   }
 
   #[test]
@@ -152,15 +145,10 @@ mod tests {
   #[test]
   fn ignore_at_rules_leaves_listed_at_rules_alone() {
     let source = "@tailwind base;\n@my-thing x;\n@other y;\n";
-    let all = crate::testing::lint(
-      NAME,
-      serde_json::json!(true),
-      source,
-      gale_css_parser::Syntax::Scss,
-    );
+    let all = lint(NAME, json!(true), source, Syntax::Scss);
     assert_eq!(all.len(), 3);
-    let options = serde_json::json!([true, { "ignoreAtRules": ["tailwind", "/^my-/"] }]);
-    let left = crate::testing::lint(NAME, options, source, gale_css_parser::Syntax::Scss);
+    let options = json!([true, { "ignoreAtRules": ["tailwind", "/^my-/"] }]);
+    let left = lint(NAME, options, source, Syntax::Scss);
     assert_eq!(left.len(), 1);
     assert!(left[0].message.contains("@other"));
   }

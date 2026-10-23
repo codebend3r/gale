@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -31,87 +32,61 @@ impl ScssAtExtendNoMissingPlaceholderCheck {
 }
 
 impl Check for ScssAtExtendNoMissingPlaceholderCheck {
-  /// Flags an `@extend` whose target is not a `%placeholder` selector.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags an `@extend` whose target is not a `%placeholder` selector, at the
+  /// selector as stylelint-scss finds it.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "extend" {
-      return vec![];
-    }
-
-    let params = at.params.trim();
-    if !params.starts_with('%') {
-      // Point to the selector, not the `@extend` keyword.
-      let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-      let at_src = ctx.source_slice(at.span.offset, at_src_end).unwrap_or("");
-      let sel_off = at_src.find(params).unwrap_or(0);
-      vec![
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      let params = at.params().trim();
+      if at.name() != "extend" || params.starts_with('%') {
+        continue;
+      }
+      diags.push(
         Diagnostic::new(
           NAME,
-          "Expected a placeholder selector (e.g. %placeholder) to be used in @extend".to_string(),
+          "Expected a placeholder selector (e.g. %placeholder) to be used in @extend",
         )
-        .span(Span::new(at.span.offset + sel_off, params.len())),
-      ]
-    } else {
-      vec![]
+        .span(at.word_span(params)),
+      );
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn extend(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "extend".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssAtExtendNoMissingPlaceholder, None).check_source(&context(source, syntax))
   }
 
   #[test]
-  fn reports_non_placeholder() {
-    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
-    let d = rule.check(&extend(".foo"), &scss_ctx());
+  fn reports_non_placeholder_at_the_selector() {
+    let d = check("a { @extend .foo; }", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("placeholder"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (12, 4));
   }
 
   #[test]
   fn allows_placeholder() {
-    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
-    let d = rule.check(&extend("%placeholder"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(check("a { @extend %placeholder; }", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_extend() {
-    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "mixin".to_string(),
-      params: "foo".to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(check("@mixin foo { }", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtExtendNoMissingPlaceholder, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&extend(".foo"), &css_ctx).is_empty());
+    assert!(check("a { @extend .foo; }", Syntax::Css).is_empty());
   }
 
   #[test]

@@ -1,12 +1,13 @@
 use std::sync::LazyLock;
 
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{Node, NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
+use crate::chars::is_css_whitespace;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::{Node, NodeKind};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/at-use-no-redundant-alias";
@@ -69,11 +70,10 @@ static FIX_ALIAS: LazyLock<Regex> = LazyLock::new(|| js_regex(r"[{S}]*as[{S}]* [
 impl Check for ScssAtUseNoRedundantAliasCheck {
   /// Reports the `as <alias>` of every `@use` whose alias is the module's
   /// default namespace, with a fix that removes it.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return Vec::new();
     }
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for at_rule in tree
@@ -145,17 +145,12 @@ fn fix(ctx: &RuleContext, at_rule: &Node) -> Option<Edit> {
   // one's raws: its `afterName` and `between` stay as they were written.
   let params = replaced
     .get(1 + at_rule.name.len()..)?
-    .trim_matches(is_css_space);
+    .trim_matches(is_css_whitespace);
   let between = ctx.source_slice(at_rule.value_span.end, text_end)?;
   Some(Edit::new(
     Span::from_range(at_rule.start, text_end),
     format!("@{}{}{params}{between}", at_rule.name, at_rule.after_name),
   ))
-}
-
-/// Whitespace as the PostCSS tokenizer reads it.
-fn is_css_space(c: char) -> bool {
-  matches!(c, ' ' | '\n' | '\t' | '\r' | '\u{c}')
 }
 
 #[cfg(test)]

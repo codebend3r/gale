@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -54,7 +55,7 @@ impl ScssDeclarationNestedPropertiesCheck {
 
 impl Check for ScssDeclarationNestedPropertiesCheck {
   /// Under "never", flags SCSS namespace blocks such as `font: { … }`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -125,13 +126,15 @@ impl Check for ScssDeclarationNestedPropertiesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn reports_nested_properties() {
     let rule = configured(&ScssDeclarationNestedProperties, None);
     let ctx = scss_ctx_with_source(".foo {\n  font: {\n    weight: bold;\n  }\n}");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
   }
 
@@ -139,7 +142,7 @@ mod tests {
   fn allows_regular_declarations() {
     let rule = configured(&ScssDeclarationNestedProperties, None);
     let ctx = scss_ctx_with_source(".foo {\n  font-weight: bold;\n}");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -147,7 +150,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssDeclarationNestedProperties, None);
     let ctx = ctx_with_source(".foo { font: { weight: bold; } }");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]

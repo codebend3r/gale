@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -45,44 +46,57 @@ impl ScssAtRuleConditionalNoParenthesesCheck {
 }
 
 impl Check for ScssAtRuleConditionalNoParenthesesCheck {
-  /// Flags parentheses wrapping the condition of `@if`, `@elsif` or `@while`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags parentheses wrapping the condition of `@if`, `@else if`, `@elsif`
+  /// or `@while`, where stylelint-scss reports them: the condition, found in
+  /// the at-rule's text, with the `if` of `@else if` left out.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    // Check if this is a conditional at-rule
-    let name_lower = at.name.to_ascii_lowercase();
-    if name_lower != "if"
-      && name_lower != "elsif"
-      && name_lower != "else if"
-      && name_lower != "while"
-    {
-      return vec![];
-    }
-
-    let params = at.params.trim();
-
-    // Check if the entire parameter is wrapped in parentheses
-    if is_wrapped_in_parens(params) {
-      // Stylelint points to the `(` of the condition, not the `@if` keyword.
-      let at_src_end = (at.span.offset + at.span.length).min(ctx.source.len());
-      let at_src = ctx.source_slice(at.span.offset, at_src_end).unwrap_or("");
-      let paren_off = at_src.find('(').unwrap_or(0);
-      vec![
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      let params = at.params();
+      // PostCSS reads `@else if (...)` as `@else` with params `if (...)`.
+      let condition = match at.name().to_ascii_lowercase().as_str() {
+        "if" | "elsif" | "while" => params,
+        "else" => match params.strip_prefix("if") {
+          Some(rest) if rest.is_empty() || rest.starts_with([' ', '(']) => rest,
+          _ => continue,
+        },
+        _ => continue,
+      };
+      // stylelint-scss tests `/^\(.*\)$/`, whose `.` stops at line breaks,
+      // so a condition spread over lines is left alone.
+      let condition = condition.trim();
+      if condition.contains(['\n', '\r', '\u{2028}', '\u{2029}'])
+        || !is_wrapped_in_parens(condition)
+      {
+        continue;
+      }
+      // stylelint-scss's `word`: the params with their first `if` removed.
+      let word = remove_first_if(params);
+      diags.push(
         Diagnostic::new(
           NAME,
-          "Unexpected () used to surround statements for @-rules".to_string(),
+          "Unexpected () used to surround statements for @-rules",
         )
-        .span(Span::new(at.span.offset + paren_off, 1)),
-      ]
-    } else {
-      vec![]
+        .span(at.word_span(&word)),
+      );
     }
+    diags
+  }
+}
+
+/// `params.replace(/\bif\b/, "")`.
+fn remove_first_if(params: &str) -> String {
+  let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+  let bytes = params.as_bytes();
+  let found = params.match_indices("if").find(|&(at, _)| {
+    (at == 0 || !is_word(bytes[at - 1])) && bytes.get(at + 2).is_none_or(|&b| !is_word(b))
+  });
+  match found {
+    Some((at, _)) => format!("{}{}", &params[..at], &params[at + 2..]),
+    None => params.to_string(),
   }
 }
 
@@ -115,90 +129,79 @@ fn is_wrapped_in_parens(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn at_node(name: &str, params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: name.to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 20),
-      children: vec![],
-    })
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssAtRuleConditionalNoParentheses, None).check_source(&context(source, syntax))
+  }
+
+  /// The reports for `@name params {}` in SCSS.
+  fn at_rule(name: &str, params: &str) -> Vec<Diagnostic> {
+    check(&format!("@{name} {params} {{ a: b }}"), Syntax::Scss)
   }
 
   #[test]
-  fn reports_parenthesized_if() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("if", "($condition)"), &scss_ctx());
+  fn reports_parenthesized_if_at_the_paren() {
+    let d = at_rule("if", "($condition)");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected ()"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (4, 12));
   }
 
   #[test]
-  fn reports_parenthesized_elsif() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("elsif", "($x > 1)"), &scss_ctx());
-    assert_eq!(d.len(), 1);
+  fn reports_parenthesized_else_if_and_if_in_rules() {
+    let scss = "a { @if ($a) { b: c } @else if ($d) { e: f } @else { g: h } }";
+    let d = check(scss, Syntax::Scss);
+    assert_eq!(d.len(), 2);
+    assert_eq!(d[0].span.offset, 8);
+    // stylelint-scss's word is ` ($d)`, the params without their `if`.
+    assert_eq!((d[1].span.offset, d[1].span.length), (30, 5));
   }
 
   #[test]
-  fn reports_parenthesized_while() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("while", "($i > 0)"), &scss_ctx());
-    assert_eq!(d.len(), 1);
+  fn reports_parenthesized_elsif_and_while() {
+    assert_eq!(at_rule("elsif", "($x > 1)").len(), 1);
+    assert_eq!(at_rule("while", "($i > 0)").len(), 1);
   }
 
   #[test]
-  fn allows_no_parens_if() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("if", "$condition"), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_no_parens() {
+    assert!(at_rule("if", "$condition").is_empty());
+    assert!(at_rule("elsif", "$x > 1").is_empty());
+    assert!(at_rule("while", "$i > 0").is_empty());
   }
 
   #[test]
-  fn allows_no_parens_elsif() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("elsif", "$x > 1"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_no_parens_while() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("while", "$i > 0"), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_parens_spread_over_lines() {
+    assert!(at_rule("if", "(\n  $a and $b\n)").is_empty());
   }
 
   #[test]
   fn allows_inner_parens_not_wrapping() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
     // `($a) and ($b)` — not wrapped in a single outer paren pair
-    let d = rule.check(&at_node("if", "($a) and ($b)"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(at_rule("if", "($a) and ($b)").is_empty());
   }
 
   #[test]
   fn allows_function_call_in_condition() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("if", "length($list) > 0"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(at_rule("if", "length($list) > 0").is_empty());
   }
 
   #[test]
   fn ignores_non_conditional_at_rules() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let d = rule.check(&at_node("media", "(min-width: 768px)"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(at_rule("media", "(min-width: 768px)").is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtRuleConditionalNoParentheses, None);
-    let ctx = ctx();
-    let d = rule.check(&at_node("if", "($x)"), &ctx);
-    assert!(d.is_empty());
+    assert!(check("@if ($x) { a: b }", Syntax::Css).is_empty());
+  }
+
+  #[test]
+  fn removes_the_first_whole_word_if() {
+    assert_eq!(remove_first_if("if ($a)"), " ($a)");
+    assert_eq!(remove_first_if("($gif)"), "($gif)");
   }
 
   #[test]

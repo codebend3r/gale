@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -10,8 +11,9 @@ const NAME: &str = "scss/comment-no-empty";
 declare_rule! {
   /// SCSS-specific `comment-no-empty`.
   ///
-  /// Disallows empty block comments (`/* */`) but exempts SCSS line comments
-  /// (`//`). Only active in SCSS/Sass files.
+  /// Disallows empty comments, block (`/* */`) and line (`//`) alike, as
+  /// stylelint-scss does: a comment whose `comment.text` is empty.  Only
+  /// active in SCSS/Sass files.
   pub struct ScssCommentNoEmpty => ScssCommentNoEmptyCheck {
     name: NAME,
     description: "Disallow empty comments (SCSS-aware)",
@@ -35,104 +37,50 @@ impl ScssCommentNoEmptyCheck {
 
 impl Check for ScssCommentNoEmptyCheck {
   /// Flags empty block and `//` comments in SCSS files.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::Comment(comment) = node else {
-      return vec![];
-    };
-
-    if comment.is_line {
-      // Flag empty line comments: `//` with nothing (or only whitespace) after.
-      // Raffia stores text after `//` in comment.text (without `//` prefix).
-      let content = if comment.text.starts_with("//") {
-        &comment.text[2..]
-      } else {
-        &comment.text
-      };
-      return if content.trim().is_empty() {
-        vec![Diagnostic::new(NAME, "Unexpected empty comment").span(comment.span)]
-      } else {
-        vec![]
-      };
-    }
-
-    let inner = comment.text.trim_start_matches("/*").trim_end_matches("*/");
-    if inner.trim().is_empty() {
-      vec![Diagnostic::new(NAME, "Unexpected empty comment").span(comment.span)]
-    } else {
-      vec![]
-    }
+    tree
+      .walk_comments()
+      .filter(|comment| comment.text().is_empty())
+      .map(|comment| Diagnostic::new(NAME, "Unexpected empty comment").span(comment.span()))
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Comment;
-  use gale_diagnostics::Span;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{invalid_options, lint};
+
+  fn scss(source: &str) -> Vec<Diagnostic> {
+    lint(NAME, json!(true), source, Syntax::Scss)
+  }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssCommentNoEmpty, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* */".to_string(),
-      span: Span::new(0, 5),
-    });
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(lint(NAME, json!(true), "/* */", Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_empty_block_comment() {
-    let rule = configured(&ScssCommentNoEmpty, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* */".to_string(),
-      span: Span::new(0, 5),
-    });
-    let d = rule.check(&node, &scss_ctx());
+    let d = scss("/* */");
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Unexpected empty comment");
   }
 
   #[test]
   fn reports_empty_line_comments() {
-    let rule = configured(&ScssCommentNoEmpty, None);
-    // A `//` with no content after it is an empty comment and should be flagged.
-    let node = CssNode::Comment(Comment {
-      is_line: true,
-      text: "".to_string(),
-      span: Span::new(0, 2),
-    });
-    let d = rule.check(&node, &scss_ctx());
-    assert_eq!(d.len(), 1);
+    // `//` with nothing (or only whitespace, a CR included) after it.
+    assert_eq!(scss("//\na {}\n//  \r\n").len(), 2);
   }
 
   #[test]
-  fn skips_non_empty_line_comments() {
-    let rule = configured(&ScssCommentNoEmpty, None);
-    let node = CssNode::Comment(Comment {
-      is_line: true,
-      text: " some text".to_string(),
-      span: Span::new(0, 12),
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
-  }
-
-  #[test]
-  fn allows_non_empty_block_comment() {
-    let rule = configured(&ScssCommentNoEmpty, None);
-    let node = CssNode::Comment(Comment {
-      is_line: false,
-      text: "/* hello */".to_string(),
-      span: Span::new(0, 11),
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+  fn skips_non_empty_comments() {
+    assert!(scss("// some text\n/* hello */").is_empty());
   }
 
   #[test]
