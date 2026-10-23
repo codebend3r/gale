@@ -159,6 +159,7 @@ pub mod selector_pseudo_element_no_unknown;
 pub mod selector_type_case;
 pub mod selector_type_no_unknown;
 pub mod shorthand_property_no_redundant_values;
+pub mod spacing;
 pub mod string_no_newline;
 pub mod string_quotes;
 pub mod syntax_string_no_invalid;
@@ -174,45 +175,14 @@ pub mod spectrum_tools_no_unknown_custom_properties;
 
 // @stylistic rules
 pub mod stylistic_at_rule_name_case;
-pub mod stylistic_at_rule_name_space_after;
-pub mod stylistic_at_rule_semicolon_newline_after;
-pub mod stylistic_at_rule_semicolon_space_before;
 pub mod stylistic_block_closing_brace_empty_line_before;
-pub mod stylistic_block_closing_brace_newline_after;
-pub mod stylistic_block_closing_brace_newline_before;
-pub mod stylistic_block_closing_brace_space_before;
-pub mod stylistic_block_opening_brace_newline_after;
-pub mod stylistic_block_opening_brace_space_after;
-pub mod stylistic_block_opening_brace_space_before;
 pub mod stylistic_color_hex_case;
-pub mod stylistic_declaration_bang_space_after;
-pub mod stylistic_declaration_bang_space_before;
-pub mod stylistic_declaration_block_semicolon_newline_after;
-pub mod stylistic_declaration_block_semicolon_newline_before;
-pub mod stylistic_declaration_block_semicolon_space_after;
-pub mod stylistic_declaration_block_semicolon_space_before;
 pub mod stylistic_declaration_block_trailing_semicolon;
-pub mod stylistic_declaration_colon_newline_after;
-pub mod stylistic_declaration_colon_space_after;
-pub mod stylistic_declaration_colon_space_before;
-pub mod stylistic_function_comma_newline_after;
-pub mod stylistic_function_comma_space_after;
-pub mod stylistic_function_comma_space_before;
 pub mod stylistic_function_max_empty_lines;
-pub mod stylistic_function_parentheses_newline_inside;
-pub mod stylistic_function_parentheses_space_inside;
 pub mod stylistic_function_whitespace_after;
 pub mod stylistic_indentation;
 pub mod stylistic_max_empty_lines;
-pub mod stylistic_media_feature_colon_space_after;
-pub mod stylistic_media_feature_colon_space_before;
 pub mod stylistic_media_feature_name_case;
-pub mod stylistic_media_feature_parentheses_space_inside;
-pub mod stylistic_media_feature_range_operator_space_after;
-pub mod stylistic_media_feature_range_operator_space_before;
-pub mod stylistic_media_query_list_comma_newline_after;
-pub mod stylistic_media_query_list_comma_space_after;
-pub mod stylistic_media_query_list_comma_space_before;
 pub mod stylistic_no_empty_first_line;
 pub mod stylistic_no_eol_whitespace;
 pub mod stylistic_no_extra_semicolons;
@@ -220,36 +190,20 @@ pub mod stylistic_no_missing_end_of_source_newline;
 pub mod stylistic_number_leading_zero;
 pub mod stylistic_number_no_trailing_zeros;
 pub mod stylistic_property_case;
-pub mod stylistic_selector_attribute_brackets_space_inside;
-pub mod stylistic_selector_attribute_operator_space_after;
-pub mod stylistic_selector_attribute_operator_space_before;
-pub mod stylistic_selector_combinator_space_after;
-pub mod stylistic_selector_combinator_space_before;
 pub mod stylistic_selector_descendant_combinator_no_non_space;
-pub mod stylistic_selector_list_comma_newline_after;
-pub mod stylistic_selector_list_comma_newline_before;
-pub mod stylistic_selector_list_comma_space_after;
-pub mod stylistic_selector_list_comma_space_before;
 pub mod stylistic_selector_max_empty_lines;
 pub mod stylistic_selector_pseudo_class_case;
-pub mod stylistic_selector_pseudo_class_parentheses_space_inside;
 pub mod stylistic_selector_pseudo_element_case;
 pub mod stylistic_string_quotes;
 pub mod stylistic_unicode_bom;
 pub mod stylistic_unit_case;
-pub mod stylistic_value_list_comma_newline_after;
-pub mod stylistic_value_list_comma_newline_before;
-pub mod stylistic_value_list_comma_space_after;
-pub mod stylistic_value_list_comma_space_before;
 pub mod stylistic_value_list_max_empty_lines;
 
 // SCSS-specific rules (scss/ prefix)
 pub mod scss_at_else_closing_brace_newline_after;
 pub mod scss_at_else_closing_brace_space_after;
 pub mod scss_at_else_empty_line_before;
-pub mod scss_at_else_if_parentheses_space_before;
 pub mod scss_at_extend_no_missing_placeholder;
-pub mod scss_at_function_parentheses_space_before;
 pub mod scss_at_function_pattern;
 pub mod scss_at_if_closing_brace_newline_after;
 pub mod scss_at_if_closing_brace_space_after;
@@ -258,7 +212,6 @@ pub mod scss_at_import_partial_extension;
 pub mod scss_at_import_partial_extension_disallowed_list;
 pub mod scss_at_mixin_argumentless_call_parentheses;
 pub mod scss_at_mixin_disallowed_list;
-pub mod scss_at_mixin_parentheses_space_before;
 pub mod scss_at_mixin_pattern;
 pub mod scss_at_rule_conditional_no_parentheses;
 pub mod scss_at_rule_no_unknown;
@@ -268,8 +221,6 @@ pub mod scss_comment_no_empty;
 pub mod scss_comment_no_loud;
 pub mod scss_declaration_nested_properties;
 pub mod scss_declaration_nested_properties_no_divided_groups;
-pub mod scss_dollar_variable_colon_space_after;
-pub mod scss_dollar_variable_colon_space_before;
 pub mod scss_dollar_variable_empty_line_before;
 pub mod scss_dollar_variable_no_missing_interpolation;
 pub mod scss_dollar_variable_no_namespaced_assignment;
@@ -520,75 +471,75 @@ rules! {
   // Spectrum tools custom plugin rules
   spectrum_tools_no_unknown_custom_properties::SpectrumToolsNoUnknownCustomProperties,
   // @stylistic rules
-  stylistic_block_closing_brace_newline_after::StylisticBlockClosingBraceNewlineAfter,
-  stylistic_at_rule_name_space_after::StylisticAtRuleNameSpaceAfter,
-  stylistic_at_rule_semicolon_newline_after::StylisticAtRuleSemicolonNewlineAfter,
-  stylistic_selector_combinator_space_before::StylisticSelectorCombinatorSpaceBefore,
+  spacing::StylisticBlockClosingBraceNewlineAfter,
+  spacing::StylisticAtRuleNameSpaceAfter,
+  spacing::StylisticAtRuleSemicolonNewlineAfter,
+  spacing::StylisticSelectorCombinatorSpaceBefore,
   stylistic_selector_pseudo_element_case::StylisticSelectorPseudoElementCase,
-  stylistic_media_feature_colon_space_before::StylisticMediaFeatureColonSpaceBefore,
-  stylistic_media_query_list_comma_newline_after::StylisticMediaQueryListCommaNewlineAfter,
-  stylistic_media_query_list_comma_space_before::StylisticMediaQueryListCommaSpaceBefore,
-  stylistic_media_query_list_comma_space_after::StylisticMediaQueryListCommaSpaceAfter,
-  stylistic_media_feature_range_operator_space_after::StylisticMediaFeatureRangeOperatorSpaceAfter,
+  spacing::StylisticMediaFeatureColonSpaceBefore,
+  spacing::StylisticMediaQueryListCommaNewlineAfter,
+  spacing::StylisticMediaQueryListCommaSpaceBefore,
+  spacing::StylisticMediaQueryListCommaSpaceAfter,
+  spacing::StylisticMediaFeatureRangeOperatorSpaceAfter,
   stylistic_max_empty_lines::StylisticMaxEmptyLines,
-  stylistic_value_list_comma_newline_after::StylisticValueListCommaNewlineAfter,
-  stylistic_declaration_colon_space_after::StylisticDeclarationColonSpaceAfter,
-  stylistic_declaration_colon_space_before::StylisticDeclarationColonSpaceBefore,
-  stylistic_declaration_bang_space_before::StylisticDeclarationBangSpaceBefore,
-  stylistic_declaration_bang_space_after::StylisticDeclarationBangSpaceAfter,
-  stylistic_function_comma_space_after::StylisticFunctionCommaSpaceAfter,
-  stylistic_function_comma_space_before::StylisticFunctionCommaSpaceBefore,
-  stylistic_function_parentheses_newline_inside::StylisticFunctionParenthesesNewlineInside,
-  stylistic_function_parentheses_space_inside::StylisticFunctionParenthesesSpaceInside,
+  spacing::StylisticValueListCommaNewlineAfter,
+  spacing::StylisticDeclarationColonSpaceAfter,
+  spacing::StylisticDeclarationColonSpaceBefore,
+  spacing::StylisticDeclarationBangSpaceBefore,
+  spacing::StylisticDeclarationBangSpaceAfter,
+  spacing::StylisticFunctionCommaSpaceAfter,
+  spacing::StylisticFunctionCommaSpaceBefore,
+  spacing::StylisticFunctionParenthesesNewlineInside,
+  spacing::StylisticFunctionParenthesesSpaceInside,
   stylistic_function_whitespace_after::StylisticFunctionWhitespaceAfter,
   stylistic_string_quotes::StylisticStringQuotes,
-  stylistic_value_list_comma_space_after::StylisticValueListCommaSpaceAfter,
+  spacing::StylisticValueListCommaSpaceAfter,
   stylistic_color_hex_case::StylisticColorHexCase,
-  stylistic_declaration_block_semicolon_newline_before::StylisticDeclarationBlockSemicolonNewlineBefore,
-  stylistic_declaration_block_semicolon_space_after::StylisticDeclarationBlockSemicolonSpaceAfter,
-  stylistic_declaration_block_semicolon_space_before::StylisticDeclarationBlockSemicolonSpaceBefore,
+  spacing::StylisticDeclarationBlockSemicolonNewlineBefore,
+  spacing::StylisticDeclarationBlockSemicolonSpaceAfter,
+  spacing::StylisticDeclarationBlockSemicolonSpaceBefore,
   stylistic_declaration_block_trailing_semicolon::StylisticDeclarationBlockTrailingSemicolon,
   stylistic_no_missing_end_of_source_newline::StylisticNoMissingEndOfSourceNewline,
   stylistic_number_no_trailing_zeros::StylisticNumberNoTrailingZeros,
   stylistic_property_case::StylisticPropertyCase,
-  stylistic_selector_attribute_operator_space_before::StylisticSelectorAttributeOperatorSpaceBefore,
-  stylistic_selector_list_comma_newline_after::StylisticSelectorListCommaNewlineAfter,
-  stylistic_selector_list_comma_newline_before::StylisticSelectorListCommaNewlineBefore,
-  stylistic_selector_list_comma_space_after::StylisticSelectorListCommaSpaceAfter,
-  stylistic_selector_list_comma_space_before::StylisticSelectorListCommaSpaceBefore,
+  spacing::StylisticSelectorAttributeOperatorSpaceBefore,
+  spacing::StylisticSelectorListCommaNewlineAfter,
+  spacing::StylisticSelectorListCommaNewlineBefore,
+  spacing::StylisticSelectorListCommaSpaceAfter,
+  spacing::StylisticSelectorListCommaSpaceBefore,
   stylistic_selector_max_empty_lines::StylisticSelectorMaxEmptyLines,
-  stylistic_selector_pseudo_class_parentheses_space_inside::StylisticSelectorPseudoClassParenthesesSpaceInside,
+  spacing::StylisticSelectorPseudoClassParenthesesSpaceInside,
   stylistic_function_max_empty_lines::StylisticFunctionMaxEmptyLines,
-  stylistic_value_list_comma_newline_before::StylisticValueListCommaNewlineBefore,
-  stylistic_media_feature_range_operator_space_before::StylisticMediaFeatureRangeOperatorSpaceBefore,
-  stylistic_media_feature_parentheses_space_inside::StylisticMediaFeatureParenthesesSpaceInside,
+  spacing::StylisticValueListCommaNewlineBefore,
+  spacing::StylisticMediaFeatureRangeOperatorSpaceBefore,
+  spacing::StylisticMediaFeatureParenthesesSpaceInside,
   stylistic_block_closing_brace_empty_line_before::StylisticBlockClosingBraceEmptyLineBefore,
-  stylistic_block_closing_brace_newline_before::StylisticBlockClosingBraceNewlineBefore,
+  spacing::StylisticBlockClosingBraceNewlineBefore,
   stylistic_unicode_bom::StylisticUnicodeBom,
   stylistic_unit_case::StylisticUnitCase,
   stylistic_indentation::StylisticIndentation,
   stylistic_no_eol_whitespace::StylisticNoEolWhitespace,
   stylistic_no_extra_semicolons::StylisticNoExtraSemicolons,
   stylistic_number_leading_zero::StylisticNumberLeadingZero,
-  stylistic_declaration_block_semicolon_newline_after::StylisticDeclarationBlockSemicolonNewlineAfter,
-  stylistic_declaration_colon_newline_after::StylisticDeclarationColonNewlineAfter,
-  stylistic_selector_combinator_space_after::StylisticSelectorCombinatorSpaceAfter,
-  stylistic_selector_attribute_operator_space_after::StylisticSelectorAttributeOperatorSpaceAfter,
-  stylistic_block_opening_brace_space_before::StylisticBlockOpeningBraceSpaceBefore,
+  spacing::StylisticDeclarationBlockSemicolonNewlineAfter,
+  spacing::StylisticDeclarationColonNewlineAfter,
+  spacing::StylisticSelectorCombinatorSpaceAfter,
+  spacing::StylisticSelectorAttributeOperatorSpaceAfter,
+  spacing::StylisticBlockOpeningBraceSpaceBefore,
   stylistic_at_rule_name_case::StylisticAtRuleNameCase,
-  stylistic_at_rule_semicolon_space_before::StylisticAtRuleSemicolonSpaceBefore,
-  stylistic_block_opening_brace_newline_after::StylisticBlockOpeningBraceNewlineAfter,
-  stylistic_media_feature_colon_space_after::StylisticMediaFeatureColonSpaceAfter,
-  stylistic_selector_attribute_brackets_space_inside::StylisticSelectorAttributeBracketsSpaceInside,
+  spacing::StylisticAtRuleSemicolonSpaceBefore,
+  spacing::StylisticBlockOpeningBraceNewlineAfter,
+  spacing::StylisticMediaFeatureColonSpaceAfter,
+  spacing::StylisticSelectorAttributeBracketsSpaceInside,
   stylistic_selector_pseudo_class_case::StylisticSelectorPseudoClassCase,
-  stylistic_value_list_comma_space_before::StylisticValueListCommaSpaceBefore,
+  spacing::StylisticValueListCommaSpaceBefore,
   stylistic_value_list_max_empty_lines::StylisticValueListMaxEmptyLines,
   stylistic_selector_descendant_combinator_no_non_space::StylisticSelectorDescendantCombinatorNoNonSpace,
-  stylistic_block_opening_brace_space_after::StylisticBlockOpeningBraceSpaceAfter,
-  stylistic_block_closing_brace_space_before::StylisticBlockClosingBraceSpaceBefore,
+  spacing::StylisticBlockOpeningBraceSpaceAfter,
+  spacing::StylisticBlockClosingBraceSpaceBefore,
   stylistic_no_empty_first_line::StylisticNoEmptyFirstLine,
   stylistic_media_feature_name_case::StylisticMediaFeatureNameCase,
-  stylistic_function_comma_newline_after::StylisticFunctionCommaNewlineAfter,
+  spacing::StylisticFunctionCommaNewlineAfter,
   // SCSS-specific rules
   scss_at_else_closing_brace_newline_after::ScssAtElseClosingBraceNewlineAfter,
   scss_at_else_closing_brace_space_after::ScssAtElseClosingBraceSpaceAfter,
@@ -608,8 +559,8 @@ rules! {
   scss_comment_no_empty::ScssCommentNoEmpty [RecommendedScss],
   scss_declaration_nested_properties::ScssDeclarationNestedProperties,
   scss_declaration_nested_properties_no_divided_groups::ScssDeclarationNestedPropertiesNoDividedGroups [RecommendedScss],
-  scss_dollar_variable_colon_space_after::ScssDollarVariableColonSpaceAfter,
-  scss_dollar_variable_colon_space_before::ScssDollarVariableColonSpaceBefore,
+  spacing::ScssDollarVariableColonSpaceAfter,
+  spacing::ScssDollarVariableColonSpaceBefore,
   scss_dollar_variable_no_missing_interpolation::ScssDollarVariableNoMissingInterpolation [RecommendedScss],
   scss_dollar_variable_no_namespaced_assignment::ScssDollarVariableNoNamespacedAssignment,
   scss_dollar_variable_pattern::ScssDollarVariablePattern,
@@ -633,9 +584,9 @@ rules! {
   scss_selector_no_redundant_nesting_selector::ScssSelectorNoRedundantNestingSelector,
   scss_dollar_variable_empty_line_before::ScssDollarVariableEmptyLineBefore,
   scss_comment_no_loud::ScssCommentNoLoud,
-  scss_at_mixin_parentheses_space_before::ScssAtMixinParenthesesSpaceBefore,
-  scss_at_function_parentheses_space_before::ScssAtFunctionParenthesesSpaceBefore,
-  scss_at_else_if_parentheses_space_before::ScssAtElseIfParenthesesSpaceBefore,
+  spacing::ScssAtMixinParenthesesSpaceBefore,
+  spacing::ScssAtFunctionParenthesesSpaceBefore,
+  spacing::ScssAtElseIfParenthesesSpaceBefore,
   scss_at_else_empty_line_before::ScssAtElseEmptyLineBefore,
   scss_double_slash_comment_inline::ScssDoubleSlashCommentInline,
   scss_double_slash_comment_empty_line_before::ScssDoubleSlashCommentEmptyLineBefore,
@@ -661,16 +612,34 @@ mod tests {
   #[test]
   fn every_rule_file_is_in_the_table() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/rules");
-    let files: BTreeSet<String> = std::fs::read_dir(&dir)
+    let paths: Vec<_> = std::fs::read_dir(&dir)
       .expect("rules directory")
       .map(|entry| entry.expect("directory entry").path())
+      .collect();
+    // A file holds one rule; a directory holds a family of rules, each
+    // listed under the directory's module.
+    let files: BTreeSet<String> = paths
+      .iter()
       .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
       .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
       .filter(|stem| stem != "mod")
       .collect();
+    let families: BTreeSet<String> = paths
+      .iter()
+      .filter(|path| path.is_dir())
+      .filter_map(|path| Some(path.file_name()?.to_str()?.to_string()))
+      .collect();
     let listed: BTreeSet<String> = MODULES.iter().map(|m| m.to_string()).collect();
-    assert_eq!(listed.len(), MODULES.len(), "a module is listed twice");
-    let missing: Vec<&String> = files.difference(&listed).collect();
+    let single = MODULES.iter().filter(|m| !families.contains(**m)).count();
+    assert_eq!(
+      listed.difference(&families).count(),
+      single,
+      "a module is listed twice"
+    );
+    let missing: Vec<&String> = files
+      .union(&families)
+      .filter(|m| !listed.contains(*m))
+      .collect();
     assert!(
       missing.is_empty(),
       "add these rules to the rules! table in rules/mod.rs: {missing:?}"
