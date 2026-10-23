@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::braces::is_block_single_line;
@@ -53,7 +53,7 @@ impl StylisticBlockClosingBraceNewlineAfterCheck {
 
 impl Check for StylisticBlockClosingBraceNewlineAfterCheck {
   /// Flags a closing brace whose trailing newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -261,13 +261,13 @@ fn is_next_closing_brace(bytes: &[u8], pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_newline_after_brace() {
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, None);
     let source = "a { color: red; }\nb { color: blue; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -276,7 +276,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "a { color: red; } b { color: blue; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -286,7 +286,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "a { color: red; }\nb { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline"));
   }
@@ -296,7 +296,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@if $cond { color: red; } @else { color: blue; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     // The first } before @else should NOT be flagged
     assert!(
       d.is_empty(),
@@ -310,7 +310,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@if $a { color: red; } @else if $b { color: blue; } @else { color: green; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag }} before @else if, got: {:?}",
@@ -324,7 +324,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockClosingBraceNewlineAfter, opt.clone());
     let source = "@function foo() {\n  @return 1;\n};\n";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag }}; pattern, got: {:?}",

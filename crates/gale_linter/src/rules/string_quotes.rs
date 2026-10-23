@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -44,7 +44,7 @@ impl StringQuotesCheck {
 
 impl Check for StringQuotesCheck {
   /// Flags strings using the quote character the option forbids.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let mut diagnostics = Vec::new();
     let bytes = ctx.source.as_bytes();
@@ -202,13 +202,13 @@ impl Check for StringQuotesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
     let opts = serde_json::json!(option);
     let rule = configured(&StringQuotes, opts.clone());
     let ctx = ctx_with_source(source);
-    rule.check_root(&[], &ctx)
+    rule.check_source(&ctx)
   }
 
   #[test]

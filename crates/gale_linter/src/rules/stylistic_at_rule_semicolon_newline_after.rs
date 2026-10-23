@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -34,7 +34,7 @@ impl StylisticAtRuleSemicolonNewlineAfterCheck {
 
 impl Check for StylisticAtRuleSemicolonNewlineAfterCheck {
   /// Flags an at-rule semicolon not followed by a newline.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -153,13 +153,15 @@ impl Check for StylisticAtRuleSemicolonNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn allows_newline_after_at_rule_semicolon() {
     let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@import url(\"foo.css\");\na { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -167,7 +169,7 @@ mod tests {
   fn reports_missing_newline_after_at_rule_semicolon() {
     let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@import url(\"foo.css\"); a { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -177,7 +179,7 @@ mod tests {
     let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "a {\n\t// @todo refactor this away; it is\n\t// in the quote block.\n\t&:first-child { color: red; }\n}\n@import url(//example.com/a.css); b { }";
     let ctx = scss_ctx_with_source(source);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     // Only the `@import`, whose `//` sits inside `url()`.
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].span.offset, source.rfind(';').unwrap());
@@ -187,7 +189,7 @@ mod tests {
   fn allows_eof_after_semicolon() {
     let rule = configured(&StylisticAtRuleSemicolonNewlineAfter, None);
     let source = "@charset \"UTF-8\";";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

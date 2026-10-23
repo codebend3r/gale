@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -41,7 +41,7 @@ impl StylisticAtRuleNameCaseCheck {
 
 impl Check for StylisticAtRuleNameCaseCheck {
   /// Flags at-rule names not in the configured case.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -132,13 +132,13 @@ impl Check for StylisticAtRuleNameCaseCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_lowercase_at_rule_names() {
     let rule = configured(&StylisticAtRuleNameCase, None);
     let source = "@media screen { } @keyframes foo { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -147,7 +147,7 @@ mod tests {
     let opt = serde_json::Value::String("lower".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@Media screen { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("lowercase"));
   }
@@ -157,7 +157,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@MEDIA screen { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -166,7 +166,7 @@ mod tests {
     let opt = serde_json::Value::String("upper".to_string());
     let rule = configured(&StylisticAtRuleNameCase, opt.clone());
     let source = "@media screen { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("uppercase"));
   }
@@ -175,7 +175,7 @@ mod tests {
   fn skips_comments() {
     let rule = configured(&StylisticAtRuleNameCase, None);
     let source = "/* @Media */ @media screen { }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

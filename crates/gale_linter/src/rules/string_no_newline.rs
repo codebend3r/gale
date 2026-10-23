@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -38,23 +39,8 @@ impl StringNoNewlineCheck {
 }
 
 impl Check for StringNoNewlineCheck {
-  /// Checks declaration values for unescaped newlines inside strings.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    if let CssNode::Style(style_rule) = node {
-      for decl in &style_rule.declarations {
-        check_value_for_newlines(&decl.value, decl.span.offset, &mut diagnostics);
-      }
-    }
-
-    diagnostics
-  }
-
-  /// Also scans the raw source, catching strings the parser discarded as malformed.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    // Source-level scan to catch newlines in strings that the parser
-    // may not preserve (e.g., lightningcss discards malformed strings).
+  /// Scans the source for strings holding an unescaped newline.
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     scan_source_for_string_newlines(ctx.source, ctx.syntax)
   }
 }
@@ -124,102 +110,33 @@ fn scan_source_for_string_newlines(source: &str, syntax: Syntax) -> Vec<Diagnost
   diagnostics
 }
 
-/// Reports each unescaped newline inside a quoted string in `value`.
-fn check_value_for_newlines(value: &str, base_offset: usize, diagnostics: &mut Vec<Diagnostic>) {
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i < len {
-    let b = bytes[i];
-    if b == b'"' || b == b'\'' {
-      let quote = b;
-      let string_start = i;
-      i += 1;
-      while i < len {
-        if bytes[i] == b'\\' {
-          // Skip escaped character (including escaped newlines which are valid).
-          i += 2;
-          continue;
-        }
-        if bytes[i] == b'\n' || bytes[i] == b'\r' {
-          diagnostics.push(
-            Diagnostic::new(NAME, "Unexpected newline in string")
-              .span(Span::new(base_offset + string_start, i - string_start)),
-          );
-          break;
-        }
-        if bytes[i] == quote {
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-    }
-    i += 1;
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+
+  fn check(source: &str) -> Vec<Diagnostic> {
+    configured(&StringNoNewline, None).check_source(&ctx_with_source(source))
+  }
 
   #[test]
   fn reports_newline_in_string_value() {
-    let rule = configured(&StringNoNewline, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "content".to_string(),
-        value: "\"hello\nworld\"".to_string(),
-        span: Span::new(4, 20),
-        important: false,
-      }],
-      span: Span::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
+    let diags = check("a { content: \"hello\nworld\"; }");
+    // Once, where it used to be reported twice.
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected newline in string");
+    assert_eq!(diags[0].span, Span::new(13, 6));
   }
 
   #[test]
   fn ignores_string_without_newline() {
-    let rule = configured(&StringNoNewline, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "content".to_string(),
-        value: "\"hello world\"".to_string(),
-        span: Span::new(4, 20),
-        important: false,
-      }],
-      span: Span::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("a { content: \"hello world\"; }").is_empty());
   }
 
   #[test]
   fn ignores_escaped_newline() {
-    let rule = configured(&StringNoNewline, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "content".to_string(),
-        value: "\"hello\\\nworld\"".to_string(),
-        span: Span::new(4, 20),
-        important: false,
-      }],
-      span: Span::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("a { content: \"hello\\\nworld\"; }").is_empty());
   }
 
   #[test]

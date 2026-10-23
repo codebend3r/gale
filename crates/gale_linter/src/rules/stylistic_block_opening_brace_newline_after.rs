@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -42,7 +42,7 @@ impl StylisticBlockOpeningBraceNewlineAfterCheck {
 
 impl Check for StylisticBlockOpeningBraceNewlineAfterCheck {
   /// Flags an opening brace whose trailing newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -181,13 +181,13 @@ impl Check for StylisticBlockOpeningBraceNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_newline_after_brace() {
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, None);
     let source = "a {\n  color: red;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -196,7 +196,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -206,7 +206,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -215,7 +215,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, opt.clone());
     let source = "a { color: red;\nbackground: blue; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 
@@ -223,7 +223,7 @@ mod tests {
   fn skips_comments() {
     let rule = configured(&StylisticBlockOpeningBraceNewlineAfter, None);
     let source = "/* { no newline } */ a {\n  color: red;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
