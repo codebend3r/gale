@@ -100,7 +100,18 @@ pub fn stylelint_results(results: &[LintResult]) -> Vec<StylelintResult> {
         .iter()
         .map(|diag| {
           let (line, column) = line_index.offset_to_location(diag.span.offset);
-          let (end_line, end_column) = line_index.offset_to_location(diag.span.end());
+          let (mut end_line, mut end_column) = line_index.offset_to_location(diag.span.end());
+          // PostCSS's `rangeBy` never ends a range at or before its start:
+          // a problem at one index ends one column on, on the same line.
+          // A span cannot say that for a line break or the end of the text,
+          // so rules report those as an empty span there.
+          let at_line_end = matches!(
+            result.source.as_bytes().get(diag.span.offset),
+            None | Some(b'\n' | b'\r')
+          );
+          if diag.span.length == 0 && at_line_end {
+            (end_line, end_column) = (line, column + 1);
+          }
           StylelintWarning {
             line,
             column,
@@ -824,6 +835,30 @@ mod tests {
     let warning = &parsed[0]["warnings"][0];
     assert_eq!(warning["column"], 33);
     assert_eq!(warning["endColumn"], 35);
+  }
+
+  #[test]
+  fn an_empty_span_at_a_line_end_ends_one_column_on() {
+    // A problem at one index ends one column after it on the same line,
+    // as PostCSS's `rangeBy` has it, even at a line break or the end of
+    // the text, where no span could say so.
+    let source = "a {}\nb {}";
+    let at = |offset: usize, length: usize| {
+      Diagnostic::new("r", "m")
+        .severity(Severity::Error)
+        .span(Span::new(offset, length))
+    };
+    let diags = vec![at(4, 0), at(source.len(), 0), at(0, 0)];
+    let results = stylelint_results(&[LintResult::new("a.css", source, diags)]);
+    let ends: Vec<_> = results[0]
+      .warnings
+      .iter()
+      .map(|w| (w.line, w.column, w.end_line, w.end_column))
+      .collect();
+    assert!(ends.contains(&(1, 5, Some(1), Some(6))), "{ends:?}");
+    assert!(ends.contains(&(2, 5, Some(2), Some(6))), "{ends:?}");
+    // Elsewhere an empty span still ends where it starts.
+    assert!(ends.contains(&(1, 1, Some(1), Some(1))), "{ends:?}");
   }
 
   #[test]
