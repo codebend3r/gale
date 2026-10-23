@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -37,118 +37,85 @@ impl BlockNoRedundantNestedStyleRulesCheck {
 
 impl Check for BlockNoRedundantNestedStyleRulesCheck {
   /// Flags nested rules whose selector is a bare `&`, since their declarations
-  /// could live in the parent block.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let mut diags = Vec::new();
-
-    for child in &rule.children {
-      let selector_trimmed = child.selector.trim();
-
-      // A nested rule whose selector is just `&` is always redundant —
-      // its declarations could live in the parent.
-      if selector_trimmed == "&" {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            "Unexpected redundant nested style rule with selector \"&\"; \
-                         declarations can be placed directly in the parent rule"
-              .to_string(),
-          )
-          .span(child.span),
-        );
-      }
-    }
-
-    diags
+  /// could live in the enclosing block.  As in Stylelint, any rule that is
+  /// not at the top level counts, whether it sits in a rule or an at-rule.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk_rules()
+      .filter(|rule| rule.parent().is_some() && rule.is_standard_syntax() && rule.selector() == "&")
+      .map(|rule| {
+        Diagnostic::new(
+          NAME,
+          "Unexpected redundant nested style rule with selector \"&\"; \
+                       declarations can be placed directly in the parent rule"
+            .to_string(),
+        )
+        .span(rule.span())
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_children(selector: &str, children: Vec<StyleRule>) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: selector.to_string(),
-      declarations: vec![],
-      children,
-      span: Span::new(0, 50),
-      ..Default::default()
-    })
-  }
-
-  fn child_rule(selector: &str) -> StyleRule {
-    StyleRule {
-      selector: selector.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(10, 30),
-      ..Default::default()
-    }
+  /// What the rule reports for `source`.
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&BlockNoRedundantNestedStyleRules, None).check_source(&context(source, syntax))
   }
 
   #[test]
   fn flags_bare_ampersand_nested_rule() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
-    let node = style_with_children(".a", vec![child_rule("&")]);
-    let diags = rule.check(&node, &ctx());
+    let source = ".a { & { color: red; } }";
+    let diags = check(source, Syntax::Css);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("redundant"));
     assert!(diags[0].message.contains("&"));
+    assert_eq!(diags[0].span.offset, 5);
+    assert_eq!(diags[0].span.length, "& { color: red; }".len());
   }
 
   #[test]
   fn flags_ampersand_with_whitespace() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
-    let node = style_with_children(".a", vec![child_rule("  &  ")]);
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
+    assert_eq!(
+      check(".a {\n  &  { color: red; }\n}", Syntax::Scss).len(),
+      1
+    );
   }
 
   #[test]
   fn allows_meaningful_nested_selector() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
-    let node = style_with_children(".a", vec![child_rule(".b")]);
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check(".a { .b { color: red; } }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn allows_ampersand_with_suffix() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
     // `&:hover` is not redundant — it creates `.a:hover`
-    let node = style_with_children(".a", vec![child_rule("&:hover")]);
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check(".a { &:hover { color: red; } }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn allows_ampersand_with_class() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
     // `&.active` is not redundant — it creates `.a.active`
-    let node = style_with_children(".a", vec![child_rule("&.active")]);
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check(".a { &.active { color: red; } }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn flags_multiple_redundant_children() {
-    let rule = configured(&BlockNoRedundantNestedStyleRules, None);
-    let node = style_with_children(".a", vec![child_rule("&"), child_rule("&")]);
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 2);
+    let source = ".a { & { color: red; } & { color: blue; } }";
+    assert_eq!(check(source, Syntax::Css).len(), 2);
+  }
+
+  #[test]
+  fn flags_ampersand_under_an_at_rule_as_stylelint_does() {
+    // Stylelint skips only rules at the root.
+    let source = ".a { @media print { & { color: red; } } }\n@media screen { & { color: red; } }";
+    assert_eq!(check(source, Syntax::Scss).len(), 2);
+    assert!(check("& { color: red; }", Syntax::Scss).is_empty());
   }
 
   #[test]

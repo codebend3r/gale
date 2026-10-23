@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -38,69 +38,65 @@ impl CommentPatternCheck {
 }
 
 impl Check for CommentPatternCheck {
-  /// Flags comment text that does not match the configured regex.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Comment(comment) = node else {
-      return vec![];
-    };
-
+  /// Flags comment text (`comment.text`, trimmed) that does not match the
+  /// configured regex.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(pattern) = &self.pattern else {
       return vec![];
     };
     let pattern_str = &pattern.source;
-
-    let text = comment.text.trim();
-    if !pattern.is_match(text) {
-      return vec![
+    tree
+      .walk_comments()
+      .filter(|comment| !pattern.is_match(comment.text()))
+      .map(|comment| {
         Diagnostic::new(
           NAME,
           format!("Expected comment to match pattern \"/{pattern_str}/\""),
         )
-        .span(comment.span),
-      ];
-    }
-    vec![]
+        .span(comment.span())
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Comment;
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
-
-  fn comment_node(text: &str) -> CssNode {
-    CssNode::Comment(Comment {
-      text: text.to_string(),
-      span: Span::new(0, text.len() + 4),
-      is_line: false,
-    })
-  }
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options, lint};
 
   #[test]
   fn reports_comment_not_matching_pattern() {
-    let rule = configured(&CommentPattern, serde_json::json!("^TODO:"));
-    let ctx = ctx();
-    let d = rule.check(&comment_node("some random comment"), &ctx);
+    let d = lint(
+      NAME,
+      json!("^TODO:"),
+      "/* some random comment */",
+      Syntax::Css,
+    );
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("TODO:"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 25));
+    let d = lint(NAME, json!("^TODO:"), "a {}\n// other", Syntax::Scss);
+    assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_comment_matching_pattern() {
-    let rule = configured(&CommentPattern, serde_json::json!("^TODO:"));
-    let ctx = ctx();
-    let d = rule.check(&comment_node("TODO: fix this"), &ctx);
-    assert!(d.is_empty());
+    let css = "/*  TODO: fix this */ a { /* TODO: and this */ }";
+    assert!(lint(NAME, json!("^TODO:"), css, Syntax::Css).is_empty());
+    assert!(lint(NAME, json!("^TODO:"), "// TODO: x", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn allows_all_when_no_options() {
     let rule = configured(&CommentPattern, None);
-    let d = rule.check(&comment_node("anything"), &ctx());
-    assert!(d.is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source("/* anything */"))
+        .is_empty()
+    );
   }
 
   #[test]

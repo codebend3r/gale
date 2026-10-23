@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -14,7 +15,11 @@ declare_rule! {
   /// the command is one of the recognized directives: "disable", "enable",
   /// "disable-line", "disable-next-line".
   ///
-  /// Equivalent to Stylelint's `annotation-no-unknown` rule.
+  /// Stands in for Stylelint's `annotation-no-unknown` rule, which checks
+  /// `!word` annotations in declaration values instead.  It only looks at
+  /// SCSS, Less and Sass files: the older CSS parser kept no comments, so it
+  /// never reported in plain CSS, and doing so now would add problems
+  /// Stylelint never gives.
   pub struct AnnotationNoUnknown => AnnotationNoUnknownCheck {
     name: NAME,
     description: "Disallow unknown annotations",
@@ -43,104 +48,85 @@ const KNOWN_COMMANDS: &[&str] = &["disable", "disable-line", "disable-next-line"
 impl Check for AnnotationNoUnknownCheck {
   /// Flags a comment whose `stylelint-`/`gale-` prefix is followed by a command
   /// outside the known directive set.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Comment(comment) = node else {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+    if ctx.syntax == Syntax::Css {
       return vec![];
-    };
-
-    let inner = comment
-      .text
-      .trim_start_matches("/*")
-      .trim_end_matches("*/")
-      .trim();
-
-    for prefix in &["stylelint-", "gale-"] {
-      if let Some(rest) = inner.strip_prefix(prefix) {
-        // Extract the command (everything up to the first space or end)
-        let command = rest.split_whitespace().next().unwrap_or("");
-        if !KNOWN_COMMANDS.contains(&command) {
-          return vec![
-            Diagnostic::new(
-              NAME,
-              format!("Unexpected unknown annotation \"/* {prefix}{command} */\""),
-            )
-            .span(comment.span),
-          ];
+    }
+    let mut diags = Vec::new();
+    for comment in tree.walk_comments() {
+      let inner = comment.text();
+      for prefix in &["stylelint-", "gale-"] {
+        if let Some(rest) = inner.strip_prefix(prefix) {
+          // The command runs up to the first whitespace.
+          let command = rest.split_whitespace().next().unwrap_or("");
+          if !KNOWN_COMMANDS.contains(&command) {
+            diags.push(
+              Diagnostic::new(
+                NAME,
+                format!("Unexpected unknown annotation \"/* {prefix}{command} */\""),
+              )
+              .span(comment.span()),
+            );
+            break;
+          }
         }
       }
     }
-
-    vec![]
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Comment;
-  use gale_diagnostics::Span;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, invalid_options, lint, scss_ctx_with_source};
 
-  fn comment(text: &str) -> CssNode {
-    CssNode::Comment(Comment {
-      text: text.to_string(),
-      span: Span::new(0, text.len()),
-      is_line: false,
-    })
+  /// The rule's own reports, without the runner's for the directives.
+  fn scss(source: &str) -> Vec<Diagnostic> {
+    configured(&AnnotationNoUnknown, None).check_source(&scss_ctx_with_source(source))
   }
 
   #[test]
   fn reports_unknown_stylelint_annotation() {
-    let rule = configured(&AnnotationNoUnknown, None);
-    let d = rule.check(&comment("/* stylelint-disabel color-named */"), &ctx());
+    let d = scss("/* stylelint-disabel color-named */");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("stylelint-disabel"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 35));
   }
 
   #[test]
   fn reports_unknown_gale_annotation() {
-    let rule = configured(&AnnotationNoUnknown, None);
-    let d = rule.check(&comment("/* gale-dsiable color-named */"), &ctx());
+    let d = lint(
+      NAME,
+      json!(true),
+      "// gale-dsiable color-named",
+      Syntax::Less,
+    );
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("gale-dsiable"));
   }
 
   #[test]
   fn allows_known_annotations() {
-    let rule = configured(&AnnotationNoUnknown, None);
-    assert!(
-      rule
-        .check(&comment("/* stylelint-disable */"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      rule
-        .check(&comment("/* stylelint-enable */"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      rule
-        .check(&comment("/* stylelint-disable-line */"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      rule
-        .check(&comment("/* stylelint-disable-next-line */"), &ctx())
-        .is_empty()
-    );
-    assert!(
-      rule
-        .check(&comment("/* gale-disable */"), &ctx())
-        .is_empty()
-    );
+    for comment in [
+      "/* stylelint-disable */",
+      "/* stylelint-enable */",
+      "/* stylelint-disable-line */",
+      "// stylelint-disable-next-line",
+      "/* gale-disable */",
+    ] {
+      let d = scss(comment);
+      assert!(d.is_empty(), "{comment} {d:?}");
+    }
   }
 
   #[test]
-  fn ignores_regular_comments() {
-    let rule = configured(&AnnotationNoUnknown, None);
-    assert!(rule.check(&comment("/* hello world */"), &ctx()).is_empty());
+  fn ignores_regular_comments_and_plain_css() {
+    assert!(scss("/* hello world */").is_empty());
+    let css = "/* stylelint-disabel color-named */";
+    assert!(lint(NAME, json!(true), css, Syntax::Css).is_empty());
   }
 
   #[test]

@@ -1,6 +1,7 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::data::lookup;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -50,12 +51,6 @@ static FONT_STRETCH_KEYWORDS: &[&str] = &[
 
 /// Known values for `inherits` in `@property`.
 static PROPERTY_INHERITS_VALUES: &[&str] = &["false", "true"];
-
-/// Case-insensitive binary search over a sorted table.
-fn lookup(haystack: &[&str], needle: &str) -> bool {
-  let lower = needle.to_ascii_lowercase();
-  haystack.binary_search(&lower.as_str()).is_ok()
-}
 
 /// Returns `true` if the value looks like a percentage (e.g. `50%`, `100%`, `62.5%`).
 fn is_percentage(value: &str) -> bool {
@@ -157,23 +152,26 @@ fn validate_descriptor_value(at_rule_name: &str, descriptor: &str, value: &str) 
 impl Check for AtRuleDescriptorValueNoUnknownCheck {
   /// Validates descriptor values inside `@font-face` and `@property`, the only
   /// at-rules this rule has value knowledge for.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    // Only validate at-rules we have knowledge about
-    let at_lower = at.name.to_ascii_lowercase();
-    if !matches!(at_lower.as_str(), "font-face" | "property") {
-      return vec![];
-    }
-
+  ///
+  /// Reads the descriptors directly in the block, as Stylelint reads
+  /// `decl.value`, and reports at the value as it does.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for child in &at.children {
-      if let CssNode::Declaration(decl) = child
-        && let Some(msg) = validate_descriptor_value(&at.name, &decl.property, &decl.value)
-      {
-        diags.push(Diagnostic::new(NAME, msg).span(decl.span));
+    for at in tree.walk_at_rules() {
+      // Only validate at-rules we have knowledge about
+      let at_lower = at.name().to_ascii_lowercase();
+      if !matches!(at_lower.as_str(), "font-face" | "property") || !at.is_standard_syntax() {
+        continue;
+      }
+      for decl in at.child_decls() {
+        if !decl.is_standard_syntax() {
+          continue;
+        }
+        if let Some(msg) = validate_descriptor_value(at.name(), decl.prop(), decl.value()) {
+          diags.push(
+            Diagnostic::new(NAME, msg).span(Span::new(decl.value_start(), decl.value().len())),
+          );
+        }
       }
     }
     diags
@@ -183,150 +181,89 @@ impl Check for AtRuleDescriptorValueNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{invalid_options, lint};
 
-  fn font_face_node(descriptors: &[(&str, &str)]) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "font-face".to_string(),
-      params: String::new(),
-      span: Span::new(0, 0),
-      children: descriptors
-        .iter()
-        .map(|(p, v)| {
-          CssNode::Declaration(Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-        })
-        .collect(),
-    })
-  }
-
-  fn property_node(descriptors: &[(&str, &str)]) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "property".to_string(),
-      params: "--my-prop".to_string(),
-      span: Span::new(0, 0),
-      children: descriptors
-        .iter()
-        .map(|(p, v)| {
-          CssNode::Declaration(Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-        })
-        .collect(),
-    })
+  /// The reports for `@at-rule { <prop>: <value>; }` in CSS.
+  fn check(at_rule: &str, prop: &str, value: &str) -> Vec<Diagnostic> {
+    let css = format!("@{at_rule} {{ {prop}: {value}; }}");
+    lint(NAME, json!(true), &css, Syntax::Css)
   }
 
   #[test]
-  fn reports_invalid_font_display() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = font_face_node(&[("font-display", "fast")]);
-    let d = rule.check(&node, &ctx());
+  fn reports_invalid_font_display_at_the_value() {
+    let d = check("font-face", "font-display", "fast");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("fast"));
     assert!(d[0].message.contains("font-display"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (27, 4));
   }
 
   #[test]
   fn allows_valid_font_display() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     for val in &["auto", "block", "swap", "fallback", "optional"] {
-      let node = font_face_node(&[("font-display", val)]);
       assert!(
-        rule.check(&node, &ctx()).is_empty(),
-        "Expected \"{}\" to be valid for font-display",
-        val
+        check("font-face", "font-display", val).is_empty(),
+        "Expected \"{val}\" to be valid for font-display"
       );
     }
   }
 
   #[test]
   fn reports_invalid_property_inherits() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = property_node(&[("inherits", "yes")]);
-    let d = rule.check(&node, &ctx());
+    let d = check("property --my-prop", "inherits", "yes");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("yes"));
     assert!(d[0].message.contains("inherits"));
+    let scss = "@property --my-prop { inherits: yes; }";
+    assert_eq!(lint(NAME, json!(true), scss, Syntax::Scss).len(), 1);
   }
 
   #[test]
   fn allows_valid_property_inherits() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = property_node(&[("inherits", "true")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
-    let node = property_node(&[("inherits", "false")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(check("property --my-prop", "inherits", "true").is_empty());
+    assert!(check("property --my-prop", "inherits", "false").is_empty());
   }
 
   #[test]
   fn allows_valid_font_style() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = font_face_node(&[("font-style", "normal")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
-    let node = font_face_node(&[("font-style", "italic")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
-    let node = font_face_node(&[("font-style", "oblique 14deg")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    for val in ["normal", "italic", "oblique 14deg"] {
+      assert!(check("font-face", "font-style", val).is_empty(), "{val}");
+    }
   }
 
   #[test]
   fn reports_invalid_font_style() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = font_face_node(&[("font-style", "bold")]);
-    let d = rule.check(&node, &ctx());
+    let d = check("font-face", "font-style", "bold");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("bold"));
   }
 
   #[test]
   fn allows_valid_font_stretch_keywords_and_percentages() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = font_face_node(&[("font-stretch", "condensed")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
-    let node = font_face_node(&[("font-stretch", "75%")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
-    let node = font_face_node(&[("font-stretch", "75% 100%")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    for val in ["condensed", "75%", "75% 100%"] {
+      assert!(check("font-face", "font-stretch", val).is_empty(), "{val}");
+    }
   }
 
   #[test]
   fn reports_invalid_font_stretch() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = font_face_node(&[("font-stretch", "wide")]);
-    let d = rule.check(&node, &ctx());
+    let d = check("font-face", "font-stretch", "wide");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("wide"));
   }
 
   #[test]
   fn ignores_unchecked_descriptors() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
     // `src` is a known descriptor but we don't validate its value
-    let node = font_face_node(&[("src", "url(anything-goes.woff2)")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(check("font-face", "src", "url(anything-goes.woff2)").is_empty());
   }
 
   #[test]
   fn ignores_other_at_rules() {
-    let rule = configured(&AtRuleDescriptorValueNoUnknown, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(check("media (min-width: 768px)", "font-display", "fast").is_empty());
   }
 
   #[test]

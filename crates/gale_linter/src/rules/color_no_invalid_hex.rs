@@ -1,5 +1,5 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::hex_colors::is_valid_hex;
 use crate::lint_env::LintEnv;
@@ -31,18 +31,20 @@ impl ColorNoInvalidHexCheck {
 }
 
 impl Check for ColorNoInvalidHexCheck {
-  /// Flags hex colors whose digit count is not 3, 4, 6 or 8.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  /// Flags hex colors whose digit count is not 3, 4, 6 or 8 in the
+  /// declarations of style rules, at the color, as Stylelint reports it.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      for hex in hex_candidates(&decl.value) {
-        if !is_valid_hex(&hex) {
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      let value = decl.raw_value();
+      for (offset, hex) in hex_candidates(&value) {
+        if !is_valid_hex(hex) {
           diags.push(
             Diagnostic::new(NAME, format!("Unexpected invalid hex color \"{hex}\""))
-              .span(decl.span),
+              .span(Span::new(decl.value_start() + offset, hex.len())),
           );
         }
       }
@@ -51,41 +53,43 @@ impl Check for ColorNoInvalidHexCheck {
   }
 }
 
-/// The words after a `#` in a value: hex colors, valid or not.  Unlike
-/// [`crate::hex_colors::find_hex_colors`] it reads any letters and digits,
-/// as an invalid color is what this rule looks for.
+/// The words after a `#` in a value, with their offsets: hex colors, valid
+/// or not.  Unlike [`crate::hex_colors::find_hex_colors`] it reads any
+/// letters and digits, as an invalid color is what this rule looks for.
 /// Skips:
 /// - Content inside `url(…)` (URLs may contain `#fragment` references)
-/// - Content after `//` (SCSS line comments that may leak into the value)
+/// - Comments: `/* … */`, and `//` to the end of the line (SCSS line
+///   comments that may leak into the value)
 /// - `#{}` SCSS interpolation
-fn hex_candidates(value: &str) -> Vec<String> {
+fn hex_candidates(value: &str) -> Vec<(usize, &str)> {
   let mut colors = Vec::new();
-  let chars: Vec<char> = value.chars().collect();
-  let len = chars.len();
+  let bytes = value.as_bytes();
+  let len = bytes.len();
 
   let mut i = 0;
   while i < len {
     // Skip SCSS line comments (// to end of line)
-    if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
-      while i < len && chars[i] != '\n' {
+    if bytes[i..].starts_with(b"//") {
+      while i < len && bytes[i] != b'\n' {
         i += 1;
       }
       continue;
     }
 
+    // Skip block comments, which value-parser reads as comment nodes.
+    if bytes[i..].starts_with(b"/*") {
+      i = value[i + 2..].find("*/").map_or(len, |end| i + 2 + end + 2);
+      continue;
+    }
+
     // Skip url(…)
-    if i + 3 < len
-      && chars[i] == 'u'
-      && chars[i + 1] == 'r'
-      && chars[i + 2] == 'l'
-      && chars[i + 3] == '('
-    {
+    if bytes[i..].starts_with(b"url(") {
       i += 4;
       let mut depth = 1;
       while i < len && depth > 0 {
-        match chars[i] {
-          '(' => depth += 1,
-          ')' => depth -= 1,
+        match bytes[i] {
+          b'(' => depth += 1,
+          b')' => depth -= 1,
           _ => {}
         }
         i += 1;
@@ -93,15 +97,15 @@ fn hex_candidates(value: &str) -> Vec<String> {
       continue;
     }
 
-    if chars[i] == '#' {
+    if bytes[i] == b'#' {
       // Skip SCSS interpolation #{…}
-      if i + 1 < len && chars[i + 1] == '{' {
+      if i + 1 < len && bytes[i + 1] == b'{' {
         i += 2;
         let mut depth = 1;
         while i < len && depth > 0 {
-          match chars[i] {
-            '{' => depth += 1,
-            '}' => depth -= 1,
+          match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
             _ => {}
           }
           i += 1;
@@ -111,12 +115,11 @@ fn hex_candidates(value: &str) -> Vec<String> {
 
       let start = i;
       i += 1;
-      while i < len && chars[i].is_ascii_alphanumeric() {
+      while i < len && bytes[i].is_ascii_alphanumeric() {
         i += 1;
       }
       if i > start + 1 {
-        let hex: String = chars[start..i].iter().collect();
-        colors.push(hex);
+        colors.push((start, &value[start..i]));
       }
     } else {
       i += 1;
@@ -129,50 +132,39 @@ fn hex_candidates(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn check(value: &str) -> Vec<Diagnostic> {
+    let source = format!("a {{ color: {value}; }}");
+    configured(&ColorNoInvalidHex, None).check_source(&ctx_with_source(&source))
   }
 
   #[test]
   fn reports_invalid_hex_chars() {
-    let rule = configured(&ColorNoInvalidHex, None);
-    let d = rule.check(&style_with_value("#gg0000"), &ctx());
+    let d = check("#gg0000");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#gg0000"));
+    // At the color, as Stylelint reports it.
+    assert_eq!(d[0].span, Span::new(11, 7));
   }
 
   #[test]
   fn reports_invalid_hex_length() {
-    let rule = configured(&ColorNoInvalidHex, None);
-    let d = rule.check(&style_with_value("#12345"), &ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(check("#12345").len(), 1);
   }
 
   #[test]
   fn allows_valid_hex() {
-    let rule = configured(&ColorNoInvalidHex, None);
-    assert!(rule.check(&style_with_value("#fff"), &ctx()).is_empty());
-    assert!(rule.check(&style_with_value("#ff00ff"), &ctx()).is_empty());
-    assert!(
-      rule
-        .check(&style_with_value("#ff00ff80"), &ctx())
-        .is_empty()
-    );
+    assert!(check("#fff").is_empty());
+    assert!(check("#ff00ff").is_empty());
+    assert!(check("#ff00ff80").is_empty());
+  }
+
+  #[test]
+  fn skips_comments_and_urls() {
+    assert!(check("red /* #zz */").is_empty());
+    assert!(check("url(a.svg#zz)").is_empty());
   }
 
   #[test]

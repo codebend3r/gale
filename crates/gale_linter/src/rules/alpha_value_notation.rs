@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::js_number::{parse_number, to_js_string, to_precision};
@@ -6,7 +7,6 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "alpha-value-notation";
 
@@ -88,20 +88,17 @@ impl Notation {
 impl Check for AlphaValueNotationCheck {
   /// Reports every alpha value in the wrong notation, with a fix that
   /// rewrites just that value.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(primary) = self.notation else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
-      let (Some(prop), Some(value)) = (
-        ctx.source_slice(decl.name_span.start, decl.name_span.end),
-        ctx.source_slice(decl.value_span.start, decl.value_span.end),
-      ) else {
+    for decl in tree.walk_decls() {
+      let Some(prop) = ctx.source_slice(decl.name_span.start, decl.name_span.end) else {
         continue;
       };
+      let value = decl.written_value();
       let is_alpha_prop = ALPHA_PROPS.iter().any(|p| p.eq_ignore_ascii_case(prop));
       if !(is_alpha_prop || mentions_alpha_function(value)) || !has_digit(value) {
         continue;
