@@ -3,7 +3,6 @@
 pub mod autoprefixable;
 pub mod braces;
 pub mod chars;
-pub mod css_tokenizer;
 pub mod custom_message;
 pub mod custom_properties;
 pub mod data;
@@ -20,21 +19,16 @@ pub mod nested_selectors;
 pub mod options;
 pub mod panic_guard;
 pub mod pattern;
-pub mod postcss_tree;
 pub mod registry;
 pub mod rule;
 pub mod rules;
 pub mod runner;
 pub mod sass_operators;
-pub mod selector;
-pub mod source_text;
 pub mod standard_syntax;
-pub mod style_rules;
 pub mod stylelint_order;
 pub mod stylelint_version;
 #[cfg(test)]
 pub mod testing;
-pub mod value_parser;
 pub mod value_syntax;
 
 pub use lint_env::LintEnv;
