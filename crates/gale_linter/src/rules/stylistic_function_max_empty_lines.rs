@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -40,7 +40,7 @@ impl StylisticFunctionMaxEmptyLinesCheck {
 
 impl Check for StylisticFunctionMaxEmptyLinesCheck {
   /// Flags runs of blank lines inside function arguments longer than the maximum.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
     let source = context.source;
@@ -152,13 +152,13 @@ impl Check for StylisticFunctionMaxEmptyLinesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, max: u64) -> Vec<Diagnostic> {
     let opts = serde_json::json!(max);
     let rule = configured(&StylisticFunctionMaxEmptyLines, opts.clone());
     let ctx = ctx_with_source(source);
-    rule.check_root(&[], &ctx)
+    rule.check_source(&ctx)
   }
 
   #[test]

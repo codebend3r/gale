@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -33,22 +33,31 @@ impl StylisticNumberNoTrailingZerosCheck {
 }
 
 impl Check for StylisticNumberNoTrailingZerosCheck {
-  /// Checks declaration values for trailing zeros.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  /// Checks the values of style-rule declarations, as written, for trailing
+  /// zeros.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      find_trailing_zeros(&decl.value, decl.span.offset, &mut diags);
+    for decl in tree.walk_decls() {
+      if !decl.parent_is_rule() {
+        continue;
+      }
+      let value = decl.raw_value();
+      let fixable = decl.value_fixable();
+      find_trailing_zeros(&value, decl.value_start(), fixable, &mut diags);
     }
     diags
   }
 }
 
-/// Reports each number in `value` with a redundant zero after the decimal point.
-fn find_trailing_zeros(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
+/// Reports each number in `value`, which starts at `base_offset`, with a
+/// redundant zero after the decimal point, at its first trailing zero as the
+/// plugin does.  The fix, when `fixable`, rewrites the number.
+fn find_trailing_zeros(
+  value: &str,
+  base_offset: usize,
+  fixable: bool,
+  diags: &mut Vec<Diagnostic>,
+) {
   let bytes = value.as_bytes();
   let len = bytes.len();
   let mut i = 0;
@@ -112,23 +121,22 @@ fn find_trailing_zeros(value: &str, base_offset: usize, diags: &mut Vec<Diagnost
           let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
 
           if trimmed.len() < number.len() {
-            let fixed = if trimmed.contains('.') {
-              trimmed.to_string()
-            } else {
-              trimmed.to_string()
-            };
-
-            diags.push(
-              Diagnostic::new(NAME, format!("Unexpected trailing zero(s) in \"{number}\""))
-                .span(Span::new(base_offset + num_start, number.len()))
-                .fix(Fix::new(
-                  "Remove trailing zeros",
-                  vec![Edit::new(
-                    Span::new(base_offset + num_start, number.len()),
-                    &fixed,
-                  )],
-                )),
-            );
+            // The first trailing zero, past the digits that stay.
+            let zeros = frac_start + value[frac_start..frac_end].trim_end_matches('0').len();
+            let mut diag =
+              Diagnostic::new(NAME, format!("Unexpected trailing zero(s) in \"{number}\"")).span(
+                Span::from_range(base_offset + zeros, base_offset + frac_end),
+              );
+            if fixable {
+              diag = diag.fix(Fix::new(
+                "Remove trailing zeros",
+                vec![Edit::new(
+                  Span::new(base_offset + num_start, number.len()),
+                  trimmed,
+                )],
+              ));
+            }
+            diags.push(diag);
           }
         }
       }
@@ -141,55 +149,61 @@ fn find_trailing_zeros(value: &str, base_offset: usize, diags: &mut Vec<Diagnost
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{fix, invalid_options, lint};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "opacity".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// The reports for `a { opacity: <value>; }` in `syntax`.
+  fn opacity(value: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      json!(true),
+      &format!("a {{ opacity: {value}; }}"),
+      syntax,
+    )
   }
 
   #[test]
-  fn reports_trailing_zero() {
-    let rule = configured(&StylisticNumberNoTrailingZeros, None);
-    let d = rule.check(&style_with_value("1.0"), &ctx());
+  fn reports_trailing_zero_at_the_zero() {
+    let d = opacity("1.0", Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1.0"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (15, 1));
     let fix = d[0].fix.as_ref().unwrap();
     assert_eq!(fix.edits[0].new_text, "1");
   }
 
   #[test]
   fn reports_multiple_trailing_zeros() {
-    let rule = configured(&StylisticNumberNoTrailingZeros, None);
-    let d = rule.check(&style_with_value("0.500"), &ctx());
+    let d = opacity("0.500", Syntax::Scss);
     assert_eq!(d.len(), 1);
+    assert_eq!((d[0].span.offset, d[0].span.length), (16, 2));
     let fix = d[0].fix.as_ref().unwrap();
     assert_eq!(fix.edits[0].new_text, "0.5");
   }
 
   #[test]
-  fn allows_no_trailing_zeros() {
-    let rule = configured(&StylisticNumberNoTrailingZeros, None);
-    let d = rule.check(&style_with_value("0.5"), &ctx());
-    assert!(d.is_empty());
+  fn fixes_the_number_in_place() {
+    let scss = "a { width: 1.50px; margin: 0 2.0em; }";
+    assert_eq!(
+      fix(NAME, json!(true), scss, Syntax::Scss),
+      "a { width: 1.5px; margin: 0 2em; }"
+    );
   }
 
   #[test]
-  fn allows_integer() {
-    let rule = configured(&StylisticNumberNoTrailingZeros, None);
-    let d = rule.check(&style_with_value("10"), &ctx());
-    assert!(d.is_empty());
+  fn offers_no_fix_after_a_rewritten_line_comment() {
+    let scss = "a { margin: 0 // x\n 1.50px; }";
+    let d = lint(NAME, json!(true), scss, Syntax::Scss);
+    assert_eq!(d.len(), 1);
+    assert!(d[0].fix.is_none());
+  }
+
+  #[test]
+  fn allows_no_trailing_zeros_and_integers() {
+    assert!(opacity("0.5", Syntax::Css).is_empty());
+    assert!(opacity("10", Syntax::Css).is_empty());
   }
 
   #[test]

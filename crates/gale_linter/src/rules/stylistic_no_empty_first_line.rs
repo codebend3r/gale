@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -34,7 +34,7 @@ impl StylisticNoEmptyFirstLineCheck {
 
 impl Check for StylisticNoEmptyFirstLineCheck {
   /// Flags a file that opens with a blank line.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if ctx.source.is_empty() {
       return vec![];
     }
@@ -79,13 +79,13 @@ impl Check for StylisticNoEmptyFirstLineCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_empty_first_line_lf() {
     let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("\na { color: red; }\n");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty first line"));
     assert!(d[0].fix.is_some());
@@ -95,7 +95,7 @@ mod tests {
   fn reports_empty_first_line_crlf() {
     let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("\r\na { color: red; }\n");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("empty first line"));
   }
@@ -104,7 +104,7 @@ mod tests {
   fn allows_non_empty_first_line() {
     let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("a { color: red; }\n");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -112,7 +112,7 @@ mod tests {
   fn allows_empty_source() {
     let rule = configured(&StylisticNoEmptyFirstLine, None);
     let ctx = ctx_with_source("");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
