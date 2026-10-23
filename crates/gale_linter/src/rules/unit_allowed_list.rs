@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::subjects::{self, UnitFilter};
 use crate::list_rules::{
   Entries, Found, KeyedList, List, ListCheck, ListRule, Polarity, keyed_option, list_option,
 };
 use crate::options::Options;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "unit-allowed-list";

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -302,96 +302,44 @@ fn split_comma_segments(value: &str) -> Vec<(String, usize)> {
   segments
 }
 
-/// Given a declaration, find the byte offset in the source where the value
-/// begins (after the `:` and any whitespace).
-fn find_value_offset(source: &str, decl_offset: usize, property_len: usize) -> usize {
-  let start = decl_offset + property_len;
-  if start >= source.len() {
-    return decl_offset;
-  }
-  let rest = &source[start..];
-  let mut off = 0;
-  let bytes = rest.as_bytes();
-  while off < bytes.len() && (bytes[off] == b':' || bytes[off].is_ascii_whitespace()) {
-    off += 1;
-  }
-  start + off
-}
-
 impl Check for TimeMinMillisecondsCheck {
-  /// Flags time values below the minimum. With `ignore: ["delay"]`, delay
-  /// properties and the delay slot of shorthands are skipped.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  /// Flags time values below the minimum in style-rule declarations, read as
+  /// written. With `ignore: ["delay"]`, delay properties and the delay slot
+  /// of shorthands are skipped.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let min = self.min;
     let ignore_delay = self.ignore_delay;
-
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      if !is_time_property(&decl.property) {
+    for decl in tree.walk_decls() {
+      if !decl.parent_is_rule() {
         continue;
       }
-
-      let prop_is_delay = is_delay_property(&decl.property);
-
+      let prop = decl.prop();
+      if !is_time_property(prop) {
+        continue;
+      }
       // If ignoring delay and this is a delay property, skip entirely.
-      if ignore_delay && prop_is_delay {
+      if ignore_delay && is_delay_property(prop) {
         continue;
       }
-
-      let is_shorthand = is_shorthand_property(&decl.property);
-
-      // Use source text when available for accurate positions.
-      let (value_text, value_offset) = if !ctx.source.is_empty() {
-        let vo = find_value_offset(ctx.source, decl.span.offset, decl.property.len());
-        let rest = ctx.source_from(vo).unwrap_or("");
-        let end = rest.find([';', '}']).unwrap_or(rest.len());
-        (
-          ctx
-            .source_slice(vo, vo + end)
-            .unwrap_or("")
-            .trim_end()
-            .to_string(),
-          vo,
-        )
-      } else {
-        let vo = decl.span.offset + decl.property.len() + 2;
-        (decl.value.clone(), vo)
-      };
-
-      let time_values = extract_time_values(&value_text, is_shorthand);
-
-      for tv in &time_values {
+      let value = decl.raw_value();
+      for tv in extract_time_values(&value, is_shorthand_property(prop)) {
         // Skip if ignoring delay and this is in a delay position.
         if ignore_delay && tv.is_delay {
           continue;
         }
-
-        let abs_ms = tv.ms.abs();
-
-        // Skip 0 — zero duration is intentional and should not be flagged.
-        if abs_ms == 0.0 {
+        // Skip 0 — zero duration is intentional and should not be flagged —
+        // and negative values, which are valid for delays and intentional.
+        if tv.ms <= 0.0 || tv.ms >= min {
           continue;
         }
-
-        // Skip negative values — they are valid for delays and intentional.
-        if tv.ms < 0.0 {
-          continue;
-        }
-
-        if abs_ms < min {
-          let abs_offset = value_offset + tv.offset;
-          diags.push(
-            Diagnostic::new(
-              NAME,
-              format!("Expected a minimum of {min}ms, found {abs_ms}ms"),
-            )
-            .span(Span::new(abs_offset, tv.length)),
-          );
-        }
+        diags.push(
+          Diagnostic::new(
+            NAME,
+            format!("Expected a minimum of {min}ms, found {}ms", tv.ms),
+          )
+          .span(Span::new(decl.value_start() + tv.offset, tv.length)),
+        );
       }
     }
     diags
@@ -401,59 +349,45 @@ impl Check for TimeMinMillisecondsCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{invalid_options, lint};
 
-  fn style_with_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: Span::new(0, prop.len() + val.len() + 2),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// The reports for `a { <prop>: <value>; }` in CSS, with the default
+  /// minimum.
+  fn decl(prop: &str, value: &str) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      json!(100),
+      &format!("a {{ {prop}: {value}; }}"),
+      Syntax::Css,
+    )
   }
 
   #[test]
-  fn reports_time_below_minimum() {
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("transition-duration", "50ms"), &ctx());
+  fn reports_time_below_minimum_at_the_time() {
+    let d = decl("transition-duration", "50ms");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("50ms"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (25, 4));
   }
 
   #[test]
   fn allows_time_above_minimum() {
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("transition-duration", "200ms"), &ctx());
-    assert!(d.is_empty());
+    assert!(decl("transition-duration", "200ms").is_empty());
   }
 
   #[test]
   fn converts_seconds_to_ms() {
     // 0.01s = 10ms, should flag with default minimum 100ms
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("transition-duration", "0.01s"), &ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(decl("transition-duration", "0.01s").len(), 1);
   }
 
   #[test]
-  fn allows_zero() {
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("animation-delay", "0ms"), &ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_negative_values() {
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("animation-delay", "-20ms"), &ctx());
-    assert!(d.is_empty());
+  fn allows_zero_and_negative_values() {
+    assert!(decl("animation-delay", "0ms").is_empty());
+    assert!(decl("animation-delay", "-20ms").is_empty());
   }
 
   #[test]
@@ -463,15 +397,20 @@ mod tests {
 
   #[test]
   fn does_not_flag_non_time_properties() {
-    let d = configured(&TimeMinMilliseconds, None).check(&style_with_decl("color", "red"), &ctx());
-    assert!(d.is_empty());
+    assert!(decl("color", "red").is_empty());
   }
 
   #[test]
   fn handles_transition_shorthand() {
-    let d = configured(&TimeMinMilliseconds, None)
-      .check(&style_with_decl("transition", "foo 0.008s linear"), &ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(decl("transition", "foo 0.008s linear").len(), 1);
+  }
+
+  #[test]
+  fn ignore_delay_skips_the_delay_slot() {
+    let css = "a { transition: foo 0.5s linear 5ms; animation-delay: 5ms; }";
+    assert_eq!(lint(NAME, json!(100), css, Syntax::Css).len(), 2);
+    let options = json!([100, { "ignore": ["delay"] }]);
+    assert!(lint(NAME, options, css, Syntax::Css).is_empty());
   }
 
   #[test]

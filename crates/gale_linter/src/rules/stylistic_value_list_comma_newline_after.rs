@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -42,7 +42,7 @@ impl StylisticValueListCommaNewlineAfterCheck {
 
 impl Check for StylisticValueListCommaNewlineAfterCheck {
   /// Flags a value list comma whose trailing newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -252,14 +252,14 @@ impl Check for StylisticValueListCommaNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_newline_after_value_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png),\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -268,7 +268,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -278,7 +278,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
   }
@@ -288,7 +288,7 @@ mod tests {
     let opt = serde_json::Value::String("always-multi-line".to_string());
     let source = "a { background: url(foo.png), url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -298,7 +298,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a:hover, a:focus { color: red; }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag selector commas, got: {:?}",
@@ -311,7 +311,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), // comment\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by SCSS line comment, got {} diagnostics",
@@ -324,7 +324,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { background: url(foo.png), /* comment */\n  url(bar.png); }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by block comment then newline, got {} diagnostics",
@@ -337,7 +337,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "a { prop: #{$a, $b}; }";
     let d = configured(&StylisticValueListCommaNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

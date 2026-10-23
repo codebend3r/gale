@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -34,147 +34,153 @@ impl StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
 
 impl Check for StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
   /// Flags a descendant combinator written as anything but one space.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let selector = &rule.selector;
-    let bytes = selector.as_bytes();
-    let len = bytes.len();
+  ///
+  /// Reads the selector of every standard-syntax rule as written, as the
+  /// plugin does.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut i = 0;
-
-    while i < len {
-      // Skip SCSS // line comments and trailing newline + indentation
-      if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-        while i < len && bytes[i] != b'\n' {
-          i += 1;
-        }
-        // Skip newline + indentation after comment
-        while i < len
-          && (bytes[i] == b'\n' || bytes[i] == b'\r' || bytes[i] == b' ' || bytes[i] == b'\t')
-        {
-          i += 1;
-        }
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = rule.raw_selector();
+      // The plugin passes over a selector holding a comment (an SCSS `//`
+      // one included, which the raw selector writes as `/* */`).
+      if selector.contains("/*") {
         continue;
       }
-      // Skip block comments
-      if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-        i += 2;
-        while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-          i += 1;
+      let bytes = selector.as_bytes();
+      let len = bytes.len();
+      let mut i = 0;
+
+      while i < len {
+        // Skip SCSS // line comments and trailing newline + indentation
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+          while i < len && bytes[i] != b'\n' {
+            i += 1;
+          }
+          // Skip newline + indentation after comment
+          while i < len
+            && (bytes[i] == b'\n' || bytes[i] == b'\r' || bytes[i] == b' ' || bytes[i] == b'\t')
+          {
+            i += 1;
+          }
+          continue;
         }
-        if i + 1 < len {
+        // Skip block comments
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
           i += 2;
-        }
-        continue;
-      }
-      // Skip strings
-      if bytes[i] == b'\'' || bytes[i] == b'"' {
-        let quote = bytes[i];
-        i += 1;
-        while i < len && bytes[i] != quote {
-          if bytes[i] == b'\\' {
+          while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
             i += 1;
           }
-          i += 1;
-        }
-        if i < len {
-          i += 1;
-        }
-        continue;
-      }
-      // Skip attribute selectors entirely
-      if bytes[i] == b'[' {
-        i += 1;
-        while i < len && bytes[i] != b']' {
-          if bytes[i] == b'\\' {
-            i += 1;
+          if i + 1 < len {
+            i += 2;
           }
-          i += 1;
-        }
-        if i < len {
-          i += 1;
-        }
-        continue;
-      }
-
-      // Skip newlines (descendant combinators are same-line whitespace)
-      if bytes[i] == b'\n' || bytes[i] == b'\r' {
-        i += 1;
-        continue;
-      }
-
-      // Skip commas (selector list separators — whitespace after them is formatting)
-      if bytes[i] == b',' {
-        i += 1;
-        // Skip all whitespace after comma (including newlines + indentation)
-        while i < len
-          && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
-        {
-          i += 1;
-        }
-        continue;
-      }
-
-      // Check for whitespace gaps that could be descendant combinators
-      if bytes[i] == b' ' || bytes[i] == b'\t' {
-        let ws_start = i;
-        // Collect all whitespace (on same line for descendant combinator)
-        while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
-          i += 1;
-        }
-        // If we hit end, a newline, or a combinator operator, skip
-        if i >= len {
           continue;
         }
-        // Newline after whitespace — this is multi-line selector formatting, not a combinator
+        // Skip strings
+        if bytes[i] == b'\'' || bytes[i] == b'"' {
+          let quote = bytes[i];
+          i += 1;
+          while i < len && bytes[i] != quote {
+            if bytes[i] == b'\\' {
+              i += 1;
+            }
+            i += 1;
+          }
+          if i < len {
+            i += 1;
+          }
+          continue;
+        }
+        // Skip attribute selectors entirely
+        if bytes[i] == b'[' {
+          i += 1;
+          while i < len && bytes[i] != b']' {
+            if bytes[i] == b'\\' {
+              i += 1;
+            }
+            i += 1;
+          }
+          if i < len {
+            i += 1;
+          }
+          continue;
+        }
+
+        // Skip newlines (descendant combinators are same-line whitespace)
         if bytes[i] == b'\n' || bytes[i] == b'\r' {
-          continue;
-        }
-        // Check the character after whitespace: if it's a combinator
-        // operator (>, +, ~) this is NOT a descendant combinator
-        if bytes[i] == b'>' || bytes[i] == b'+' || bytes[i] == b'~' {
           i += 1;
           continue;
         }
-        // Also check the character before the whitespace: if it was
-        // a combinator operator, this is not a descendant combinator
-        if ws_start > 0
-          && (bytes[ws_start - 1] == b'>'
-            || bytes[ws_start - 1] == b'+'
-            || bytes[ws_start - 1] == b'~')
-        {
-          continue;
-        }
-        // If it's a comma or newline, this is a selector list separator, not a combinator
-        if bytes[i] == b',' || bytes[i] == b'\n' || bytes[i] == b'\r' {
-          continue;
-        }
-        // Also skip if whitespace is at the start (before first selector)
-        if ws_start == 0 {
-          continue;
-        }
-        // Also skip if the character before whitespace is a comma or opening brace
-        if bytes[ws_start - 1] == b',' || bytes[ws_start - 1] == b'{' {
+
+        // Skip commas (selector list separators — whitespace after them is formatting)
+        if bytes[i] == b',' {
+          i += 1;
+          // Skip all whitespace after comma (including newlines + indentation)
+          while i < len
+            && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+          {
+            i += 1;
+          }
           continue;
         }
 
-        let ws_len = i - ws_start;
-        let ws_slice = &selector[ws_start..i];
+        // Check for whitespace gaps that could be descendant combinators
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+          let ws_start = i;
+          // Collect all whitespace (on same line for descendant combinator)
+          while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+          }
+          // If we hit end, a newline, or a combinator operator, skip
+          if i >= len {
+            continue;
+          }
+          // Newline after whitespace — this is multi-line selector formatting, not a combinator
+          if bytes[i] == b'\n' || bytes[i] == b'\r' {
+            continue;
+          }
+          // Check the character after whitespace: if it's a combinator
+          // operator (>, +, ~) this is NOT a descendant combinator
+          if bytes[i] == b'>' || bytes[i] == b'+' || bytes[i] == b'~' {
+            i += 1;
+            continue;
+          }
+          // Also check the character before the whitespace: if it was
+          // a combinator operator, this is not a descendant combinator
+          if ws_start > 0
+            && (bytes[ws_start - 1] == b'>'
+              || bytes[ws_start - 1] == b'+'
+              || bytes[ws_start - 1] == b'~')
+          {
+            continue;
+          }
+          // If it's a comma or newline, this is a selector list separator, not a combinator
+          if bytes[i] == b',' || bytes[i] == b'\n' || bytes[i] == b'\r' {
+            continue;
+          }
+          // Also skip if whitespace is at the start (before first selector)
+          if ws_start == 0 {
+            continue;
+          }
+          // Also skip if the character before whitespace is a comma or opening brace
+          if bytes[ws_start - 1] == b',' || bytes[ws_start - 1] == b'{' {
+            continue;
+          }
 
-        // Flag if the whitespace contains a tab or is more than one space
-        if ws_slice.contains('\t') || ws_len > 1 {
-          diagnostics.push(
-            Diagnostic::new(NAME, "Expected single space for descendant combinator")
-              .span(Span::new(rule.span.offset + ws_start, ws_len)),
-          );
+          let ws_len = i - ws_start;
+          let ws_slice = &selector[ws_start..i];
+
+          // Flag if the whitespace contains a tab or is more than one space
+          if ws_slice.contains('\t') || ws_len > 1 {
+            diagnostics.push(
+              Diagnostic::new(NAME, "Expected single space for descendant combinator")
+                .span(Span::new(rule.selector_start() + ws_start, ws_len)),
+            );
+          }
+          continue;
         }
-        continue;
+
+        i += 1;
       }
-
-      i += 1;
     }
 
     diagnostics
@@ -184,25 +190,17 @@ impl Check for StylisticSelectorDescendantCombinatorNoNonSpaceCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
+  /// What the rule reports for a CSS rule with the selector `selector`.
   fn check_selector(selector: &str) -> Vec<Diagnostic> {
     let rule = configured(&StylisticSelectorDescendantCombinatorNoNonSpace, None);
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: selector.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    rule.check(&node, &ctx)
+    rule.check_source(&context(
+      &format!("{selector} {{ color: red; }}"),
+      Syntax::Css,
+    ))
   }
 
   #[test]
@@ -234,6 +232,13 @@ mod tests {
   fn allows_single_space_around_adjacent_combinator() {
     let d = check_selector("a + b");
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn reports_where_the_whitespace_is_written() {
+    let d = check_selector(".x,\n.y  .z");
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span, Span::new(6, 2));
   }
 
   #[test]

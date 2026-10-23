@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
@@ -6,7 +7,6 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_property;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "value-no-vendor-prefix";
 
@@ -48,17 +48,20 @@ const PREFIXES: &[&str] = &[
 impl Check for ValueNoVendorPrefixCheck {
   /// Flags vendor-prefixed values that have a standard equivalent, skipping any
   /// listed in `ignoreValues`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for &decl in ctx.written_declarations(node).iter() {
-      let lower = decl.value.to_ascii_lowercase();
+    for decl in tree.walk_decls() {
+      let raw = decl.raw_value();
+      let value: &str = &raw;
+      let fixable = decl.value_fixable();
+      let lower = value.to_ascii_lowercase();
       if !PREFIXES.iter().any(|prefix| lower.contains(prefix)) {
         continue;
       }
-      if !is_standard_syntax_property(decl.prop) {
+      if !is_standard_syntax_property(decl.prop()) {
         continue;
       }
-      let nodes = value_parser::parse(decl.value);
+      let nodes = value_parser::parse(value);
       value_parser::walk(&nodes, &mut |node: &ValueNode| {
         if !autoprefixable::property_value(node.value) || self.ignore_values.matches(node.value) {
           return true;
@@ -70,19 +73,21 @@ impl Check for ValueNoVendorPrefixCheck {
           NodeKind::Comment => 2,
           _ => 0,
         };
-        let start = decl.value_start + node.source_index;
+        let start = decl.value_start() + node.source_index;
         let text = Span::new(start + text_offset, node.value.len());
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!("Unexpected vendor-prefixed value \"{}\"", node.value),
-          )
-          .span(Span::new(start, node.value.len()))
-          .fix(Fix::new(
+        let diag = Diagnostic::new(
+          NAME,
+          format!("Unexpected vendor-prefixed value \"{}\"", node.value),
+        )
+        .span(Span::new(start, node.value.len()));
+        diags.push(if fixable {
+          diag.fix(Fix::new(
             format!("Remove the vendor prefix from \"{}\"", node.value),
             vec![Edit::new(text, autoprefixable::unprefix(node.value))],
-          )),
-        );
+          ))
+        } else {
+          diag
+        });
         true
       });
     }

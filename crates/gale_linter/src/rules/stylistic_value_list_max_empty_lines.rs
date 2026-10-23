@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -40,17 +40,17 @@ impl StylisticValueListMaxEmptyLinesCheck {
 
 impl Check for StylisticValueListMaxEmptyLinesCheck {
   /// Flags runs of blank lines inside a declaration value longer than the maximum.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
-
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
 
     let mut diagnostics = Vec::new();
 
-    for decl in &rule.declarations {
-      let value = &decl.value;
+    // The declarations of style rules, with their values as written.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      let value = decl.raw_value();
       let mut consecutive_empty = 0usize;
       let mut max_found = 0usize;
 
@@ -71,7 +71,7 @@ impl Check for StylisticValueListMaxEmptyLinesCheck {
             NAME,
             format!("Expected no more than {max} empty line(s) in value list"),
           )
-          .span(decl.span),
+          .span(decl.span()),
         );
       }
     }
@@ -83,27 +83,14 @@ impl Check for StylisticValueListMaxEmptyLinesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
   use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   fn check_value(value: &str, max: u64) -> Vec<Diagnostic> {
-    let opts = serde_json::json!(max);
-    let rule = configured(&StylisticValueListMaxEmptyLines, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: value.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    rule.check(&node, &ctx)
+    let rule = configured(&StylisticValueListMaxEmptyLines, serde_json::json!(max));
+    let source = format!("a {{ font-family: {value}; }}");
+    rule.check_source(&ctx_with_source(&source))
   }
 
   #[test]
@@ -117,6 +104,8 @@ mod tests {
     let d = check_value("Arial,\n\nsans-serif", 0);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("no more than 0"));
+    // The whole declaration.
+    assert_eq!(d[0].span, Span::new(4, 32));
   }
 
   #[test]
