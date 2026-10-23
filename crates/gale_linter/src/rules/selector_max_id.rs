@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{blank_comments, split_selectors};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::split_selectors;
 
 const NAME: &str = "selector-max-id";
 
@@ -49,133 +49,50 @@ impl SelectorMaxIdCheck {
 
 impl Check for SelectorMaxIdCheck {
   /// Flags a selector holding more ID selectors than allowed.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as written, and rules that are not standard syntax
+  /// (interpolation, placeholders, Less mixins) are skipped, as Stylelint
+  /// skips them.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
     // Stylelint checks each individual selector in a comma-separated
     // selector list and reports a separate diagnostic for each one that
     // exceeds the limit.  Match this behaviour.
     let mut diags = Vec::new();
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector_source_start = rule.selector_start();
+      let source_selector = rule.raw_selector();
+      let source_selector = source_selector.as_ref();
 
-    // Find the byte offset of each individual selector within the source
-    // so we can report accurate positions.
-    let selector_source_start = rule.span.offset;
-
-    // Read the original selector text from the source to preserve exact
-    // formatting (pseudo-element notation, attribute quoting, etc.).
-    // We find the opening `{` to determine where the selector ends,
-    // since the parser may normalize whitespace differently from source.
-    let source_selector = {
-      if selector_source_start < ctx.source.len() {
-        let rest = ctx.source_from(selector_source_start).unwrap_or("");
-        // Find the opening brace, respecting strings and brackets.
-        let end = find_selector_end(rest);
-        rest[..end].trim_end()
-      } else {
-        &rule.selector[..]
-      }
-    };
-
-    let parts: Vec<&str> = split_selectors(source_selector)
-      .into_iter()
-      .map(|(_, part)| part)
-      .collect();
-    // Calculate byte offsets of each part within the selector string.
-    let mut part_offsets: Vec<usize> = Vec::new();
-    {
-      let mut pos = 0;
-      for (idx, part) in parts.iter().enumerate() {
-        // After the first part, skip past the comma separator.
-        if idx > 0 {
-          pos += 1; // the comma itself
+      // Comments are blanked out, byte for byte, so that a comma or an `#id`
+      // in one is not read; the message quotes the selector as written.
+      let blanked = blank_comments(source_selector);
+      for (start, part) in split_selectors(&blanked) {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+          continue;
         }
-        // Find where this part starts (skip leading whitespace in the source selector)
-        let selector_bytes = source_selector.as_bytes();
-        while pos < selector_bytes.len()
-          && (selector_bytes[pos] == b' '
-            || selector_bytes[pos] == b'\t'
-            || selector_bytes[pos] == b'\n'
-            || selector_bytes[pos] == b'\r')
-        {
-          pos += 1;
+        let count = count_id_selectors(trimmed);
+        if count > max {
+          let begin = start + part.len() - part.trim_start().len();
+          let text = &source_selector[begin..begin + trimmed.len()];
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!(
+                "Expected \"{}\" to have no more than {max} ID selector{}",
+                text,
+                if max == 1 { "" } else { "s" },
+              ),
+            )
+            .span(Span::new(selector_source_start + begin, trimmed.len())),
+          );
         }
-        part_offsets.push(pos);
-        pos += part.trim_start().len();
-      }
-    }
-
-    for (idx, individual) in parts.iter().enumerate() {
-      let trimmed = individual.trim();
-      if trimmed.is_empty() {
-        continue;
-      }
-      let count = count_id_selectors(trimmed);
-      if count > max {
-        // Use the offset of this individual selector within the
-        // source for accurate line/column reporting.
-        let offset = selector_source_start + part_offsets.get(idx).copied().unwrap_or(0);
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Expected \"{}\" to have no more than {max} ID selector{}",
-              trimmed,
-              if max == 1 { "" } else { "s" },
-            ),
-          )
-          .span(Span::new(offset, trimmed.len())),
-        );
       }
     }
     diags
   }
-}
-
-/// Find the end of the selector text in source by locating the opening `{`.
-/// This accounts for quoted strings and attribute selectors containing `{`.
-fn find_selector_end(source: &str) -> usize {
-  let bytes = source.as_bytes();
-  let mut i = 0;
-  while i < bytes.len() {
-    match bytes[i] {
-      b'{' => return i,
-      b'"' | b'\'' => {
-        // Skip quoted string.
-        let quote = bytes[i];
-        i += 1;
-        while i < bytes.len() && bytes[i] != quote {
-          if bytes[i] == b'\\' {
-            i += 1; // skip escaped char
-          }
-          i += 1;
-        }
-      }
-      b'[' => {
-        // Skip attribute selector.
-        i += 1;
-        while i < bytes.len() && bytes[i] != b']' {
-          if bytes[i] == b'"' || bytes[i] == b'\'' {
-            let quote = bytes[i];
-            i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-              if bytes[i] == b'\\' {
-                i += 1;
-              }
-              i += 1;
-            }
-          }
-          i += 1;
-        }
-      }
-      _ => {}
-    }
-    i += 1;
-  }
-  source.len()
 }
 
 /// Count `#` characters that are ID selectors (not hex color fragments or SCSS interpolation).
@@ -214,40 +131,34 @@ fn count_id_selectors(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_id_selector() {
-    let d = configured(&SelectorMaxId, None).check(&style_with_selector("#foo"), &ctx());
+    let d = configured(&SelectorMaxId, None)
+      .check_source(&context(&style_with_selector("#foo"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#foo"));
   }
 
   #[test]
   fn allows_class_selector() {
-    let d = configured(&SelectorMaxId, None).check(&style_with_selector(".bar"), &ctx());
+    let d = configured(&SelectorMaxId, None)
+      .check_source(&context(&style_with_selector(".bar"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn counts_multiple_ids() {
-    let d = configured(&SelectorMaxId, None).check(&style_with_selector("#a #b"), &ctx());
+    let d = configured(&SelectorMaxId, None)
+      .check_source(&context(&style_with_selector("#a #b"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#a #b"));
   }
@@ -255,8 +166,10 @@ mod tests {
   #[test]
   fn skips_scss_interpolation() {
     // #{$var} is SCSS interpolation, not an ID selector
-    let d =
-      configured(&SelectorMaxId, None).check(&style_with_selector(".#{$prefix}-item"), &ctx());
+    let d = configured(&SelectorMaxId, None).check_source(&context(
+      &style_with_selector(".#{$prefix}-item"),
+      Syntax::Css,
+    ));
     assert!(
       d.is_empty(),
       "SCSS interpolation should not count as ID selector"
@@ -269,8 +182,34 @@ mod tests {
       &SelectorMaxId,
       serde_json::json!([1, { "ignoreContextFunctionalPseudoClasses": [":not"] }]),
     );
-    assert!(rule.check(&style_with_selector("#a"), &ctx()).is_empty());
-    assert_eq!(rule.check(&style_with_selector("#a #b"), &ctx()).len(), 1);
+    assert!(
+      rule
+        .check_source(&context(&style_with_selector("#a"), Syntax::Css))
+        .is_empty()
+    );
+    assert_eq!(
+      rule
+        .check_source(&context(&style_with_selector("#a #b"), Syntax::Css))
+        .len(),
+      1
+    );
+  }
+
+  #[test]
+  fn reports_each_selector_where_it_is_written() {
+    let rule = configured(&SelectorMaxId, None);
+    let source = "a,\n  #b /* #c, #d */ .e,\n.f /* #g */ {}";
+    let d = rule.check_source(&context(source, Syntax::Css));
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+      d[0].message,
+      "Expected \"#b /* #c, #d */ .e\" to have no more than 0 ID selectors"
+    );
+    assert_eq!(d[0].span.offset, source.find("#b").unwrap());
+    // Interpolation makes the selector non-standard, so it is skipped as in
+    // Stylelint, rather than cut short at the `{` of `#{`.
+    let scss = ".a-#{$b} #c {}";
+    assert!(rule.check_source(&context(scss, Syntax::Scss)).is_empty());
   }
 
   #[test]

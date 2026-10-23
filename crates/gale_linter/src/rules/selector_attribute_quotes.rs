@@ -1,11 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{self, Escape, Kind};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{self, Escape, Kind};
-use crate::standard_syntax::is_standard_syntax_selector;
 
 const NAME: &str = "selector-attribute-quotes";
 
@@ -46,15 +45,19 @@ impl SelectorAttributeQuotesCheck {
 impl Check for SelectorAttributeQuotesCheck {
   /// Flags attribute selectors whose value quoting does not match the
   /// option, in every style rule's selector as written.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let never = self.expectation == "never";
     let mut diags = Vec::new();
-    for rule in &ctx.scanned_rules().style_rules {
-      if !has_attribute_with_operator(&rule.prelude) || !is_standard_syntax_selector(&rule.prelude)
-      {
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let first = diags.len();
+      if !has_attribute_with_operator(&prelude) {
         continue;
       }
-      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+      let Some(selectors) = postcss::parse(&prelude, rule.selector_start()) else {
         continue;
       };
       postcss::walk(&selectors, &mut |visit| {
@@ -102,6 +105,9 @@ impl Check for SelectorAttributeQuotesCheck {
           vec![Edit::new(span, replacement)],
         )));
       });
+      if !rule.selector_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
+      }
     }
     diags
   }

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::chars::is_ident_char;
@@ -92,41 +92,43 @@ impl Config {
 impl Check for SelectorMaxTypeCheck {
   /// Flags selectors holding more type selectors than allowed, stripping
   /// preprocessor constructs first.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let config = &self.config;
 
-    let selector = if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
-    ) {
-      strip_preprocessor_constructs(&rule.selector, ctx.syntax)
-    } else {
-      rule.selector.clone()
-    };
-
     let mut diags = Vec::new();
-    // Check each comma-separated selector individually
-    for sel in selector.split(',') {
-      let sel = sel.trim();
-      if sel.is_empty() {
-        continue;
-      }
-      let count = count_type_selectors(sel, config);
-      if count > config.max {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Expected \"{sel}\" to have no more than {max} type selector",
-              max = config.max,
-            ),
-          )
-          .span(rule.span),
-        );
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = if matches!(
+        ctx.syntax,
+        gale_css_parser::Syntax::Scss
+          | gale_css_parser::Syntax::Sass
+          | gale_css_parser::Syntax::Less
+      ) {
+        strip_preprocessor_constructs(rule.selector(), ctx.syntax)
+      } else {
+        rule.selector().to_string()
+      };
+      // Check each comma-separated selector individually
+      for sel in selector.split(',') {
+        let sel = sel.trim();
+        if sel.is_empty() {
+          continue;
+        }
+        let count = count_type_selectors(sel, config);
+        if count > config.max {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!(
+                "Expected \"{sel}\" to have no more than {max} type selector",
+                max = config.max,
+              ),
+            )
+            .span(rule.span()),
+          );
+        }
       }
     }
     diags
@@ -418,29 +420,19 @@ fn strip_preprocessor_constructs(selector: &str, syntax: gale_css_parser::Syntax
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_type_selectors() {
     let rule = configured(&SelectorMaxType, None);
-    let d = rule.check(&style_with_selector("div span a ul"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("div span a ul"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(
       d[0]
@@ -452,21 +444,21 @@ mod tests {
   #[test]
   fn allows_within_limit() {
     let rule = configured(&SelectorMaxType, None);
-    let d = rule.check(&style_with_selector("div span a"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("div span a"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn does_not_count_class_selectors() {
     let rule = configured(&SelectorMaxType, None);
-    let d = rule.check(&style_with_selector(".a .b .c .d"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a .b .c .d"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn does_not_count_id_selectors() {
     let rule = configured(&SelectorMaxType, None);
-    let d = rule.check(&style_with_selector("#a #b #c #d"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("#a #b #c #d"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -474,8 +466,7 @@ mod tests {
   fn max_zero_rejects_single_type() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("foo {}"), &c);
+    let d = rule.check_source(&context(&style_with_selector("foo"), Syntax::Css));
     assert_eq!(d.len(), 1);
   }
 
@@ -483,8 +474,7 @@ mod tests {
   fn max_zero_accepts_class() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector(".bar {}"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".bar"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -492,9 +482,8 @@ mod tests {
   fn ignore_descendant() {
     let opts = serde_json::json!([0, {"ignore": ["descendant"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
     // `.foo div` — div is after descendant combinator, should be ignored
-    let d = rule.check(&style_with_selector(".foo div"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".foo div"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -502,9 +491,8 @@ mod tests {
   fn ignore_child() {
     let opts = serde_json::json!([0, {"ignore": ["child"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
     // `.foo > div` — div is after child combinator, should be ignored
-    let d = rule.check(&style_with_selector(".foo > div"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".foo > div"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -512,9 +500,8 @@ mod tests {
   fn ignore_compounded() {
     let opts = serde_json::json!([0, {"ignore": ["compounded"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
     // `.foo.bar div.baz` — div.baz is compounded with class, should be ignored
-    let d = rule.check(&style_with_selector("div.baz"), &c);
+    let d = rule.check_source(&context(&style_with_selector("div.baz"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -522,8 +509,7 @@ mod tests {
   fn ignore_types_exact() {
     let opts = serde_json::json!([0, {"ignoreTypes": ["fieldset"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("fieldset"), &c);
+    let d = rule.check_source(&context(&style_with_selector("fieldset"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -531,8 +517,7 @@ mod tests {
   fn ignore_types_regex() {
     let opts = serde_json::json!([0, {"ignoreTypes": ["/^my-/"]}]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("my-type"), &c);
+    let d = rule.check_source(&context(&style_with_selector("my-type"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -542,8 +527,7 @@ mod tests {
     // `:is(div)` has 1 type selector.
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector(":is(div)"), &c);
+    let d = rule.check_source(&context(&style_with_selector(":is(div)"), Syntax::Css));
     assert_eq!(d.len(), 1, "expected 1 diagnostic for type inside :is()");
   }
 
@@ -552,22 +536,25 @@ mod tests {
     // Stylelint v17: `.foo:not(div)` counts `div` as a type selector.
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector(".foo:not(div)"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".foo:not(div)"), Syntax::Css));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn counts_types_inside_has() {
     // Stylelint v17: `div:has(span a)` has 3 type selectors total.
-    let d =
-      configured(&SelectorMaxType, None).check(&style_with_selector("div:has(span a)"), &ctx());
+    let d = configured(&SelectorMaxType, None).check_source(&context(
+      &style_with_selector("div:has(span a)"),
+      Syntax::Css,
+    ));
     assert!(d.is_empty(), "3 types within default max of 3 should pass");
 
     let opts = serde_json::json!([2]);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("div:has(span a)"), &c);
+    let d = rule.check_source(&context(
+      &style_with_selector("div:has(span a)"),
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1, "3 types with max 2 should fail");
   }
 
@@ -577,7 +564,10 @@ mod tests {
     // to be cut out of the selector at character indices.
     let opts = serde_json::json!(1);
     let rule = configured(&SelectorMaxType, opts.clone());
-    let d = rule.check(&style_with_selector("\u{4e2d}\u{6587} div"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector("\u{4e2d}\u{6587} div"),
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1);
   }
 

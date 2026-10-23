@@ -1,6 +1,7 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::data::is_legacy_pseudo_element;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -45,27 +46,28 @@ const DEFAULT_MAX: usize = 1;
 
 impl Check for SelectorMaxPseudoClassCheck {
   /// Flags a selector holding more pseudo-classes than allowed.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
     let mut diags = Vec::new();
-    for sel in rule.selector.split(',') {
-      let sel = sel.trim();
-      let count = count_pseudo_classes(sel);
-      if count > max {
-        diags.push(
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for sel in rule.selector().split(',') {
+        let sel = sel.trim();
+        let count = count_pseudo_classes(sel);
+        if count > max {
+          diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} pseudo-class(es), found {count}"
                         ),
                     )
-                    .span(rule.span),
+                    .span(rule.span()),
                 );
+        }
       }
     }
     diags
@@ -135,7 +137,10 @@ fn count_pseudo_classes(selector: &str) -> usize {
       while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
         i += 1;
       }
-      if i > start {
+      // The four pseudo-elements CSS 2 wrote with one colon are elements,
+      // as Stylelint counts them.
+      let name: String = chars[start..i].iter().collect();
+      if i > start && !is_legacy_pseudo_element(&name) {
         count += 1;
       }
       // Do NOT skip parenthesized arguments — continue scanning so that
@@ -151,30 +156,20 @@ fn count_pseudo_classes(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, sel.len()),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_pseudo_classes() {
     let rule = configured(&SelectorMaxPseudoClass, None);
     // 2 pseudo-classes: :hover:focus
-    let d = rule.check(&style_with_selector("a:hover:focus"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a:hover:focus"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
   }
@@ -182,23 +177,34 @@ mod tests {
   #[test]
   fn allows_within_default_limit() {
     let rule = configured(&SelectorMaxPseudoClass, None);
-    let d = rule.check(&style_with_selector("a:hover"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a:hover"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn respects_configured_max() {
     let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector("a:hover:focus"), &ctx);
+    let d = rule.check_source(&context(&style_with_selector("a:hover:focus"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn does_not_count_pseudo_elements() {
     let rule = configured(&SelectorMaxPseudoClass, None);
-    let d = rule.check(&style_with_selector("a::before:hover"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector("a::before:hover"),
+      Syntax::Css,
+    ));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn does_not_count_legacy_single_colon_pseudo_elements() {
+    let rule = configured(&SelectorMaxPseudoClass, None);
+    for syntax in [Syntax::Css, Syntax::Scss, Syntax::Less] {
+      let source = style_with_selector("a:hover:BEFORE, p:first-line:focus");
+      assert!(rule.check_source(&context(&source, syntax)).is_empty());
+    }
   }
 
   #[test]
@@ -213,7 +219,7 @@ mod tests {
   fn counts_pseudo_classes_inside_not() {
     let rule = configured(&SelectorMaxPseudoClass, None);
     // Stylelint v17: `:not(:hover)` counts as 2 pseudo-classes (`:not` and `:hover`).
-    let d = rule.check(&style_with_selector("a:not(:hover)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a:not(:hover)"), Syntax::Css));
     assert_eq!(
       d.len(),
       1,
@@ -226,7 +232,7 @@ mod tests {
   fn counts_pseudo_classes_inside_is() {
     let rule = configured(&SelectorMaxPseudoClass, None);
     // Stylelint v17: `a:is(:hover)` counts as 2 pseudo-classes (`:is` and `:hover`).
-    let d = rule.check(&style_with_selector("a:is(:hover)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a:is(:hover)"), Syntax::Css));
     assert_eq!(
       d.len(),
       1,
@@ -239,8 +245,7 @@ mod tests {
   fn allows_pseudo_classes_inside_functional_within_limit() {
     let rule = configured(&SelectorMaxPseudoClass, serde_json::json!(2));
     // `:not(:hover)` = 2 pseudo-classes, max 2 should be OK
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector("a:not(:hover)"), &ctx);
+    let d = rule.check_source(&context(&style_with_selector("a:not(:hover)"), Syntax::Css));
     assert!(d.is_empty());
   }
 

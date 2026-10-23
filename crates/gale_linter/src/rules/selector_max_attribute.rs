@@ -1,14 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{PostcssTree, RuleRef};
+use gale_css_parser::selector::nesting::{resolve_nested, resolve_nested_list};
+use gale_css_parser::selector::{Selector, SelectorList, SelectorNode, parse_selector_list};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::nesting::{resolve_nested, resolve_nested_list};
-use crate::selector::{
-  Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
-};
-use crate::style_rules::RawStyleRule;
 use crate::stylelint_version::stylelint_major_version;
 
 const NAME: &str = "selector-max-attribute";
@@ -167,18 +164,19 @@ impl Options<'_> {
 }
 
 impl SelectorMaxAttributeCheck {
-  /// The report for `selector` of `raw`, written as `text`.
-  fn report(&self, raw: &RawStyleRule, selector: &Selector, max: u64, v17: bool) -> Diagnostic {
-    let text = &raw.prelude[selector.offset..selector.end];
+  /// The report for `selector` of `rule`.
+  fn report(&self, rule: RuleRef, selector: &Selector, max: u64, v17: bool) -> Diagnostic {
+    let text = &rule.raw_selector()[selector.offset..selector.end];
     let message = if v17 {
       format!("Too many attribute selectors in \"{text}\", maximum {max}")
     } else {
       let noun = if max == 1 { "selector" } else { "selectors" };
       format!("Expected \"{text}\" to have no more than {max} attribute {noun}")
     };
+    let offset = rule.selector_start();
     Diagnostic::new(NAME, message).span(Span::from_range(
-      raw.offset + selector.offset,
-      raw.offset + selector.end,
+      offset + selector.offset,
+      offset + selector.end,
     ))
   }
 }
@@ -186,7 +184,7 @@ impl SelectorMaxAttributeCheck {
 impl Check for SelectorMaxAttributeCheck {
   /// Flags selectors holding more attribute selectors than allowed, counted
   /// the way the installed Stylelint counts them.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(max) = self.max else {
       return vec![];
     };
@@ -196,42 +194,41 @@ impl Check for SelectorMaxAttributeCheck {
     };
     let v17 = stylelint_major_version() >= 17;
 
-    let scanned = ctx.scanned_rules();
-    let rules = &scanned.style_rules;
     let mut diags = Vec::new();
-    // Each rule's selectors resolved against its ancestors, for its nested
-    // rules to build on.  Parents precede their children in `rules`.
-    let mut resolved: Vec<Option<SelectorList>> = Vec::with_capacity(rules.len());
-    for raw in rules {
-      let own = is_standard_syntax_selector(&raw.prelude)
-        .then(|| parse_selector_list(&raw.prelude).ok())
-        .flatten();
-      let parent = raw.parent.and_then(|index| resolved[index].as_ref());
+    // Each rule's selectors resolved against its ancestors, by node, for
+    // its nested rules to build on.  Parents precede their children.
+    let mut resolved: Vec<Option<SelectorList>> = (0..tree.nodes.len()).map(|_| None).collect();
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let own = parse_selector_list(&prelude).ok();
+      let parent_rule = rule.parent_rule();
+      let parent = parent_rule.and_then(|parent| resolved[parent.id()].as_ref());
       let Some(own) = own else {
-        resolved.push(None);
         continue;
       };
       if v17 {
         for selector in &own.selectors {
           if options.count_deep(&selector.nodes) > max {
-            diags.push(self.report(raw, selector, max, true));
+            diags.push(self.report(rule, selector, max, true));
           }
         }
-      } else if raw.parent.is_none() || parent.is_some() {
+      } else if parent_rule.is_none() || parent.is_some() {
         for selector in &own.selectors {
           let nested = parent.map(|parent| resolve_nested(selector, parent));
           options.counts_by_context(nested.as_ref().unwrap_or(selector), &mut |_| {
-            diags.push(self.report(raw, selector, max, false));
+            diags.push(self.report(rule, selector, max, false));
           });
         }
       }
-      let entry = match (raw.parent, parent) {
+      resolved[rule.id()] = match (parent_rule, parent) {
         (None, _) => Some(own),
         (Some(_), Some(parent)) => Some(resolve_nested_list(&own, parent)),
         // An ancestor that cannot be resolved leaves this rule unresolved.
         (Some(_), None) => None,
       };
-      resolved.push(entry);
     }
     diags
   }
@@ -240,7 +237,6 @@ impl Check for SelectorMaxAttributeCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::style_rules::scan_style_rules;
   use gale_css_parser::Syntax;
 
   use crate::testing::invalid_options;
@@ -257,18 +253,18 @@ mod tests {
     };
     // Exercise both counting modes directly, whatever Stylelint the test
     // run happens to find.
-    let rules = scan_style_rules(source, Syntax::Scss);
+    let tree = PostcssTree::parse(source, Syntax::Scss);
     let mut out = Vec::new();
-    for raw in &rules {
-      let list = parse_selector_list(&raw.prelude).unwrap();
+    for rule in tree.walk_rules() {
+      let list = parse_selector_list(&rule.raw_selector()).unwrap();
       for selector in &list.selectors {
         if v17 {
           if opts.count_deep(&selector.nodes) > max {
-            out.push(check.report(raw, selector, max, true).message);
+            out.push(check.report(rule, selector, max, true).message);
           }
         } else {
           opts.counts_by_context(selector, &mut |_| {
-            out.push(check.report(raw, selector, max, false).message);
+            out.push(check.report(rule, selector, max, false).message);
           });
         }
       }
@@ -314,6 +310,27 @@ mod tests {
     for v17 in [false, true] {
       assert!(lint("[type='text'], [disabled] { }", serde_json::json!(1), v17).is_empty());
     }
+  }
+
+  #[test]
+  fn suffix_attribute_selectors_count_like_any_other() {
+    // `$=` is plain CSS, not a Sass variable.
+    let found = crate::testing::lint(
+      NAME,
+      serde_json::json!(0),
+      "img[src$='.gif'] { }",
+      Syntax::Css,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+  }
+
+  #[test]
+  fn selectors_with_comments_are_counted() {
+    // Stylelint skips a rule by its selector without comments, so a `//`
+    // in a comment does not hide the selector.
+    let source = ".a {\n  b, // see https://x\n  c[d] { }\n}";
+    let found = crate::testing::lint(NAME, serde_json::json!(0), source, Syntax::Scss);
+    assert_eq!(found.len(), 1, "{found:?}");
   }
 
   #[test]

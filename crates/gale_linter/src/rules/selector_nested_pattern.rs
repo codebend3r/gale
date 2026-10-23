@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -43,144 +43,79 @@ impl SelectorNestedPatternCheck {
 impl Check for SelectorNestedPatternCheck {
   /// Flags nested selectors that do not match the configured pattern. Uses
   /// `fancy_regex` so lookarounds in the pattern work.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  ///
+  /// As in Stylelint, a rule is nested when its parent is a rule (not an
+  /// at-rule), and each one is reported once, at the rule.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(pattern) = &self.pattern else {
       return vec![];
     };
+    let pattern_str = &pattern.source;
 
     let mut diags = Vec::new();
-    check_nested_selectors(rule, pattern, &mut diags);
-    diags
-  }
-}
-
-/// Reports each nested selector, split on commas, that fails the pattern.
-fn check_nested_selectors(
-  style: &gale_css_parser::StyleRule,
-  pattern: &Pattern,
-  diags: &mut Vec<Diagnostic>,
-) {
-  let pattern_str = &pattern.source;
-  for child in &style.children {
-    let selector = child.selector.trim();
-    // Check each selector in a selector list (split by comma)
-    for individual in selector.split(',') {
-      let sel = individual.trim();
-      if sel.is_empty() {
-        continue;
-      }
-      if !pattern.is_match(sel) {
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.parent_is_rule() && rule.is_standard_syntax())
+    {
+      let selector = rule.raw_selector();
+      // Check each selector in a selector list (split by comma), and report
+      // the first that fails, once per list.
+      if let Some(sel) = selector
+        .trim()
+        .split(',')
+        .map(str::trim)
+        .find(|sel| !sel.is_empty() && !pattern.is_match(sel))
+      {
         diags.push(
           Diagnostic::new(
             NAME,
             format!("Expected nested selector \"{sel}\" to match pattern \"{pattern_str}\""),
           )
-          .span(child.span),
+          .span(rule.span()),
         );
-        // Only report once per selector list, not per individual selector
-        break;
       }
     }
-    // Recurse into deeper nesting
-    check_nested_selectors(child, pattern, diags);
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn make_decl() -> Declaration {
-    Declaration {
-      property: "color".to_string(),
-      value: "red".to_string(),
-      span: Span::new(0, 0),
-      important: false,
-    }
+  /// What the rule configured with `options` reports for `source`.
+  fn check(options: serde_json::Value, source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&SelectorNestedPattern, options).check_source(&context(source, syntax))
   }
 
   #[test]
   fn reports_nested_without_ampersand() {
-    let opts = serde_json::json!("^&");
-    let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: ".child".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check(&node, &ctx);
+    let source = ".parent { color: red; .child { color: red; } }";
+    let d = check(serde_json::json!("^&"), source, Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(".child"));
+    assert_eq!(d[0].span.offset, source.find(".child").unwrap());
   }
 
   #[test]
   fn allows_nested_with_ampersand() {
-    let opts = serde_json::json!("^&");
-    let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check(&node, &ctx);
-    assert!(d.is_empty());
+    let source = ".parent { color: red; &:hover { color: red; } }";
+    assert!(check(serde_json::json!("^&"), source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn no_diagnostics_for_no_children() {
-    let opts = serde_json::json!("^&");
-    let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      span: Span::new(0, 20),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx);
-    assert!(d.is_empty());
+    let source = ".parent { color: red; }";
+    assert!(check(serde_json::json!("^&"), source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn no_diagnostics_without_options() {
-    let rule = configured(&SelectorNestedPattern, None);
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: ".child".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check(&node, &ctx);
+    let source = ".parent { color: red; .child { color: red; } }";
+    let d = configured(&SelectorNestedPattern, None).check_source(&context(source, Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -189,55 +124,30 @@ mod tests {
     // Pattern like patternfly uses: "^(?!.*&[-_])"
     // This pattern rejects selectors containing &- or &_
     let opts = serde_json::json!("^(?!.*&[-_])");
-    let rule = configured(&SelectorNestedPattern, opts.clone());
-    let ctx = scss_ctx();
     // &__child should be rejected (contains &_)
-    let node = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: "&__child".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
+    let source = ".parent { color: red; &__child { color: red; } }";
+    assert_eq!(check(opts.clone(), source, Syntax::Scss).len(), 1);
 
     // &:hover should be accepted (no &- or &_)
-    let node2 = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: "&:hover".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d2 = rule.check(&node2, &ctx);
-    assert!(d2.is_empty());
+    let source = ".parent { color: red; &:hover { color: red; } }";
+    assert!(check(opts.clone(), source, Syntax::Scss).is_empty());
 
     // .child without & should also be accepted (no &-)
-    let node3 = CssNode::Style(StyleRule {
-      selector: ".parent".to_string(),
-      declarations: vec![make_decl()],
-      children: vec![StyleRule {
-        selector: ".child".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(20, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 40),
-      nested_at_rules: Vec::new(),
-    });
-    let d3 = rule.check(&node3, &ctx);
-    assert!(d3.is_empty());
+    let source = ".parent { color: red; .child { color: red; } }";
+    assert!(check(opts, source, Syntax::Scss).is_empty());
+  }
+
+  #[test]
+  fn reports_each_nested_rule_once() {
+    // Each rule nested in a rule, however deep, is reported once; one in
+    // an at-rule is not nested in a rule, as Stylelint sees it.
+    let source = ".a { .b { .c { .d {} } } @media print { .e {} } }";
+    let d = check(serde_json::json!("^&"), source, Syntax::Scss);
+    let found: Vec<_> = d
+      .iter()
+      .map(|d| &source[d.span.offset..d.span.offset + 2])
+      .collect();
+    assert_eq!(found, [".b", ".c", ".d"]);
   }
 
   #[test]
