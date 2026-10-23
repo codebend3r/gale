@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -64,213 +65,108 @@ impl ScssDoubleSlashCommentWhitespaceInsideCheck {
 
 impl Check for ScssDoubleSlashCommentWhitespaceInsideCheck {
   /// Flags a `//` comment whose whitespace after the slashes does not match the
-  /// option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// option.  Only comment nodes are checked: a `//` comment inside a
+  /// selector, value or params lives in that node's raws, where
+  /// stylelint-scss's `walkComments` does not see it either.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::Comment(comment) = node else {
-      return vec![];
-    };
-
-    // Only applies to line comments (`//`)
-    if !comment.is_line {
-      return vec![];
-    }
-
-    // Skip `//` comments embedded inside selector lists (preceding non-empty
-    // line ends with `,`). postcss-scss doesn't expose these as comment nodes
-    // so Stylelint never checks them.
-    if comment.span.offset > 0 {
-      let before = ctx.source_slice(0, comment.span.offset).unwrap_or("");
-      // Find the previous non-empty line
-      if let Some(prev_line) = before.lines().rev().find(|l| !l.trim().is_empty()) {
-        if prev_line.trim_end().ends_with(',') {
-          return vec![];
-        }
+    let mut diags = Vec::new();
+    for comment in tree.walk_comments() {
+      // Only `//` comments, and not the empty ones (`//` with nothing but
+      // whitespace after it), which stylelint-scss skips.
+      if !comment.is_inline() || comment.text().is_empty() {
+        continue;
       }
-    }
+      // The text after `//`, as written.
+      let content = comment.source_text().get(2..).unwrap_or("");
 
-    let option = self.expectation;
-
-    // The comment text should be the content after `//`.
-    // Some parsers include the `//` prefix, some don't.
-    let content = if comment.text.starts_with("//") {
-      &comment.text[2..]
-    } else {
-      &comment.text
-    };
-
-    // Empty comments (`//` with nothing after) are always allowed.
-    if content.is_empty() {
-      return vec![];
-    }
-
-    // Triple-slash comments (`///`) are SassDoc and should be ignored.
-    if content.starts_with('/') {
-      return vec![];
-    }
-
-    // `//!` comments are special directive comments and should be ignored.
-    if content.starts_with('!') {
-      return vec![];
-    }
-
-    // Comment separators like `//====`, `//----`, `//****`, `//####`, etc.
-    // If the content after `//` consists entirely of a single repeated
-    // non-alphanumeric, non-whitespace character, treat it as a separator.
-    if is_separator_comment(content) {
-      return vec![];
-    }
-
-    let starts_with_space = content.starts_with(' ') || content.starts_with('\t');
-
-    // Stylelint points to the character right after `//`, not to `//` itself.
-    // comment.span.offset always points to the `//` in source (raffia stores
-    // text content without `//`, but span.start still includes the `//`).
-    let after_slashes = comment.span.offset + 2;
-
-    match option {
-      "always" => {
-        if !starts_with_space {
-          vec![
-            Diagnostic::new(NAME, "Expected a space after //".to_string())
-              .span(Span::new(after_slashes, 1)),
-          ]
-        } else {
-          vec![]
-        }
+      // Triple-slash comments (`///`) are SassDoc and should be ignored.
+      // `//!` comments are special directive comments and should be ignored.
+      // Comment separators like `//====`, `//----`, `//****`, `//####`, etc.
+      // If the content after `//` consists entirely of a single repeated
+      // non-alphanumeric, non-whitespace character, treat it as a separator.
+      if content.starts_with('/') || content.starts_with('!') || is_separator_comment(content) {
+        continue;
       }
-      "never" => {
-        if starts_with_space {
-          vec![
-            Diagnostic::new(NAME, "Unexpected whitespace after //".to_string())
-              .span(Span::new(after_slashes, 1)),
-          ]
-        } else {
-          vec![]
-        }
-      }
-      _ => vec![],
+
+      let starts_with_space = content.starts_with(' ') || content.starts_with('\t');
+
+      // Stylelint points to the character right after `//`, not to `//` itself.
+      let after_slashes = comment.start + 2;
+      let message = match self.expectation {
+        "always" if !starts_with_space => "Expected a space after //",
+        "never" if starts_with_space => "Unexpected whitespace after //",
+        _ => continue,
+      };
+      diags.push(Diagnostic::new(NAME, message).span(Span::new(after_slashes, 1)));
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Comment;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{invalid_options, lint};
 
-  fn line_comment(text: &str) -> CssNode {
-    CssNode::Comment(Comment {
-      is_line: true,
-      text: text.to_string(),
-      span: Span::new(0, text.len()),
-    })
-  }
-
-  fn block_comment(text: &str) -> CssNode {
-    CssNode::Comment(Comment {
-      is_line: false,
-      text: text.to_string(),
-      span: Span::new(0, text.len()),
-    })
+  fn always(source: &str) -> Vec<Diagnostic> {
+    lint(NAME, json!("always"), source, Syntax::Scss)
   }
 
   #[test]
   fn reports_missing_space_always() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//comment"), &scss_ctx());
+    let d = always("a {}\n//comment");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (7, 1));
+    assert_eq!(always("a {\n  //TODO fix this\n}").len(), 1);
   }
 
   #[test]
-  fn allows_space_always() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("// comment"), &scss_ctx());
-    assert!(d.is_empty());
+  fn reports_space_never() {
+    let d = lint(NAME, json!("never"), "// comment\n//comment", Syntax::Scss);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].message, "Unexpected whitespace after //");
+    assert_eq!(d[0].span.offset, 2);
   }
 
   #[test]
-  fn allows_empty_comment() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//"), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_space_and_empty_comments() {
+    assert!(always("// comment\n//\n//   \r\n").is_empty());
   }
 
   #[test]
   fn skips_block_comments() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&block_comment("/*comment*/"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(always("/*comment*/").is_empty());
   }
 
   #[test]
-  fn allows_triple_slash_sassdoc() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("/// @param"), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_sassdoc_bang_and_separator_comments() {
+    for comment in [
+      "/// @param",
+      "///",
+      "//! important",
+      "//========",
+      "//--------",
+      "//****",
+      "//####",
+    ] {
+      assert!(always(comment).is_empty(), "{comment}");
+    }
   }
 
   #[test]
-  fn allows_triple_slash_bare() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("///"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_bang_comment() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//! important"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_separator_equals() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//========"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_separator_dashes() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//--------"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_separator_stars() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//****"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_separator_hashes() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//####"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn still_reports_regular_no_space() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let d = rule.check(&line_comment("//TODO fix this"), &scss_ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("Expected a space"));
+  fn ignores_comments_inside_selectors_and_values() {
+    assert!(always("a, //x\nb { c: d //y\n; }").is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssDoubleSlashCommentWhitespaceInside, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&line_comment("//comment"), &css_ctx).is_empty());
+    assert!(lint(NAME, json!("always"), "//comment\na {}", Syntax::Less).is_empty());
   }
 
   #[test]

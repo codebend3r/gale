@@ -37,6 +37,17 @@ pub fn is_word_or_hyphen_byte(b: u8) -> bool {
   is_word_byte(b) || b == b'-'
 }
 
+/// CSS whitespace (Stylelint's `isWhitespace`, the PostCSS tokenizer's):
+/// space, tab, line feed, carriage return or form feed.
+pub fn is_css_whitespace(c: char) -> bool {
+  matches!(c, ' ' | '\n' | '\t' | '\r' | '\u{c}')
+}
+
+/// [`is_css_whitespace`] for one byte.
+pub fn is_css_whitespace_byte(b: u8) -> bool {
+  matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

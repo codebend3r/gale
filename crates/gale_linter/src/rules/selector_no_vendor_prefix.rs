@@ -1,12 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{self, Kind};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{self, Kind};
-use crate::standard_syntax::is_standard_syntax_selector;
 
 const NAME: &str = "selector-no-vendor-prefix";
 
@@ -51,16 +50,19 @@ const PREFIXES: &[&str] = &[
 impl Check for SelectorNoVendorPrefixCheck {
   /// Flags vendor-prefixed pseudos that have a standard equivalent, in every
   /// style rule's selector as written, skipping `ignoreSelectors`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for rule in &ctx.scanned_rules().style_rules {
-      let lower = rule.prelude.to_ascii_lowercase();
-      if !PREFIXES.iter().any(|prefix| lower.contains(prefix))
-        || !is_standard_syntax_selector(&rule.prelude)
-      {
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let first = diags.len();
+      let lower = prelude.to_ascii_lowercase();
+      if !PREFIXES.iter().any(|prefix| lower.contains(prefix)) {
         continue;
       }
-      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+      let Some(selectors) = postcss::parse(&prelude, rule.selector_start()) else {
         continue;
       };
       postcss::walk(&selectors, &mut |visit| {
@@ -85,6 +87,9 @@ impl Check for SelectorNoVendorPrefixCheck {
           )),
         );
       });
+      if !rule.selector_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
+      }
     }
     diags
   }

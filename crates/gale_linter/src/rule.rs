@@ -1,16 +1,14 @@
 use std::rc::Rc;
 
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Severity};
 
 use crate::file_cache::FileCache;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::PostcssTree;
-use crate::source_text::{self, WrittenDeclaration};
-use crate::style_rules::{self, ScannedRules};
 
-/// Context passed to each rule when checking a node.
+/// Context passed to each rule when checking a file.
 pub struct RuleContext<'a> {
   /// The path to the file being linted.
   pub file_path: &'a str,
@@ -45,19 +43,6 @@ impl<'a> RuleContext<'a> {
     self.source.get(start..)
   }
 
-  /// The selector of the style rule that starts at `offset`, exactly as
-  /// written: everything up to the `{` that opens its block, with trailing
-  /// whitespace removed.
-  ///
-  /// The parsed selector is no substitute when positions matter: the CSS
-  /// parser re-serialises it, so its length need not match the source.
-  /// Returns `None` when `offset` is not a character boundary in the source.
-  pub fn selector_source(&self, offset: usize) -> Option<&'a str> {
-    let rest = self.source_from(offset)?;
-    let end = selector_end(rest, !matches!(self.syntax, Syntax::Css));
-    rest.get(..end).map(str::trim_end)
-  }
-
   /// The file's [`FileCache`], when it was built for this context's source
   /// and syntax.
   fn cache(&self) -> Option<&'a FileCache<'a>> {
@@ -74,72 +59,6 @@ impl<'a> RuleContext<'a> {
       None => Rc::new(PostcssTree::parse(self.source, self.syntax)),
     }
   }
-
-  /// The source's style rule preludes and at-rules as written, scanned once
-  /// per file and shared with every other rule that asks.
-  pub fn scanned_rules(&self) -> Rc<ScannedRules> {
-    match self.cache() {
-      Some(cache) => cache.scanned_rules(),
-      None => Rc::new(style_rules::scan(self.source, self.syntax)),
-    }
-  }
-
-  /// The declarations `node` holds directly, as written (see
-  /// [`source_text::written_declarations`]).  Every rule checking the node
-  /// the runner is on shares one reading of them.
-  pub fn written_declarations(&self, node: &CssNode) -> Rc<Vec<WrittenDeclaration<'a>>> {
-    match self.cache() {
-      Some(cache) => cache.written_declarations(node),
-      None => Rc::new(source_text::written_declarations(
-        self.source,
-        node,
-        self.syntax,
-      )),
-    }
-  }
-}
-
-/// Byte length of the selector at the start of `text`: the offset of the
-/// first `{` that is not inside a string, comment, attribute selector,
-/// parentheses or `#{...}` interpolation, or the whole text if there is none.
-///
-/// `line_comments` treats `//` as a comment to the end of the line, as in
-/// SCSS and Less.
-fn selector_end(text: &str, line_comments: bool) -> usize {
-  let bytes = text.as_bytes();
-  let mut depth = 0usize;
-  let mut i = 0;
-  while i < bytes.len() {
-    match bytes[i] {
-      b'{' if depth == 0 => return i,
-      quote @ (b'"' | b'\'') => {
-        i += 1;
-        while i < bytes.len() && bytes[i] != quote {
-          if bytes[i] == b'\\' {
-            i += 1;
-          }
-          i += 1;
-        }
-      }
-      b'/' if bytes.get(i + 1) == Some(&b'*') => {
-        i = text[i + 2..]
-          .find("*/")
-          .map_or(bytes.len(), |end| i + 2 + end + 1);
-      }
-      b'/' if line_comments && bytes.get(i + 1) == Some(&b'/') => {
-        i = text[i..].find('\n').map_or(bytes.len(), |end| i + end);
-      }
-      b'#' if bytes.get(i + 1) == Some(&b'{') => {
-        depth += 1;
-        i += 1;
-      }
-      b'(' | b'[' => depth += 1,
-      b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-      _ => {}
-    }
-    i += 1;
-  }
-  bytes.len()
 }
 
 /// What the registry knows about a rule before it is configured.
@@ -169,16 +88,12 @@ pub struct RuleMeta {
 /// the set is checked by the same configured rule.  The runner gives each
 /// problem its severity, so a check leaves it at the default.
 pub trait Check: Send + Sync {
-  /// Check a single CSS node and return any diagnostics.
-  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
-    let _ = (node, context);
-    vec![]
-  }
-
-  /// Check the entire document (all top-level nodes). Used for rules that need
-  /// document-level context like duplicate detection or source-level checks.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    let _ = (nodes, context);
+  /// Check the file through its statement tree, the tree a Stylelint rule
+  /// reads as `root` (see [`PostcssTree`]).
+  ///
+  /// The runner calls it once per file with the tree every rule shares.
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
+    let _ = (tree, context);
     vec![]
   }
 }
@@ -305,28 +220,6 @@ mod tests {
     assert_eq!(ctx.source_from(5), None);
   }
 
-  #[test]
-  fn selector_source_reads_up_to_the_opening_brace() {
-    let ctx = context("a ,\n  b中 { color: red; }", Syntax::Css);
-    assert_eq!(ctx.selector_source(0), Some("a ,\n  b中"));
-    assert_eq!(ctx.selector_source(8), None, "inside 中");
-  }
-
-  #[test]
-  fn selector_source_skips_braces_that_do_not_open_the_block() {
-    let scss = context(
-      ".a-#{$b}, [x=\"{\"] /* { */ .c(d) // {\n.e { }",
-      Syntax::Scss,
-    );
-    assert_eq!(
-      scss.selector_source(0),
-      Some(".a-#{$b}, [x=\"{\"] /* { */ .c(d) // {\n.e")
-    );
-    // Plain CSS has no line comments, so `//` is just text.
-    let css = context("a // b { }", Syntax::Css);
-    assert_eq!(css.selector_source(0), Some("a // b"));
-  }
-
   /// A context with the runner's per-file cache shares its artifacts
   /// between rules; one over other text, or without a cache, builds its own.
   #[test]
@@ -339,7 +232,6 @@ mod tests {
       ..context(&source, Syntax::Css)
     };
     assert!(Rc::ptr_eq(&ctx.postcss_tree(), &cache.postcss_tree()));
-    assert!(Rc::ptr_eq(&ctx.scanned_rules(), &cache.scanned_rules()));
 
     let other = source.clone();
     let elsewhere = RuleContext {
@@ -350,10 +242,6 @@ mod tests {
     let tree = elsewhere.postcss_tree();
     assert!(!Rc::ptr_eq(&tree, &cache.postcss_tree()));
     assert!(std::ptr::eq(tree.source(), other.as_str()));
-    assert!(!Rc::ptr_eq(
-      &elsewhere.scanned_rules(),
-      &cache.scanned_rules()
-    ));
 
     let uncached = context(&source, Syntax::Css);
     assert!(!Rc::ptr_eq(
@@ -378,7 +266,7 @@ mod tests {
   }
 
   impl Check for ReportsWord {
-    fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+    fn check(&self, _tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
       vec![Diagnostic::new("test/word", self.word)]
     }
   }
@@ -417,12 +305,7 @@ mod tests {
     );
     let ctx = context("", Syntax::Css);
     let check = configure(&WordRule, serde_json::json!("b")).ok().unwrap();
-    assert_eq!(check.check_root(&[], &ctx)[0].message, "b");
-    assert!(
-      check
-        .check(&CssNode::Style(Default::default()), &ctx)
-        .is_empty()
-    );
+    assert_eq!(check.check(&ctx.postcss_tree(), &ctx)[0].message, "b");
     assert_eq!(
       configure(&WordRule, serde_json::json!("c")).err().unwrap(),
       ["Invalid option value \"c\" for rule \"test/word\""]

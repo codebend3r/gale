@@ -5,10 +5,10 @@
 
 use std::sync::OnceLock;
 
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
-use crate::postcss_tree::PostcssTree;
 use crate::stylelint_version::installed_at_least;
 
 /// Stylelint's `hasEmptyLine`: whether `text` holds a line with nothing but

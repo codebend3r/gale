@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
@@ -59,44 +59,35 @@ impl AtRulePropertyRequiredListCheck {
 }
 
 impl Check for AtRulePropertyRequiredListCheck {
-  /// Flags an at-rule that is missing any property the config requires for it.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
-    };
-
-    let name_lower = at_rule.name.to_ascii_lowercase();
-    let required_props = match self.required.get(name_lower.as_str()) {
-      Some(props) => props,
-      None => return vec![],
-    };
-
-    // Collect declared properties from the at-rule's children.
-    let declared: Vec<String> = at_rule
-      .children
-      .iter()
-      .filter_map(|child| {
-        if let CssNode::Declaration(decl) = child {
-          Some(decl.property.to_ascii_lowercase())
-        } else {
-          None
-        }
-      })
-      .collect();
-
+  /// Flags an at-rule with a block that is missing any property the config
+  /// requires for it, at its `@name` word as Stylelint reports it.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for req in required_props {
-      if !declared.iter().any(|d| d == req) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Expected property \"{req}\" in at-rule \"@{name}\"",
-              name = at_rule.name,
-            ),
-          )
-          .span(at_rule.span),
-        );
+    for at_rule in tree.walk_at_rules() {
+      if !at_rule.has_block() || !at_rule.is_standard_syntax() {
+        continue;
+      }
+      let name = at_rule.name();
+      let Some(required_props) = self.required.get(name.to_ascii_lowercase().as_str()) else {
+        continue;
+      };
+
+      // The properties declared directly in the block.
+      let declared: Vec<String> = at_rule
+        .child_decls()
+        .map(|decl| decl.prop().to_ascii_lowercase())
+        .collect();
+
+      for req in required_props {
+        if !declared.iter().any(|d| d == req) {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!("Expected property \"{req}\" in at-rule \"@{name}\""),
+            )
+            .span(Span::new(at_rule.start, name.len() + 1)),
+          );
+        }
       }
     }
     diags
@@ -128,85 +119,61 @@ fn parse_options(map: &Map<String, Value>) -> HashMap<String, Vec<String>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
-
-  fn at_rule_with_decls(name: &str, decls: Vec<(&str, &str)>) -> CssNode {
-    let children = decls
-      .into_iter()
-      .map(|(prop, val)| {
-        CssNode::Declaration(Declaration {
-          property: prop.to_string(),
-          value: val.to_string(),
-          span: Span::new(0, 10),
-          important: false,
-        })
-      })
-      .collect();
-    CssNode::AtRule(AtRule {
-      name: name.to_string(),
-      params: String::new(),
-      span: Span::new(0, 20),
-      children,
-    })
-  }
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options, lint};
 
   #[test]
-  fn reports_missing_required_property() {
-    let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
-    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx();
-
-    let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
-    let d = rule.check(&node, &c);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("font-style"));
+  fn reports_missing_required_property_at_the_name() {
+    let opts = json!({ "font-face": ["font-family", "font-style"] });
+    for css in [
+      "a {}\n@font-face { font-family: Arial; }",
+      "a {}\n@FONT-FACE { FONT-FAMILY: Arial; }",
+    ] {
+      let d = lint(NAME, opts.clone(), css, Syntax::Css);
+      assert_eq!(d.len(), 1, "{css}");
+      assert!(d[0].message.contains("font-style"));
+      assert_eq!((d[0].span.offset, d[0].span.length), (5, 10));
+    }
   }
 
   #[test]
   fn allows_when_all_properties_present() {
-    let opts = serde_json::json!({ "font-face": ["font-family", "font-style"] });
-    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx();
-
-    let node = at_rule_with_decls(
-      "font-face",
-      vec![("font-family", "Arial"), ("font-style", "normal")],
-    );
-    let d = rule.check(&node, &c);
-    assert!(d.is_empty());
+    let opts = json!({ "font-face": ["font-family", "font-style"] });
+    let css = "@font-face { font-family: Arial; font-style: normal; }";
+    assert!(lint(NAME, opts, css, Syntax::Css).is_empty());
+    // `@page` and `@property` keep their descriptors too.
+    let opts = json!({ "page": ["margin"], "property": ["syntax"] });
+    let css = "@page { margin: 1cm; }\n@property --x { syntax: '*'; inherits: false; }";
+    assert!(lint(NAME, opts, css, Syntax::Css).is_empty());
   }
 
   #[test]
-  fn ignores_unmatched_at_rules() {
-    let opts = serde_json::json!({ "font-face": ["font-family"] });
-    let rule = configured(&AtRulePropertyRequiredList, opts.clone());
-    let c = ctx();
-
-    let node = at_rule_with_decls("media", vec![]);
-    let d = rule.check(&node, &c);
-    assert!(d.is_empty());
+  fn ignores_unmatched_and_blockless_at_rules() {
+    let opts = json!({ "font-face": ["font-family"] });
+    assert!(lint(NAME, opts, "@media screen {}\n@font-face x;", Syntax::Css).is_empty());
   }
 
   #[test]
   fn returns_empty_when_no_options() {
     let rule = configured(&AtRulePropertyRequiredList, None);
-    let ctx = ctx();
-    let node = at_rule_with_decls("font-face", vec![]);
-    let d = rule.check(&node, &ctx);
-    assert!(d.is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source("@font-face {}"))
+        .is_empty()
+    );
   }
 
   #[test]
   fn a_single_name_is_a_list_of_one() {
-    let rule = configured(
-      &AtRulePropertyRequiredList,
-      serde_json::json!({ "font-face": "font-display" }),
+    let opts = json!({ "font-face": "font-display" });
+    let d = lint(
+      NAME,
+      opts,
+      "@font-face { font-family: Arial; }",
+      Syntax::Css,
     );
-    let node = at_rule_with_decls("font-face", vec![("font-family", "Arial")]);
-    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("font-display"));
   }

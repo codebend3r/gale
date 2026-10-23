@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -32,38 +33,40 @@ impl ScssLoadPartialExtensionCheck {
 }
 
 impl Check for ScssLoadPartialExtensionCheck {
-  /// Flags a `@use`, `@forward` or `@import` path that carries a file extension.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags a `@use`, `@forward` or `@import` path that carries a file
+  /// extension, at the extension, as stylelint-scss reports it.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if !matches!(at.name.as_str(), "use" | "forward" | "import") {
-      return vec![];
-    }
-
-    let path = extract_path(&at.params);
-    if path.is_empty() {
-      return vec![];
-    }
-
-    for ext in &[".scss", ".sass"] {
-      if path.ends_with(ext) {
-        return vec![
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !matches!(at.name(), "use" | "forward" | "import") {
+        continue;
+      }
+      let params = at.params();
+      let path = extract_path(params);
+      if path.is_empty() {
+        continue;
+      }
+      if let Some(ext) = [".scss", ".sass"]
+        .into_iter()
+        .find(|ext| path.ends_with(ext))
+      {
+        // stylelint-scss reports the last `.scss` in the params.
+        let span = params.rfind(ext).map_or(at.span(), |at_ext| {
+          Span::new(at.params_start() + at_ext, ext.len())
+        });
+        diags.push(
           Diagnostic::new(
             NAME,
-            format!("Unexpected file extension \"{}\" in partial import", ext),
+            format!("Unexpected file extension \"{ext}\" in partial import"),
           )
-          .span(at.span),
-        ];
+          .span(span),
+        );
       }
     }
-
-    vec![]
+    diags
   }
 }
 
@@ -85,54 +88,37 @@ fn extract_path(params: &str) -> &str {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn use_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "use".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  /// The reports for `@use <params>;` in `syntax`.
+  fn use_rule(params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let source = format!("@use {params};");
+    configured(&ScssLoadPartialExtension, None).check_source(&context(&source, syntax))
   }
 
   #[test]
-  fn reports_scss_extension() {
-    let rule = configured(&ScssLoadPartialExtension, None);
-    let d = rule.check(&use_rule("\"variables.scss\""), &scss_ctx());
+  fn reports_scss_extension_at_the_extension() {
+    let d = use_rule("\"variables.scss\"", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(".scss"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (15, 5));
   }
 
   #[test]
   fn reports_sass_extension() {
-    let rule = configured(&ScssLoadPartialExtension, None);
-    let d = rule.check(&use_rule("\"variables.sass\""), &scss_ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(use_rule("\"variables.sass\"", Syntax::Scss).len(), 1);
   }
 
   #[test]
-  fn allows_css_extension() {
-    let rule = configured(&ScssLoadPartialExtension, None);
-    let d = rule.check(&use_rule("\"reset.css\""), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_no_extension() {
-    let rule = configured(&ScssLoadPartialExtension, None);
-    let d = rule.check(&use_rule("\"variables\""), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_css_and_no_extension() {
+    assert!(use_rule("\"reset.css\"", Syntax::Scss).is_empty());
+    assert!(use_rule("\"variables\"", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssLoadPartialExtension, None);
-    let ctx = ctx();
-    assert!(rule.check(&use_rule("\"variables.scss\""), &ctx).is_empty());
+    assert!(use_rule("\"variables.scss\"", Syntax::Css).is_empty());
   }
 
   #[test]

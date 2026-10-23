@@ -9,14 +9,14 @@
 //! with Stylelint's.
 
 use gale_css_parser::Syntax;
+use gale_css_parser::css_tokenizer::{self, ComponentValue, Token, TokenType};
+use gale_css_parser::postcss_tree::{Node, NodeKind, PostcssTree, RuleRef};
+use gale_css_parser::selector::postcss::{self as selector, Kind};
+use gale_css_parser::value_parser::{self, ValueNode};
 
 use super::{Found, KeyedFound};
-use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
 use crate::data;
-use crate::postcss_tree::{Node, NodeKind, PostcssTree};
-use crate::selector::postcss::{self as selector, Kind};
 use crate::standard_syntax;
-use crate::value_parser::{self, ValueNode};
 
 /// Every node of `kind`, with its index, in document order.
 fn nodes_of<'t>(tree: &'t PostcssTree, kind: NodeKind) -> impl Iterator<Item = (usize, &'t Node)> {
@@ -55,14 +55,6 @@ fn standard_rules<'t>(
       let raw = tree.source().get(node.name_span.clone()).unwrap_or("");
       (i, node, raw)
     })
-}
-
-/// Whether the rule sits directly in `@keyframes` (`isKeyframeRule`).
-fn is_keyframe_rule(tree: &PostcssTree, node: &Node) -> bool {
-  node.parent.is_some_and(|parent| {
-    let parent = &tree.nodes[parent];
-    parent.kind == NodeKind::AtRule && parent.name.eq_ignore_ascii_case("keyframes")
-  })
 }
 
 /// At-rule names, without the `@`: `at-rule-*-list`.  Non-standard
@@ -662,7 +654,12 @@ pub fn declaration_units(tree: &PostcssTree, skip_functions: bool, found: &mut V
 /// `rule-selector-property-disallowed-list`.
 pub fn rule_properties(tree: &PostcssTree, ignore_keyframes: bool, found: &mut Vec<KeyedFound>) {
   for (rule, node, _) in standard_rules(tree) {
-    if ignore_keyframes && is_keyframe_rule(tree, node) {
+    if ignore_keyframes
+      && tree
+        .node(rule)
+        .as_rule()
+        .is_some_and(RuleRef::is_keyframe_rule)
+    {
       continue;
     }
     for (i, decl) in nodes_of(tree, NodeKind::Decl) {
@@ -705,7 +702,11 @@ pub struct SelectorOptions {
 /// commas: `selector-disallowed-list`.
 pub fn selectors(tree: &PostcssTree, options: SelectorOptions, found: &mut Vec<Found>) {
   for (i, node, raw) in standard_rules(tree) {
-    if (options.ignore_keyframes && is_keyframe_rule(tree, node))
+    if (options.ignore_keyframes
+      && tree
+        .node(i)
+        .as_rule()
+        .is_some_and(RuleRef::is_keyframe_rule))
       || (options.ignore_inside_block && node.parent.is_some())
     {
       continue;

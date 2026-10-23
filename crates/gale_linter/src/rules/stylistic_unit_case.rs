@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -38,38 +38,34 @@ impl StylisticUnitCaseCheck {
 }
 
 impl Check for StylisticUnitCaseCheck {
-  /// Flags units not in the configured case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags units in declaration values, as written, whose case does not
+  /// match the option, at the unit, with a fix that recases it.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = self.expected_case;
-
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      let value = &decl.value;
-      let base = decl.span.offset;
-      // Find units in value: a number followed by letters
-      for (unit_offset, unit) in find_units(value) {
-        let is_wrong = match expected_case {
-          "lower" => unit.chars().any(|c| c.is_ascii_uppercase()),
-          "upper" => unit.chars().any(|c| c.is_ascii_lowercase()),
-          _ => false,
+    for decl in tree.walk_decls() {
+      let value = decl.raw_value();
+      let fixable = decl.value_fixable();
+      let base = decl.value_start();
+      for (unit_offset, unit) in find_units(&value) {
+        let fixed = match expected_case {
+          "lower" => unit.to_ascii_lowercase(),
+          "upper" => unit.to_ascii_uppercase(),
+          _ => continue,
         };
-        if is_wrong {
-          let fixed = match expected_case {
-            "lower" => unit.to_ascii_lowercase(),
-            "upper" => unit.to_ascii_uppercase(),
-            _ => continue,
-          };
-          // Try to find the unit in source for accurate offset
-          let abs_offset = base + unit_offset;
-          diags.push(
-            Diagnostic::new(NAME, format!("Expected \"{unit}\" to be \"{fixed}\""))
-              .span(Span::new(abs_offset, unit.len()))
-              .fix(Fix::new(
-                format!("Convert to {expected_case}case"),
-                vec![Edit::new(Span::new(abs_offset, unit.len()), &fixed)],
-              )),
-          );
+        if fixed == unit {
+          continue;
         }
+        let span = Span::new(base + unit_offset, unit.len());
+        let mut diag =
+          Diagnostic::new(NAME, format!("Expected \"{unit}\" to be \"{fixed}\"")).span(span);
+        if fixable {
+          diag = diag.fix(Fix::new(
+            format!("Convert to {expected_case}case"),
+            vec![Edit::new(span, &fixed)],
+          ));
+        }
+        diags.push(diag);
       }
     }
     diags
@@ -95,6 +91,18 @@ fn find_units(value: &str) -> Vec<(usize, String)> {
         i += 1;
       }
       if i < len {
+        i += 1;
+      }
+      continue;
+    }
+
+    // Skip hex colours (`#97C1FF`) and unicode ranges (`U+1D00-1DBF`),
+    // whose digits are not numbers.
+    let hex = bytes[i] == b'#';
+    let unicode_range = matches!(bytes[i], b'u' | b'U') && bytes.get(i + 1) == Some(&b'+');
+    if hex || unicode_range {
+      i += 1 + usize::from(unicode_range);
+      while i < len && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'?')) {
         i += 1;
       }
       continue;
@@ -163,54 +171,66 @@ fn find_units(value: &str) -> Vec<(usize, String)> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{fix, invalid_options, lint};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "width".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// The reports for `a { width: <value>; }` in `syntax`, lower case wanted.
+  fn width(value: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      json!("lower"),
+      &format!("a {{ width: {value}; }}"),
+      syntax,
+    )
   }
 
   #[test]
-  fn reports_uppercase_unit() {
-    let rule = configured(&StylisticUnitCase, None);
-    let d = rule.check(&style_with_value("10PX"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("\"px\""));
+  fn reports_uppercase_unit_at_the_unit() {
+    for syntax in [Syntax::Css, Syntax::Scss] {
+      let d = width("10PX", syntax);
+      assert_eq!(d.len(), 1);
+      assert!(d[0].message.contains("\"px\""));
+      assert_eq!((d[0].span.offset, d[0].span.length), (13, 2));
+    }
   }
 
   #[test]
   fn allows_lowercase_unit() {
-    let rule = configured(&StylisticUnitCase, None);
-    let d = rule.check(&style_with_value("10px"), &ctx());
-    assert!(d.is_empty());
+    assert!(width("10px", Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_mixed_case_unit() {
-    let rule = configured(&StylisticUnitCase, None);
-    let d = rule.check(&style_with_value("10Rem"), &ctx());
+    let d = width("10Rem", Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("\"rem\""));
   }
 
   #[test]
+  fn fixes_the_unit_in_place() {
+    let scss = "a { width: 10PX; @media print { top: 1EM; } }\n$x: 2Rem;";
+    assert_eq!(
+      fix(NAME, json!("lower"), scss, Syntax::Scss),
+      "a { width: 10px; @media print { top: 1em; } }\n$x: 2rem;"
+    );
+    let upper = fix(NAME, json!("upper"), "a { width: 10px; }", Syntax::Css);
+    assert_eq!(upper, "a { width: 10PX; }");
+  }
+
+  #[test]
+  fn does_not_flag_hex_colours_or_unicode_ranges() {
+    assert!(width("#97C1FF", Syntax::Scss).is_empty());
+    let css = "@font-face { unicode-range: U+1D00-1DBF, u+2C60-2C7F; }";
+    assert!(lint(NAME, json!("lower"), css, Syntax::Css).is_empty());
+  }
+
+  #[test]
   fn does_not_flag_var_custom_property_with_uppercase_letter() {
     // `var(--base0C)` — the `C` is part of the custom property name, not a unit
-    let rule = configured(&StylisticUnitCase, None);
-    let d = rule.check(&style_with_value("var(--base0C)"), &ctx());
     assert!(
-      d.is_empty(),
+      width("var(--base0C)", Syntax::Css).is_empty(),
       "uppercase letter in a CSS custom property name must not be flagged as a unit"
     );
   }

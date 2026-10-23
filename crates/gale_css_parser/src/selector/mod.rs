@@ -330,16 +330,6 @@ pub fn any_pseudo(nodes: &[SelectorNode], mut pred: impl FnMut(&Pseudo) -> bool)
   !walk_pseudos(nodes, &mut |visit| !pred(visit.pseudo))
 }
 
-/// Whether a selector uses only standard CSS syntax; interpolation and
-/// preprocessor placeholders are left alone.
-pub fn is_standard_syntax_selector(selector: &str) -> bool {
-  let trimmed = selector.trim_start();
-  !(trimmed.starts_with('%')
-    || selector.contains("#{")
-    || selector.contains("@{")
-    || selector.contains('$'))
-}
-
 /// The selector with its `//` comments (SCSS, Less) cut from each line,
 /// leaving out the lines that held nothing else.  A `//` inside a quoted
 /// string is not a comment.

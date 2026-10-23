@@ -129,8 +129,8 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | `--disable-default-ignores` / `--di` | Lint `node_modules` too | ✅ | ✅ |
 | `--no-ignore` | Skip every ignore file | ✅ | ❌ |
 | `--stdin` / `--stdin-filename` | Lint source from standard input | ✅ | ✅ |
-| `--fix` | Autofix problems (strict mode by default) | ✅ | ✅ |
-| `--fix=lax` | Also fix files that have parse errors | ✅ | ✅ |
+| `--fix` | Autofix problems | ✅ | ✅ |
+| `--fix=lax` | Also fix files that have syntax errors (gale recovers from every one, so it fixes like `--fix`) | ✅ | ✅ |
 | `--formatter` / `-f` | Pick an output format | ✅ | ✅ |
 | `--custom-formatter` | Load a formatter from a JS module | ❌ | ✅ |
 | `--custom-syntax` | Pick a parser from the command line | ⚠️ Same four syntaxes as the config key; anything else skips every file | ✅ Any PostCSS syntax package |
@@ -173,7 +173,7 @@ decision; a ❌ under Stylelint is something Gale adds on top.
 | Feature | Description | Gale | Stylelint |
 |---------|-------------|:----:|:---------:|
 | Fix on the command line | `--fix` rewrites files in place | ✅ | ✅ |
-| Strict and lax modes | Skip or include files with parse errors | ✅ | ✅ |
+| Strict and lax modes | Skip or include files with syntax errors (gale recovers from every one, so both fix alike) | ✅ | ✅ |
 | Fixed output on stdin | `--fix --stdin` prints the fixed source | ✅ | ✅ |
 | Repeated passes until stable | Re-run fixes when one fix enables another | ✅ | ⚠️ Single pass |
 | Disable comments suppress fixes | A disabled rule does not fix its range | ✅ | ✅ |

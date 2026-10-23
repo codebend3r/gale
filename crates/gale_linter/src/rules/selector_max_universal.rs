@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -69,23 +69,23 @@ struct Config {
 impl Check for SelectorMaxUniversalCheck {
   /// Flags selectors holding more `*` than allowed, checking each comma-separated
   /// selector on its own.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let config = &self.config;
 
     let mut diags = Vec::new();
 
-    for sel in rule.selector.split(',') {
-      let sel = sel.trim();
-      if sel.is_empty() {
-        continue;
-      }
-      let count = count_universal_selectors(sel, config);
-      if count > config.max {
-        diags.push(
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for sel in rule.selector().split(',') {
+        let sel = sel.trim();
+        if sel.is_empty() {
+          continue;
+        }
+        let count = count_universal_selectors(sel, config);
+        if count > config.max {
+          diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
@@ -93,8 +93,9 @@ impl Check for SelectorMaxUniversalCheck {
                             max = config.max,
                         ),
                     )
-                    .span(rule.span),
+                    .span(rule.span()),
                 );
+        }
       }
     }
 
@@ -191,31 +192,20 @@ fn count_universal_selectors(selector: &str, config: &Config) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_universal() {
     let opts = serde_json::json!([1]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("* *"), &c);
+    let d = rule.check_source(&context(&style_with_selector("* *"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
   }
@@ -223,28 +213,31 @@ mod tests {
   #[test]
   fn allows_single_universal() {
     let rule = configured(&SelectorMaxUniversal, None);
-    let d = rule.check(&style_with_selector("*"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("*"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_universal() {
     let rule = configured(&SelectorMaxUniversal, None);
-    let d = rule.check(&style_with_selector("div .class"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("div .class"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_star_in_attribute_value() {
     let rule = configured(&SelectorMaxUniversal, None);
-    let d = rule.check(&style_with_selector("div[class*='foo']"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector("div[class*='foo']"),
+      Syntax::Css,
+    ));
     assert!(d.is_empty());
   }
 
   #[test]
   fn checks_each_selector_separately() {
     let rule = configured(&SelectorMaxUniversal, None);
-    let d = rule.check(&style_with_selector("*, *"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("*, *"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -252,8 +245,7 @@ mod tests {
   fn respects_custom_max() {
     let options = serde_json::json!([2]);
     let rule = configured(&SelectorMaxUniversal, options.clone());
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector("* *"), &ctx);
+    let d = rule.check_source(&context(&style_with_selector("* *"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -261,9 +253,8 @@ mod tests {
   fn ignore_after_child_combinator() {
     let opts = serde_json::json!([1, {"ignoreAfterCombinators": [">"]}]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx();
     // * > * — the second * is after child combinator, should be ignored
-    let d = rule.check(&style_with_selector("* > *"), &c);
+    let d = rule.check_source(&context(&style_with_selector("* > *"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -271,8 +262,7 @@ mod tests {
   fn max_zero_rejects_single_universal() {
     let opts = serde_json::json!([0]);
     let rule = configured(&SelectorMaxUniversal, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("*"), &c);
+    let d = rule.check_source(&context(&style_with_selector("*"), Syntax::Css));
     assert_eq!(d.len(), 1);
   }
 

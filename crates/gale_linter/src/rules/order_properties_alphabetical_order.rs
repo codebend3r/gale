@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
-use crate::autoprefixable::vendor_prefix_len;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting, is_truthy};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::stylelint_order::{is_standard_syntax_property, normalized_property};
 
 const NAME: &str = "order/properties-alphabetical-order";
 
@@ -35,53 +35,37 @@ impl OrderPropertiesAlphabeticalOrderCheck {
 }
 
 impl Check for OrderPropertiesAlphabeticalOrderCheck {
-  /// Flags a property that sorts before the one declared above it. SCSS variables
-  /// are skipped.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  /// Flags a property that sorts before the one declared above it in the
+  /// same style rule.  SCSS variables and custom properties are skipped;
+  /// names print as written, as stylelint-order prints them.
+  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut prev_sort_key: Option<String> = None;
-    let mut prev_original: Option<String> = None;
-
-    for decl in &rule.declarations {
-      let prop = &decl.property;
-
-      // Skip SCSS variables ($var)
-      if prop.starts_with('$') {
-        continue;
+    for rule in tree.walk_rules() {
+      let mut prev: Option<(String, &str)> = None;
+      for decl in rule.child_decls() {
+        let prop = decl.prop();
+        // stylelint-order passes over variables, interpolated names and
+        // custom properties.
+        if !is_standard_syntax_property(prop) || prop.starts_with("--") {
+          continue;
+        }
+        // Compare without the vendor prefix, ignoring case, and with
+        // `-moz-osx-font-smoothing` read as `font-smoothing`.
+        let sort_key = normalized_property(prop);
+        if let Some((prev_key, prev_prop)) = &prev
+          && sort_key < *prev_key
+        {
+          diagnostics.push(
+            Diagnostic::new(
+              NAME,
+              format!("Expected \"{prop}\" to come before \"{prev_prop}\""),
+            )
+            .span(decl.span()),
+          );
+        }
+        prev = Some((sort_key, prop));
       }
-
-      // Skip custom properties (--var)
-      if prop.starts_with("--") {
-        continue;
-      }
-
-      // Strip vendor prefix and lowercase for comparison
-      let unprefixed = &prop[vendor_prefix_len(prop)..];
-      let sort_key = unprefixed.to_ascii_lowercase();
-
-      if let Some(ref prev) = prev_sort_key
-        && sort_key < *prev
-      {
-        diagnostics.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Expected \"{prop}\" to come before \"{}\"",
-              prev_original.as_deref().unwrap_or(prev)
-            ),
-          )
-          .span(decl.span),
-        );
-      }
-
-      prev_sort_key = Some(sort_key);
-      prev_original = Some(prop.clone());
     }
-
     diagnostics
   }
 }
@@ -89,140 +73,91 @@ impl Check for OrderPropertiesAlphabeticalOrderCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, context};
 
-  fn make_decl(property: &str, value: &str, offset: usize, length: usize) -> Declaration {
-    Declaration {
-      property: property.to_string(),
-      value: value.to_string(),
-      span: Span::new(offset, length),
-      important: false,
-    }
+  /// The messages reported for `source` in `syntax`.
+  fn messages(source: &str, syntax: Syntax) -> Vec<String> {
+    configured(&OrderPropertiesAlphabeticalOrder, None)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| d.message)
+      .collect()
   }
 
   #[test]
   fn accepts_alphabetical_order() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("color", "red", 4, 10),
-        make_decl("display", "block", 15, 14),
-        make_decl("font-size", "12px", 30, 15),
-      ],
-      span: Span::new(0, 50),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    let source = "a { color: red; display: block; font-size: 12px; }";
+    assert!(messages(source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_non_alphabetical_order() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("color", "red", 19, 10),
-      ],
-      span: Span::new(0, 35),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("color"));
-    assert!(diags[0].message.contains("display"));
+    assert_eq!(
+      messages("a { display: block; color: red; }", Syntax::Css),
+      ["Expected \"color\" to come before \"display\""]
+    );
   }
 
   #[test]
   fn skips_scss_variables() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("$my-var", "10px", 19, 14),
-        make_decl("color", "red", 34, 10),
-      ],
-      span: Span::new(0, 50),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    // "color" comes after "display" which is out of order, but $my-var is skipped
-    assert_eq!(diags.len(), 1);
+    let source = "a { display: block; $my-var: 10px; color: red; }";
+    // "color" still follows "display": `$my-var` is skipped.
+    assert_eq!(messages(source, Syntax::Scss).len(), 1);
+  }
+
+  #[test]
+  fn skips_interpolated_properties_and_nested_property_blocks() {
+    let source = "a { padding: { #{$end}: 0; #{$start}: 0; } margin: { left: 0; } top: 0; }";
+    assert!(messages(source, Syntax::Scss).is_empty());
   }
 
   #[test]
   fn case_insensitive_comparison() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("Color", "red", 4, 10),
-        make_decl("display", "block", 15, 14),
-      ],
-      span: Span::new(0, 35),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(messages("a { Color: red; display: block; }", Syntax::Css).is_empty());
+  }
+
+  #[test]
+  fn names_print_as_written() {
+    assert_eq!(
+      messages("a { DISPLAY: block; Color: red; }", Syntax::Css),
+      ["Expected \"Color\" to come before \"DISPLAY\""]
+    );
+  }
+
+  #[test]
+  fn osx_font_smoothing_sorts_as_font_smoothing() {
+    let source = "a { -moz-osx-font-smoothing: grayscale; line-height: 1; }";
+    assert!(messages(source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn skips_custom_properties() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("--my-var", "10px", 19, 16),
-        make_decl("font-size", "12px", 36, 15),
-      ],
-      span: Span::new(0, 55),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    let source = "a { display: block; --my-var: 10px; font-size: 12px; }";
+    assert!(messages(source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn vendor_prefixed_sorts_as_unprefixed() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    // -webkit-transform should sort as "transform", which comes after "display"
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("display", "block", 4, 14),
-        make_decl("-webkit-transform", "scale(1)", 19, 28),
-        make_decl("transform", "scale(1)", 48, 21),
-      ],
-      span: Span::new(0, 70),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    // -webkit-transform sorts as "transform", which comes after "display".
+    let source = "a { display: block; -webkit-transform: scale(1); transform: scale(1); }";
+    assert!(messages(source, Syntax::Css).is_empty());
   }
 
   #[test]
   fn vendor_prefixed_out_of_order() {
-    let rule = configured(&OrderPropertiesAlphabeticalOrder, None);
-    // -webkit-transform sorts as "transform", which should come after "appearance"
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        make_decl("-webkit-transform", "scale(1)", 4, 28),
-        make_decl("appearance", "none", 33, 17),
-      ],
-      span: Span::new(0, 55),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("appearance"));
+    // -webkit-transform sorts as "transform", after "appearance".
+    let source = "a { -webkit-transform: scale(1); appearance: none; }";
+    let d = messages(source, Syntax::Css);
+    assert_eq!(d.len(), 1);
+    assert!(d[0].contains("appearance"));
+  }
+
+  #[test]
+  fn each_rule_is_its_own_block() {
+    let source = "a { display: block; b { color: red; } top: 0 }";
+    assert!(messages(source, Syntax::Scss).is_empty());
   }
 
   #[test]

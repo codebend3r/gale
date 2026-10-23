@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -41,28 +41,30 @@ impl NamedGridAreasNoInvalidCheck {
 impl Check for NamedGridAreasNoInvalidCheck {
   /// Flags `grid-template-areas` whose rows differ in cell count or whose named
   /// areas do not form contiguous rectangles.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Declaration(decl) = node else {
-      return vec![];
-    };
-
-    let prop = decl.property.to_ascii_lowercase();
-    if prop != "grid-template-areas" {
-      return vec![];
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for decl in tree.walk_decls() {
+      if decl.prop().eq_ignore_ascii_case("grid-template-areas") {
+        check_areas(decl.value().trim(), decl.span(), &mut diagnostics);
+      }
     }
+    diagnostics
+  }
+}
 
-    let value = decl.value.trim();
+/// Check the value of one `grid-template-areas` declaration, reporting at
+/// `span`.
+fn check_areas(value: &str, span: Span, diagnostics: &mut Vec<Diagnostic>) {
+  {
     if value.eq_ignore_ascii_case("none") {
-      return vec![];
+      return;
     }
 
     // Parse rows: each quoted string is a row
     let rows = parse_grid_rows(value);
     if rows.is_empty() {
-      return vec![];
+      return;
     }
-
-    let mut diagnostics = Vec::new();
 
     // Check all rows have the same number of columns
     let col_count = rows[0].len();
@@ -78,37 +80,41 @@ impl Check for NamedGridAreasNoInvalidCheck {
               row.len()
             ),
           )
-          .span(decl.span),
+          .span(span),
         );
         // If row counts don't match, skip rectangle check
-        return diagnostics;
+        return;
       }
     }
 
     // Check that each named area forms a rectangle.
-    // Collect positions of each named area.
+    // Collect positions of each named area, in the order the areas first
+    // appear so that the reports come in a stable order.
     let mut areas: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    let mut order = Vec::new();
     for (row_idx, row) in rows.iter().enumerate() {
       for (col_idx, cell) in row.iter().enumerate() {
         if *cell != "." {
-          areas.entry(cell).or_default().push((row_idx, col_idx));
+          let positions = areas.entry(cell).or_default();
+          if positions.is_empty() {
+            order.push(*cell);
+          }
+          positions.push((row_idx, col_idx));
         }
       }
     }
 
-    for (name, positions) in &areas {
-      if !is_rectangle(positions) {
+    for name in order {
+      if !is_rectangle(&areas[name]) {
         diagnostics.push(
           Diagnostic::new(
             NAME,
             format!("Named grid area \"{}\" does not form a rectangle", name),
           )
-          .span(decl.span),
+          .span(span),
         );
       }
     }
-
-    diagnostics
   }
 }
 
@@ -172,25 +178,18 @@ fn is_rectangle(positions: &[(usize, usize)]) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Declaration;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
-  fn decl(property: &str, value: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: property.to_string(),
-      value: value.to_string(),
-      span: Span::new(0, 0),
-      important: false,
-    })
+  fn decl(property: &str, value: &str) -> String {
+    format!("a {{ {property}: {value}; }}")
   }
 
   #[test]
   fn allows_valid_rectangle_areas() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a a" "a a""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -198,7 +197,7 @@ mod tests {
   fn allows_valid_multiple_named_areas() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a b" "a b""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -206,7 +205,7 @@ mod tests {
   fn allows_valid_with_null_cells() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a . b" "a . b""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -215,7 +214,7 @@ mod tests {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     // "a" occupies (0,0), (0,1), (1,1) — not a rectangle
     let node = decl("grid-template-areas", r#""a a" "b a""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("does not form a rectangle"));
     assert!(d[0].message.contains("\"a\""));
@@ -226,7 +225,7 @@ mod tests {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     // "a" occupies (0,0), (1,0), (1,1) — L-shape, not a rectangle
     let node = decl("grid-template-areas", r#""a b" "a a""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("does not form a rectangle"));
   }
@@ -235,7 +234,7 @@ mod tests {
   fn reports_unequal_row_lengths() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""a a" "b b b""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("cell tokens"));
   }
@@ -244,7 +243,7 @@ mod tests {
   fn allows_none_value() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", "none");
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -252,7 +251,7 @@ mod tests {
   fn ignores_other_properties() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("display", "grid");
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -260,7 +259,7 @@ mod tests {
   fn allows_single_row() {
     let rule = configured(&NamedGridAreasNoInvalid, None);
     let node = decl("grid-template-areas", r#""header header sidebar""#);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 
@@ -271,7 +270,7 @@ mod tests {
       "grid-template-areas",
       r#""header header header" "nav content sidebar" "footer footer footer""#,
     );
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert!(d.is_empty());
   }
 

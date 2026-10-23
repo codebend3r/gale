@@ -1,12 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::hex_colors::is_valid_hex;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "color-hex-length";
 
@@ -50,21 +49,18 @@ impl Check for ColorHexLengthCheck {
   /// Like Stylelint, it looks only at whole words of the value as written:
   /// hex digits inside strings, comments and `url()` are not colors, and the
   /// fix keeps the case of the digits it keeps.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let long = self.long;
 
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      if decl.span.length == 0 {
-        continue;
-      }
-      let Some((value, value_start)) = source_text::declaration_value(ctx.source, decl) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      let value = decl.raw_value();
       if !value.contains('#') {
         continue;
       }
-      let nodes = value_parser::parse(value);
+      let value_start = decl.value_start();
+      let fixable = decl.value_fixable();
+      let nodes = value_parser::parse(&value);
       value_parser::walk(&nodes, &mut |node: &ValueNode| {
         if node.is_function_named("url") {
           return false;
@@ -86,14 +82,16 @@ impl Check for ColorHexLengthCheck {
         };
         let span = Span::new(value_start + node.source_index, hex.len());
         let verb = if long { "Expand" } else { "Shorten" };
-        diags.push(
-          Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{expected}\""))
-            .span(span)
-            .fix(Fix::new(
-              format!("{verb} to \"{expected}\""),
-              vec![Edit::new(span, &expected)],
-            )),
-        );
+        let diag =
+          Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{expected}\"")).span(span);
+        diags.push(if fixable {
+          diag.fix(Fix::new(
+            format!("{verb} to \"{expected}\""),
+            vec![Edit::new(span, &expected)],
+          ))
+        } else {
+          diag
+        });
         true
       });
     }
@@ -204,6 +202,28 @@ mod tests {
       )
       .is_empty()
     );
+  }
+
+  #[test]
+  fn reads_every_declaration_as_written() {
+    let short = serde_json::json!("short");
+    // `@font-face` descriptors are declarations too.
+    assert_eq!(
+      fix(
+        RULE,
+        short.clone(),
+        "@font-face { color: #ffffff; }",
+        Syntax::Css
+      ),
+      "@font-face { color: #fff; }"
+    );
+    // After an SCSS `//` comment the value's offsets run ahead of the
+    // source, so the problem is reported but not fixed.
+    let scss = "a { b: #ffffff // x\n #aaaaaa; }";
+    let warnings = lint(RULE, short.clone(), scss, Syntax::Scss);
+    let offsets: Vec<usize> = warnings.iter().map(|w| w.span.offset).collect();
+    assert_eq!(offsets, [7, 23]);
+    assert_eq!(fix(RULE, short, scss, Syntax::Scss), scss);
   }
 
   #[test]

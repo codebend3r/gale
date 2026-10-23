@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::data::is_known_pseudo_element;
@@ -38,23 +38,23 @@ impl SelectorPseudoElementNoUnknownCheck {
 impl Check for SelectorPseudoElementNoUnknownCheck {
   /// Flags pseudo-elements that are not standard. Vendor-prefixed names,
   /// and names the `ignorePseudoElements` option lists, are skipped.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  /// Rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for name in extract_pseudo_elements(&rule.selector) {
-      if name.starts_with('-') || self.ignored.matches(&name) {
-        continue;
-      }
-      if !is_known_pseudo_element(&name) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!("Unexpected unknown pseudo-element selector \"::{name}\""),
-          )
-          .span(rule.span),
-        );
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for name in extract_pseudo_elements(rule.selector()) {
+        if name.starts_with('-') || self.ignored.matches(&name) {
+          continue;
+        }
+        if !is_known_pseudo_element(&name) {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!("Unexpected unknown pseudo-element selector \"::{name}\""),
+            )
+            .span(rule.span()),
+          );
+        }
       }
     }
     diags
@@ -90,29 +90,19 @@ fn extract_pseudo_elements(selector: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_unknown_pseudo_element() {
     let rule = configured(&SelectorPseudoElementNoUnknown, None);
-    let d = rule.check(&style_with_selector("a::beforre"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a::beforre"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("::beforre"));
   }
@@ -121,22 +111,20 @@ mod tests {
   fn ignore_pseudo_elements_skips_listed_names() {
     let options = serde_json::json!([true, { "ignorePseudoElements": ["v-deep", "/^my-/"] }]);
     let rule = configured(&SelectorPseudoElementNoUnknown, options.clone());
-    let ctx = RuleContext {
-      env: Default::default(),
-      ..ctx()
-    };
     assert!(
       rule
-        .check(&style_with_selector(".a::v-deep"), &ctx)
+        .check_source(&context(&style_with_selector(".a::v-deep"), Syntax::Css))
         .is_empty()
     );
     assert!(
       rule
-        .check(&style_with_selector(".a::my-thing"), &ctx)
+        .check_source(&context(&style_with_selector(".a::my-thing"), Syntax::Css))
         .is_empty()
     );
     assert_eq!(
-      rule.check(&style_with_selector(".a::v-global"), &ctx).len(),
+      rule
+        .check_source(&context(&style_with_selector(".a::v-global"), Syntax::Css))
+        .len(),
       1
     );
   }
@@ -146,12 +134,15 @@ mod tests {
     let rule = configured(&SelectorPseudoElementNoUnknown, None);
     assert!(
       rule
-        .check(&style_with_selector("a::before"), &ctx())
+        .check_source(&context(&style_with_selector("a::before"), Syntax::Css))
         .is_empty()
     );
     assert!(
       rule
-        .check(&style_with_selector("a::placeholder"), &ctx())
+        .check_source(&context(
+          &style_with_selector("a::placeholder"),
+          Syntax::Css
+        ))
         .is_empty()
     );
   }

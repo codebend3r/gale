@@ -1,6 +1,6 @@
 use gale_diagnostics::SourceLineIndex;
 
-/// Converts Sass indented syntax to SCSS so that the existing raffia parser can
+/// Converts Sass indented syntax to SCSS so that the SCSS parser can
 /// handle it.  This is intentionally a "good-enough" mechanical transformation:
 ///
 /// * Indentation changes → `{` / `}`

@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::style_rules::RawAtRule;
 
 /// Stylelint's `deprecatedAtKeywords`.
 const DEPRECATED_AT_RULES: &[&str] = &["document", "nest", "viewport"];
@@ -44,46 +43,32 @@ impl AtRuleNoDeprecatedCheck {
 
 impl Check for AtRuleNoDeprecatedCheck {
   /// Flags deprecated at-rules, skipping `ignoreAtRules`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for at in &ctx.scanned_rules().at_rules {
-      let lower = at.name.to_ascii_lowercase();
+    for at in tree.walk_at_rules() {
+      let lower = at.name().to_ascii_lowercase();
       if !DEPRECATED_AT_RULES.contains(&lower.as_str())
-        || !is_standard_syntax_at_rule(&at)
-        || self.ignore_at_rules.matches(&at.name)
+        || !at.is_standard_syntax()
+        || self.ignore_at_rules.matches(at.name())
       {
         continue;
       }
       let mut diag = Diagnostic::new(
         NAME,
-        format!("Unexpected deprecated at-rule \"@{}\"", at.name),
+        format!("Unexpected deprecated at-rule \"@{}\"", at.name()),
       )
-      .span(Span::new(at.offset, at.name.len() + 1));
-      if lower == "nest" && at.has_block {
+      .span(Span::new(at.start, at.name().len() + 1));
+      if lower == "nest" && at.has_block() {
         // `@nest .foo & {}` becomes `.foo & {}`.
         diag = diag.fix(Fix::new(
           "Replace @nest with a nested rule",
-          vec![Edit::new(Span::from_range(at.offset, at.params_offset), "")],
+          vec![Edit::new(Span::from_range(at.start, at.params_start()), "")],
         ));
       }
       diags.push(diag);
     }
     diags
   }
-}
-
-/// Stylelint's `isStandardSyntaxAtRule`, for a scanned at-rule: not Sass's
-/// blockless, paramless `@content`, nor a Less variable or detached ruleset
-/// call.  (`@charset` is never deprecated, so it needs no check here.)
-fn is_standard_syntax_at_rule(at: &RawAtRule) -> bool {
-  if !at.has_block && at.params.is_empty() {
-    return false;
-  }
-  let after_name = at.offset + 1 + at.name.len();
-  let less_variable = at.params.starts_with(':');
-  let detached_ruleset_call =
-    !at.has_block && at.params_offset == after_name && at.params.starts_with('(');
-  !(less_variable || detached_ruleset_call)
 }
 
 #[cfg(test)]

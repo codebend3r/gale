@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -43,13 +43,14 @@ impl ColorHexAlphaCheck {
 impl Check for ColorHexAlphaCheck {
   /// Flags hex colors whose digit count carries an alpha channel under "never",
   /// or lacks one under "always".
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mode = self.mode;
 
     let mut diags = Vec::new();
 
-    for decl in node.declarations() {
-      let value = &decl.value;
+    for decl in tree.walk_decls() {
+      let value = &*decl.raw_value();
+      let value_start = decl.value_start();
       let bytes = value.as_bytes();
       let len = bytes.len();
       let mut i = 0;
@@ -75,7 +76,7 @@ impl Check for ColorHexAlphaCheck {
                     NAME,
                     format!("Unexpected alpha channel in hex color \"{hex_str}\""),
                   )
-                  .span(Span::new(decl.span.offset + start, 1 + hex_len)),
+                  .span(Span::new(value_start + start, 1 + hex_len)),
                 );
               }
             }
@@ -88,7 +89,7 @@ impl Check for ColorHexAlphaCheck {
                     NAME,
                     format!("Expected alpha channel in hex color \"{hex_str}\""),
                   )
-                  .span(Span::new(decl.span.offset + start, 1 + hex_len)),
+                  .span(Span::new(value_start + start, 1 + hex_len)),
                 );
               }
             }
@@ -107,81 +108,63 @@ impl Check for ColorHexAlphaCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn check(options: Option<serde_json::Value>, value: &str) -> Vec<Diagnostic> {
+    let source = format!("a {{ color: {value}; }}");
+    configured(&ColorHexAlpha, options).check_source(&ctx_with_source(&source))
   }
 
   #[test]
   fn never_flags_four_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("never"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#ffff"), &ctx);
+    let d = check(Some(serde_json::json!("never")), "#ffff");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#ffff"));
+    assert_eq!(d[0].span, Span::new(11, 5));
   }
 
   #[test]
   fn never_flags_eight_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("never"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#ffffffff"), &ctx);
+    let d = check(Some(serde_json::json!("never")), "#ffffffff");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#ffffffff"));
   }
 
   #[test]
   fn never_allows_three_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("never"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#fff"), &ctx);
-    assert!(d.is_empty());
+    assert!(check(Some(serde_json::json!("never")), "#fff").is_empty());
   }
 
   #[test]
   fn never_allows_six_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("never"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#ffffff"), &ctx);
-    assert!(d.is_empty());
+    assert!(check(Some(serde_json::json!("never")), "#ffffff").is_empty());
   }
 
   #[test]
   fn always_flags_three_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("always"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#fff"), &ctx);
+    let d = check(Some(serde_json::json!("always")), "#fff");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected alpha"));
   }
 
   #[test]
   fn always_allows_eight_digit_hex() {
-    let rule = configured(&ColorHexAlpha, serde_json::json!("always"));
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#ffffffff"), &ctx);
-    assert!(d.is_empty());
+    assert!(check(Some(serde_json::json!("always")), "#ffffffff").is_empty());
   }
 
   #[test]
   fn default_is_never() {
-    let rule = configured(&ColorHexAlpha, None);
-    let ctx = ctx();
-    let d = rule.check(&style_with_value("#ffff"), &ctx);
+    assert_eq!(check(None, "#ffff").len(), 1);
+  }
+
+  #[test]
+  fn reads_the_value_as_written() {
+    // The CSS parser used to shorten `#ffffffff` and spell `white` as `#fff`.
+    assert_eq!(check(Some(serde_json::json!("always")), "white").len(), 0);
+    let d = check(Some(serde_json::json!("never")), "#FFFFFFFF");
     assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("#FFFFFFFF"));
   }
 
   #[test]

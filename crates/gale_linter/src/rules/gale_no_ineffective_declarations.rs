@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Declaration, StyleRule};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree, RuleRef};
 use gale_diagnostics::Diagnostic;
 
 use crate::data::CSS_WIDE_KEYWORDS;
@@ -155,11 +156,11 @@ fn is_dynamic(value: &str) -> bool {
 /// The winning declaration of `property` in `declarations`, by the cascade
 /// inside one block: the last one, unless an earlier one is `!important`
 /// and it is not.
-fn winning<'a>(declarations: &'a [Declaration], property: &str) -> Option<&'a Declaration> {
-  let mut winner: Option<&Declaration> = None;
-  for decl in declarations {
-    if decl.property.eq_ignore_ascii_case(property)
-      && (decl.important || !winner.is_some_and(|w| w.important))
+fn winning<'a>(declarations: &[DeclRef<'a>], property: &str) -> Option<DeclRef<'a>> {
+  let mut winner: Option<DeclRef> = None;
+  for &decl in declarations {
+    if decl.prop().eq_ignore_ascii_case(property)
+      && (decl.important() || !winner.is_some_and(|w| w.important()))
     {
       winner = Some(decl);
     }
@@ -180,9 +181,9 @@ struct Layout<'a> {
 
 impl<'a> Layout<'a> {
   /// Reads the box from a block's declarations.
-  fn read(declarations: &'a [Declaration]) -> Self {
+  fn read(declarations: &[DeclRef<'a>]) -> Self {
     let display = winning(declarations, "display")
-      .map(|decl| decl.value.trim())
+      .map(|decl| decl.value().trim())
       .filter(|value| !is_dynamic(value))
       .and_then(|value| {
         let keywords: Vec<String> = value
@@ -196,13 +197,13 @@ impl<'a> Layout<'a> {
         known.then_some((value, keywords))
       });
     let position = winning(declarations, "position")
-      .map(|decl| decl.value.trim())
+      .map(|decl| decl.value().trim())
       .filter(|value| !is_dynamic(value))
       .map(|value| (value, value.to_ascii_lowercase()));
     let multicol = declarations.iter().any(|decl| {
       MULTICOL_PROPERTIES
         .iter()
-        .any(|p| decl.property.eq_ignore_ascii_case(p))
+        .any(|p| decl.prop().eq_ignore_ascii_case(p))
     });
     Self {
       display,
@@ -283,19 +284,24 @@ impl<'a> Layout<'a> {
 
 /// Whether the block pulls in declarations the rule cannot see: a Sass
 /// `@include` or `@extend`, a Tailwind `@apply`, or a Less mixin call.
-fn has_hidden_declarations(rule: &StyleRule, ctx: &RuleContext) -> bool {
-  let at_rule = rule.nested_at_rules.iter().any(|node| {
-    matches!(node, CssNode::AtRule(at)
-      if matches!(at.name.to_ascii_lowercase().as_str(), "include" | "extend" | "apply"))
-  });
+fn has_hidden_declarations(rule: RuleRef) -> bool {
+  let at_rule = rule
+    .children()
+    .filter_map(|node| node.as_at_rule())
+    .any(|at| {
+      matches!(
+        at.name().to_ascii_lowercase().as_str(),
+        "include" | "extend" | "apply"
+      )
+    });
   if at_rule {
     return true;
   }
   // Mixins are not always parsed as at-rules; look at the block's text.
-  let start = rule.span.offset;
-  let end = start + rule.span.length;
-  let text = ctx.source_slice(start, end).unwrap_or("");
-  let body = text.split_once('{').map_or("", |(_, body)| body);
+  let body = rule
+    .source_text()
+    .split_once('{')
+    .map_or("", |(_, body)| body);
   body.contains("@include")
     || body.contains("@extend")
     || body.contains("@apply")
@@ -307,36 +313,48 @@ fn has_hidden_declarations(rule: &StyleRule, ctx: &RuleContext) -> bool {
     })
 }
 
+/// Whether `rule` is a Less mixin definition (`.mixin() { }`), which the
+/// rule has never looked at: the block is checked where it is mixed in.
+fn is_less_mixin_definition(rule: RuleRef, syntax: Syntax) -> bool {
+  syntax == Syntax::Less && !rule.is_standard_syntax() && rule.selector().ends_with(')')
+}
+
 impl Check for GaleNoIneffectiveDeclarationsCheck {
   /// Reports each declaration in a style rule's own block that the block's
   /// `display` or `position` switches off.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-    if rule.declarations.is_empty() || has_hidden_declarations(rule, ctx) {
-      return vec![];
-    }
-
-    let block = Layout::read(&rule.declarations);
+  ///
+  /// The property and the `display` or `position` that switches it off are
+  /// printed as written.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      let property = decl.property.to_ascii_lowercase();
-      let value = decl.value.trim().to_ascii_lowercase();
-      if CSS_WIDE_KEYWORDS.contains(&value.as_str()) || is_initial_value(&property, &value) {
+    for rule in tree.walk_rules() {
+      if is_less_mixin_definition(rule, ctx.syntax) {
         continue;
       }
-      if let Some(cause) = block.switched_off_by(&property) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Unexpected \"{}\", which has no effect with \"{cause}\"",
-              decl.property
-            ),
-          )
-          .span(decl.span),
-        );
+      let declarations: Vec<DeclRef> = rule.child_decls().collect();
+      if declarations.is_empty() || has_hidden_declarations(rule) {
+        continue;
+      }
+
+      let block = Layout::read(&declarations);
+      for decl in declarations {
+        let property = decl.prop().to_ascii_lowercase();
+        let value = decl.value().trim().to_ascii_lowercase();
+        if CSS_WIDE_KEYWORDS.contains(&value.as_str()) || is_initial_value(&property, &value) {
+          continue;
+        }
+        if let Some(cause) = block.switched_off_by(&property) {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!(
+                "Unexpected \"{}\", which has no effect with \"{cause}\"",
+                decl.prop()
+              ),
+            )
+            .span(decl.span()),
+          );
+        }
       }
     }
     diags
@@ -519,6 +537,24 @@ mod tests {
   fn allows_values_from_variables() {
     assert!(css("a { display: var(--display); justify-content: center; }").is_empty());
     assert!(css("a { position: var(--position); top: 0; }").is_empty());
+  }
+
+  #[test]
+  fn prints_the_declarations_as_written() {
+    assert_eq!(
+      css("a { DISPLAY: Block; Justify-Content: center; }"),
+      ["Unexpected \"Justify-Content\", which has no effect with \"display: Block\""]
+    );
+  }
+
+  #[test]
+  fn leaves_less_mixin_definitions_alone() {
+    let less = |source| messages(source, Syntax::Less);
+    assert!(less(".m() { display: block; justify-content: center; }").is_empty());
+    assert_eq!(
+      less(".m { display: block; justify-content: center; }").len(),
+      1
+    );
   }
 
   #[test]

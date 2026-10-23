@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -39,7 +39,7 @@ impl StylisticDeclarationColonNewlineAfterCheck {
 
 impl Check for StylisticDeclarationColonNewlineAfterCheck {
   /// Flags a declaration colon whose trailing newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -272,14 +272,14 @@ impl Check for StylisticDeclarationColonNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_multi_line_allows_single_line_value() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { color: red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -288,7 +288,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url()\n    no-repeat; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -298,7 +298,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background:\n    url() no-repeat; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -307,7 +307,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { color: red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
   }
 
@@ -316,7 +316,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a { color:\n  red; }";
     let d = configured(&StylisticDeclarationColonNewlineAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

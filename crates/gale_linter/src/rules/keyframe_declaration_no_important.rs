@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{AtRuleRef, NodeRef, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -36,148 +36,110 @@ impl KeyframeDeclarationNoImportantCheck {
 }
 
 impl Check for KeyframeDeclarationNoImportantCheck {
-  /// Checks the children of a `@keyframes` at-rule.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    if let CssNode::AtRule(at_rule) = node
-      && at_rule.name == "keyframes"
-    {
-      collect_important_in_children(&at_rule.children, &mut diagnostics);
-    }
-
-    diagnostics
+  /// Flags every `!important` declaration in a `@keyframes` block or in
+  /// one of its keyframe selectors: browsers ignore them there.
+  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk_decls()
+      .filter(|decl| decl.important() && in_keyframes_block(decl.node()))
+      .map(|decl| {
+        Diagnostic::new(
+          NAME,
+          format!(
+            "Unexpected !important in keyframe declaration \"{}\"",
+            decl.prop()
+          ),
+        )
+        .span(decl.span())
+      })
+      .collect()
   }
 }
 
-/// Recurses through keyframe blocks, flagging every `!important` declaration —
-/// browsers ignore them there.
-fn collect_important_in_children(children: &[CssNode], diagnostics: &mut Vec<Diagnostic>) {
-  for child in children {
-    match child {
-      CssNode::Declaration(decl) if decl.important => {
-        diagnostics.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Unexpected !important in keyframe declaration \"{}\"",
-              decl.property
-            ),
-          )
-          .span(decl.span),
-        );
-      }
-      CssNode::Style(style_rule) => {
-        for decl in &style_rule.declarations {
-          if decl.important {
-            diagnostics.push(
-              Diagnostic::new(
-                NAME,
-                format!(
-                  "Unexpected !important in keyframe declaration \"{}\"",
-                  decl.property
-                ),
-              )
-              .span(decl.span),
-            );
-          }
-        }
-      }
-      _ => {}
-    }
-  }
+/// Whether `decl` sits directly in a `@keyframes` block, or in a rule that
+/// does.
+fn in_keyframes_block(decl: NodeRef) -> bool {
+  let Some(parent) = decl.parent() else {
+    return false;
+  };
+  let block = match parent.as_rule() {
+    Some(rule) => rule.parent(),
+    None => Some(parent),
+  };
+  block
+    .and_then(NodeRef::as_at_rule)
+    .is_some_and(AtRuleRef::is_keyframes)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Syntax};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, scss_ctx_with_source};
+  use crate::testing::{CheckSource, configured, context};
+
+  /// What the rule reports for `source` in `syntax`: each message and the
+  /// text it points at.
+  fn check(source: &str, syntax: Syntax) -> Vec<(String, &str)> {
+    configured(&KeyframeDeclarationNoImportant, None)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| {
+        (
+          d.message,
+          &source[d.span.offset..d.span.offset + d.span.length],
+        )
+      })
+      .collect()
+  }
 
   #[test]
   fn reports_important_in_keyframe() {
-    let rule = configured(&KeyframeDeclarationNoImportant, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, 50),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "opacity".to_string(),
-        value: "0".to_string(),
-        span: Span::new(20, 15),
-        important: true,
-      })],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("!important"));
+    for syntax in [Syntax::Css, Syntax::Scss, Syntax::Less] {
+      assert_eq!(
+        check(
+          "@keyframes fade { from { opacity: 0 !important; } to { opacity: 1 } }",
+          syntax
+        ),
+        [(
+          "Unexpected !important in keyframe declaration \"opacity\"".to_string(),
+          "opacity: 0 !important;"
+        )]
+      );
+    }
+  }
+
+  #[test]
+  fn reports_declarations_directly_in_the_at_rule() {
+    let d = check("@keyframes fade { opacity: 0 !important }", Syntax::Scss);
+    assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn names_match_like_stylelint() {
+    for name in ["-webkit-keyframes", "KEYFRAMES", "-ms-keyframes"] {
+      let source = format!("@{name} fade {{ from {{ opacity: 0 !important }} }}");
+      assert_eq!(check(&source, Syntax::Scss).len(), 1, "{name}");
+      assert_eq!(check(&source, Syntax::Css).len(), 1, "{name}");
+    }
+    assert!(
+      check(
+        "@-x-keyframes f { from { top: 0 !important } }",
+        Syntax::Css
+      )
+      .is_empty()
+    );
   }
 
   #[test]
   fn ignores_keyframe_without_important() {
-    let rule = configured(&KeyframeDeclarationNoImportant, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, 50),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "opacity".to_string(),
-        value: "0".to_string(),
-        span: Span::new(20, 15),
-        important: false,
-      })],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("@keyframes fade { from { opacity: 0 } }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn ignores_non_keyframe_at_rule() {
-    let rule = configured(&KeyframeDeclarationNoImportant, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 30),
-      children: vec![],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn detects_important_in_parsed_css_keyframes() {
-    let rule = configured(&KeyframeDeclarationNoImportant, None);
-    let css = "@keyframes fade { from { opacity: 0 !important; } }";
-    let result = gale_css_parser::parse(css, Syntax::Css).expect("should parse CSS");
-    let ctx = ctx();
-    let mut all_diags = Vec::new();
-    for node in &result.nodes {
-      all_diags.extend(rule.check(node, &ctx));
-    }
-    assert_eq!(
-      all_diags.len(),
-      1,
-      "should detect !important in CSS keyframe"
-    );
-  }
-
-  #[test]
-  fn detects_important_in_parsed_scss_keyframes() {
-    let rule = configured(&KeyframeDeclarationNoImportant, None);
-    let scss = "@keyframes fade { from { opacity: 0 !important; } }";
-    let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
-    let ctx = scss_ctx_with_source(scss);
-    let mut all_diags = Vec::new();
-    for node in &result.nodes {
-      all_diags.extend(rule.check(node, &ctx));
-    }
-    assert_eq!(
-      all_diags.len(),
-      1,
-      "should detect !important in SCSS keyframe"
-    );
+    let source = "@media (min-width: 768px) { a { color: red !important } }";
+    assert!(check(source, Syntax::Css).is_empty());
   }
 
   #[test]

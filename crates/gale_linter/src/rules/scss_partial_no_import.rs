@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -37,7 +38,7 @@ impl ScssPartialNoImportCheck {
 
 impl Check for ScssPartialNoImportCheck {
   /// Flags `@import` inside a partial file, where `@use` or `@forward` belongs.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -49,106 +50,63 @@ impl Check for ScssPartialNoImportCheck {
       .next()
       .or_else(|| ctx.file_path.rsplit('\\').next())
       .unwrap_or(ctx.file_path);
-
     if !filename.starts_with('_') {
       return vec![];
     }
 
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "import" {
-      return vec![];
-    }
-
-    vec![
-      Diagnostic::new(
-        NAME,
-        "Unexpected @import in partial SCSS file. Use @use or @forward instead.".to_string(),
-      )
-      .span(at.span),
-    ]
+    tree
+      .walk_at_rules()
+      .filter(|at| at.name() == "import")
+      .map(|at| {
+        Diagnostic::new(
+          NAME,
+          "Unexpected @import in partial SCSS file. Use @use or @forward instead.",
+        )
+        .span(at.span())
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
-  use gale_css_parser::{AtRule, Syntax};
-  use gale_diagnostics::Span;
+  use crate::testing::{CheckSource, configured, invalid_options};
+  use gale_css_parser::Syntax;
 
-  fn partial_ctx() -> RuleContext<'static> {
-    RuleContext {
+  /// The reports for `source` in a file named `file_path`.
+  fn check(file_path: &str, source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let ctx = RuleContext {
       env: Default::default(),
-      file_path: "_partial.scss",
-      source: "",
-      syntax: Syntax::Scss,
+      file_path,
+      source,
+      syntax,
       cache: None,
-    }
-  }
-
-  fn non_partial_ctx() -> RuleContext<'static> {
-    RuleContext {
-      env: Default::default(),
-      file_path: "main.scss",
-      source: "",
-      syntax: Syntax::Scss,
-      cache: None,
-    }
-  }
-
-  fn import(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 20),
-      children: vec![],
-    })
+    };
+    configured(&ScssPartialNoImport, None).check_source(&ctx)
   }
 
   #[test]
   fn reports_import_in_partial() {
-    let rule = configured(&ScssPartialNoImport, None);
-    let d = rule.check(&import("\"foo\""), &partial_ctx());
+    let d = check("_partial.scss", "a {}\n@import \"foo\";", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("@import"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (5, 14));
   }
 
   #[test]
   fn allows_import_in_non_partial() {
-    let rule = configured(&ScssPartialNoImport, None);
-    assert!(
-      rule
-        .check(&import("\"foo\""), &non_partial_ctx())
-        .is_empty()
-    );
+    assert!(check("main.scss", "@import \"foo\";", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_import_at_rules() {
-    let rule = configured(&ScssPartialNoImport, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "use".to_string(),
-      params: "\"foo\"".to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &partial_ctx()).is_empty());
+    assert!(check("_partial.scss", "@use \"foo\";", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssPartialNoImport, None);
-    let css_ctx = RuleContext {
-      env: Default::default(),
-      file_path: "_partial.css",
-      source: "",
-      syntax: Syntax::Css,
-      cache: None,
-    };
-    assert!(rule.check(&import("\"foo\""), &css_ctx).is_empty());
+    assert!(check("_partial.css", "@import \"foo\";", Syntax::Css).is_empty());
   }
 
   #[test]

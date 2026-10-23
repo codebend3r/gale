@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -43,106 +43,71 @@ impl StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
 
 impl Check for StylisticDeclarationBlockSemicolonNewlineBeforeCheck {
   /// Flags a declaration semicolon whose preceding newline does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+    let message = match self.option {
+      "always" => "Expected newline before \";\"",
+      "never" => "Unexpected whitespace before \";\"",
+      _ => return vec![],
     };
-    let option = self.option;
-
-    let mut diags = Vec::new();
-    let source = ctx.source;
-
-    for decl in &rule.declarations {
-      let decl_end = decl.span.offset + decl.span.length;
-      // Look for the semicolon after the declaration
-      if decl_end >= source.len() {
-        continue;
-      }
-
-      // Find the semicolon following this declaration
-      let remaining = &source[decl_end..];
-      let semi_rel = match remaining.find(';') {
-        Some(pos) => pos,
-        None => continue,
-      };
-      let semi_offset = decl_end + semi_rel;
-
-      if semi_offset == 0 {
-        continue;
-      }
-
-      let char_before = source.as_bytes()[semi_offset - 1];
-      let has_newline_before = char_before == b'\n' || (char_before == b'\r');
-
-      let violation = match option {
-        "always" => !has_newline_before,
-        "never" => has_newline_before,
-        _ => false,
-      };
-
-      if violation {
-        let msg = match option {
-          "always" => "Expected newline before \";\"",
-          "never" => "Unexpected whitespace before \";\"",
-          _ => continue,
-        };
-        diags.push(Diagnostic::new(NAME, msg).span(Span::new(semi_offset, 1)));
-      }
-    }
-
-    diags
+    let source = ctx.source.as_bytes();
+    tree
+      .walk_decls()
+      .filter(|decl| decl.parent_is_rule())
+      .filter_map(DeclRef::semicolon)
+      .filter(|&semi| {
+        let has_newline_before = matches!(source[semi - 1], b'\n' | b'\r');
+        has_newline_before != (self.option == "always")
+      })
+      .map(|semi| {
+        // The plugin reports at the character before the `;`.
+        let before = ctx.source[..semi]
+          .char_indices()
+          .next_back()
+          .map_or(semi, |(i, _)| i);
+        Diagnostic::new(NAME, message).span(Span::new(before, 0))
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+
+  /// The offsets reported for the CSS `source` with `option`.
+  fn offsets(source: &str, option: Option<serde_json::Value>) -> Vec<usize> {
+    configured(&StylisticDeclarationBlockSemicolonNewlineBefore, option)
+      .check_source(&ctx_with_source(source))
+      .into_iter()
+      .map(|d| d.span.offset)
+      .collect()
+  }
 
   #[test]
   fn allows_no_newline_before_semicolon() {
-    let rule = configured(&StylisticDeclarationBlockSemicolonNewlineBefore, None);
-    let source = "a { color: red; }";
-    let ctx = ctx_with_source(source);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(4, 10),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx);
-    assert!(d.is_empty());
+    assert!(offsets("a { color: red; }", None).is_empty());
   }
 
   #[test]
   fn reports_newline_before_semicolon_when_never() {
-    let rule = configured(
+    let d = configured(
       &StylisticDeclarationBlockSemicolonNewlineBefore,
       serde_json::json!("never"),
-    );
-    let source = "a { color: red\n; }";
-    let ctx = ctx_with_source(source);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(4, 10),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx);
+    )
+    .check_source(&ctx_with_source("a { color: red\n; }"));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected"));
+    assert_eq!(d[0].span.offset, 14);
+  }
+
+  #[test]
+  fn tests_each_declarations_own_semicolon() {
+    let source = "a { color: red\n; top: 0; left: 0 }\nb { right: 0; }";
+    assert_eq!(offsets(source, None), [14]);
+    let always = Some(serde_json::json!("always"));
+    assert_eq!(offsets(source, always), [22, 46]);
   }
 
   #[test]

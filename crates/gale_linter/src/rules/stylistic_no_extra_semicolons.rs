@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -34,7 +34,7 @@ impl StylisticNoExtraSemicolonsCheck {
 
 impl Check for StylisticNoExtraSemicolonsCheck {
   /// Flags semicolons that terminate nothing.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -163,19 +163,19 @@ impl Check for StylisticNoExtraSemicolonsCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_normal_semicolons() {
     let source = "a { color: red; display: block; }";
-    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_double_semicolons() {
     let source = "a { color: red;; }";
-    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("extra semicolon"));
   }
@@ -183,7 +183,7 @@ mod tests {
   #[test]
   fn reports_semicolons_separated_by_whitespace() {
     let source = "a { color: red; ; }";
-    let d = configured(&StylisticNoExtraSemicolons, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoExtraSemicolons, None).check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
   }
 

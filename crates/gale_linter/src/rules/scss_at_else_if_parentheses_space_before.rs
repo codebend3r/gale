@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -53,7 +54,7 @@ impl ScssAtElseIfParenthesesSpaceBeforeCheck {
 impl Check for ScssAtElseIfParenthesesSpaceBeforeCheck {
   /// Flags an `@else if` whose space before the opening parenthesis does not
   /// match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -143,13 +144,15 @@ impl Check for ScssAtElseIfParenthesesSpaceBeforeCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn never_allows_no_space() {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     let src = "@if $x { } @else if($y) { }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -157,7 +160,7 @@ mod tests {
   fn never_reports_space() {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     let src = "@if $x { } @else if ($y) { }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -168,7 +171,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, opts.clone());
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -178,7 +181,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, opts.clone());
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -188,7 +191,7 @@ mod tests {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     // @else without if — should not trigger
     let src = "@if $x { } @else { }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -197,7 +200,7 @@ mod tests {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     // @else if without parentheses — not our concern
     let src = "@if $x { } @else if $y { }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -205,14 +208,14 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     let ctx = ctx_with_source("@else if($y) { }");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]
   fn handles_multiple_else_if() {
     let rule = configured(&ScssAtElseIfParenthesesSpaceBefore, None);
     let src = "@if $a { } @else if($b) { } @else if ($c) { }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     // default "never": second @else if has space => 1 report
     assert_eq!(d.len(), 1);
   }

@@ -1,4 +1,4 @@
-use gale_css_parser::{CssNode, Declaration};
+use gale_css_parser::postcss_tree::{DeclRef, NodeRef, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -56,79 +56,6 @@ const NESTING_SUPPORTED_AT_RULES: &[&str] = &[
 /// (Stylelint's `declarationContainingAtKeywords`).
 const DECLARATION_CONTAINING_AT_RULES: &[&str] = &["mixin", "scope"];
 
-/// Where a run of sibling nodes sits.
-#[derive(Clone, Copy)]
-enum Parent<'a> {
-  /// The stylesheet root.
-  Root,
-  /// A style rule's block.
-  Rule,
-  /// An at-rule's block, by at-rule name as written.
-  AtRule(&'a str),
-}
-
-/// The walk's state: the rule's options and the problems found so far.
-struct Walk<'a> {
-  /// The `ignoreAtRules` option.
-  ignore_at_rules: &'a Matchers,
-  /// Problems found so far.
-  diags: Vec<Diagnostic>,
-}
-
-impl Walk<'_> {
-  /// Check the declarations among `nodes` and walk into their blocks.
-  ///
-  /// `shielded` is true when the parent or an ancestor is a style rule, a
-  /// declaration-containing at-rule or an ignored at-rule: Stylelint's
-  /// `findNodeUpToRoot` test for at-rules that need nesting.
-  fn nodes(&mut self, nodes: &[CssNode], parent: Parent<'_>, shielded: bool) {
-    for node in nodes {
-      match node {
-        CssNode::Declaration(decl) => self.declaration(decl, parent, shielded),
-        CssNode::AtRule(at) => {
-          let shields = shielded
-            || is_declaration_containing(&at.name)
-            || self.ignore_at_rules.matches(&at.name);
-          self.nodes(&at.children, Parent::AtRule(&at.name), shields);
-        }
-        CssNode::Style(style) => self.style_rule(style),
-        CssNode::Comment(_) => {}
-      }
-    }
-  }
-
-  /// Walk a style rule's nested blocks.  Its own declarations are always in
-  /// a valid position, and so is anything nested under it.
-  fn style_rule(&mut self, style: &gale_css_parser::StyleRule) {
-    self.nodes(&style.nested_at_rules, Parent::Rule, true);
-    for child in &style.children {
-      self.style_rule(child);
-    }
-  }
-
-  /// Report `decl` when its position is invalid.
-  fn declaration(&mut self, decl: &Declaration, parent: Parent<'_>, shielded: bool) {
-    if !is_standard_syntax_declaration(&decl.property) {
-      return;
-    }
-    let valid = match parent {
-      Parent::Root => false,
-      Parent::Rule => true,
-      Parent::AtRule(name) => {
-        is_declaration_containing(name) || !is_nesting_supported(name) || shielded
-      }
-    };
-    if valid {
-      return;
-    }
-    // The declaration's own span, so a disable comment for the
-    // declaration's line covers the report.
-    self
-      .diags
-      .push(Diagnostic::new(NAME, "Invalid position for declaration").span(decl.span));
-  }
-}
-
 /// Whether `name` is an at-rule that takes declarations only when nested.
 fn is_nesting_supported(name: &str) -> bool {
   NESTING_SUPPORTED_AT_RULES
@@ -136,165 +63,105 @@ fn is_nesting_supported(name: &str) -> bool {
     .any(|known| known.eq_ignore_ascii_case(name))
 }
 
-/// Whether `name` is an at-rule that takes declarations directly.
-fn is_declaration_containing(name: &str) -> bool {
-  DECLARATION_CONTAINING_AT_RULES
-    .iter()
-    .any(|known| known.eq_ignore_ascii_case(name))
+/// Whether `node` is an at-rule that takes declarations directly.
+fn is_declaration_containing(node: NodeRef) -> bool {
+  node.as_at_rule().is_some_and(|at| {
+    DECLARATION_CONTAINING_AT_RULES
+      .iter()
+      .any(|known| known.eq_ignore_ascii_case(at.name()))
+  })
 }
 
-/// Stylelint's `isStandardSyntaxDeclaration` as far as the property tells:
-/// SCSS variables (`$var`, `ns.$var`) and Less variables (`@var`, but not
-/// `@{var}` interpolation) are not declarations this rule looks at.
-fn is_standard_syntax_declaration(property: &str) -> bool {
-  let scss_variable = property.starts_with('$') || property.contains(".$");
-  let less_variable = property.starts_with('@') && !property.starts_with("@{");
-  !scss_variable && !less_variable
+impl NoInvalidPositionDeclarationCheck {
+  /// Whether `decl` sits where a declaration applies: in a style rule or an
+  /// at-rule that takes declarations, or in one that takes them nested
+  /// (`@media`, `@supports`, ...) with a style rule, a declaration-taking
+  /// at-rule or an ignored at-rule around it.
+  fn is_valid_position(&self, decl: DeclRef) -> bool {
+    let Some(parent) = decl.parent() else {
+      return false;
+    };
+    if parent.as_rule().is_some() || is_declaration_containing(parent) {
+      return true;
+    }
+    let Some(at) = parent.as_at_rule() else {
+      // A nested property's block, say.
+      return false;
+    };
+    if !is_nesting_supported(at.name()) {
+      return true;
+    }
+    decl.ancestors().any(|node| {
+      node.as_rule().is_some()
+        || is_declaration_containing(node)
+        || node
+          .as_at_rule()
+          .is_some_and(|at| self.ignore_at_rules.matches(at.name()))
+    })
+  }
 }
 
 impl Check for NoInvalidPositionDeclarationCheck {
   /// Flags declarations at the root, or directly inside an at-rule that
   /// takes them only when nested in a style rule.
-  fn check_root(&self, nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let mut walk = Walk {
-      ignore_at_rules: &self.ignore_at_rules,
-      diags: Vec::new(),
-    };
-    walk.nodes(nodes, Parent::Root, false);
-    walk.diags
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk_decls()
+      .filter(|decl| decl.is_standard_syntax() && !self.is_valid_position(*decl))
+      .map(|decl| Diagnostic::new(NAME, "Invalid position for declaration").span(decl.span()))
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, Syntax};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, context};
+
+  /// Lint `source` and return each report's line.
+  fn lines(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
+    configured(&NoInvalidPositionDeclaration, options)
+      .check_source(&context(source, syntax))
+      .iter()
+      .map(|d| source[..d.span.offset].lines().count().max(1))
+      .collect()
+  }
 
   #[test]
   fn reports_declaration_inside_media() {
-    let rule = configured(&NoInvalidPositionDeclaration, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      })],
-    });
-    let d = rule.check_root(&[node], &ctx());
+    let source = "@media (min-width: 768px) {\n  color: red;\n}";
+    let d =
+      configured(&NoInvalidPositionDeclaration, None).check_source(&context(source, Syntax::Css));
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Invalid position for declaration");
+    assert_eq!(&source[d[0].span.offset..d[0].span.end()], "color: red;");
   }
 
   #[test]
   fn allows_style_rules_inside_media() {
-    let rule = configured(&NoInvalidPositionDeclaration, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Style(gale_css_parser::StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![Declaration {
-          property: "color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(0, 0),
-          important: false,
-        }],
-        span: Span::new(0, 0),
-        ..Default::default()
-      })],
-    });
-    let d = rule.check_root(&[node], &ctx());
-    assert!(d.is_empty());
+    let source = "@media (min-width: 768px) { a { color: red; } }";
+    assert!(lines(source, Syntax::Css, None).is_empty());
   }
 
   #[test]
   fn allows_scss_variable_inside_media() {
-    let rule = configured(&NoInvalidPositionDeclaration, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$sidebar-width".to_string(),
-        value: "285px".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      })],
-    });
-    let d = rule.check_root(&[node], &ctx());
-    assert!(d.is_empty(), "SCSS variables should not be flagged");
+    let source = "@media (min-width: 768px) { $sidebar-width: 1px; }";
+    assert!(lines(source, Syntax::Scss, None).is_empty());
   }
 
   #[test]
   fn allows_declarations_inside_font_face() {
-    let rule = configured(&NoInvalidPositionDeclaration, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "font-face".to_string(),
-      params: String::new(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "font-family".to_string(),
-        value: "MyFont".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      })],
-    });
-    let d = rule.check_root(&[node], &ctx());
-    assert!(d.is_empty());
+    let source = "@font-face { font-family: x; }";
+    assert!(lines(source, Syntax::Css, None).is_empty());
   }
 
   #[test]
-  fn allows_scss_nested_media_with_declarations() {
-    let rule = configured(&NoInvalidPositionDeclaration, None);
-    // In SCSS, @media nested inside a style rule legitimately contains
-    // declarations scoped by the parent selector.  This should NOT be flagged.
-    let node = CssNode::Style(gale_css_parser::StyleRule {
-      selector: ".foo".to_string(),
-      declarations: vec![],
-      span: Span::new(0, 100),
-      nested_at_rules: vec![CssNode::AtRule(AtRule {
-        name: "media".to_string(),
-        params: "(min-width: 600px)".to_string(),
-        span: Span::new(10, 80),
-        children: vec![CssNode::Declaration(Declaration {
-          property: "font-size".to_string(),
-          value: "14px".to_string(),
-          span: Span::new(40, 16),
-          important: false,
-        })],
-      })],
-      ..Default::default()
-    });
-    let d = rule.check_root(&[node], &ctx());
-    assert!(
-      d.is_empty(),
-      "declarations inside @media nested in a style rule should not be flagged"
-    );
-  }
-
-  /// Lint `source` with the real parser and return each report's line.
-  fn lines(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
-    let parsed = gale_css_parser::parse(source, syntax).expect("parses");
-    let ctx = RuleContext {
-      env: Default::default(),
-      file_path: "t.scss",
-      source,
-      syntax,
-      cache: None,
-    };
-    configured(&NoInvalidPositionDeclaration, options)
-      .check_root(&parsed.nodes, &ctx)
-      .iter()
-      .map(|d| source[..d.span.offset].lines().count().max(1))
-      .collect()
+  fn allows_nested_media_with_declarations() {
+    let source = ".a { @media (min-width: 1px) { font-size: 1px; } }";
+    assert!(lines(source, Syntax::Css, None).is_empty());
+    assert!(lines(source, Syntax::Scss, None).is_empty());
   }
 
   #[test]
@@ -334,6 +201,7 @@ mod tests {
   fn root_level_declarations_are_reported() {
     let source = "color: red;\n$x: 1;\n.a {\n  color: blue;\n}\n";
     assert_eq!(lines(source, Syntax::Scss, None), vec![1]);
+    assert_eq!(lines("color: red;\n.a {}", Syntax::Css, None), vec![1]);
   }
 
   #[test]

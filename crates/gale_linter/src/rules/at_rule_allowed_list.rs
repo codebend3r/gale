@@ -1,5 +1,6 @@
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::{Found, ListCheck, ListRule, Polarity, subjects};
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "at-rule-allowed-list";
@@ -42,7 +43,7 @@ mod tests {
 
   use super::{AtRuleAllowedList, NAME};
   use crate::list_rules::testing::check_css;
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_at_rules_missing_from_the_list() {
@@ -80,7 +81,7 @@ mod tests {
   fn reports_nothing_without_a_list() {
     let check = configured(&AtRuleAllowedList, None);
     let ctx = ctx_with_source("@supports (display: grid) {}");
-    assert!(check.check_root(&[], &ctx).is_empty());
+    assert!(check.check_source(&ctx).is_empty());
   }
 
   #[test]

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -11,8 +11,9 @@ declare_rule! {
   /// Disallow invalid syntax strings in `@property` descriptors.
   ///
   /// The `syntax` descriptor in a `@property` rule must be a quoted string
-  /// containing a valid CSS syntax definition. This rule checks that the value
-  /// is quoted, non-empty, and uses only known CSS type names.
+  /// containing a valid CSS syntax definition. This rule checks that a quoted
+  /// value is non-empty and uses only known CSS type names; like Stylelint's,
+  /// it has nothing to say about a value that is not a string.
   ///
   /// Equivalent to Stylelint's `syntax-string-no-invalid` rule.
   pub struct SyntaxStringNoInvalid => SyntaxStringNoInvalidCheck {
@@ -99,42 +100,32 @@ fn validate_syntax_string(value: &str) -> Option<String> {
 }
 
 impl Check for SyntaxStringNoInvalidCheck {
-  /// Flags a `@property` `syntax` descriptor that is unquoted, empty, or names a
+  /// Flags a `@property` `syntax` descriptor string that is empty or names a
   /// CSS type this rule does not know.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if at.name != "property" {
-      return vec![];
-    }
-
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
-    // Look for "syntax" declarations in children
-    for child in &at.children {
-      let CssNode::Declaration(decl) = child else {
-        continue;
-      };
-      if decl.property != "syntax" {
+    // The `syntax` descriptors of every `@property`.
+    let descriptors = tree
+      .walk_at_rules()
+      .filter(|at| at.name() == "property")
+      .flat_map(|at| at.child_decls())
+      .filter(|decl| decl.prop() == "syntax");
+    for decl in descriptors {
+      let value = decl.value().trim();
+
+      // Stylelint checks the strings of the value and nothing else.
+      let quoted = value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+          || (value.starts_with('\'') && value.ends_with('\'')));
+      if !quoted {
         continue;
       }
-
-      let value = decl.value.trim();
-
-      // Must be quoted
-      if (value.starts_with('"') && value.ends_with('"'))
-        || (value.starts_with('\'') && value.ends_with('\''))
-      {
-        let inner = &value[1..value.len() - 1];
-        if let Some(reason) = validate_syntax_string(inner) {
-          diags.push(
-            Diagnostic::new(NAME, format!("Invalid syntax string: {reason}")).span(decl.span),
-          );
-        }
-      } else {
-        diags
-          .push(Diagnostic::new(NAME, "Syntax string must be quoted".to_string()).span(decl.span));
+      let inner = &value[1..value.len() - 1];
+      if let Some(reason) = validate_syntax_string(inner) {
+        diags.push(
+          Diagnostic::new(NAME, format!("Invalid syntax string: {reason}")).span(decl.span()),
+        );
       }
     }
 
@@ -145,30 +136,19 @@ impl Check for SyntaxStringNoInvalidCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode, Declaration};
   use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn property_rule(syntax_value: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "property".to_string(),
-      params: "--my-color".to_string(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "syntax".to_string(),
-        value: syntax_value.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      })],
-    })
+  fn property_rule(syntax_value: &str) -> String {
+    format!("@property --my-color {{ syntax: {syntax_value}; inherits: false; }}")
   }
 
   #[test]
   fn allows_valid_length() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"<length>\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"<length>\"")))
         .is_empty()
     );
   }
@@ -177,7 +157,7 @@ mod tests {
   fn allows_valid_color() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"<color>\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"<color>\"")))
         .is_empty()
     );
   }
@@ -186,7 +166,7 @@ mod tests {
   fn allows_universal() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"*\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"*\"")))
         .is_empty()
     );
   }
@@ -195,7 +175,7 @@ mod tests {
   fn allows_pipe_separated() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"<length> | <color>\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"<length> | <color>\"")))
         .is_empty()
     );
   }
@@ -204,7 +184,7 @@ mod tests {
   fn allows_plus_suffix() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"<length>+\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"<length>+\"")))
         .is_empty()
     );
   }
@@ -213,51 +193,54 @@ mod tests {
   fn allows_hash_suffix() {
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"<length>#\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"<length>#\"")))
         .is_empty()
     );
   }
 
   #[test]
   fn reports_unknown_type() {
-    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("\"<foo>\""), &ctx());
+    let d = configured(&SyntaxStringNoInvalid, None)
+      .check_source(&ctx_with_source(&property_rule("\"<foo>\"")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unknown syntax type"));
     assert!(d[0].message.contains("<foo>"));
   }
 
   #[test]
-  fn reports_unquoted_value() {
-    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("<length>"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("must be quoted"));
+  fn ignores_unquoted_value() {
+    // Stylelint's rule reads only the strings of the value; a value that is
+    // not one is `at-rule-descriptor-value-no-unknown`'s business.
+    let d = configured(&SyntaxStringNoInvalid, None)
+      .check_source(&ctx_with_source(&property_rule("<length>")));
+    assert!(d.is_empty());
   }
 
   #[test]
   fn reports_empty_string() {
-    let d = configured(&SyntaxStringNoInvalid, None).check(&property_rule("\"\""), &ctx());
+    let d = configured(&SyntaxStringNoInvalid, None)
+      .check_source(&ctx_with_source(&property_rule("\"\"")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Empty syntax string"));
   }
 
   #[test]
   fn ignores_non_property_at_rules() {
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "screen".to_string(),
-      span: Span::new(0, 0),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "syntax".to_string(),
-        value: "\"<bogus>\"".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      })],
-    });
+    let source = "@media screen { syntax: \"<bogus>\"; }";
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&node, &ctx())
+        .check_source(&ctx_with_source(source))
         .is_empty()
     );
+  }
+
+  #[test]
+  fn reads_property_rules_in_css() {
+    // The CSS parser used to keep no descriptors for `@property`.
+    let source = "@property --x {\n  syntax: \"<foo>\";\n}";
+    let d = configured(&SyntaxStringNoInvalid, None).check_source(&ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span, Span::new(18, 16));
   }
 
   #[test]
@@ -265,7 +248,7 @@ mod tests {
     // Plain keywords like "auto" are valid in syntax descriptors
     assert!(
       configured(&SyntaxStringNoInvalid, None)
-        .check(&property_rule("\"auto\""), &ctx())
+        .check_source(&ctx_with_source(&property_rule("\"auto\"")))
         .is_empty()
     );
   }

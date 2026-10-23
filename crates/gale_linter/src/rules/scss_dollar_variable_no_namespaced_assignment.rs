@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
@@ -46,13 +47,12 @@ static NAMESPACED: LazyLock<Regex> =
 
 impl Check for ScssDollarVariableNoNamespacedAssignmentCheck {
   /// Reports every declaration whose property is a `namespace.$variable`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return Vec::new();
     }
-    ctx
-      .postcss_tree()
-      .decls()
+    tree
+      .walk_decls()
       .filter(|decl| NAMESPACED.is_match(&decl.name))
       .map(|decl| {
         Diagnostic::new(NAME, "Unexpected assignment to a namespaced $ variable")

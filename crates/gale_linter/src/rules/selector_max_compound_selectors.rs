@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::strip_line_comments;
 
 const NAME: &str = "selector-max-compound-selectors";
 
@@ -47,38 +46,30 @@ const MAX_COMPOUND: usize = 3;
 
 impl Check for SelectorMaxCompoundSelectorsCheck {
   /// Flags a selector holding more compound selectors than allowed.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    // Read configured max from options (primary option is a number).
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
-    let selector = if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
-    ) {
-      strip_line_comments(&rule.selector)
-    } else {
-      rule.selector.clone()
-    };
-
     let mut diags = Vec::new();
-    // Check each comma-separated selector
-    for sel in selector.split(',') {
-      let sel = sel.trim();
-      let count = count_compound_selectors(sel);
-      if count > max {
-        diags.push(
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = rule.selector();
+      // Check each comma-separated selector
+      for sel in selector.split(',') {
+        let sel = sel.trim();
+        let count = count_compound_selectors(sel);
+        if count > max {
+          diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} compound selector(s), found {count}"
                         ),
                     )
-                    .span(rule.span),
+                    .span(rule.span()),
                 );
+        }
       }
     }
     diags
@@ -131,12 +122,20 @@ fn count_compound_selectors(selector: &str) -> usize {
 
     // Descendant combinator (whitespace between simple selectors)
     if chars[i].is_ascii_whitespace() {
+      // Whitespace just inside a `(`, as in `:not( .a )`, is padding.
+      let after_paren = i > 0 && chars[i - 1] == '(';
       // Skip all whitespace
       while i < len && chars[i].is_ascii_whitespace() {
         i += 1;
       }
       // If not at end and next char is not a combinator or closing paren, it's a descendant combinator
-      if i < len && chars[i] != '>' && chars[i] != '+' && chars[i] != '~' && chars[i] != ')' {
+      if !after_paren
+        && i < len
+        && chars[i] != '>'
+        && chars[i] != '+'
+        && chars[i] != '~'
+        && chars[i] != ')'
+      {
         count += 1;
       }
       continue;
@@ -151,30 +150,20 @@ fn count_compound_selectors(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_compound_selectors() {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 4 compound selectors: .a .b .c .d
-    let d = rule.check(&style_with_selector(".a .b .c .d"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a .b .c .d"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 4"));
   }
@@ -183,7 +172,7 @@ mod tests {
   fn allows_within_limit() {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 3 compound selectors: .a .b .c
-    let d = rule.check(&style_with_selector(".a .b .c"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a .b .c"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -191,14 +180,17 @@ mod tests {
   fn counts_child_combinator() {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // 4 compound selectors: .a > .b > .c > .d
-    let d = rule.check(&style_with_selector(".a > .b > .c > .d"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector(".a > .b > .c > .d"),
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn single_selector_ok() {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
-    let d = rule.check(&style_with_selector(".foo"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".foo"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -208,7 +200,7 @@ mod tests {
     // "dt, // TODO: Deprecate\n.form-group-header" should be treated as
     // "dt,\n.form-group-header" which is two selectors each with 1 compound.
     let sel = "dt, // TODO: Deprecate\n.form-group-header";
-    let d = rule.check(&style_with_selector(sel), &scss_ctx());
+    let d = rule.check_source(&context(&style_with_selector(sel), Syntax::Scss));
     assert!(d.is_empty(), "Expected no diagnostics, got: {:?}", d);
   }
 
@@ -217,7 +209,7 @@ mod tests {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Full-line SCSS comments should be stripped entirely
     let sel = "// This is a comment\n.foo .bar";
-    let d = rule.check(&style_with_selector(sel), &scss_ctx());
+    let d = rule.check_source(&context(&style_with_selector(sel), Syntax::Scss));
     assert!(d.is_empty());
   }
 
@@ -226,7 +218,10 @@ mod tests {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Stylelint v17: compound selectors inside :is() ARE counted.
     // `:is(.a .b .c .d)` has 4 compound selectors.
-    let d = rule.check(&style_with_selector(":is(.a .b .c .d)"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector(":is(.a .b .c .d)"),
+      Syntax::Css,
+    ));
     assert_eq!(
       d.len(),
       1,
@@ -240,11 +235,18 @@ mod tests {
     let rule = configured(&SelectorMaxCompoundSelectors, None);
     // Stylelint v17: `.foo:has(.bar > .baz > .qux > .quux)` has compounds
     // counted across the whole selector as-written.
-    let d = rule.check(
+    let d = rule.check_source(&context(
       &style_with_selector(".foo:has(.bar > .baz > .qux > .quux)"),
-      &ctx(),
-    );
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn padding_inside_parentheses_is_no_combinator() {
+    let rule = configured(&SelectorMaxCompoundSelectors, None);
+    let source = style_with_selector("> div:not( :only-of-type ) .button");
+    assert!(rule.check_source(&context(&source, Syntax::Css)).is_empty());
   }
 
   #[test]

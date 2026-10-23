@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -39,7 +39,7 @@ impl StylisticNumberLeadingZeroCheck {
 
 impl Check for StylisticNumberLeadingZeroCheck {
   /// Flags a fractional number whose leading zero does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -131,14 +131,14 @@ impl Check for StylisticNumberLeadingZeroCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_allows_leading_zero() {
     let opt = serde_json::json!("always");
     let source = "a { opacity: 0.5; }";
-    let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+    let d =
+      configured(&StylisticNumberLeadingZero, opt.clone()).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -146,8 +146,8 @@ mod tests {
   fn always_reports_missing_leading_zero() {
     let opt = serde_json::json!("always");
     let source = "a { opacity: .5; }";
-    let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+    let d =
+      configured(&StylisticNumberLeadingZero, opt.clone()).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a leading zero"));
   }
@@ -156,8 +156,8 @@ mod tests {
   fn never_reports_leading_zero() {
     let opt = serde_json::json!("never");
     let source = "a { opacity: 0.5; }";
-    let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+    let d =
+      configured(&StylisticNumberLeadingZero, opt.clone()).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected leading zero"));
   }
@@ -166,8 +166,8 @@ mod tests {
   fn never_allows_bare_dot() {
     let opt = serde_json::json!("never");
     let source = "a { opacity: .5; }";
-    let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+    let d =
+      configured(&StylisticNumberLeadingZero, opt.clone()).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -175,8 +175,8 @@ mod tests {
   fn does_not_flag_normal_decimals() {
     let opt = serde_json::json!("always");
     let source = "a { width: 1.5px; }";
-    let d = configured(&StylisticNumberLeadingZero, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+    let d =
+      configured(&StylisticNumberLeadingZero, opt.clone()).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_unit;
@@ -306,118 +306,34 @@ fn is_x_unit_valid_in_context(func: Option<&str>, in_media_resolution: bool) -> 
   false
 }
 
-/// Byte offset where a declaration's value begins, past the colon and whitespace.
-fn find_value_offset(source: &str, decl_offset: usize, decl_length: usize) -> usize {
-  let end = (decl_offset + decl_length).min(source.len());
-  if decl_offset >= source.len() || end <= decl_offset {
-    return decl_offset;
-  }
-  let slice = &source[decl_offset..end];
-  if let Some(colon) = slice.find(':') {
-    let after_colon = colon + 1;
-    let mut off = after_colon;
-    let bytes = slice.as_bytes();
-    while off < bytes.len() && bytes[off].is_ascii_whitespace() {
-      off += 1;
-    }
-    decl_offset + off
-  } else {
-    decl_offset
-  }
-}
-
-/// Byte offset where an at-rule's prelude begins, past its name and whitespace.
-fn find_params_offset(source: &str, at_rule_offset: usize) -> usize {
-  let start = at_rule_offset;
-  if start >= source.len() {
-    return start;
-  }
-  let rest = &source[start..];
-  let mut off = 1;
-  let bytes = rest.as_bytes();
-  while off < bytes.len() && (bytes[off].is_ascii_alphanumeric() || bytes[off] == b'-') {
-    off += 1;
-  }
-  while off < bytes.len() && bytes[off].is_ascii_whitespace() {
-    off += 1;
-  }
-  start + off
-}
-
-// ---------------------------------------------------------------------------
-// Rule implementation
-// ---------------------------------------------------------------------------
-
 impl Check for UnitNoUnknownCheck {
-  /// Flags units that are not standard CSS. `content`, `unicode-range` and SCSS
-  /// variable declarations are skipped.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags units that are not standard CSS, in every declaration's value as
+  /// written and in `@media` params, the only at-rule Stylelint checks.
+  /// `content`, `unicode-range` and what Stylelint's
+  /// `isStandardSyntaxDeclaration` / `isStandardSyntaxAtRule` reject (Sass
+  /// and Less variables, Less mixins) are skipped.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let opts = &self.opts;
     let mut diags = Vec::new();
-
-    match node {
-      CssNode::Style(rule) => {
-        for decl in &rule.declarations {
-          if decl.property.eq_ignore_ascii_case("content") {
-            continue;
-          }
-          if decl.property.eq_ignore_ascii_case("unicode-range") {
-            continue;
-          }
-          // Skip SCSS variable declarations ($var: value)
-          if decl.property.starts_with('$') {
-            continue;
-          }
-          let value_offset = find_value_offset(ctx.source, decl.span.offset, decl.span.length);
-          check_value(&decl.value, opts, false, value_offset, NAME, &mut diags);
-        }
-      }
-      CssNode::AtRule(at_rule) => {
-        if !at_rule.params.is_empty() {
-          let at_name = at_rule.name.to_ascii_lowercase();
-          // Skip at-rules whose params are identifiers, not CSS values
-          if matches!(
-            at_name.as_str(),
-            "font-face"
-              | "mixin"
-              | "include"
-              | "function"
-              | "extend"
-              | "import"
-              | "use"
-              | "forward"
-              | "at-root"
-              | "return"
-              | "debug"
-              | "warn"
-              | "error"
-              | "each"
-              | "for"
-              | "while"
-              | "namespace"
-              | "layer"
-              | "charset"
-          ) {
-            // skip
-          } else {
-            let params_offset = find_params_offset(ctx.source, at_rule.span.offset);
-            check_at_rule_params(&at_rule.params, opts, params_offset, NAME, &mut diags);
-          }
-        }
-      }
-      CssNode::Declaration(decl) => {
-        if decl.property.eq_ignore_ascii_case("content")
-          || decl.property.eq_ignore_ascii_case("unicode-range")
-          || decl.property.starts_with('$')
+    for node in tree.walk() {
+      if let Some(decl) = node.as_decl() {
+        let prop = decl.prop();
+        if prop.eq_ignore_ascii_case("content")
+          || prop.eq_ignore_ascii_case("unicode-range")
+          || !decl.is_standard_syntax()
         {
-          return vec![];
+          continue;
         }
-        let value_offset = find_value_offset(ctx.source, decl.span.offset, decl.span.length);
-        check_value(&decl.value, opts, false, value_offset, NAME, &mut diags);
+        let value = decl.raw_value();
+        check_value(&value, opts, false, decl.value_start(), NAME, &mut diags);
+      } else if let Some(at) = node.as_at_rule() {
+        if !at.name().eq_ignore_ascii_case("media") || !at.is_standard_syntax() {
+          continue;
+        }
+        let params = at.raw_params();
+        check_at_rule_params(&params, opts, at.params_start(), NAME, &mut diags);
       }
-      _ => {}
     }
-
     diags
   }
 }
@@ -592,45 +508,69 @@ fn media_feature_values(params: &str) -> Vec<(String, String, usize)> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, configured_in, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, configured_in, context, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "width".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&UnitNoUnknown, None).check_source(&context(source, syntax))
+  }
+
+  /// The reports for `a { width: <value> }` in CSS.
+  fn width(value: &str) -> Vec<Diagnostic> {
+    check(&format!("a {{ width: {value} }}"), Syntax::Css)
   }
 
   #[test]
-  fn reports_unknown_unit() {
-    let rule = configured(&UnitNoUnknown, None);
-    let d = rule.check(&style_with_value("10xyz"), &ctx());
+  fn reports_unknown_unit_at_its_number() {
+    let d = width("10xyz");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("xyz"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (11, 3));
+    // Offsets come from the value as written, not a re-printed one.
+    let d = width("0.50px 0.50px 10pixels");
+    assert_eq!(d[0].span.offset, 25);
   }
 
   #[test]
   fn allows_known_units() {
-    let rule = configured(&UnitNoUnknown, None);
-    assert!(rule.check(&style_with_value("10px"), &ctx()).is_empty());
-    assert!(rule.check(&style_with_value("2rem"), &ctx()).is_empty());
-    assert!(rule.check(&style_with_value("50%"), &ctx()).is_empty());
+    for value in ["10px", "2rem", "50%"] {
+      assert!(width(value).is_empty(), "{value}");
+    }
   }
 
   #[test]
   fn does_not_extract_unit_from_function_names() {
-    let rule = configured(&UnitNoUnknown, None);
-    let d = rule.check(&style_with_value("scale3d(1.1, 1.1, 1.1)"), &ctx());
-    assert!(d.is_empty());
+    assert!(width("scale3d(1.1, 1.1, 1.1)").is_empty());
+  }
+
+  #[test]
+  fn checks_descriptors_nested_at_rules_and_media_params() {
+    let css = "@font-face { size-adjust: 10pixels; }\n\
+      a { @media (min-width: 10pixels) { b { top: 1xyz } } }";
+    let d = check(css, Syntax::Css);
+    let units: Vec<&str> = d.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(units.len(), 3, "{units:?}");
+  }
+
+  #[test]
+  fn skips_variables_and_mixins() {
+    let less = "@size: 10pixels;\n.m(@a) { top: @a }\na { .m(10pixels); }";
+    assert!(check(less, Syntax::Less).is_empty());
+    let scss = "$size: 10pixels;\na { $local: 2xyz; @include m(10pixels); }";
+    assert!(check(scss, Syntax::Scss).is_empty());
+  }
+
+  #[test]
+  fn checks_only_media_params() {
+    let css = "@document url(http://www.w3.org/) {}\n@supports (top: 1xyz) {}";
+    assert!(check(css, Syntax::Css).is_empty());
+    let d = check(
+      "@MEDIA (min-resolution: 2x) and (min-width: 1xyz) {}",
+      Syntax::Css,
+    );
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("xyz"));
   }
 
   #[test]
@@ -679,13 +619,9 @@ mod tests {
     let older = LintEnv {
       stylelint_version: Some((14, 16, 1)),
     };
-    let node = style_with_value("100dvh");
-    assert!(
-      configured(&UnitNoUnknown, None)
-        .check(&node, &ctx())
-        .is_empty()
-    );
-    let d = configured_in(&UnitNoUnknown, None, older).check(&node, &ctx());
+    let css = "a { height: 100dvh }";
+    assert!(width("100dvh").is_empty());
+    let d = configured_in(&UnitNoUnknown, None, older).check_source(&context(css, Syntax::Css));
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Unexpected unknown unit \"dvh\"");
   }

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -45,7 +45,7 @@ impl StylisticNoEolWhitespaceCheck {
 
 impl Check for StylisticNoEolWhitespaceCheck {
   /// Flags whitespace at the end of a line, skipping string literals.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -122,19 +122,19 @@ impl Check for StylisticNoEolWhitespaceCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_no_trailing_whitespace() {
     let source = "a {\n  color: red;\n}\n";
-    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_trailing_spaces() {
     let source = "a {  \n  color: red;\n}\n";
-    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("end-of-line whitespace"));
   }
@@ -142,11 +142,10 @@ mod tests {
   #[test]
   fn ignore_empty_lines_allows_whitespace_only_lines() {
     let source = "a {\n  \n  color: red; \n\t\n}\n  ";
-    let all = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    let all = configured(&StylisticNoEolWhitespace, None).check_source(&ctx_with_source(source));
     assert_eq!(all.len(), 4);
     let options = serde_json::json!([true, { "ignore": ["empty-lines"] }]);
-    let d =
-      configured(&StylisticNoEolWhitespace, options).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, options).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].span.offset, 20);
   }
@@ -154,14 +153,14 @@ mod tests {
   #[test]
   fn reports_trailing_tab() {
     let source = "a {\t\n  color: red;\n}\n";
-    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_lines() {
     let source = "a { \n  color: red; \n}\n";
-    let d = configured(&StylisticNoEolWhitespace, None).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticNoEolWhitespace, None).check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 2);
   }
 

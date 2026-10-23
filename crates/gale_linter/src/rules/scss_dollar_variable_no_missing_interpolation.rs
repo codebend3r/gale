@@ -1,15 +1,14 @@
 use std::sync::LazyLock;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{Node, NodeKind, PostcssTree};
+use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use regex::Regex;
 
 use crate::data;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::{Node, NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, ValueNode};
 
 const NAME: &str = "scss/dollar-variable-no-missing-interpolation";
 
@@ -79,9 +78,8 @@ enum Required {
 impl Check for ScssDollarVariableNoMissingInterpolationCheck {
   /// Reports the first bare variable in each declaration or at-rule that
   /// needs it interpolated.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
-    let variables = Variables::collect(&tree);
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+    let variables = Variables::collect(tree);
     if variables.all.is_empty() {
       return Vec::new();
     }
@@ -133,7 +131,7 @@ impl Check for ScssDollarVariableNoMissingInterpolationCheck {
       )
       .message_args([node_name.as_str(), variable])
       .span(span);
-      if let Some(fix) = value_index.and_then(|index| interpolate(&tree, node, value, index)) {
+      if let Some(fix) = value_index.and_then(|index| interpolate(tree, node, value, index)) {
         diag = diag.fix(fix);
       }
       diags.push(diag);
@@ -156,8 +154,8 @@ impl<'t> Variables<'t> {
   fn collect(tree: &'t PostcssTree<'_>) -> Self {
     let mut all: Vec<&str> = Vec::new();
     let mut string_valued = Vec::new();
-    for decl in tree.decls() {
-      let (prop, value) = (decl.name.as_str(), decl.value.as_str());
+    for decl in tree.walk_decls() {
+      let (prop, value) = (decl.prop(), decl.value());
       // A custom property set to a variable makes that variable one to
       // interpolate, assigned here or not.
       if prop.starts_with("--") && is_dollar_var(value) && !all.contains(&value) {

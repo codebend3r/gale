@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -10,7 +10,7 @@ const NAME: &str = "plugin/require-file-header-comment";
 declare_rule! {
   /// Require that CSS files begin with a comment matching a specified pattern.
   ///
-  /// This is a `check_root` rule that inspects the first node in the file.
+  /// It inspects the first node in the file.
   ///
   /// Options (secondary): an object with a `pattern` key containing a regex
   /// pattern (as a string, optionally wrapped in `/regex/flags`).
@@ -86,50 +86,37 @@ impl HeaderPattern {
 
 impl Check for PluginRequireFileHeaderCommentCheck {
   /// Flags a file whose first node is not a comment matching the pattern.
-  fn check_root(&self, nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+  /// The comment's text is PostCSS's `comment.text`: no delimiters, no
+  /// whitespace around it.
+  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
     let Some(pattern) = &self.pattern else {
       return vec![];
     };
-
-    // Find the first non-whitespace node
-    let first_node = nodes.first();
-
-    match first_node {
-      Some(CssNode::Comment(comment)) => {
-        if pattern.matches(&comment.text) {
-          // Comment matches pattern — all good
-          vec![]
-        } else {
-          vec![
-            Diagnostic::new(
-              NAME,
-              "File header comment does not match the required pattern",
-            )
-            .span(comment.span),
-          ]
-        }
-      }
-      _ => {
-        // No comment at the start of file, or file is empty
-        // Use span at the start of the file
-        let span = Span::new(0, 0);
-        let mut diag = Diagnostic::new(
+    match tree.root_nodes().next().and_then(NodeRef::as_comment) {
+      Some(comment) if pattern.matches(comment.text()) => vec![],
+      Some(comment) => vec![
+        Diagnostic::new(
+          NAME,
+          "File header comment does not match the required pattern",
+        )
+        .span(comment.span()),
+      ],
+      // No comment at the start of the file, or an empty file: insert a
+      // default header at the top.
+      None => vec![
+        Diagnostic::new(
           NAME,
           "Missing file header comment matching the required pattern",
         )
-        .span(span);
-
-        // Provide autofix: insert a default header comment at the top
-        diag = diag.fix(Fix::new(
+        .span(Span::new(0, 0))
+        .fix(Fix::new(
           "Insert file header comment",
           vec![Edit::new(
             Span::new(0, 0),
             "/* TODO: Add file header comment */\n".to_string(),
           )],
-        ));
-
-        vec![diag]
-      }
+        )),
+      ],
     }
   }
 }
@@ -137,150 +124,48 @@ impl Check for PluginRequireFileHeaderCommentCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Comment, StyleRule};
+  use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, context};
 
-  #[test]
-  fn passes_with_matching_comment() {
-    let opts = json!([true, {
-        "pattern": "/Copyright|License/i"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Comment(Comment {
-      text: " Copyright 2024 Acme Corp ".to_string(),
-      span: Span::new(0, 30),
-      is_line: false,
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert!(diags.is_empty());
+  /// What the rule reports for `source` in `syntax` with `pattern`.
+  fn check(source: &str, syntax: Syntax, pattern: &str) -> Vec<Diagnostic> {
+    configured(
+      &PluginRequireFileHeaderComment,
+      json!([true, { "pattern": pattern }]),
+    )
+    .check_source(&context(source, syntax))
   }
 
   #[test]
-  fn passes_with_license_comment() {
-    let opts = json!([true, {
-        "pattern": "/Copyright|License/i"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Comment(Comment {
-      text: " MIT License ".to_string(),
-      span: Span::new(0, 16),
-      is_line: false,
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert!(diags.is_empty());
+  fn passes_with_matching_comment() {
+    let source = "/* Copyright 2024 Acme Corp */\na {}";
+    for syntax in [Syntax::Css, Syntax::Scss, Syntax::Less] {
+      assert!(check(source, syntax, "/Copyright|License/i").is_empty());
+    }
+    assert!(check("// MIT License\na {}", Syntax::Scss, "/Copyright|License/i").is_empty());
+  }
+
+  #[test]
+  fn the_text_is_trimmed() {
+    assert!(check("/*\n  Copyright\n*/", Syntax::Css, "/^Copyright$/").is_empty());
   }
 
   #[test]
   fn fails_with_wrong_comment() {
-    let opts = json!([true, {
-        "pattern": "/Copyright|License/i"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Comment(Comment {
-      text: " This is just a comment ".to_string(),
-      span: Span::new(0, 28),
-      is_line: false,
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
+    let source = "/* This is just a comment */\na {}";
+    let diags = check(source, Syntax::Css, "/Copyright|License/i");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("does not match"));
+    assert_eq!((diags[0].span.offset, diags[0].span.length), (0, 28));
   }
 
   #[test]
   fn fails_with_no_comment() {
-    let opts = json!([true, {
-        "pattern": "/Copyright/"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, 10),
-      children: vec![],
-      nested_at_rules: vec![],
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
+    let diags = check("a {}\n/* Copyright */", Syntax::Css, "/Copyright/");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("Missing file header comment"));
-    assert!(diags[0].fix.is_some());
-  }
-
-  #[test]
-  fn fails_with_empty_file() {
-    let opts = json!([true, {
-        "pattern": "/Copyright/"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes: Vec<CssNode> = vec![];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].fix.is_some());
-  }
-
-  #[test]
-  fn no_options_returns_empty() {
-    let rule = configured(&PluginRequireFileHeaderComment, None);
-    let ctx = ctx();
-    let nodes: Vec<CssNode> = vec![];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn literal_pattern() {
-    let opts = json!([true, {
-        "pattern": "Copyright"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Comment(Comment {
-      text: " Copyright 2024 ".to_string(),
-      span: Span::new(0, 20),
-      is_line: false,
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn case_insensitive_regex() {
-    let opts = json!([true, {
-        "pattern": "/copyright/i"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Comment(Comment {
-      text: " COPYRIGHT 2024 ".to_string(),
-      span: Span::new(0, 20),
-      is_line: false,
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn autofix_inserts_comment() {
-    let opts = json!([true, {
-        "pattern": "/Copyright/"
-    }]);
-    let rule = configured(&PluginRequireFileHeaderComment, opts.clone());
-    let ctx = ctx();
-    let nodes = vec![CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, 10),
-      children: vec![],
-      nested_at_rules: vec![],
-    })];
-    let diags = rule.check_root(&nodes, &ctx);
-    assert_eq!(diags.len(), 1);
     let fix = diags[0].fix.as_ref().unwrap();
     assert_eq!(fix.edits.len(), 1);
     assert_eq!(fix.edits[0].span.offset, 0);
@@ -289,6 +174,29 @@ mod tests {
         .new_text
         .contains("TODO: Add file header comment")
     );
+  }
+
+  #[test]
+  fn fails_with_empty_file() {
+    let diags = check("", Syntax::Css, "/Copyright/");
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0].fix.is_some());
+  }
+
+  #[test]
+  fn no_options_returns_empty() {
+    let rule = configured(&PluginRequireFileHeaderComment, None);
+    assert!(rule.check_source(&context("", Syntax::Css)).is_empty());
+  }
+
+  #[test]
+  fn literal_pattern() {
+    assert!(check("/* Copyright 2024 */", Syntax::Css, "Copyright").is_empty());
+  }
+
+  #[test]
+  fn case_insensitive_regex() {
+    assert!(check("/* COPYRIGHT 2024 */", Syntax::Css, "/copyright/i").is_empty());
   }
 
   #[test]

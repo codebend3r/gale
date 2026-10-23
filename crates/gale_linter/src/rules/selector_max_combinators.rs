@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -45,27 +45,28 @@ const DEFAULT_MAX: usize = 2;
 
 impl Check for SelectorMaxCombinatorsCheck {
   /// Flags a selector holding more combinators than allowed.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
     let mut diags = Vec::new();
-    for sel in rule.selector.split(',') {
-      let sel = sel.trim();
-      let count = count_combinators(sel);
-      if count > max {
-        diags.push(
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for sel in rule.selector().split(',') {
+        let sel = sel.trim();
+        let count = count_combinators(sel);
+        if count > max {
+          diags.push(
           Diagnostic::new(
             NAME,
             format!(
               "Expected selector \"{sel}\" to have no more than {max} combinator(s), found {count}"
             ),
           )
-          .span(rule.span),
+          .span(rule.span()),
         );
+        }
       }
     }
     diags
@@ -121,12 +122,20 @@ fn count_combinators(selector: &str) -> usize {
       continue;
     }
 
-    // Descendant combinator (whitespace between simple selectors)
+    // Descendant combinator (whitespace between simple selectors); whitespace
+    // just inside a `(`, as in `:not( .a )`, is padding.
     if chars[i].is_ascii_whitespace() {
+      let after_paren = i > 0 && chars[i - 1] == '(';
       while i < len && chars[i].is_ascii_whitespace() {
         i += 1;
       }
-      if i < len && chars[i] != '>' && chars[i] != '+' && chars[i] != '~' && chars[i] != ')' {
+      if !after_paren
+        && i < len
+        && chars[i] != '>'
+        && chars[i] != '+'
+        && chars[i] != '~'
+        && chars[i] != ')'
+      {
         count += 1;
       }
       continue;
@@ -141,30 +150,23 @@ fn count_combinators(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, sel.len()),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_combinators() {
     let rule = configured(&SelectorMaxCombinators, None);
     // 3 combinators: .a .b > .c + .d
-    let d = rule.check(&style_with_selector(".a .b > .c + .d"), &ctx());
+    let d = rule.check_source(&context(
+      &style_with_selector(".a .b > .c + .d"),
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 3"));
   }
@@ -173,22 +175,21 @@ mod tests {
   fn allows_within_default_limit() {
     let rule = configured(&SelectorMaxCombinators, None);
     // 2 combinators: .a .b > .c
-    let d = rule.check(&style_with_selector(".a .b > .c"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a .b > .c"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn respects_configured_max() {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(1));
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector(".a .b > .c"), &ctx);
+    let d = rule.check_source(&context(&style_with_selector(".a .b > .c"), Syntax::Css));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn single_selector_no_combinators() {
     let rule = configured(&SelectorMaxCombinators, None);
-    let d = rule.check(&style_with_selector(".foo"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".foo"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -205,8 +206,7 @@ mod tests {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(0));
     // Stylelint v17: combinators inside :is() ARE counted.
     // `:is(.a .b)` has 1 descendant combinator.
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector(":is(.a .b)"), &ctx);
+    let d = rule.check_source(&context(&style_with_selector(":is(.a .b)"), Syntax::Css));
     assert_eq!(
       d.len(),
       1,
@@ -219,9 +219,18 @@ mod tests {
     let rule = configured(&SelectorMaxCombinators, serde_json::json!(0));
     // Stylelint v17: combinators inside :has() ARE counted.
     // `.foo:has(.bar > .baz)` has 1 child combinator inside :has().
-    let ctx = ctx();
-    let d = rule.check(&style_with_selector(".foo:has(.bar > .baz)"), &ctx);
+    let d = rule.check_source(&context(
+      &style_with_selector(".foo:has(.bar > .baz)"),
+      Syntax::Css,
+    ));
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn padding_inside_parentheses_is_no_combinator() {
+    let rule = configured(&SelectorMaxCombinators, None);
+    let source = style_with_selector("> div:not( :only-of-type ) .button");
+    assert!(rule.check_source(&context(&source, Syntax::Css)).is_empty());
   }
 
   #[test]

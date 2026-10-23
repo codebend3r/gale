@@ -1,13 +1,13 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::{
+  Pseudo, PseudoArg, Selector, SelectorList, SelectorNode, any_pseudo, parse_selector_list,
+  walk_pseudos,
+};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::{
-  Pseudo, PseudoArg, Selector, SelectorList, SelectorNode, any_pseudo, is_standard_syntax_selector,
-  parse_selector_list, walk_pseudos,
-};
 
 const NAME: &str = "selector-no-invalid";
 
@@ -69,13 +69,19 @@ impl Check for SelectorNoInvalidCheck {
   /// Checks every style rule prelude, reporting selectors that fail to parse
   /// or that break a structural rule of the selector grammar.
   ///
-  /// Preludes are read from the source text rather than the parsed AST: the
-  /// CSS parser drops rules whose selectors it cannot parse, which are exactly
-  /// the ones this rule exists to report.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Selectors come from the statement tree, which keeps the rules no CSS
+  /// parser can read: exactly the ones this rule exists to report.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for raw in &ctx.scanned_rules().style_rules {
-      self.check_prelude(&raw.prelude, raw.offset, &mut diagnostics);
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      self.check_prelude(
+        &rule.raw_selector(),
+        rule.selector_start(),
+        &mut diagnostics,
+      );
     }
     diagnostics
   }
@@ -83,7 +89,9 @@ impl Check for SelectorNoInvalidCheck {
 
 impl SelectorNoInvalidCheck {
   fn check_prelude(&self, selector: &str, base: usize, diagnostics: &mut Vec<Diagnostic>) {
-    if !is_standard_syntax_selector(selector) {
+    // css-tree reads an empty selector (`{ &:hover {} }`) as an empty list,
+    // where the selector parser expects one.
+    if selector.is_empty() {
       return;
     }
 
@@ -252,13 +260,12 @@ fn is_valid_dir_argument(arg: &PseudoArg) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
-  use gale_css_parser::{Syntax, parse};
+  use crate::testing::{CheckSource, configured, invalid_options};
+  use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
 
   /// (message, line, column, endLine, endColumn) for every warning, in order.
   fn lint_with(css: &str, syntax: Syntax) -> Vec<(String, usize, usize, usize, usize)> {
-    let parsed = parse(css, syntax).expect("fixture should parse");
     let ctx = RuleContext {
       env: Default::default(),
       file_path: "t.css",
@@ -268,7 +275,7 @@ mod tests {
     };
     let index = SourceLineIndex::build(css);
     configured(&SelectorNoInvalid, None)
-      .check_root(&parsed.nodes, &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| {
         let (l, c) = index.offset_to_location(d.span.offset);
@@ -316,6 +323,10 @@ mod tests {
       "::slotted(.foo) {}",
       "::before::marker {}",
       "::part(foo)::before {}",
+      // css-tree reads an empty selector as an empty list.
+      "a { { &:hover {} } }",
+      // Braces in a value open no rule.
+      "a { padding: 10px calc({10px+5px}); }",
     ] {
       assert_eq!(lint(css), vec![], "should accept {css:?}");
     }
@@ -330,6 +341,17 @@ mod tests {
         "should accept {css:?}"
       );
     }
+  }
+
+  #[test]
+  fn reads_selectors_with_a_dollar_sign() {
+    // Stylelint skips Sass only where `isStandardSyntaxRule` does, so a
+    // stray `$` is read, and `$=` is a valid attribute matcher.
+    assert_eq!(
+      lint_with(".a-$b {}", Syntax::Scss),
+      vec![(rejected(".a-$b", "unexpected input"), 1, 4, 1, 5)]
+    );
+    assert_eq!(lint("[href$=x] {}"), vec![]);
   }
 
   #[test]

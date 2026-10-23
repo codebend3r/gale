@@ -38,6 +38,23 @@ impl LintEnv {
   }
 }
 
+/// Nearest `node_modules` directory at or above `file_path`.
+pub(crate) fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
+  let mut dir = if file_path.is_file() {
+    file_path.parent()?
+  } else {
+    file_path
+  };
+
+  loop {
+    let nm = dir.join("node_modules");
+    if nm.is_dir() {
+      return Some(nm);
+    }
+    dir = dir.parent()?;
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

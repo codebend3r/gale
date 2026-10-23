@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Stylelint's `DEPRECATED_COLORS`: deprecated system colors and their
 /// replacements.
@@ -182,25 +182,29 @@ impl DeclarationPropertyValueKeywordNoDeprecatedCheck {
 impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
   /// Flags deprecated value keywords, skipping values that match
   /// `ignoreKeywords`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for &decl in ctx.written_declarations(node).iter() {
-      if !may_include_keyword(decl.value) {
+    for decl in tree.walk_decls() {
+      let raw = decl.raw_value();
+      let value: &str = &raw;
+      let fixable = decl.value_fixable();
+      if !may_include_keyword(value) {
         continue;
       }
       // Sass and Less variables are not properties.
-      if decl.prop.starts_with('$') || (decl.prop.starts_with('@') && !decl.prop.starts_with("@{"))
+      if decl.prop().starts_with('$')
+        || (decl.prop().starts_with('@') && !decl.prop().starts_with("@{"))
       {
         continue;
       }
       // Stylelint matches the whole value against `ignoreKeywords`.
-      if self.ignore_keywords.matches(decl.value) {
+      if self.ignore_keywords.matches(value) {
         continue;
       }
-      let Some(keywords) = keywords_for(&decl.prop.to_ascii_lowercase()) else {
+      let Some(keywords) = keywords_for(&decl.prop().to_ascii_lowercase()) else {
         continue;
       };
-      let nodes = value_parser::parse(decl.value);
+      let nodes = value_parser::parse(value);
       let mut standard = true;
       value_parser::walk(&nodes, &mut |node: &ValueNode| {
         if node.kind != NodeKind::Comment && !is_standard_syntax_value(node.value) {
@@ -219,7 +223,7 @@ impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
         if node.kind != NodeKind::Word {
           return true;
         }
-        let span = Span::new(decl.value_start + node.source_index, node.value.len());
+        let span = Span::new(decl.value_start() + node.source_index, node.value.len());
         match &keywords {
           Keywords::Rejected(rejected) if rejected.contains(&lower.as_str()) => {
             diags.push(
@@ -227,7 +231,8 @@ impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
                 NAME,
                 format!(
                   "Unexpected deprecated keyword \"{}\" for property \"{}\"",
-                  node.value, decl.prop
+                  node.value,
+                  decl.prop()
                 ),
               )
               .span(span),
@@ -235,17 +240,19 @@ impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
           }
           Keywords::Replaced(replaced) => {
             if let Some((_, expected)) = replaced.iter().find(|(key, _)| *key == lower) {
-              diags.push(
-                Diagnostic::new(
-                  NAME,
-                  format!("Expected \"{}\" to be \"{expected}\"", node.value),
-                )
-                .span(span)
-                .fix(Fix::new(
+              let diag = Diagnostic::new(
+                NAME,
+                format!("Expected \"{}\" to be \"{expected}\"", node.value),
+              )
+              .span(span);
+              diags.push(if fixable {
+                diag.fix(Fix::new(
                   format!("Replace with \"{expected}\""),
                   vec![Edit::new(span, *expected)],
-                )),
-              );
+                ))
+              } else {
+                diag
+              });
             }
           }
           Keywords::Rejected(_) => {}

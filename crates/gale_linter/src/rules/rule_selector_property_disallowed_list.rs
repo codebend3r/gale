@@ -1,6 +1,7 @@
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::{KeyedCheck, KeyedFound, KeyedListRule, Polarity, subjects};
 use crate::options::Options;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "rule-selector-property-disallowed-list";

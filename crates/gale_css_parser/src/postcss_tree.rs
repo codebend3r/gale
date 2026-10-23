@@ -1,12 +1,12 @@
 //! The statements of a stylesheet as PostCSS sees them, recovered from the
 //! source text.
 //!
-//! Rules that reason about layout (the `*-empty-line-before` family, comment
-//! spacing) need what Stylelint's PostCSS tree gives them: every rule,
-//! at-rule, declaration and comment, in order, with its parent, its siblings
-//! and the exact whitespace before it (`raws.before`).  Gale's own AST cannot
-//! answer that: lightningcss drops comments and the at-rules it does not
-//! know, and the SCSS/Less AST hoists comments to the top level.
+//! Stylelint rules read PostCSS's tree: every rule, at-rule, declaration
+//! and comment, in order, with its parent, its siblings, its text exactly
+//! as written and the whitespace before it (`raws.before`).  This is that
+//! tree, and the one Gale's rules are meant to read: [`views`] gives each
+//! node a typed view ([`DeclRef`], [`RuleRef`], ...) and the tree the
+//! PostCSS walks (`walk_decls`, `walk_rules`, ...).
 //!
 //! [`PostcssTree::parse`] ports the statement-level logic of PostCSS's
 //! tokenizer and parser, with the changes `postcss-scss` and `postcss-less`
@@ -15,19 +15,24 @@
 //! would throw, it carries on the way `postcss-safe-parser` does, folding
 //! the stray text into the next node's `raws.before`.
 //!
-//! A rule gets the file's tree from
-//! [`RuleContext::postcss_tree`](crate::rule::RuleContext::postcss_tree),
-//! which parses it once per file for every rule (and the disable comments)
-//! to share, rather than parsing it again.
+//! The linter parses each file's tree once and shares it between every
+//! rule and the disable comments, rather than parsing it again.
 //!
 //! Offsets are byte offsets into the source and always fall on character
 //! boundaries: every token ends at an ASCII delimiter or at the end of the
 //! input.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::ops::Range;
 
-use gale_css_parser::Syntax;
 use gale_diagnostics::SourceLineIndex;
+
+use crate::Syntax;
+
+pub mod views;
+
+pub use views::{AtRuleRef, CommentRef, DeclRef, NodeRef, RuleRef};
 
 /// The kind of a statement node, as PostCSS types it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +117,11 @@ pub struct PostcssTree<'a> {
   pub root_semicolon: bool,
   /// The line each offset is on.
   lines: SourceLineIndex,
+  /// The parser the tree imitates.
+  flavor: Flavor,
+  /// Which nodes are standard-syntax rules, worked out on first use: every
+  /// selector rule asks it of every rule.
+  standard_rules: OnceCell<Vec<bool>>,
 }
 
 impl<'a> PostcssTree<'a> {
@@ -131,6 +141,8 @@ impl<'a> PostcssTree<'a> {
       root: parser.root,
       root_semicolon: parser.root_semicolon,
       lines: SourceLineIndex::build(source),
+      flavor,
+      standard_rules: OnceCell::new(),
     }
   }
 
@@ -142,6 +154,61 @@ impl<'a> PostcssTree<'a> {
   /// The 1-based line holding `offset`.
   pub fn line_of(&self, offset: usize) -> usize {
     self.lines.line(offset)
+  }
+
+  /// The text of `range`, a rule's selector, a declaration's value or an
+  /// at-rule's params, as the parser keeps it in `raws.*.raw`, which is
+  /// what Stylelint's `getRuleSelector`, `getDeclarationValue` and
+  /// `getAtRuleParams` read.  postcss-scss writes each `//` comment there
+  /// as a `/* */` one; the text is otherwise the source's.
+  ///
+  /// Offsets into the result line up with the source up to the first
+  /// `//` comment, and run two bytes ahead per comment after it, as they
+  /// do in Stylelint.
+  pub fn raw_text(&self, range: Range<usize>) -> Cow<'a, str> {
+    let text = self.source.get(range.clone()).unwrap_or("");
+    if self.flavor != Flavor::Scss || !text.contains("//") {
+      return Cow::Borrowed(text);
+    }
+    let mut tokenizer = Tokenizer::new(self.source, true);
+    tokenizer.pos = range.start;
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut converted = false;
+    while tokenizer.pos < range.end {
+      let Some(token) = tokenizer.next_token() else {
+        break;
+      };
+      let token_text = self
+        .source
+        .get(token.start..token.end.min(range.end))
+        .unwrap_or("");
+      if token.kind == Tok::InlineComment {
+        // postcss-scss: `'/*' + text.slice(2).replace(/(\*\/|\/\*)/g, '*//*') + '*/'`.
+        converted = true;
+        out.push_str("/*");
+        let mut rest = token_text.get(2..).unwrap_or("");
+        while let Some(at) = rest.find(['*', '/']) {
+          out.push_str(&rest[..at]);
+          let pair = rest.get(at..at + 2);
+          if pair == Some("*/") || pair == Some("/*") {
+            out.push_str("*//*");
+            rest = &rest[at + 2..];
+          } else {
+            out.push_str(&rest[at..at + 1]);
+            rest = &rest[at + 1..];
+          }
+        }
+        out.push_str(rest);
+        out.push_str("*/");
+      } else {
+        out.push_str(token_text);
+      }
+    }
+    if converted {
+      Cow::Owned(out)
+    } else {
+      Cow::Borrowed(text)
+    }
   }
 
   /// The line the node starts on (Stylelint's `getNodeLine`).
@@ -186,11 +253,6 @@ impl<'a> PostcssTree<'a> {
   /// counted from its `@`.
   pub fn at_rule_param_index(&self, at_rule: &Node) -> usize {
     1 + at_rule.name.len() + at_rule.after_name.len()
-  }
-
-  /// Every declaration, in document order.
-  pub fn decls(&self) -> impl Iterator<Item = &Node> {
-    self.nodes.iter().filter(|n| n.kind == NodeKind::Decl)
   }
 
   /// The children of node `parent`, or the top-level nodes for `None`.
@@ -358,7 +420,8 @@ impl<'a> PostcssTree<'a> {
   /// too.  Ranges come in source order and never overlap.
   pub fn removal_ranges(&self, i: usize) -> Vec<Range<usize>> {
     let node = &self.nodes[i];
-    let mut ranges = vec![node.before.start.min(node.start)..node.end];
+    let mut ranges = Vec::with_capacity(2);
+    ranges.push(node.before.start.min(node.start)..node.end);
     let siblings = self.siblings(i);
     let is_statement = |s: usize| self.nodes[s].kind != NodeKind::Comment;
     let last = siblings.iter().rposition(|&s| is_statement(s));
@@ -467,8 +530,16 @@ impl<'a> PostcssTree<'a> {
 
   /// Stylelint's `isStandardSyntaxRule`.
   pub fn is_standard_syntax_rule(&self, i: usize) -> bool {
-    let node = &self.nodes[i];
-    node.kind == NodeKind::Rule && !node.extend && is_standard_syntax_selector(&node.name)
+    let standard = self.standard_rules.get_or_init(|| {
+      self
+        .nodes
+        .iter()
+        .map(|node| {
+          node.kind == NodeKind::Rule && !node.extend && is_standard_syntax_selector(&node.name)
+        })
+        .collect()
+    });
+    standard[i]
   }
 
   /// Stylelint's `isStandardSyntaxDeclaration`.
@@ -568,7 +639,7 @@ pub fn has_interpolation(text: &str) -> bool {
 /// Whether `open`, then at least one character, then `close` appear in
 /// `text`.  Without `dot_all` the characters may not include line breaks
 /// (JavaScript's `.`).
-pub(crate) fn has_delimited(text: &str, open: &str, close: char, dot_all: bool) -> bool {
+pub fn has_delimited(text: &str, open: &str, close: char, dot_all: bool) -> bool {
   text.match_indices(open).any(|(at, _)| {
     let rest = &text[at + open.len()..];
     let mut chars = rest.char_indices();
@@ -1891,13 +1962,13 @@ mod tests {
   fn decls(source: &str, syntax: Syntax) -> Vec<(String, String, bool, String)> {
     let tree = PostcssTree::parse(source, syntax);
     tree
-      .decls()
+      .walk_decls()
       .map(|d| {
         (
           source[d.name_span.clone()].to_string(),
-          source[d.value_span.clone()].to_string(),
-          d.important,
-          d.value.clone(),
+          d.raw_value().to_string(),
+          d.important(),
+          d.value().to_string(),
         )
       })
       .collect()

@@ -1,4 +1,4 @@
-use gale_css_parser::{CssNode, Declaration};
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -48,67 +48,26 @@ impl NumberMaxPrecisionCheck {
 }
 
 impl Check for NumberMaxPrecisionCheck {
-  /// Flags numbers with more decimal places than allowed, scanning the raw source
-  /// since lightningcss rounds values.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let max = self.max;
-
+  /// Flags the first number in each style-rule declaration with more decimal
+  /// places than allowed, reading the value as written.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      // Scan the raw source rather than `decl.value`: lightningcss
-      // normalises numbers when it prints a value (1.123456789 becomes
-      // 1.12346), which would both misreport the literal and, because the
-      // rounded text is not findable in the source, collapse the column
-      // onto the start of the declaration.
-      let (text, base) = match decl_value_source(ctx.source, decl) {
-        Some((text, base)) => (text, Some(base)),
-        // No usable span (synthetic nodes in unit tests, unusual
-        // parses): fall back to the printed value.
-        None => (decl.value.as_str(), None),
-      };
-
-      let Some(found) = find_precision_issue(text, max) else {
+    for decl in tree.walk_decls() {
+      if !decl.parent_is_rule() {
+        continue;
+      }
+      let value = decl.raw_value();
+      let Some(found) = find_precision_issue(&value, self.max) else {
         continue;
       };
-
-      let span = match base {
-        Some(base) => Span::new(base + found.offset, found.original.len()),
-        None => Span::new(decl.span.offset, found.original.len()),
-      };
-
       let (original, rounded) = (found.original, found.rounded);
       diags.push(
-        Diagnostic::new(NAME, format!("Expected \"{original}\" to be \"{rounded}\"")).span(span),
+        Diagnostic::new(NAME, format!("Expected \"{original}\" to be \"{rounded}\""))
+          .span(Span::new(decl.value_start() + found.offset, original.len())),
       );
     }
     diags
   }
-}
-
-/// Locate the value portion of a declaration inside the original source.
-///
-/// Returns the value text and its absolute byte offset, or `None` when the
-/// declaration's span does not map onto `source` (zero-length spans, synthetic
-/// nodes, offsets past the end).
-fn decl_value_source<'a>(source: &'a str, decl: &Declaration) -> Option<(&'a str, usize)> {
-  let start = decl.span.offset;
-  let end = start.checked_add(decl.span.length)?;
-  if decl.span.length == 0
-    || end > source.len()
-    || !source.is_char_boundary(start)
-    || !source.is_char_boundary(end)
-  {
-    return None;
-  }
-
-  let slice = &source[start..end];
-  // The value begins after the property/value separator.
-  let rel = slice.find(':')? + 1;
-  Some((&slice[rel..], start + rel))
 }
 
 /// A number in a value that carries more decimal places than allowed.
@@ -180,59 +139,42 @@ fn round_to_precision(num: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
+  use crate::testing::{invalid_options, lint};
 
-  fn style_decl(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "width".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
-  }
-
-  /// A declaration whose span points into `source`.
-  fn sourced_decl(source: &str, printed_value: &str) -> CssNode {
-    let start = source
-      .find("width")
-      .expect("test source needs a declaration");
-    let end = source.find(';').unwrap_or(source.len());
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "width".to_string(),
-        value: printed_value.to_string(),
-        span: Span::new(start, end - start),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    })
+  /// The reports for `a { width: <value>; }` in CSS.
+  fn width(options: Value, value: &str) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      options,
+      &format!("a {{ width: {value}; }}"),
+      Syntax::Css,
+    )
   }
 
   #[test]
   fn reports_excess_precision() {
-    let d = configured(&NumberMaxPrecision, None).check(&style_decl("0.12345em"), &ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(width(json!(4), "0.12345em").len(), 1);
   }
 
   #[test]
   fn allows_within_precision() {
-    let rule = configured(&NumberMaxPrecision, None);
-    assert!(rule.check(&style_decl("0.1234em"), &ctx()).is_empty());
-    assert!(rule.check(&style_decl("10px"), &ctx()).is_empty());
+    assert!(width(json!(4), "0.1234em").is_empty());
+    assert!(width(json!(4), "10px").is_empty());
   }
 
   #[test]
   fn reports_excess_in_multiple_values() {
-    let d = configured(&NumberMaxPrecision, None).check(&style_decl("0.12345 0.6789"), &ctx());
+    assert_eq!(width(json!(4), "0.12345 0.6789").len(), 1);
+  }
+
+  #[test]
+  fn checks_only_style_rule_declarations() {
+    let css = "@font-face { size-adjust: 1.123456%; }\n\
+      a { @media print { top: 1.123456px; } b { top: 1.123456px; } }";
+    let d = lint(NAME, json!(4), css, Syntax::Css);
     assert_eq!(d.len(), 1);
   }
 
@@ -240,33 +182,20 @@ mod tests {
   fn honours_array_form_primary_option() {
     // `[2, { ... }]` is Stylelint's standard shape; the max must be read
     // from element 0, not from the array itself.
-    let source = "a { width: 1.234px; }";
-    let d = configured(&NumberMaxPrecision, serde_json::json!([2, {}]))
-      .check(&sourced_decl(source, "1.234px"), &ctx_with_source(source));
+    let d = width(json!([2, {}]), "1.234px");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("to be \"1.23\""), "{}", d[0].message);
   }
 
   #[test]
   fn array_form_can_disable_by_raising_max() {
-    let source = "a { width: 1.234px; }";
-    assert!(
-      configured(&NumberMaxPrecision, serde_json::json!([6, {}]))
-        .check(&sourced_decl(source, "1.234px"), &ctx_with_source(source))
-        .is_empty()
-    );
+    assert!(width(json!([6, {}]), "1.234px").is_empty());
   }
 
   #[test]
-  fn reports_the_source_literal_not_the_printed_value() {
-    // lightningcss rounds long literals when printing a value; the warning
-    // must still quote what the author wrote, at the author's column.
-    let source = "a { width: 1.123456789px; }";
-    let d = configured(&NumberMaxPrecision, serde_json::json!(2)).check(
-      // What lightningcss hands us is already rounded to 1.12346.
-      &sourced_decl(source, "1.12346px"),
-      &ctx_with_source(source),
-    );
+  fn reports_the_source_literal_at_its_column() {
+    let source = "a { width: 1.123456789px !important; }";
+    let d = lint(NAME, json!(2), source, Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(
       d[0].message.contains("\"1.123456789\""),
@@ -274,8 +203,8 @@ mod tests {
       d[0].message
     );
     assert_eq!(
-      d[0].span.offset,
-      source.find("1.123456789").unwrap(),
+      (d[0].span.offset, d[0].span.length),
+      (source.find("1.123456789").unwrap(), 11),
       "should point at the number, not the declaration start"
     );
   }

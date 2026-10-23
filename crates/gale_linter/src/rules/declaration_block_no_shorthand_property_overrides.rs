@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -159,48 +159,46 @@ fn longhands_for(shorthand: &str) -> Option<&'static [&'static str]> {
 }
 
 impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
-  /// Flags a shorthand that appears after — and so silently overrides — a
-  /// longhand it covers.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let style = match node {
-      CssNode::Style(s) => s,
-      _ => return vec![],
-    };
-
+  /// Flags a shorthand that appears after (and so silently overrides) a
+  /// longhand it covers.  Names match ignoring case and print as written,
+  /// as Stylelint's do.
+  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    // Track longhand properties we've seen so far (property name).
-    let mut seen_longhands: Vec<&str> = Vec::new();
+    for rule in tree.walk_rules() {
+      // The longhands seen so far: lower-cased, then as written.
+      let mut seen_longhands: Vec<(String, &str)> = Vec::new();
+      for decl in rule.child_decls() {
+        let written = decl.prop();
+        let prop = written.to_ascii_lowercase();
 
-    for decl in &style.declarations {
-      let prop = decl.property.as_str();
+        if let Some(longhands) = longhands_for(&prop)
+          && let Some(longhand) = longhands.iter().find_map(|longhand| {
+            seen_longhands
+              .iter()
+              .find(|(seen, _)| seen == longhand)
+              .map(|(_, written)| *written)
+          })
+        {
+          // Only the first overridden longhand (in the table's order) is
+          // reported.
+          diagnostics.push(
+            Diagnostic::new(
+              NAME,
+              format!("Unexpected shorthand \"{written}\" after \"{longhand}\""),
+            )
+            .span(decl.span()),
+          );
+        }
 
-      // Check if this property is a shorthand that would override a seen longhand.
-      if let Some(longhands) = longhands_for(prop) {
-        for &longhand in longhands {
-          if seen_longhands.contains(&longhand) {
-            diagnostics.push(
-              Diagnostic::new(
-                NAME,
-                format!("Unexpected shorthand \"{}\" after \"{}\"", prop, longhand,),
-              )
-              .span(decl.span),
-            );
-            // Only report the first overridden longhand per shorthand occurrence.
-            break;
-          }
+        if !seen_longhands.iter().any(|(seen, _)| *seen == prop)
+          && SHORTHAND_LONGHANDS
+            .iter()
+            .any(|(_, longhands)| longhands.contains(&prop.as_str()))
+        {
+          seen_longhands.push((prop, written));
         }
       }
-
-      // Check if this property is a longhand of any shorthand.
-      if !seen_longhands.contains(&prop)
-        && SHORTHAND_LONGHANDS
-          .iter()
-          .any(|(_, longhands)| longhands.contains(&prop))
-      {
-        seen_longhands.push(prop);
-      }
     }
-
     diagnostics
   }
 }
@@ -208,91 +206,65 @@ impl Check for DeclarationBlockNoShorthandPropertyOverridesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
+
+  /// The messages reported for `source` in `syntax`.
+  fn messages(source: &str, syntax: Syntax) -> Vec<String> {
+    configured(&DeclarationBlockNoShorthandPropertyOverrides, None)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| d.message)
+      .collect()
+  }
 
   #[test]
   fn reports_shorthand_overriding_longhand() {
-    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "border-color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(4, 16),
-          important: false,
-        },
-        Declaration {
-          property: "border".to_string(),
-          value: "1px solid".to_string(),
-          span: Span::new(22, 18),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 42),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("\"border\""));
-    assert!(diags[0].message.contains("\"border-color\""));
+    assert_eq!(
+      messages("a { border-color: red; border: 1px solid; }", Syntax::Css),
+      ["Unexpected shorthand \"border\" after \"border-color\""]
+    );
   }
 
   #[test]
   fn ignores_longhand_after_shorthand() {
-    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "margin".to_string(),
-          value: "10px".to_string(),
-          span: Span::new(4, 14),
-          important: false,
-        },
-        Declaration {
-          property: "margin-top".to_string(),
-          value: "20px".to_string(),
-          span: Span::new(20, 16),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 38),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(messages("a { margin: 10px; margin-top: 20px; }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_font_shorthand_overriding_font_weight() {
-    let rule = configured(&DeclarationBlockNoShorthandPropertyOverrides, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "h1".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "font-weight".to_string(),
-          value: "bold".to_string(),
-          span: Span::new(4, 16),
-          important: false,
-        },
-        Declaration {
-          property: "font".to_string(),
-          value: "16px/1.5 Arial".to_string(),
-          span: Span::new(22, 22),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 46),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("\"font\""));
-    assert!(diags[0].message.contains("\"font-weight\""));
+    assert_eq!(
+      messages(
+        "h1 { font-weight: bold; font: 16px/1.5 Arial; }",
+        Syntax::Css
+      ),
+      ["Unexpected shorthand \"font\" after \"font-weight\""]
+    );
+  }
+
+  #[test]
+  fn reports_the_first_overridden_longhand_once() {
+    assert_eq!(
+      messages(
+        "a { margin-left: 0; margin-top: 0; margin: 1px; }",
+        Syntax::Css
+      ),
+      ["Unexpected shorthand \"margin\" after \"margin-top\""]
+    );
+  }
+
+  #[test]
+  fn names_match_ignoring_case_and_print_as_written() {
+    let expected = ["Unexpected shorthand \"MARGIN\" after \"Margin-Top\""];
+    let source = "a { Margin-Top: 0; MARGIN: 1px; }";
+    assert_eq!(messages(source, Syntax::Css), expected);
+    assert_eq!(messages(source, Syntax::Scss), expected);
+  }
+
+  #[test]
+  fn each_rule_is_its_own_block() {
+    assert!(messages("a { margin-top: 0; b { margin: 0; } }", Syntax::Scss).is_empty());
   }
 
   #[test]

@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -34,68 +35,51 @@ impl ScssLoadNoPartialLeadingUnderscoreCheck {
 impl Check for ScssLoadNoPartialLeadingUnderscoreCheck {
   /// Flags a `@use`, `@forward` or `@import` path whose partial name starts with
   /// an underscore; Sass adds it implicitly.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !matches!(at.name(), "use" | "forward" | "import") {
+        continue;
+      }
+      let params = at.params();
+      // Extract the path from params. Strip quotes and whitespace.
+      let path = extract_path(params);
+      if path.is_empty() {
+        continue;
+      }
 
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
+      // Match Stylelint's behavior: skip if the path-stripped value ends with
+      // a whitespace/comma/paren/quote followed by a word (e.g., `as name`
+      // after `@use 'path' as name`). Stylelint's imperfect quote stripping
+      // causes it to skip these cases.
+      if has_trailing_keyword(&strip_quotes(params)) {
+        continue;
+      }
 
-    if !matches!(at.name.as_str(), "use" | "forward" | "import") {
-      return vec![];
-    }
+      // Skipping importing CSS: url(), ".css", URI with a protocol
+      if path.starts_with("url(") || path.ends_with(".css") || path.contains("//") {
+        continue;
+      }
 
-    // Extract the path from params. Strip quotes and whitespace.
-    let path = extract_path(&at.params);
-    if path.is_empty() {
-      return vec![];
-    }
-
-    // Match Stylelint's behavior: skip if the path-stripped value ends with
-    // a whitespace/comma/paren/quote followed by a word (e.g., `as name`
-    // after `@use 'path' as name`). Stylelint's imperfect quote stripping
-    // causes it to skip these cases.
-    let path_stripped = strip_quotes(&at.params);
-    if has_trailing_keyword(&path_stripped) {
-      return vec![];
-    }
-
-    // Skipping importing CSS: url(), ".css", URI with a protocol
-    if path.starts_with("url(") || path.ends_with(".css") || path.contains("//") {
-      return vec![];
-    }
-
-    // Get the filename portion (last segment after `/`).
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    if filename.starts_with('_') {
-      // Compute the span pointing to the path within the params,
-      // matching Stylelint's column positioning (word: pathStripped).
-      let path_offset = if at.span.length > 0 && at.span.offset + at.span.length <= ctx.source.len()
-      {
-        let at_src = ctx
-          .source_slice(at.span.offset, at.span.offset + at.span.length)
-          .unwrap_or("");
-        // Find the path string within the at-rule source
-        if let Some(pos) = at_src.find(path) {
-          at.span.offset + pos
-        } else {
-          at.span.offset
-        }
-      } else {
-        at.span.offset
-      };
-      vec![
+      // Get the filename portion (last segment after `/`).
+      let filename = path.rsplit('/').next().unwrap_or(path);
+      if !filename.starts_with('_') {
+        continue;
+      }
+      // Point at the path in the at-rule, matching Stylelint's column
+      // positioning (word: pathStripped).
+      diags.push(
         Diagnostic::new(
           NAME,
-          "Unexpected leading underscore in imported partial name".to_string(),
+          "Unexpected leading underscore in imported partial name",
         )
-        .span(Span::new(path_offset, path.len())),
-      ]
-    } else {
-      vec![]
+        .span(at.word_span(path)),
+      );
     }
+    diags
   }
 }
 
@@ -163,68 +147,45 @@ fn extract_path(params: &str) -> &str {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn use_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "use".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssLoadNoPartialLeadingUnderscore, None).check_source(&context(source, syntax))
   }
 
-  fn import_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  fn use_rule(params: &str) -> Vec<Diagnostic> {
+    check(&format!("@use {params};"), Syntax::Scss)
   }
 
   #[test]
-  fn reports_leading_underscore_in_use() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let d = rule.check(&use_rule("\"_variables\""), &scss_ctx());
+  fn reports_leading_underscore_in_use_at_the_path() {
+    let d = use_rule("\"_variables\"");
     assert_eq!(d.len(), 1);
+    assert_eq!((d[0].span.offset, d[0].span.length), (6, 10));
   }
 
   #[test]
-  fn reports_leading_underscore_in_import() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let d = rule.check(&import_rule("\"_mixins\""), &scss_ctx());
-    assert_eq!(d.len(), 1);
+  fn reports_leading_underscore_in_import_and_forward() {
+    assert_eq!(check("@import \"_mixins\";", Syntax::Scss).len(), 1);
+    assert_eq!(check("@forward '_mixins';", Syntax::Scss).len(), 1);
   }
 
   #[test]
   fn reports_underscore_in_path() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let d = rule.check(&use_rule("\"path/to/_file\""), &scss_ctx());
-    assert_eq!(d.len(), 1);
+    assert_eq!(use_rule("\"path/to/_file\"").len(), 1);
   }
 
   #[test]
-  fn allows_no_underscore() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let d = rule.check(&use_rule("\"variables\""), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_path_without_underscore() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let d = rule.check(&use_rule("\"path/to/file\""), &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_no_underscore_and_aliases() {
+    assert!(use_rule("\"variables\"").is_empty());
+    assert!(use_rule("\"path/to/file\"").is_empty());
+    assert!(use_rule("\"_theme\" as theme").is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssLoadNoPartialLeadingUnderscore, None);
-    let ctx = ctx();
-    assert!(rule.check(&use_rule("\"_variables\""), &ctx).is_empty());
+    assert!(check("@use \"_variables\";", Syntax::Css).is_empty());
   }
 
   #[test]

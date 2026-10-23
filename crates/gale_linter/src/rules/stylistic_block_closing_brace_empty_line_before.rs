@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::braces::is_block_single_line;
@@ -46,7 +46,7 @@ impl StylisticBlockClosingBraceEmptyLineBeforeCheck {
 
 impl Check for StylisticBlockClosingBraceEmptyLineBeforeCheck {
   /// Flags a closing brace whose preceding blank line does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -225,13 +225,13 @@ fn is_empty_block(source: &str, closing_brace_pos: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   fn check(source: &str, option: &str) -> Vec<Diagnostic> {
     let opts = serde_json::json!(option);
     let rule = configured(&StylisticBlockClosingBraceEmptyLineBefore, opts.clone());
     let ctx = ctx_with_source(source);
-    rule.check_root(&[], &ctx)
+    rule.check_source(&ctx)
   }
 
   #[test]

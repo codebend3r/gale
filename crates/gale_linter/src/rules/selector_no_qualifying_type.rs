@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::split_selectors;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::chars::is_ident_char;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::split_selectors;
 
 const NAME: &str = "selector-no-qualifying-type";
 
@@ -48,144 +48,40 @@ impl SelectorNoQualifyingTypeCheck {
 
 impl Check for SelectorNoQualifyingTypeCheck {
   /// Flags selectors qualifying a class, attribute or ID with a type, honouring
-  /// the `ignore` options. Runs at root so nesting can be resolved.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_class = self.ignore_class;
-    let ignore_attribute = self.ignore_attribute;
-    let ignore_id = self.ignore_id;
-
-    let is_scss = matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-    );
-
+  /// the `ignore` options.  A nested `&` stands for a type when a rule it is
+  /// nested in, through any at-rules, ends in one.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    walk_nodes(
-      nodes,
-      ctx,
-      is_scss,
-      false, // ancestor_has_interpolation
-      false, // ancestor_is_type
-      ignore_class,
-      ignore_attribute,
-      ignore_id,
-      &mut diags,
-    );
-    diags
-  }
-}
-
-/// Recursively walk nodes, tracking whether any ancestor selector contains
-/// SCSS interpolation. Stylelint skips rules whose resolved (flattened)
-/// selector is non-standard, which includes any rule nested inside a parent
-/// whose selector contains `#{...}`.
-fn walk_nodes(
-  nodes: &[CssNode],
-  ctx: &RuleContext,
-  is_scss: bool,
-  ancestor_has_interpolation: bool,
-  ancestor_is_type: bool,
-  ignore_class: bool,
-  ignore_attribute: bool,
-  ignore_id: bool,
-  diags: &mut Vec<Diagnostic>,
-) {
-  for node in nodes {
-    match node {
-      CssNode::Style(style) => {
-        let self_has_interpolation = is_scss && style.selector.contains("#{");
-        let any_interpolation = ancestor_has_interpolation || self_has_interpolation;
-
-        // Only check this selector if neither it nor any ancestor
-        // contains SCSS interpolation (matching Stylelint's
-        // `isStandardSyntaxRule` skip).
-        if !any_interpolation {
-          check_selector_list(
-            &style.selector,
-            style.span.offset,
-            ancestor_is_type,
-            ignore_class,
-            ignore_attribute,
-            ignore_id,
-            diags,
-          );
-        }
-
-        let self_is_type = selector_ends_with_type(&style.selector);
-
-        // Recurse into children, propagating interpolation flag.
-        walk_style_children(
-          style,
-          ctx,
-          is_scss,
-          any_interpolation,
-          self_is_type,
-          ignore_class,
-          ignore_attribute,
-          ignore_id,
-          diags,
-        );
+    // Rules that are not standard syntax, keyframe selectors and, as
+    // Stylelint resolves nesting before it checks and gives up on a
+    // selector it cannot resolve, rules nested in a rule that is not
+    // standard syntax (interpolation, a placeholder, a Less mixin) are
+    // skipped.
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let ancestors = std::iter::successors(rule.parent_rule(), |rule| rule.parent_rule());
+      let mut ancestor_is_type = false;
+      let mut ancestor_is_standard = true;
+      for ancestor in ancestors {
+        ancestor_is_type |= selector_ends_with_type(ancestor.selector());
+        ancestor_is_standard &= ancestor.is_standard_syntax();
       }
-      CssNode::AtRule(at_rule) => {
-        walk_nodes(
-          &at_rule.children,
-          ctx,
-          is_scss,
-          ancestor_has_interpolation,
-          ancestor_is_type,
-          ignore_class,
-          ignore_attribute,
-          ignore_id,
-          diags,
-        );
+      if !ancestor_is_standard {
+        continue;
       }
-      _ => {}
-    }
-  }
-}
-
-/// Recurses into nested rules, carrying down whether an ancestor supplied the
-/// type or contained interpolation.
-fn walk_style_children(
-  style: &gale_css_parser::StyleRule,
-  ctx: &RuleContext,
-  is_scss: bool,
-  ancestor_has_interpolation: bool,
-  ancestor_is_type: bool,
-  ignore_class: bool,
-  ignore_attribute: bool,
-  ignore_id: bool,
-  diags: &mut Vec<Diagnostic>,
-) {
-  for child in &style.children {
-    let self_has_interpolation = is_scss && child.selector.contains("#{");
-    let any_interpolation = ancestor_has_interpolation || self_has_interpolation;
-
-    if !any_interpolation {
       check_selector_list(
-        &child.selector,
-        child.span.offset,
+        &rule.raw_selector(),
+        rule.selector_start(),
         ancestor_is_type,
-        ignore_class,
-        ignore_attribute,
-        ignore_id,
-        diags,
+        self.ignore_class,
+        self.ignore_attribute,
+        self.ignore_id,
+        &mut diags,
       );
     }
-
-    let self_is_type = selector_ends_with_type(&child.selector);
-
-    walk_style_children(
-      child,
-      ctx,
-      is_scss,
-      any_interpolation,
-      self_is_type || ancestor_is_type,
-      ignore_class,
-      ignore_attribute,
-      ignore_id,
-      diags,
-    );
+    diags
   }
 }
 
@@ -560,29 +456,20 @@ fn is_type_selector_start(chars: &[char], i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_type_with_class() {
     let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("a.foo");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("a.foo"));
   }
@@ -591,7 +478,7 @@ mod tests {
   fn reports_type_with_id() {
     let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("div#bar");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert_eq!(d.len(), 1);
   }
 
@@ -599,7 +486,7 @@ mod tests {
   fn allows_class_only() {
     let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector(".foo");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -607,7 +494,7 @@ mod tests {
   fn allows_type_only() {
     let rule = configured(&SelectorNoQualifyingType, None);
     let node = style_with_selector("div");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -616,7 +503,7 @@ mod tests {
     let rule = configured(&SelectorNoQualifyingType, None);
     // div:hover#thing should be reported
     let node = style_with_selector("div:hover#thing");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert_eq!(d.len(), 1, "should report div:hover#thing as qualifying");
   }
 
@@ -626,9 +513,8 @@ mod tests {
       &SelectorNoQualifyingType,
       serde_json::json!({"ignore": ["id"]}),
     );
-    let ctx_with_ignore = ctx();
     let node = style_with_selector("div#bar");
-    let d = rule.check_root(&[node], &ctx_with_ignore);
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert!(
       d.is_empty(),
       "should ignore id qualifying when ignore: [\"id\"]"
@@ -641,9 +527,8 @@ mod tests {
       &SelectorNoQualifyingType,
       serde_json::json!({"ignore": ["class"]}),
     );
-    let ctx_with_ignore = ctx();
     let node = style_with_selector("ul.list");
-    let d = rule.check_root(&[node], &ctx_with_ignore);
+    let d = rule.check_source(&context(&node, Syntax::Css));
     assert!(
       d.is_empty(),
       "should ignore class qualifying when ignore: [\"class\"]"
@@ -654,25 +539,8 @@ mod tests {
   fn reports_nesting_ampersand_with_class() {
     let rule = configured(&SelectorNoQualifyingType, None);
     // a { &.class {} } — the & resolves to the parent type `a`
-    let parent = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      children: vec![StyleRule {
-        selector: "&.class".to_string(),
-        declarations: vec![Declaration {
-          property: "color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(4, 15),
-          important: false,
-        }],
-        span: Span::new(4, 15),
-        ..Default::default()
-      }],
-      span: Span::new(0, 20),
-
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check_root(&[parent], &ctx());
+    let parent = "a { &.class { color: red; } }".to_string();
+    let d = rule.check_source(&context(&parent, Syntax::Css));
     assert_eq!(
       d.len(),
       1,
@@ -685,7 +553,7 @@ mod tests {
     let rule = configured(&SelectorNoQualifyingType, None);
     // Ensure :is(a, b) does not hang
     let node = style_with_selector(":is(a, b):is(c, d)");
-    let d = rule.check_root(&[node], &ctx());
+    let d = rule.check_source(&context(&node, Syntax::Css));
     // No qualifying type here
     assert!(d.is_empty());
   }
@@ -703,30 +571,25 @@ mod tests {
   fn skips_nested_in_scss_interpolation_parent() {
     let rule = configured(&SelectorNoQualifyingType, None);
     // a.foo nested inside .#{$var} should be skipped in SCSS mode
-    let scss_ctx = scss_ctx();
-    let parent = CssNode::Style(StyleRule {
-      selector: ".#{$var}".to_string(),
-      declarations: vec![],
-      children: vec![StyleRule {
-        selector: "a.foo".to_string(),
-        declarations: vec![Declaration {
-          property: "color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(0, 0),
-          important: false,
-        }],
-        span: Span::new(0, 0),
-        ..Default::default()
-      }],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    });
-    let d = rule.check_root(&[parent], &scss_ctx);
+    let parent = ".#{$var} { a.foo { color: red; } }".to_string();
+    let d = rule.check_source(&context(&parent, Syntax::Scss));
     assert!(
       d.is_empty(),
       "should skip rules nested inside SCSS interpolation parent"
     );
+  }
+
+  #[test]
+  fn reports_where_the_selector_is_written() {
+    let rule = configured(&SelectorNoQualifyingType, None);
+    let source = ".x,\n  .y>a.foo {}\nb { @media print { &.c {} } }";
+    let d = rule.check_source(&context(source, Syntax::Css));
+    let found: Vec<_> = d
+      .iter()
+      .map(|d| &source[d.span.offset..d.span.end()])
+      .collect();
+    // The `&` under `@media` stands for `b`, through the at-rule.
+    assert_eq!(found, ["a.foo", "&.c"]);
   }
 
   #[test]

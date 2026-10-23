@@ -1,12 +1,11 @@
 use std::sync::LazyLock;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind;
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::sass_operators::find_operators;
 
@@ -69,8 +68,7 @@ static DATA_URI: LazyLock<Regex> =
 impl Check for ScssOperatorNoNewlineBeforeCheck {
   /// Reports each operator in a declaration value or at-rule params that
   /// starts a line.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     for node in &tree.nodes {

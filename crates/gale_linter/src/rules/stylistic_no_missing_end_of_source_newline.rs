@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -35,7 +35,7 @@ impl StylisticNoMissingEndOfSourceNewlineCheck {
 impl Check for StylisticNoMissingEndOfSourceNewlineCheck {
   /// Flags a file not ending in a newline. Trailing whitespace does not count,
   /// matching Stylelint.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if ctx.source.is_empty() {
       return vec![];
     }
@@ -63,13 +63,13 @@ impl Check for StylisticNoMissingEndOfSourceNewlineCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn reports_missing_newline() {
     let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("a { color: red; }");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("missing end-of-source"));
     assert!(d[0].fix.is_some());
@@ -79,7 +79,7 @@ mod tests {
   fn allows_trailing_newline() {
     let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("a { color: red; }\n");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -87,7 +87,7 @@ mod tests {
   fn ignores_empty_source() {
     let rule = configured(&StylisticNoMissingEndOfSourceNewline, None);
     let ctx = ctx_with_source("");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 

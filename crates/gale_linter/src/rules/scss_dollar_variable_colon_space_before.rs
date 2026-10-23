@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -49,7 +50,7 @@ impl ScssDollarVariableColonSpaceBeforeCheck {
 impl Check for ScssDollarVariableColonSpaceBeforeCheck {
   /// Flags a `$variable` declaration whose space before the colon does not match
   /// the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -125,13 +126,15 @@ impl Check for ScssDollarVariableColonSpaceBeforeCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn allows_no_space_before_colon() {
     let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = scss_ctx_with_source("$color: red;");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -139,7 +142,7 @@ mod tests {
   fn reports_space_before_colon() {
     let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = scss_ctx_with_source("$color : red;");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
   }
 
@@ -147,7 +150,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssDollarVariableColonSpaceBefore, None);
     let ctx = ctx_with_source("$color : red;");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]

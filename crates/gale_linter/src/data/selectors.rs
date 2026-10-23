@@ -12,6 +12,15 @@ pub fn is_known_pseudo_element(name: &str) -> bool {
   lookup(KNOWN_PSEUDO_ELEMENTS, name)
 }
 
+/// Whether `name` (without colons) is one of the four CSS 2
+/// pseudo-elements that may take a single colon, in any case: Stylelint's
+/// `levelOneAndTwoPseudoElements`.
+pub fn is_legacy_pseudo_element(name: &str) -> bool {
+  ["before", "after", "first-line", "first-letter"]
+    .iter()
+    .any(|legacy| legacy.eq_ignore_ascii_case(name))
+}
+
 /// Whether `name` is a standard HTML element name.
 pub fn is_known_html_element(name: &str) -> bool {
   lookup(KNOWN_HTML_ELEMENTS, name)

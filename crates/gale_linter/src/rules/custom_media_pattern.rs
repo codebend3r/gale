@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -47,68 +47,58 @@ impl CustomMediaPatternCheck {
 
 impl Check for CustomMediaPatternCheck {
   /// Flags an `@custom-media` name that does not match the configured
-  /// pattern, at the name itself.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if at.name != "custom-media" {
-      return vec![];
-    }
-
+  /// pattern, at the name itself, as Stylelint reports it.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
-
-    // @custom-media --name <media-query>
-    // The params should start with the custom media name (--name).
-    let Some(full_name) = at.params.split_whitespace().next() else {
-      return vec![];
-    };
-    let Some(name) = full_name.strip_prefix("--") else {
-      return vec![];
-    };
-    if self.pattern.is_match(name) {
-      return vec![];
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !at.name().eq_ignore_ascii_case("custom-media") {
+        continue;
+      }
+      // @custom-media --name <media-query>
+      // The params should start with the custom media name (--name).
+      let params = at.params();
+      let Some(full_name) = params.split_whitespace().next() else {
+        continue;
+      };
+      let Some(name) = full_name.strip_prefix("--") else {
+        continue;
+      };
+      if self.pattern.is_match(name) {
+        continue;
+      }
+      let start = at.params_start() + (params.len() - params.trim_start().len());
+      diags.push(
+        Diagnostic::new(
+          NAME,
+          format!("Expected \"{full_name}\" to match pattern \"{pattern_str}\""),
+        )
+        .span(Span::new(start, full_name.len()))
+        .message_args([full_name, pattern_str]),
+      );
     }
-
-    // Point at the name in the source when it can be found there, as
-    // Stylelint does, else at the whole at-rule.
-    let span = ctx
-      .source_slice(at.span.offset, at.span.end())
-      .and_then(|text| text.find(full_name))
-      .map(|at_name| Span::new(at.span.offset + at_name, full_name.len()))
-      .unwrap_or(at.span);
-
-    vec![
-      Diagnostic::new(
-        NAME,
-        format!("Expected \"{full_name}\" to match pattern \"{pattern_str}\""),
-      )
-      .span(span)
-      .message_args([full_name, pattern_str]),
-    ]
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
+  use gale_css_parser::Syntax;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
+  use crate::testing::{invalid_options, lint};
 
-  fn custom_media(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "custom-media".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  fn check(options: Value, css: &str) -> Vec<Diagnostic> {
+    lint(NAME, options, css, Syntax::Css)
   }
 
   #[test]
   fn reports_non_kebab_case() {
-    let rule = configured(&CustomMediaPattern, None);
-    let d = rule.check(&custom_media("--myQuery (min-width: 768px)"), &ctx());
+    let d = check(
+      json!(DEFAULT_PATTERN),
+      "@custom-media --myQuery (min-width: 768px);",
+    );
     assert_eq!(d.len(), 1);
     assert_eq!(
       d[0].message,
@@ -118,15 +108,11 @@ mod tests {
 
   #[test]
   fn uses_the_configured_pattern() {
-    let options = serde_json::json!("^(?!bp-)[a-z-]+$");
-    let rule = configured(&CustomMediaPattern, options.clone());
-    let source = "@custom-media --bp-small (max-width: 30em);";
-    let ctx = ctx_with_source(source);
-    let mut node = custom_media("--bp-small (max-width: 30em)");
-    if let CssNode::AtRule(at) = &mut node {
-      at.span = Span::new(0, source.len());
-    }
-    let d = rule.check(&node, &ctx);
+    let options = json!("^(?!bp-)[a-z-]+$");
+    let d = check(
+      options.clone(),
+      "@custom-media --bp-small (max-width: 30em);",
+    );
     assert_eq!(d.len(), 1);
     assert_eq!(
       d[0].message,
@@ -134,29 +120,24 @@ mod tests {
     );
     // Reported at the name, not the whole at-rule.
     assert_eq!(d[0].span, Span::new(14, "--bp-small".len()));
+    let d = check(
+      options.clone(),
+      "@CUSTOM-MEDIA --bp-small (max-width: 30em);",
+    );
+    assert_eq!(d.len(), 1);
 
-    let ok = custom_media("--small (max-width: 30em)");
-    assert!(rule.check(&ok, &ctx).is_empty());
+    assert!(check(options, "@custom-media --small (max-width: 30em);").is_empty());
   }
 
   #[test]
   fn allows_kebab_case() {
-    let rule = configured(&CustomMediaPattern, None);
-    let d = rule.check(&custom_media("--my-query (min-width: 768px)"), &ctx());
-    assert!(d.is_empty());
+    let css = "@custom-media --my-query (min-width: 768px);";
+    assert!(check(json!(DEFAULT_PATTERN), css).is_empty());
   }
 
   #[test]
   fn ignores_non_custom_media_at_rules() {
-    let rule = configured(&CustomMediaPattern, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    let d = rule.check(&node, &ctx());
-    assert!(d.is_empty());
+    assert!(check(json!(DEFAULT_PATTERN), "@media (min-width: 768px) {}").is_empty());
   }
 
   #[test]

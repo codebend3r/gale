@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::braces::scss_block_close;
@@ -49,7 +50,7 @@ impl ScssAtIfClosingBraceNewlineAfterCheck {
 impl Check for ScssAtIfClosingBraceNewlineAfterCheck {
   /// Flags an `@if` closing brace, when no `@else` follows, whose trailing
   /// newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -111,13 +112,15 @@ impl Check for ScssAtIfClosingBraceNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn allows_newline_after_if() {
     let rule = configured(&ScssAtIfClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $cond { color: red; }\n.foo {}");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -125,7 +128,7 @@ mod tests {
   fn allows_else_on_same_line() {
     let rule = configured(&ScssAtIfClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $cond { color: red; } @else { color: blue; }\n");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -137,7 +140,7 @@ mod tests {
     // }
     let src = "@if $breakpoint != \"base\" {\n  $breakpoint-name: -on-#{$breakpoint};\n}\n";
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -147,7 +150,7 @@ mod tests {
     let src =
       "@if $x { $name: #{$x}-foo; } @else if $y { $name: #{$y}-bar; } @else { $name: baz; }\n";
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -155,7 +158,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssAtIfClosingBraceNewlineAfter, None);
     let ctx = ctx_with_source("@if { } .foo {}");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]

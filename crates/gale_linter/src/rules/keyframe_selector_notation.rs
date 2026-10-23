@@ -1,9 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{AtRuleRef, NodeKind, PostcssTree};
+use gale_css_parser::selector::postcss::strip_comments;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "keyframe-selector-notation";
@@ -63,23 +63,22 @@ enum Notation {
 impl Check for KeyframeSelectorNotationCheck {
   /// Reports keyframe selectors in the other notation, with a fix that
   /// swaps `from`/`to` and `0%`/`100%`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(notation) = self.notation else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for (index, at_rule) in tree.nodes.iter().enumerate() {
-      let is_keyframes = at_rule.kind == NodeKind::AtRule
-        && ctx
-          .source_slice(at_rule.name_span.start, at_rule.name_span.end)
-          .is_some_and(is_keyframes_name);
+      let is_keyframes = tree
+        .node(index)
+        .as_at_rule()
+        .is_some_and(AtRuleRef::is_keyframes);
       if !is_keyframes {
         continue;
       }
       // Every rule inside the block, however deep.
-      let rules: Vec<(usize, &str)> = descendants(&tree, index)
+      let rules: Vec<(usize, &str)> = descendants(tree, index)
         .filter(|&i| tree.nodes[i].kind == NodeKind::Rule)
         .filter_map(|i| {
           let selector = &tree.nodes[i].name_span;
@@ -125,16 +124,6 @@ impl Check for KeyframeSelectorNotationCheck {
     }
     diags
   }
-}
-
-/// Whether an at-rule name is `keyframes`, optionally vendor-prefixed.
-fn is_keyframes_name(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  let unprefixed = ["-o-", "-moz-", "-ms-", "-webkit-"]
-    .iter()
-    .find_map(|prefix| lower.strip_prefix(prefix))
-    .unwrap_or(&lower);
-  unprefixed == "keyframes"
 }
 
 /// Indices of every node inside the block of node `index`.
@@ -268,20 +257,6 @@ fn top_level_parts(selector: &str) -> Vec<(usize, usize)> {
   }
   parts.push((start, bytes.len().max(start)));
   parts
-}
-
-/// `text` with its `/* */` comments removed.
-fn strip_comments(text: &str) -> String {
-  let mut out = String::with_capacity(text.len());
-  let mut rest = text;
-  while let Some(open) = rest.find("/*") {
-    out.push_str(&rest[..open]);
-    rest = rest[open + 2..]
-      .find("*/")
-      .map_or("", |close| &rest[open + 2 + close + 2..]);
-  }
-  out.push_str(rest);
-  out
 }
 
 /// PostCSS's `list.comma`: the trimmed, non-empty comma-separated parts.

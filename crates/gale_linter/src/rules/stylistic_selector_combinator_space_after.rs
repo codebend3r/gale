@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -41,7 +41,7 @@ const COMBINATORS: &[u8] = b">~+";
 
 impl Check for StylisticSelectorCombinatorSpaceAfterCheck {
   /// Flags a selector combinator whose trailing space does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -206,14 +206,14 @@ impl Check for StylisticSelectorCombinatorSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_allows_space_after_combinator() {
     let opt = serde_json::json!("always");
     let source = "a > b { }";
     let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -222,7 +222,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a >b { }";
     let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space after"));
   }
@@ -232,7 +232,7 @@ mod tests {
     let opt = serde_json::json!("never");
     let source = "a > b { }";
     let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected space after"));
   }
@@ -242,7 +242,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a ~b { }";
     let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 
@@ -251,7 +251,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let source = "a +b { }";
     let d = configured(&StylisticSelectorCombinatorSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
   }
 

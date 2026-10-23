@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -45,96 +46,68 @@ impl ScssAtMixinPatternCheck {
 }
 
 impl Check for ScssAtMixinPatternCheck {
-  /// Flags a `@mixin` name that does not match the configured regex, defaulting
-  /// to kebab-case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags a `@mixin` name that does not match the configured regex,
+  /// defaulting to kebab-case, at the name as stylelint-scss finds it.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "mixin" {
-      return vec![];
-    }
-
     let pattern_str = self.pattern.source.as_str();
-
-    // The mixin name is the first word in params (before `(` or whitespace)
-    let first_token = at.params.split_whitespace().next().unwrap_or("");
-    let mixin_name = first_token.split('(').next().unwrap_or("");
-
-    if mixin_name.is_empty() {
-      return vec![];
-    }
-
-    if !self.pattern.is_match(mixin_name) {
-      vec![
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if at.name() != "mixin" {
+        continue;
+      }
+      // The mixin name is the first word in params (before `(` or whitespace)
+      let first_token = at.params().split_whitespace().next().unwrap_or("");
+      let mixin_name = first_token.split('(').next().unwrap_or("");
+      if mixin_name.is_empty() || self.pattern.is_match(mixin_name) {
+        continue;
+      }
+      diags.push(
         Diagnostic::new(
           NAME,
-          format!(
-            "Expected @mixin name \"{}\" to match pattern \"{}\"",
-            mixin_name, pattern_str
-          ),
+          format!("Expected @mixin name \"{mixin_name}\" to match pattern \"{pattern_str}\""),
         )
-        .span(at.span),
-      ]
-    } else {
-      vec![]
+        .span(at.word_span(mixin_name)),
+      );
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn mixin(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "mixin".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  /// The reports for `source` in `syntax`, with the default pattern.
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssAtMixinPattern, None).check_source(&context(source, syntax))
   }
 
   #[test]
   fn allows_kebab_case() {
-    let rule = configured(&ScssAtMixinPattern, None);
-    assert!(rule.check(&mixin("my-mixin($a)"), &scss_ctx()).is_empty());
+    assert!(check("@mixin my-mixin($a) { }", Syntax::Scss).is_empty());
   }
 
   #[test]
-  fn reports_non_matching_pattern() {
-    let rule = configured(&ScssAtMixinPattern, None);
-    let d = rule.check(&mixin("MyMixin($a)"), &scss_ctx());
+  fn reports_non_matching_pattern_at_the_name() {
+    let d = check("a { @mixin MyMixin($a) { } }", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("MyMixin"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (11, 7));
   }
 
   #[test]
   fn skips_non_mixin() {
-    let rule = configured(&ScssAtMixinPattern, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "function".to_string(),
-      params: "MyFunc".to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(check("@function MyFunc() { }", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtMixinPattern, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&mixin("MyMixin"), &css_ctx).is_empty());
+    assert!(check("@mixin MyMixin { }", Syntax::Css).is_empty());
   }
 
   #[test]

@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{self, Kind, Visit};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{self, Kind, Visit};
 use crate::standard_syntax::is_standard_syntax_selector;
 
 const NAME: &str = "selector-type-case";
@@ -117,12 +117,17 @@ const TIMELINE_RANGES: &[&str] = &[
 impl Check for SelectorTypeCaseCheck {
   /// Flags type selectors not in the configured case, reading every style
   /// rule's selector as written.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let upper = self.upper;
 
     let mut diags = Vec::new();
-    for rule in &ctx.scanned_rules().style_rules {
-      let clean = postcss::strip_comments(&rule.prelude);
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let first = diags.len();
+      let clean = postcss::strip_comments(&prelude);
       if !starts_a_tag_name(&clean) {
         continue;
       }
@@ -140,7 +145,7 @@ impl Check for SelectorTypeCaseCheck {
       {
         continue;
       }
-      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+      let Some(selectors) = postcss::parse(&prelude, rule.selector_start()) else {
         continue;
       };
       postcss::walk(&selectors, &mut |visit| {
@@ -173,6 +178,9 @@ impl Check for SelectorTypeCaseCheck {
           )),
         );
       });
+      if !rule.selector_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
+      }
     }
     diags
   }

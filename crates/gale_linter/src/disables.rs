@@ -24,9 +24,9 @@
 use std::collections::{HashMap, HashSet};
 
 use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Severity, Span};
 
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::registry::resolve_deprecated_alias;
 
 /// Stylelint's `RULE_NAME_ALL`: the rule name of the blanket ranges.

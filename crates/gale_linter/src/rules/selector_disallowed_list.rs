@@ -1,7 +1,8 @@
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::subjects::{self, SelectorOptions};
 use crate::list_rules::{Found, ListCheck, ListRule, Polarity};
 use crate::options::Options;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "selector-disallowed-list";

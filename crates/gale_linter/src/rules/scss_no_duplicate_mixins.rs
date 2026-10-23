@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::{Diagnostic, Span};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -33,102 +34,73 @@ impl ScssNoDuplicateMixinsCheck {
 }
 
 impl Check for ScssNoDuplicateMixinsCheck {
-  /// Flags a `@mixin` name declared more than once.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags a `@mixin` name declared more than once.  The name is everything
+  /// before the first `(` or space.
+  ///
+  /// Mixins inside style rules are left out, as they always were: they are
+  /// scoped to the rule, and stylelint-scss, which does look at them, only
+  /// compares those that share a parent with the first one.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut diagnostics = Vec::new();
-    collect_mixins(nodes, &mut seen, &mut diagnostics, ctx.source);
-    diagnostics
-  }
-}
-
-/// Recurses through the tree, reporting each repeat of a mixin name. The name
-/// is everything before the first `(` or space.
-fn collect_mixins(
-  nodes: &[CssNode],
-  seen: &mut HashSet<String>,
-  diagnostics: &mut Vec<Diagnostic>,
-  source: &str,
-) {
-  for node in nodes {
-    match node {
-      CssNode::AtRule(at) if at.name == "mixin" => {
-        // The mixin name is everything before the first `(` or whitespace.
-        let raw = at.params.trim();
-        let mixin_name = raw
-          .split(|c: char| c == '(' || c.is_whitespace())
-          .next()
-          .unwrap_or("")
-          .trim();
-        if mixin_name.is_empty() {
-          continue;
-        }
-        if seen.contains(mixin_name) {
-          // Point to the mixin name, not the `@mixin` keyword.
-          // Stylelint message has no quotes around the name.
-          let at_src_end = (at.span.offset + at.span.length).min(source.len());
-          let at_src = &source[at.span.offset..at_src_end];
-          let name_off = at_src.find(mixin_name).unwrap_or(0);
-          diagnostics.push(
-            Diagnostic::new(NAME, format!("Unexpected duplicate mixin {}", mixin_name))
-              .span(Span::new(at.span.offset + name_off, mixin_name.len())),
-          );
-        } else {
-          seen.insert(mixin_name.to_string());
-        }
-        // Also recurse into children for nested mixins.
-        collect_mixins(&at.children, seen, diagnostics, source);
+    for at in tree.walk_at_rules() {
+      if at.name() != "mixin" || at.ancestors().any(|node| node.as_rule().is_some()) {
+        continue;
       }
-      CssNode::AtRule(at) => {
-        collect_mixins(&at.children, seen, diagnostics, source);
+      let mixin_name = at
+        .params()
+        .trim()
+        .split(|c: char| c == '(' || c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim();
+      if mixin_name.is_empty() || seen.insert(mixin_name) {
+        continue;
       }
-      _ => {}
+      // Point to the mixin name, not the `@mixin` keyword.
+      // Stylelint message has no quotes around the name.
+      diagnostics.push(
+        Diagnostic::new(NAME, format!("Unexpected duplicate mixin {mixin_name}"))
+          .span(at.word_span(mixin_name)),
+      );
     }
+    diagnostics
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn mixin(name: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "mixin".to_string(),
-      params: name.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssNoDuplicateMixins, None).check_source(&context(source, syntax))
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssNoDuplicateMixins, None);
-    let nodes = vec![mixin("foo"), mixin("foo")];
-    assert!(rule.check_root(&nodes, &ctx()).is_empty());
+    assert!(check("@mixin foo {}\n@mixin foo {}", Syntax::Css).is_empty());
   }
 
   #[test]
-  fn reports_duplicate_mixins() {
-    let rule = configured(&ScssNoDuplicateMixins, None);
-    let nodes = vec![mixin("foo"), mixin("bar"), mixin("foo")];
-    let d = rule.check_root(&nodes, &scss_ctx());
+  fn reports_duplicate_mixins_at_the_name() {
+    let d = check(
+      "@mixin foo {}\n@mixin bar {}\n@if $a { @mixin foo($b) {} }",
+      Syntax::Scss,
+    );
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("foo"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (44, 3));
   }
 
   #[test]
-  fn allows_unique_mixins() {
-    let rule = configured(&ScssNoDuplicateMixins, None);
-    let nodes = vec![mixin("foo"), mixin("bar"), mixin("baz")];
-    let d = rule.check_root(&nodes, &scss_ctx());
-    assert!(d.is_empty());
+  fn allows_unique_mixins_and_mixins_in_rules() {
+    assert!(check("@mixin foo {}\n@mixin bar {}\n@mixin baz {}", Syntax::Scss).is_empty());
+    assert!(check("a { @mixin foo {} }\nb { @mixin foo {} }", Syntax::Scss).is_empty());
   }
 
   #[test]
