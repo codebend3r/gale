@@ -1,14 +1,13 @@
 use std::collections::HashSet;
 
-use gale_css_parser::{CssNode, Declaration, StyleRule};
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
 use crate::stylelint_version::stylelint_major_version;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "custom-property-no-missing-var-function";
 
@@ -68,41 +67,6 @@ const IGNORED_PROPERTIES: &[&str] = &[
 /// Properties Stylelint 17 added to [`IGNORED_PROPERTIES`].
 const IGNORED_PROPERTIES_SINCE_17: &[&str] = &["animation-timeline", "timeline-scope"];
 
-/// Every declaration in `nodes`, at any depth, and the params of every
-/// `@property` rule.
-fn collect<'a>(
-  nodes: &'a [CssNode],
-  decls: &mut Vec<&'a Declaration>,
-  property_rules: &mut Vec<&'a gale_css_parser::AtRule>,
-) {
-  for node in nodes {
-    match node {
-      CssNode::Declaration(decl) => decls.push(decl),
-      CssNode::AtRule(at) => {
-        if at.name.eq_ignore_ascii_case("property") {
-          property_rules.push(at);
-        }
-        collect(&at.children, decls, property_rules);
-      }
-      CssNode::Style(rule) => collect_rule(rule, decls, property_rules),
-      CssNode::Comment(_) => {}
-    }
-  }
-}
-
-/// [`collect`] for a style rule and everything nested in it.
-fn collect_rule<'a>(
-  rule: &'a StyleRule,
-  decls: &mut Vec<&'a Declaration>,
-  property_rules: &mut Vec<&'a gale_css_parser::AtRule>,
-) {
-  decls.extend(rule.declarations.iter());
-  collect(&rule.nested_at_rules, decls, property_rules);
-  for child in &rule.children {
-    collect_rule(child, decls, property_rules);
-  }
-}
-
 /// The checks for one stylesheet.
 struct ValueCheck<'a> {
   /// Custom property names the stylesheet defines.
@@ -158,23 +122,20 @@ impl<'a> ValueCheck<'a> {
 impl Check for CustomPropertyNoMissingVarFunctionCheck {
   /// Flags a custom property this stylesheet defines when a value uses it
   /// bare instead of inside `var()`.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let mut decls = Vec::new();
-    let mut property_rules = Vec::new();
-    collect(nodes, &mut decls, &mut property_rules);
-
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let source = tree.source();
     let mut check = ValueCheck {
       known: HashSet::new(),
       found: Vec::new(),
     };
-    for at in property_rules {
-      let params =
-        source_text::at_rule_params(ctx.source, at).map_or(at.params.trim(), |(params, _)| params);
-      check.known.insert(params);
+    for at in tree.walk_at_rules() {
+      if at.name().eq_ignore_ascii_case("property") {
+        check.known.insert(at.params());
+      }
     }
-    for decl in &decls {
-      if decl.property.starts_with("--") {
-        check.known.insert(decl.property.as_str());
+    for decl in tree.walk_decls() {
+      if decl.is_custom_property() {
+        check.known.insert(decl.prop());
       }
     }
     if check.known.is_empty() {
@@ -182,14 +143,15 @@ impl Check for CustomPropertyNoMissingVarFunctionCheck {
     }
 
     let stylelint_17 = stylelint_major_version() >= 17;
-    for decl in decls {
-      let Some((value, offset)) = source_text::declaration_value(ctx.source, decl) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      // The value as written, comments and all, so that offsets into it
+      // are offsets into the source.
+      let offset = decl.value_start();
+      let value = &source[offset..decl.value_span.end];
       if !value.contains("--") {
         continue;
       }
-      let property = decl.property.to_ascii_lowercase();
+      let property = decl.prop().to_ascii_lowercase();
       let ignored = IGNORED_PROPERTIES.contains(&property.as_str())
         || (stylelint_17 && IGNORED_PROPERTIES_SINCE_17.contains(&property.as_str()));
       if ignored {
@@ -218,17 +180,15 @@ impl Check for CustomPropertyNoMissingVarFunctionCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   /// Lint `source` with the real parser, returning `(offset, name)` for
   /// each report (the name is the quoted part of the message).
   fn lint(source: &str) -> Vec<(usize, String)> {
-    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
     let ctx = ctx_with_source(source);
     configured(&CustomPropertyNoMissingVarFunction, None)
-      .check_root(&parsed.nodes, &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| {
         let name = d.message.split('"').nth(1).unwrap_or_default().to_string();
@@ -247,9 +207,8 @@ mod tests {
   fn names_the_property_in_the_message() {
     let rule = configured(&CustomPropertyNoMissingVarFunction, None);
     let source = ":root { --a: 1px; }\na { margin: 0 --a; }";
-    let parsed = gale_css_parser::parse(source, Syntax::Css).expect("parses");
     let ctx = ctx_with_source(source);
-    let d = rule.check_root(&parsed.nodes, &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(
       d[0].message.ends_with("var function for \"--a\""),

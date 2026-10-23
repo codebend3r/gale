@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::data::is_css_wide_keyword;
@@ -57,20 +58,25 @@ const GENERIC_FAMILIES: &[&str] = &[
 
 impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
   /// Flags a `font-family` whose last entry is not a generic family keyword.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let style = match node {
-      CssNode::Style(s) => s,
-      _ => return vec![],
-    };
-
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    for decl in &style.declarations {
-      if decl.property != "font-family" {
+    // The declarations of style rules, so never `@font-face`'s.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      // The property in any case in CSS, as written elsewhere.
+      let prop = decl.prop();
+      let is_font_family = match context.syntax {
+        Syntax::Css => prop.eq_ignore_ascii_case("font-family"),
+        _ => prop == "font-family",
+      };
+      if !is_font_family {
         continue;
       }
 
-      let value = decl.value.trim();
+      let value = decl.value().trim();
       if value.is_empty() {
         continue;
       }
@@ -126,7 +132,7 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
 
       if !has_generic && !ignored {
         diagnostics
-          .push(Diagnostic::new(NAME, "Unexpected missing generic font family").span(decl.span));
+          .push(Diagnostic::new(NAME, "Unexpected missing generic font family").span(decl.span()));
       }
     }
 
@@ -137,64 +143,45 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
   use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+
+  fn check(rule: &dyn Check, source: &str) -> Vec<Diagnostic> {
+    rule.check_source(&ctx_with_source(source))
+  }
 
   #[test]
   fn reports_missing_generic_family() {
     let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "body".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "Arial, Helvetica".to_string(),
-        span: Span::new(6, 28),
-        important: false,
-      }],
-      span: Span::new(0, 36),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
+    let diags = check(&*rule, "body { font-family: Arial, Helvetica; }");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("missing generic font family"));
+    assert_eq!(diags[0].span, Span::new(7, 30));
   }
 
   #[test]
   fn ignores_when_generic_family_present() {
     let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "body".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "Arial, Helvetica, sans-serif".to_string(),
-        span: Span::new(6, 40),
-        important: false,
-      }],
-      span: Span::new(0, 48),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(
+      check(
+        &*rule,
+        "body { font-family: Arial, Helvetica, sans-serif; }"
+      )
+      .is_empty()
+    );
   }
 
   #[test]
   fn accepts_system_ui() {
     let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "body".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "system-ui".to_string(),
-        span: Span::new(6, 20),
-        important: false,
-      }],
-      span: Span::new(0, 28),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check(&*rule, "body { font-family: system-ui; }").is_empty());
+  }
+
+  #[test]
+  fn skips_font_face() {
+    let rule = configured(&FontFamilyNoMissingGenericFamilyKeyword, None);
+    assert!(check(&*rule, "@font-face { font-family: Arial; }").is_empty());
   }
 
   #[test]
@@ -203,21 +190,8 @@ mod tests {
       &FontFamilyNoMissingGenericFamilyKeyword,
       serde_json::json!([true, { "ignoreFontFamilies": ["/^Icon/"] }]),
     );
-    let node = |value: &str| {
-      CssNode::Style(StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![Declaration {
-          property: "font-family".to_string(),
-          value: value.to_string(),
-          span: Span::new(0, 10),
-          important: false,
-        }],
-        span: Span::new(0, 0),
-        ..Default::default()
-      })
-    };
-    assert!(rule.check(&node("Arial, \"Icon Font\""), &ctx()).is_empty());
-    assert_eq!(rule.check(&node("Arial"), &ctx()).len(), 1);
+    assert!(check(&*rule, "a { font-family: Arial, \"Icon Font\"; }").is_empty());
+    assert_eq!(check(&*rule, "a { font-family: Arial; }").len(), 1);
   }
 
   #[test]

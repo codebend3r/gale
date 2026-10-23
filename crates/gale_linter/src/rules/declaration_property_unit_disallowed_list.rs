@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::{Entries, KeyedCheck, KeyedFound, KeyedListRule, Polarity, subjects};
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "declaration-property-unit-disallowed-list";

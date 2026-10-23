@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "custom-property-empty-line-before";
@@ -74,11 +73,10 @@ impl CustomPropertyEmptyLineBeforeCheck {
 
 impl Check for CustomPropertyEmptyLineBeforeCheck {
   /// Checks every custom property in the document, in source order.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let always = self.always;
     let except = |name: &str| self.except.contains(&name);
     let ignore = |name: &str| self.ignore.contains(&name);
-    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -93,7 +91,7 @@ impl Check for CustomPropertyEmptyLineBeforeCheck {
         .parent
         .is_some_and(|p| matches!(tree.nodes[p].kind, NodeKind::Rule | NodeKind::AtRule));
       if (ignore("after-comment") && tree.is_after_comment(i))
-        || (ignore("after-custom-property") && is_after_custom_property(&tree, i))
+        || (ignore("after-custom-property") && is_after_custom_property(tree, i))
         || (ignore("first-nested") && tree.is_first_nested(i))
         || (ignore("inside-single-line-block")
           && in_block
@@ -105,14 +103,14 @@ impl Check for CustomPropertyEmptyLineBeforeCheck {
       let flip = (except("first-nested") && tree.is_first_nested(i))
         || (except("after-block") && tree.is_after_block(i))
         || (except("after-comment") && tree.is_after_comment(i))
-        || (except("after-custom-property") && is_after_custom_property(&tree, i));
+        || (except("after-custom-property") && is_after_custom_property(tree, i));
       let expect_empty_line = always != flip;
       if expect_empty_line == has_empty_line(tree.before(i)) {
         continue;
       }
       diags.push(empty_line_report(
         NAME,
-        &tree,
+        tree,
         i,
         expect_empty_line,
         "custom property",
@@ -137,13 +135,13 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
     let ctx = context(source, syntax);
     configured(&CustomPropertyEmptyLineBefore, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()

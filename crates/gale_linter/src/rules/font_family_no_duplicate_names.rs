@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -41,15 +41,15 @@ impl FontFamilyNoDuplicateNamesCheck {
 
 impl Check for FontFamilyNoDuplicateNamesCheck {
   /// Flags a family name listed twice in the same `font-family` or `font` value.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    for decl in &rule.declarations {
-      let prop_lower = decl.property.to_ascii_lowercase();
+    // The declarations of style rules.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      let prop_lower = decl.prop().to_ascii_lowercase();
       if prop_lower != "font-family" && prop_lower != "font" {
         continue;
       }
@@ -59,7 +59,7 @@ impl Check for FontFamilyNoDuplicateNamesCheck {
       // heuristic: split on commas, which only appear in the font-family
       // part of the shorthand. If there are no commas, there's at most one
       // family name so no duplicates are possible.
-      let families: Vec<&str> = decl.value.split(',').collect();
+      let families: Vec<&str> = decl.value().split(',').collect();
       if families.len() <= 1 {
         continue;
       }
@@ -82,7 +82,7 @@ impl Check for FontFamilyNoDuplicateNamesCheck {
               NAME,
               format!("Unexpected duplicate font family name \"{}\"", normalized),
             )
-            .span(decl.span),
+            .span(decl.span()),
           );
         }
       }
@@ -95,67 +95,38 @@ impl Check for FontFamilyNoDuplicateNamesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
   use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+
+  fn check(rule: &dyn Check, value: &str) -> Vec<Diagnostic> {
+    let source = format!("a {{ font-family: {value}; }}");
+    rule.check_source(&ctx_with_source(&source))
+  }
 
   #[test]
   fn reports_duplicate_font_family_names() {
     let rule = configured(&FontFamilyNoDuplicateNames, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "Arial, Helvetica, Arial".to_string(),
-        span: Span::new(4, 36),
-        important: false,
-      }],
-      span: Span::new(0, 42),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
+    let diags = check(&*rule, "Arial, Helvetica, Arial");
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
       "Unexpected duplicate font family name \"arial\""
     );
+    // The whole declaration.
+    assert_eq!(diags[0].span, Span::new(4, 37));
   }
 
   #[test]
   fn ignores_unique_font_family_names() {
     let rule = configured(&FontFamilyNoDuplicateNames, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "Arial, Helvetica, sans-serif".to_string(),
-        span: Span::new(4, 41),
-        important: false,
-      }],
-      span: Span::new(0, 47),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check(&*rule, "Arial, Helvetica, sans-serif").is_empty());
   }
 
   #[test]
   fn detects_duplicates_with_quotes() {
     let rule = configured(&FontFamilyNoDuplicateNames, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "\"Arial\", Arial, sans-serif".to_string(),
-        span: Span::new(4, 39),
-        important: false,
-      }],
-      span: Span::new(0, 45),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
+    assert_eq!(check(&*rule, "\"Arial\", Arial, sans-serif").len(), 1);
   }
 
   #[test]
@@ -164,18 +135,10 @@ mod tests {
       &FontFamilyNoDuplicateNames,
       serde_json::json!([true, { "ignoreFontFamilyNames": ["/^My /", "monospace"] }]),
     );
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "font-family".to_string(),
-        value: "\"My Font\", My Font, monospace, monospace, serif, serif".to_string(),
-        span: Span::new(0, 10),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx());
+    let d = check(
+      &*rule,
+      "\"My Font\", My Font, monospace, monospace, serif, serif",
+    );
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("serif"));
   }

@@ -2,11 +2,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::chars::is_word_or_hyphen_byte;
-use crate::lint_env::LintEnv;
+use crate::custom_properties::{collect_definitions_from_source, var_references};
+use crate::lint_env::{LintEnv, find_node_modules};
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
@@ -67,7 +67,7 @@ fn import_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
 impl Check for CsstoolsValueNoUnknownCustomPropertiesCheck {
   /// Collects custom property definitions from `importFrom` and from this file,
   /// then flags every `var()` reference that resolves to none of them.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let source = context.source;
 
     // 1. Collect custom property definitions from importFrom files.
@@ -77,83 +77,33 @@ impl Check for CsstoolsValueNoUnknownCustomPropertiesCheck {
     let mut known_props: HashSet<String> = imported_props;
     collect_definitions_from_source(source, &mut known_props);
 
-    // 3. Walk all AST declarations, find var() references, report unknown ones.
+    // 3. Walk every declaration, find var() references, report unknown ones.
     let mut diagnostics = Vec::new();
-    walk_nodes_for_vars(nodes, source, &known_props, &mut diagnostics);
+    for decl in tree.walk_decls() {
+      check_declaration(decl, source, &known_props, &mut diagnostics);
+    }
 
     diagnostics
   }
 }
 
-// ---------------------------------------------------------------------------
-// Walking AST for declarations with var() references
-// ---------------------------------------------------------------------------
-
-/// Recursively walk AST nodes, checking declarations for unknown var() references.
-fn walk_nodes_for_vars(
-  nodes: &[CssNode],
-  source: &str,
-  known_props: &HashSet<String>,
-  diagnostics: &mut Vec<Diagnostic>,
-) {
-  for node in nodes {
-    for decl in node.declarations() {
-      check_declaration(decl, source, known_props, diagnostics);
-    }
-    match node {
-      CssNode::Style(style_rule) => {
-        // Recurse into nested style rule children.
-        walk_nodes_for_vars(
-          &style_rule
-            .children
-            .iter()
-            .map(|c| CssNode::Style(c.clone()))
-            .collect::<Vec<_>>(),
-          source,
-          known_props,
-          diagnostics,
-        );
-        // Recurse into nested at-rules.
-        walk_nodes_for_vars(
-          &style_rule.nested_at_rules,
-          source,
-          known_props,
-          diagnostics,
-        );
-      }
-      CssNode::AtRule(at_rule) => {
-        // Recurse into child rules (e.g., @media, @keyframes blocks).
-        walk_nodes_for_vars(&at_rule.children, source, known_props, diagnostics);
-      }
-      CssNode::Declaration(_) | CssNode::Comment(_) => {}
-    }
-  }
-}
-
 /// Check a single declaration for unknown var() custom property references.
 fn check_declaration(
-  decl: &gale_css_parser::Declaration,
+  decl: DeclRef,
   source: &str,
   known_props: &HashSet<String>,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
-  // Only process if the value contains `var(`.
-  if !decl.value.contains("var(") && !decl.value.contains("VAR(") {
+  // The plugin reads `decl.value`.
+  let value = decl.value();
+  if !value.contains("var(") && !value.contains("VAR(") {
     return;
   }
 
-  // Find the byte offset of the value in the source.
-  let value_offset = find_value_offset(source, decl);
+  let decl_source_start = decl.start;
 
-  // Find all var() references in the value.
-  let var_refs = find_var_refs_in_value(&decl.value, value_offset);
-
-  // The declaration source representation (from property start to value end).
-  // Used for word-based position lookup matching Stylelint's behavior.
-  let decl_source_start = decl.span.offset;
-
-  for vr in &var_refs {
-    if known_props.contains(&vr.name) {
+  for vr in var_references(value) {
+    if known_props.contains(vr.name) {
       continue;
     }
     if vr.has_fallback {
@@ -164,10 +114,9 @@ fn check_declaration(
     // occurrence of the word in the declaration's source representation.
     // We replicate this by searching for the property name from the
     // declaration start in the source.
-    let name_offset = if let Some(idx) = source[decl_source_start..].find(&vr.name) {
-      decl_source_start + idx
-    } else {
-      vr.name_offset
+    let name_offset = match source[decl_source_start..].find(vr.name) {
+      Some(idx) => decl_source_start + idx,
+      None => decl.value_start() + vr.offset,
     };
 
     diagnostics.push(
@@ -175,87 +124,12 @@ fn check_declaration(
         NAME,
         format!(
           "Unexpected custom property \"{}\" inside declaration \"{}\".",
-          vr.name, decl.property
+          vr.name,
+          decl.prop()
         ),
       )
       .span(Span::new(name_offset, vr.name.len())),
     );
-  }
-}
-
-/// Find the byte offset of the declaration value in the source.
-/// Uses the declaration's span (pointing to property start) and searches
-/// for the colon to find where the value starts.
-fn find_value_offset(source: &str, decl: &gale_css_parser::Declaration) -> usize {
-  let start = decl.span.offset;
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-
-  // Find the colon after the property name.
-  let mut i = start;
-  while i < len && bytes[i] != b':' {
-    i += 1;
-  }
-  if i < len {
-    i += 1; // skip colon
-  }
-
-  // Skip whitespace after colon.
-  while i < len && is_whitespace(bytes[i]) {
-    i += 1;
-  }
-
-  i
-}
-
-// ---------------------------------------------------------------------------
-// Collecting custom property definitions
-// ---------------------------------------------------------------------------
-
-/// Extract all custom property definitions (`--name: value`) from a CSS source.
-fn collect_definitions_from_source(source: &str, props: &mut HashSet<String>) {
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i + 2 < len {
-    if bytes[i] == b'-' && bytes[i + 1] == b'-' {
-      let is_prop_start = if i == 0 {
-        true
-      } else {
-        let prev = bytes[i - 1];
-        prev == b' '
-          || prev == b'\t'
-          || prev == b'\n'
-          || prev == b'\r'
-          || prev == b'{'
-          || prev == b';'
-          || prev == b'('
-      };
-
-      if is_prop_start {
-        let name_start = i;
-        let mut j = i + 2;
-        while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-' || bytes[j] == b'_')
-        {
-          j += 1;
-        }
-        let name = &source[name_start..j];
-
-        let mut k = j;
-        while k < len && (bytes[k] == b' ' || bytes[k] == b'\t') {
-          k += 1;
-        }
-
-        if k < len && bytes[k] == b':' && (k + 1 >= len || bytes[k + 1] != b':') {
-          props.insert(name.to_string());
-        }
-
-        i = j;
-        continue;
-      }
-    }
-    i += 1;
   }
 }
 
@@ -300,23 +174,6 @@ fn load_imported_custom_properties(paths: &[String], context: &RuleContext) -> H
   props
 }
 
-/// Nearest `node_modules` directory at or above `file_path`.
-fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
-  let mut dir = if file_path.is_file() {
-    file_path.parent()?
-  } else {
-    file_path
-  };
-
-  loop {
-    let nm = dir.join("node_modules");
-    if nm.is_dir() {
-      return Some(nm);
-    }
-    dir = dir.parent()?;
-  }
-}
-
 /// Resolves an `importFrom` entry: absolute as-is, bare specifiers against
 /// `node_modules`, relative against the current directory.
 fn resolve_import_path(path_str: &str, node_modules: Option<&Path>) -> Option<std::path::PathBuf> {
@@ -347,87 +204,14 @@ fn resolve_import_path(path_str: &str, node_modules: Option<&Path>) -> Option<st
   None
 }
 
-// ---------------------------------------------------------------------------
-// var() reference finding
-// ---------------------------------------------------------------------------
-
-struct VarRef {
-  name: String,
-  name_offset: usize,
-  has_fallback: bool,
-}
-
-/// Find all `var(--name)` references in a value string, at all nesting levels.
-fn find_var_refs_in_value(value: &str, base_offset: usize) -> Vec<VarRef> {
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut refs = Vec::new();
-  let mut i = 0;
-
-  while i < len {
-    if i + 4 <= len
-      && (bytes[i] == b'v' || bytes[i] == b'V')
-      && (bytes[i + 1] == b'a' || bytes[i + 1] == b'A')
-      && (bytes[i + 2] == b'r' || bytes[i + 2] == b'R')
-      && bytes[i + 3] == b'('
-    {
-      if i > 0
-        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-' || bytes[i - 1] == b'_')
-      {
-        i += 1;
-        continue;
-      }
-
-      i += 4;
-
-      while i < len && is_whitespace(bytes[i]) {
-        i += 1;
-      }
-
-      if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
-        let name_start = i;
-        while i < len && is_word_or_hyphen_byte(bytes[i]) {
-          i += 1;
-        }
-        let prop_name = &value[name_start..i];
-
-        while i < len && is_whitespace(bytes[i]) {
-          i += 1;
-        }
-
-        let has_fallback = i < len && bytes[i] == b',';
-
-        refs.push(VarRef {
-          name: prop_name.to_string(),
-          name_offset: base_offset + name_start,
-          has_fallback,
-        });
-
-        continue;
-      }
-    }
-
-    i += 1;
-  }
-
-  refs
-}
-
-/// Whether the byte is CSS whitespace.
-#[inline]
-fn is_whitespace(b: u8) -> bool {
-  b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
+  use crate::testing::{CheckSource, configured, invalid_options};
   use gale_css_parser::Syntax;
 
   fn lint(source: &str) -> Vec<Diagnostic> {
     let rule = configured(&CsstoolsValueNoUnknownCustomProperties, None);
-    let parsed = gale_css_parser::parse(source, Syntax::Css).unwrap();
     let context = RuleContext {
       env: Default::default(),
       file_path: "test.css",
@@ -435,16 +219,7 @@ mod tests {
       syntax: Syntax::Css,
       cache: None,
     };
-    rule.check_root(&parsed.nodes, &context)
-  }
-
-  #[test]
-  fn collects_definitions() {
-    let source = ":root { --my-color: red; --spacing: 8px; }";
-    let mut props = HashSet::new();
-    collect_definitions_from_source(source, &mut props);
-    assert!(props.contains("--my-color"));
-    assert!(props.contains("--spacing"));
+    rule.check_source(&context)
   }
 
   #[test]
@@ -480,6 +255,21 @@ mod tests {
     let diags = lint(":root { --my-color: var(--base-color); }");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("--base-color"));
+  }
+
+  #[test]
+  fn names_the_property_as_written_at_the_reference() {
+    let source = "@media screen { .a { COLOR: var( --unknown) } }";
+    let diags = lint(source);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+      diags[0].message,
+      "Unexpected custom property \"--unknown\" inside declaration \"COLOR\"."
+    );
+    assert_eq!(
+      &source[diags[0].span.offset..diags[0].span.end()],
+      "--unknown"
+    );
   }
 
   #[test]

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -61,19 +61,12 @@ const NON_STANDARD_DIRECTIONS: &[&str] = &[
 const STANDARD_GRADIENT_FUNCTIONS: &[&str] = &["linear-gradient", "repeating-linear-gradient"];
 
 impl Check for FunctionLinearGradientNoNonstandardDirectionCheck {
-  /// Checks declaration values, preferring source text so the original direction
-  /// keywords survive parser normalisation.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Checks each declaration as written, property through `;`: no property
+  /// can look like a `linear-gradient(` call.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      let decl_start = decl.span.offset;
-      let decl_end = decl_start + decl.span.length;
-      let search_area = if decl.span.length > 0 && decl_end <= ctx.source.len() {
-        ctx.source_slice(decl_start, decl_end).unwrap_or("")
-      } else {
-        &decl.value
-      };
-      check_value(search_area, decl_start, &mut diags);
+    for decl in tree.walk_decls() {
+      check_value(decl.source_text(), decl.span().offset, &mut diags);
     }
     diags
   }
@@ -221,37 +214,23 @@ fn find_top_level_comma(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn style_with_value(val: &str) -> String {
+    format!("a {{ background: {val}; }}")
   }
 
-  fn decl_with_value(val: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: "background".to_string(),
-      value: val.to_string(),
-      span: Span::new(0, val.len()),
-      important: false,
-    })
+  fn decl_with_value(val: &str) -> String {
+    format!("@media print {{ background: {val}; }}")
   }
 
   #[test]
   fn reports_nonstandard_direction() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(&style_with_value("linear-gradient(top, red, blue)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "linear-gradient(top, red, blue)",
+    )));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("top"));
   }
@@ -259,40 +238,36 @@ mod tests {
   #[test]
   fn accepts_standard_direction() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("linear-gradient(to top, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "linear-gradient(to top, red, blue)",
+    )));
     assert!(d.is_empty());
   }
 
   #[test]
   fn accepts_angle() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("linear-gradient(45deg, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "linear-gradient(45deg, red, blue)",
+    )));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_nonstandard_in_declaration_node() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &decl_with_value("linear-gradient(bottom, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&decl_with_value(
+      "linear-gradient(bottom, red, blue)",
+    )));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_two_word_direction() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("linear-gradient(top right, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "linear-gradient(top right, red, blue)",
+    )));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("top right"));
   }
@@ -300,7 +275,7 @@ mod tests {
   #[test]
   fn ignores_non_gradient() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(&style_with_value("rgb(255, 0, 0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value("rgb(255, 0, 0)")));
     assert!(d.is_empty());
   }
 
@@ -308,40 +283,36 @@ mod tests {
   fn ignores_vendor_prefixed_gradient() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
     // Vendor-prefixed gradients use the old syntax legitimately
-    let d = rule.check(
-      &style_with_value("-webkit-linear-gradient(top, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "-webkit-linear-gradient(top, red, blue)",
+    )));
     assert!(d.is_empty());
   }
 
   #[test]
   fn ignores_moz_prefixed_gradient() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("-moz-linear-gradient(top, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "-moz-linear-gradient(top, red, blue)",
+    )));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_repeating_linear_gradient() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("repeating-linear-gradient(top, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "repeating-linear-gradient(top, red, blue)",
+    )));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn accepts_standard_repeating() {
     let rule = configured(&FunctionLinearGradientNoNonstandardDirection, None);
-    let d = rule.check(
-      &style_with_value("repeating-linear-gradient(to top, red, blue)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "repeating-linear-gradient(to top, red, blue)",
+    )));
     assert!(d.is_empty());
   }
 

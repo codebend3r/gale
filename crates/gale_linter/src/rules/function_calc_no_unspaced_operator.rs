@@ -1,7 +1,7 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::css_tokenizer::{self, ComponentValue, Token, TokenType};
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::css_tokenizer::{self, ComponentValue, Token, TokenType};
 use crate::data::MATH_FUNCTIONS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -44,15 +44,18 @@ impl FunctionCalcNoUnspacedOperatorCheck {
 impl Check for FunctionCalcNoUnspacedOperatorCheck {
   /// Flags `+` and `-` operators in math functions that lack a single space
   /// on either side.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for &decl in ctx.written_declarations(node).iter() {
-      if !decl.value.contains(['+', '-']) || !mentions_math_function(decl.value) {
+    for decl in tree.walk_decls() {
+      let value = decl.raw_value();
+      if !value.contains(['+', '-']) || !mentions_math_function(&value) {
         continue;
       }
-      let values = tokenize_declaration_value(decl.value);
+      let value_start = decl.value_start();
+      let fixable = decl.value_fixable();
+      let values = tokenize_declaration_value(&value);
       let mut found = Vec::new();
-      walk(decl.value, &values, false, &mut found);
+      walk(&value, &values, false, &mut found);
       for report in found {
         let message = match report.side {
           Side::Before => format!(
@@ -65,16 +68,16 @@ impl Check for FunctionCalcNoUnspacedOperatorCheck {
           ),
         };
         let mut diag = Diagnostic::new(NAME, message).span(Span::new(
-          decl.value_start + report.position,
+          value_start + report.position,
           report.operator.len_utf8(),
         ));
-        if !report.edits.is_empty() {
+        if fixable && !report.edits.is_empty() {
           let edits = report
             .edits
             .into_iter()
             .map(|(start, end, text)| {
               Edit::new(
-                Span::from_range(decl.value_start + start, decl.value_start + end),
+                Span::from_range(value_start + start, value_start + end),
                 text,
               )
             })

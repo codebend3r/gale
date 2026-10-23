@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::CSS_WIDE_KEYWORDS;
@@ -110,11 +110,11 @@ const POSITION_KEYWORDS: &[&str] = &["absolute", "fixed", "relative", "static", 
 const FLOAT_KEYWORDS: &[&str] = &["inline-end", "inline-start", "left", "none", "right"];
 
 impl Check for DeclarationPropertyValueNoUnknownCheck {
-  /// Checks each declaration in a style rule, or a bare declaration.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Checks every declaration.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut all_diags = Vec::new();
-    for decl in node.declarations() {
-      if self.is_ignored(&decl.property, decl.value.trim()) {
+    for decl in tree.walk_decls() {
+      if self.is_ignored(decl.prop(), decl.value().trim()) {
         continue;
       }
       all_diags.extend(self.check_decl(decl));
@@ -126,15 +126,18 @@ impl Check for DeclarationPropertyValueNoUnknownCheck {
 impl DeclarationPropertyValueNoUnknownCheck {
   /// Flags a value keyword the property does not accept. Custom properties and
   /// values containing function calls are skipped as unverifiable.
-  fn check_decl(&self, decl: &gale_css_parser::Declaration) -> Vec<Diagnostic> {
-    let property = decl.property.to_ascii_lowercase();
+  fn check_decl(&self, decl: DeclRef) -> Vec<Diagnostic> {
+    let property = decl.prop().to_ascii_lowercase();
+    let written = decl.value().trim();
+    // The value, as Stylelint reports it.
+    let value_span = Span::new(decl.value_start(), written.len());
 
     // Skip custom properties
     if property.starts_with("--") {
       return vec![];
     }
 
-    let value = decl.value.trim().to_ascii_lowercase();
+    let value = written.to_ascii_lowercase();
 
     // Skip empty values (parser may handle these)
     if value.is_empty() {
@@ -187,25 +190,24 @@ impl DeclarationPropertyValueNoUnknownCheck {
             NAME,
             format!(
               "Unexpected unknown value \"{}\" for property \"{}\"",
-              decl.value.trim(),
-              decl.property
+              written,
+              decl.prop()
             ),
           )
-          .span(decl.span),
+          .span(decl.span()),
         ];
       }
       if !keywords.contains(&tokens[0]) {
-        let val_off = decl.span.offset + decl.property.len() + 2;
         return vec![
           Diagnostic::new(
             NAME,
             format!(
               "Unexpected unknown value \"{}\" for property \"{}\"",
-              decl.value.trim(),
-              decl.property
+              written,
+              decl.prop()
             ),
           )
-          .span(Span::new(val_off, decl.value.trim().len())),
+          .span(value_span),
         ];
       }
       return vec![];
@@ -225,18 +227,11 @@ impl DeclarationPropertyValueNoUnknownCheck {
           NAME,
           format!(
             "Unexpected unknown value \"{}\" for property \"{}\"",
-            decl.value.trim(),
-            decl.property
+            written,
+            decl.prop()
           ),
         )
-        .span({
-          // Point to the value, not the whole declaration.
-          // Find ": " after the property name within the span.
-          let val_offset = decl.span.offset + decl.property.len();
-          // Skip colon and whitespace
-          let val_offset = val_offset + 2; // ": "
-          Span::new(val_offset, decl.value.trim().len())
-        }),
+        .span(value_span),
       ];
     }
 
@@ -269,17 +264,11 @@ fn is_css_wide_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Declaration;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn decl(property: &str, value: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: property.to_string(),
-      value: value.to_string(),
-      span: Span::new(0, 0),
-      important: false,
-    })
+  fn decl(property: &str, value: &str) -> String {
+    format!("a {{ {property}: {value}; }}")
   }
 
   // --- display ---
@@ -301,7 +290,7 @@ mod tests {
       "flow-root",
       "list-item",
     ] {
-      let d = rule.check(&decl("display", kw), &ctx());
+      let d = rule.check_source(&ctx_with_source(&decl("display", kw)));
       assert!(d.is_empty(), "Expected '{}' to be valid for display", kw);
     }
   }
@@ -316,27 +305,36 @@ mod tests {
       "-moz-inline-stack",
       "flow",
     ] {
-      let d = rule.check(&decl("display", value), &ctx());
+      let d = rule.check_source(&ctx_with_source(&decl("display", value)));
       assert!(d.is_empty(), "{value}");
     }
-    let d = rule.check(&decl("display", "-ms-flexbox"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("display", "-ms-flexbox")));
     assert_eq!(d.len(), 1, "css-tree does not know -ms-flexbox");
   }
 
   #[test]
   fn reports_invalid_display_value() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("display", "banana"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("display", "banana")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("banana"));
     assert!(d[0].message.contains("display"));
+    // At the value, wherever it starts.
+    assert_eq!(d[0].span, Span::new(13, 6));
+    let source = "a { DISPLAY :  Banana; }";
+    let d = rule.check_source(&ctx_with_source(source));
+    assert_eq!(
+      d[0].message,
+      "Unexpected unknown value \"Banana\" for property \"DISPLAY\""
+    );
+    assert_eq!(d[0].span, Span::new(15, 6));
   }
 
   #[test]
   fn allows_css_wide_keywords_for_display() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["inherit", "initial", "unset", "revert", "revert-layer"] {
-      let d = rule.check(&decl("display", kw), &ctx());
+      let d = rule.check_source(&ctx_with_source(&decl("display", kw)));
       assert!(d.is_empty(), "Expected '{}' to be valid for display", kw);
     }
   }
@@ -344,7 +342,7 @@ mod tests {
   #[test]
   fn skips_display_with_var() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("display", "var(--my-display)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("display", "var(--my-display)")));
     assert!(d.is_empty());
   }
 
@@ -354,7 +352,7 @@ mod tests {
   fn allows_valid_position_values() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["static", "relative", "absolute", "fixed", "sticky"] {
-      let d = rule.check(&decl("position", kw), &ctx());
+      let d = rule.check_source(&ctx_with_source(&decl("position", kw)));
       assert!(d.is_empty(), "Expected '{}' to be valid for position", kw);
     }
   }
@@ -362,7 +360,7 @@ mod tests {
   #[test]
   fn reports_invalid_position_value() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("position", "floating"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("position", "floating")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("floating"));
     assert!(d[0].message.contains("position"));
@@ -374,7 +372,7 @@ mod tests {
   fn allows_valid_float_values() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     for kw in &["left", "right", "none", "inline-start", "inline-end"] {
-      let d = rule.check(&decl("float", kw), &ctx());
+      let d = rule.check_source(&ctx_with_source(&decl("float", kw)));
       assert!(d.is_empty(), "Expected '{}' to be valid for float", kw);
     }
   }
@@ -382,7 +380,7 @@ mod tests {
   #[test]
   fn reports_invalid_float_value() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("float", "center"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("float", "center")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("center"));
     assert!(d[0].message.contains("float"));
@@ -393,7 +391,7 @@ mod tests {
   #[test]
   fn skips_custom_properties() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("--my-prop", "anything"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("--my-prop", "anything")));
     assert!(d.is_empty());
   }
 
@@ -401,14 +399,17 @@ mod tests {
   fn skips_unknown_properties() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     // We don't validate properties we don't have keyword lists for
-    let d = rule.check(&decl("color", "banana"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("color", "banana")));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_values_with_env() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("display", "env(safe-area-inset-top)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl(
+      "display",
+      "env(safe-area-inset-top)",
+    )));
     assert!(d.is_empty());
   }
 
@@ -416,14 +417,14 @@ mod tests {
   fn skips_multi_token_display() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
     // CSS Display Level 3 multi-keyword syntax
-    let d = rule.check(&decl("display", "inline flex"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("display", "inline flex")));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_multiple_tokens_for_position() {
     let rule = configured(&DeclarationPropertyValueNoUnknown, None);
-    let d = rule.check(&decl("position", "absolute fixed"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl("position", "absolute fixed")));
     assert_eq!(d.len(), 1);
   }
 
@@ -433,9 +434,22 @@ mod tests {
       &DeclarationPropertyValueNoUnknown,
       serde_json::json!([true, { "ignoreProperties": { "/^disp/": ["/^fancy/"], "float": "middle" } }]),
     );
-    assert!(rule.check(&decl("display", "fancy-box"), &ctx()).is_empty());
-    assert!(rule.check(&decl("float", "middle"), &ctx()).is_empty());
-    assert_eq!(rule.check(&decl("display", "plain-box"), &ctx()).len(), 1);
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&decl("display", "fancy-box")))
+        .is_empty()
+    );
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&decl("float", "middle")))
+        .is_empty()
+    );
+    assert_eq!(
+      rule
+        .check_source(&ctx_with_source(&decl("display", "plain-box")))
+        .len(),
+      1
+    );
   }
 
   #[test]
