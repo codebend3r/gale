@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -36,17 +36,18 @@ impl FunctionUrlNoSchemeRelativeCheck {
 }
 
 impl Check for FunctionUrlNoSchemeRelativeCheck {
-  /// Checks each declaration in a style rule, or a bare declaration.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Checks the value of every declaration as written.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      check_value(&decl.value, decl.span.offset, &mut diags);
+    for decl in tree.walk_decls() {
+      check_value(&decl.raw_value(), decl.value_start(), &mut diags);
     }
     diags
   }
 }
 
-/// Flags `url()` arguments beginning with `//`.
+/// Flags `url()` arguments beginning with `//`, reporting the arguments
+/// between the parentheses as Stylelint does.
 fn check_value(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
   let lower = value.to_ascii_lowercase();
   let bytes = lower.as_bytes();
@@ -100,7 +101,7 @@ fn check_value(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
               NAME,
               format!("Unexpected scheme-relative url \"{}\"", unquoted),
             )
-            .span(Span::new(base_offset + start, close + 1 - start)),
+            .span(Span::new(base_offset + after_paren, close - after_paren)),
           );
         }
 
@@ -115,76 +116,67 @@ fn check_value(value: &str, base_offset: usize, diags: &mut Vec<Diagnostic>) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "background".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn style_with_value(val: &str) -> String {
+    format!("a {{ background: {val}; }}")
   }
 
-  fn decl_with_value(val: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: "background".to_string(),
-      value: val.to_string(),
-      span: Span::new(0, val.len()),
-      important: false,
-    })
+  fn decl_with_value(val: &str) -> String {
+    format!("@font-face {{ src: {val}; }}")
   }
 
   #[test]
   fn reports_scheme_relative_url() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(&style_with_value("url(//example.com/image.png)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "url(//example.com/image.png)",
+    )));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("//example.com"));
+    // The url's arguments, as Stylelint reports them.
+    assert_eq!(d[0].span, Span::new(20, 23));
   }
 
   #[test]
   fn reports_quoted_scheme_relative_url() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(&style_with_value("url('//example.com/image.png')"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "url('//example.com/image.png')",
+    )));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn accepts_absolute_url() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(
-      &style_with_value("url(https://example.com/image.png)"),
-      &ctx(),
-    );
+    let d = rule.check_source(&ctx_with_source(&style_with_value(
+      "url(https://example.com/image.png)",
+    )));
     assert!(d.is_empty());
   }
 
   #[test]
   fn accepts_relative_url() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(&style_with_value("url(images/bg.png)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value("url(images/bg.png)")));
     assert!(d.is_empty());
   }
 
   #[test]
   fn reports_scheme_relative_in_declaration_node() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(&decl_with_value("url(//cdn.example.com/font.woff)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&decl_with_value(
+      "url(//cdn.example.com/font.woff)",
+    )));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn ignores_non_url_function() {
     let rule = configured(&FunctionUrlNoSchemeRelative, None);
-    let d = rule.check(&style_with_value("rgb(0, 0, 0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_value("rgb(0, 0, 0)")));
     assert!(d.is_empty());
   }
 

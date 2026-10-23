@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::NodeKind as StatementKind;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind as StatementKind;
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, NodeKind};
 
 const NAME: &str = "import-notation";
 
@@ -45,11 +45,10 @@ impl ImportNotationCheck {
 impl Check for ImportNotationCheck {
   /// Reports the first `@import` URL or string in the other notation, with
   /// a fix that rewrites it.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(want_string) = self.want_string else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
     for at_rule in tree

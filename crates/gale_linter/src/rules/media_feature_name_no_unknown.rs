@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_media_feature;
@@ -44,58 +45,30 @@ impl MediaFeatureNameNoUnknownCheck {
 
 impl Check for MediaFeatureNameNoUnknownCheck {
   /// Flags media feature names that are not standard, skipping any matched by
-  /// `ignoreMediaFeatureNames` and any query containing interpolation.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if at.name != "media" {
-      return vec![];
-    }
-
-    // In SCSS/Sass, skip @media rules whose params contain interpolation
-    if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-    ) {
-      let at_end = (at.span.offset + at.span.length).min(ctx.source.len());
-      let at_source = if at.span.offset < at_end {
-        ctx.source_slice(at.span.offset, at_end).unwrap_or("")
-      } else {
-        ""
-      };
-      if at_source.contains("#{") || at.params.contains("#{") {
-        return vec![];
-      }
-    }
-
+  /// `ignoreMediaFeatureNames` and, in SCSS, any query containing
+  /// interpolation.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for feature in extract_media_features(&at.params) {
-      // Skip vendor-prefixed features
-      if feature.name.starts_with('-') {
+    for at in tree.walk_at_rules() {
+      if !at.name().eq_ignore_ascii_case("media") {
         continue;
       }
-      // Skip custom media feature names (--prefix)
-      if feature.name.starts_with("--") {
+      // The params as Stylelint's `getAtRuleParams` reads them.
+      let params = at.raw_params();
+      if matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) && params.contains("#{") {
         continue;
       }
-      // Skip Less variables (@var)
-      if feature.name.starts_with('@') {
-        continue;
-      }
-      // Skip SCSS variables ($var)
-      if feature.name.starts_with('$') {
-        continue;
-      }
-
-      if self.ignore_media_feature_names.matches(&feature.name) {
-        continue;
-      }
-
-      if !is_known_media_feature(&feature.name) {
-        // Find the feature name directly in the source text
-        let span = find_feature_span_in_source(ctx.source, at.span.offset, &feature);
-
+      for feature in extract_media_features(&params) {
+        // Skip vendor-prefixed and custom (`--`) names, and Less (`@var`)
+        // and SCSS (`$var`) variables.
+        if feature.name.starts_with(['-', '@', '$'])
+          || self.ignore_media_feature_names.matches(&feature.name)
+          || is_known_media_feature(&feature.name)
+        {
+          continue;
+        }
+        let span = find_feature_span(&params, at.params_start(), &feature)
+          .unwrap_or(Span::new(at.start, feature.name.len()));
         diags.push(
           Diagnostic::new(
             NAME,
@@ -114,44 +87,19 @@ struct MediaFeature {
   name: String,
 }
 
-/// Find the feature name directly in the source text by searching for it
-/// as a whole word.
-fn find_feature_span_in_source(source: &str, at_offset: usize, feature: &MediaFeature) -> Span {
-  let at_source = &source[at_offset..];
-  let feature_lower = feature.name.to_ascii_lowercase();
-  let at_lower = at_source.to_ascii_lowercase();
-  let mut search_start = 0;
-
-  while search_start < at_lower.len() {
-    if let Some(pos) = at_lower[search_start..].find(&feature_lower) {
-      let abs_pos = search_start + pos;
-
-      let before_ok = if abs_pos == 0 {
-        true
-      } else {
-        let prev = at_source.as_bytes()[abs_pos - 1];
-        !prev.is_ascii_alphanumeric() && prev != b'-' && prev != b'_'
-      };
-
-      let after_pos = abs_pos + feature.name.len();
-      let after_ok = if after_pos >= at_source.len() {
-        true
-      } else {
-        let next = at_source.as_bytes()[after_pos];
-        !next.is_ascii_alphanumeric() && next != b'-' && next != b'_'
-      };
-
-      if before_ok && after_ok {
-        return Span::new(at_offset + abs_pos, feature.name.len());
-      }
-
-      search_start = abs_pos + 1;
-    } else {
-      break;
-    }
-  }
-
-  Span::new(at_offset, feature.name.len())
+/// Where `feature` is written in `params`, which start at `params_start`:
+/// its first whole-word occurrence, in any case.
+fn find_feature_span(params: &str, params_start: usize, feature: &MediaFeature) -> Option<Span> {
+  let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+  let lower = params.to_ascii_lowercase();
+  let target = feature.name.to_ascii_lowercase();
+  let bytes = params.as_bytes();
+  lower.match_indices(&target).find_map(|(at, _)| {
+    let end = at + target.len();
+    let before_ok = at == 0 || !is_word(bytes[at - 1]);
+    let after_ok = end >= bytes.len() || !is_word(bytes[end]);
+    (before_ok && after_ok).then(|| Span::new(params_start + at, feature.name.len()))
+  })
 }
 
 /// Extract media feature names from a @media params string.
@@ -346,47 +294,53 @@ fn extract_media_features(params: &str) -> Vec<MediaFeature> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::lint;
 
-  fn media(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `@media <params> {}` in `syntax`.
+  fn media(options: Value, params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    lint(NAME, options, &format!("@media {params} {{}}"), syntax)
   }
 
   #[test]
-  fn reports_unknown_media_feature() {
-    let rule = configured(&MediaFeatureNameNoUnknown, None);
-    let d = rule.check(&media("(min-wdith: 768px)"), &ctx());
+  fn reports_unknown_media_feature_at_its_name() {
+    let d = media(json!(true), "screen and (min-wdith: 768px)", Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("min-wdith"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (19, 9));
+    // A feature named like the at-rule is found in the params, not in `@media`.
+    let d = lint(NAME, json!(true), "@MEDIA (media: 1) {}", Syntax::Scss);
+    assert_eq!((d[0].span.offset, d[0].span.length), (8, 5));
   }
 
   #[test]
   fn allows_known_media_features() {
-    let rule = configured(&MediaFeatureNameNoUnknown, None);
-    assert!(rule.check(&media("(min-width: 768px)"), &ctx()).is_empty());
-    assert!(rule.check(&media("(hover: hover)"), &ctx()).is_empty());
-    assert!(
-      rule
-        .check(&media("(prefers-color-scheme: dark)"), &ctx())
-        .is_empty()
-    );
+    for params in [
+      "(min-width: 768px)",
+      "(hover: hover)",
+      "(prefers-color-scheme: dark)",
+      "(MIN-WIDTH: 1px)",
+    ] {
+      assert!(
+        media(json!(true), params, Syntax::Css).is_empty(),
+        "{params}"
+      );
+    }
   }
 
   #[test]
-  fn allows_vendor_prefixed() {
-    let rule = configured(&MediaFeatureNameNoUnknown, None);
-    assert!(
-      rule
-        .check(&media("(-webkit-min-device-pixel-ratio: 2)"), &ctx())
-        .is_empty()
-    );
+  fn allows_vendor_prefixed_and_variables() {
+    let params = "(-webkit-min-device-pixel-ratio: 2) and ($bp: 1px)";
+    assert!(media(json!(true), params, Syntax::Scss).is_empty());
+  }
+
+  #[test]
+  fn checks_nested_media_and_skips_interpolated_queries() {
+    let scss = "a { @media (colour: 1) { b: c } }\n@media (#{$f}: 1) {}";
+    let d = lint(NAME, json!(true), scss, Syntax::Scss);
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("colour"));
   }
 
   #[test]
@@ -423,10 +377,9 @@ mod tests {
 
   #[test]
   fn ignore_media_feature_names_takes_names_and_regexes() {
-    let options = serde_json::json!([true, { "ignoreMediaFeatureNames": ["min-wdith", "/^my-/"] }]);
-    let rule = configured(&MediaFeatureNameNoUnknown, options);
-    assert!(rule.check(&media("(min-wdith: 768px)"), &ctx()).is_empty());
-    assert!(rule.check(&media("(my-feature: 1)"), &ctx()).is_empty());
-    assert_eq!(rule.check(&media("(max-wdith: 768px)"), &ctx()).len(), 1);
+    let options = json!([true, { "ignoreMediaFeatureNames": ["min-wdith", "/^my-/"] }]);
+    assert!(media(options.clone(), "(min-wdith: 768px)", Syntax::Css).is_empty());
+    assert!(media(options.clone(), "(my-feature: 1)", Syntax::Css).is_empty());
+    assert_eq!(media(options, "(max-wdith: 768px)", Syntax::Css).len(), 1);
   }
 }

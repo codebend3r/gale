@@ -1,9 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::standard_syntax::is_standard_syntax_value;
 
 const NAME: &str = "function-no-unknown";
 
@@ -264,19 +265,26 @@ fn extract_functions(value: &str) -> Vec<String> {
 impl Check for FunctionNoUnknownCheck {
   /// Flags function names that are neither standard CSS nor, in SCSS files, a
   /// built-in SCSS function. Vendor-prefixed names are skipped.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let is_scss = matches!(
       ctx.syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
     );
 
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      for func_name in extract_functions(&decl.value) {
+    // The declarations of style rules.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      // Stylelint skips a value in preprocessor syntax whole: a Sass or
+      // Less variable, a Sass module member such as `math.div(` or
+      // `tokens.$x`, interpolation.
+      let value = decl.value();
+      if !value.contains('(') || !is_standard_syntax_value(value) {
+        continue;
+      }
+      for func_name in extract_functions(value) {
         // Skip vendor-prefixed functions
         if func_name.starts_with('-') || self.ignore_functions.matches(&func_name) {
           continue;
@@ -290,7 +298,7 @@ impl Check for FunctionNoUnknownCheck {
         }
         diags.push(
           Diagnostic::new(NAME, format!("Unexpected unknown function \"{func_name}\""))
-            .span(decl.span),
+            .span(decl.span()),
         );
       }
     }
@@ -301,35 +309,26 @@ impl Check for FunctionNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
   use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn style_node(props: &[(&str, &str)]) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: props
-        .iter()
-        .map(|(p, v)| Declaration {
-          property: p.to_string(),
-          value: v.to_string(),
-          span: Span::new(0, 0),
-          important: false,
-        })
-        .collect(),
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn style_node(props: &[(&str, &str)]) -> String {
+    let decls: Vec<String> = props.iter().map(|(p, v)| format!("{p}: {v};")).collect();
+    format!("a {{ {} }}", decls.join(" "))
   }
 
   #[test]
   fn reports_unknown_function() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "unknownfn(red)")]);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("unknownfn"));
+    // The whole declaration.
+    assert_eq!(d[0].span, Span::new(4, 22));
   }
 
   #[test]
@@ -341,28 +340,28 @@ mod tests {
       ("background", "linear-gradient(red, blue)"),
       ("--x", "var(--color)"),
     ]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_vendor_prefixed_functions() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("background", "-webkit-linear-gradient(red, blue)")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_scss_functions_in_scss() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "darken(#000, 10%)")]);
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn reports_scss_functions_in_css() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "darken(#000, 10%)")]);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("darken"));
   }
@@ -371,15 +370,35 @@ mod tests {
   fn ignores_values_without_functions() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("color", "red"), ("margin", "10px")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn extracts_multiple_functions() {
     let rule = configured(&FunctionNoUnknown, None);
     let node = style_node(&[("background", "unknownA(1) unknownB(2)")]);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 2);
+  }
+
+  #[test]
+  fn skips_values_in_preprocessor_syntax() {
+    let rule = configured(&FunctionNoUnknown, None);
+    for value in [
+      "token-utils.slot(width, $fallbacks)",
+      "$size unknownfn(1)",
+      "unknownfn(#{$x})",
+      "@size",
+    ] {
+      let node = style_node(&[("width", value)]);
+      assert!(
+        rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
+        "{value}"
+      );
+    }
+    // A variable later in the value does not make it preprocessor syntax.
+    let node = style_node(&[("width", "unknownfn($x)")]);
+    assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 1);
   }
 
   #[test]
@@ -393,7 +412,7 @@ mod tests {
       ("top", "my-fn(1)"),
       ("left", "other(1)"),
     ]);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("other"));
   }

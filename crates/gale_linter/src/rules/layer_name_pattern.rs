@@ -1,5 +1,5 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -50,143 +50,130 @@ impl LayerNamePatternCheck {
 }
 
 impl Check for LayerNamePatternCheck {
-  /// Flags `@layer` names that do not match the configured regex, validating each
-  /// segment of a dotted name separately.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if !at.name.eq_ignore_ascii_case("layer") {
-      return vec![];
-    }
-
-    let params = at.params.trim();
-    if params.is_empty() {
-      return vec![];
-    }
-
+  /// Flags `@layer` names that do not match the configured regex, validating
+  /// each segment of a dotted name separately and reporting at the segment.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
-
     let mut diags = Vec::new();
-
-    // Layer names can be comma-separated: `@layer reset, base, utilities`
-    for layer_name in params.split(',') {
-      let layer_name = layer_name.trim();
-      if layer_name.is_empty() {
+    for at in tree.walk_at_rules() {
+      if !at.name().eq_ignore_ascii_case("layer") {
         continue;
       }
-
-      // Layer names can be dotted: `base.utilities` — validate each segment
-      for segment in layer_name.split('.') {
-        let segment = segment.trim();
-        if segment.is_empty() {
+      let params = at.raw_params();
+      let base = at.params_start();
+      // Layer names can be comma-separated (`@layer reset, base, utilities`)
+      // and dotted (`base.utilities`): validate each segment.
+      for (segment, offset) in segments(&params) {
+        // A string is not a name (Stylelint only checks the words).
+        if segment.starts_with(['"', '\'']) || self.pattern.is_match(segment) {
           continue;
         }
-        if !self.pattern.is_match(segment) {
-          diags.push(
-            Diagnostic::new(
-              NAME,
-              format!(
-                "Expected layer name segment \"{segment}\" to match pattern \"{pattern_str}\""
-              ),
-            )
-            .span(at.span)
-            .message_args([segment, pattern_str]),
-          );
-        }
+        diags.push(
+          Diagnostic::new(
+            NAME,
+            format!("Expected layer name segment \"{segment}\" to match pattern \"{pattern_str}\""),
+          )
+          .span(Span::new(base + offset, segment.len()))
+          .message_args([segment, pattern_str]),
+        );
       }
     }
-
     diags
   }
+}
+
+/// The non-empty, trimmed segments of the layer names in `params`, each
+/// with its offset in `params`.
+fn segments(params: &str) -> Vec<(&str, usize)> {
+  let mut out = Vec::new();
+  let mut name_start = 0;
+  for name in params.split(',') {
+    let mut segment_start = name_start;
+    for segment in name.split('.') {
+      let trimmed = segment.trim();
+      if !trimmed.is_empty() {
+        let lead = segment.len() - segment.trim_start().len();
+        out.push((trimmed, segment_start + lead));
+      }
+      segment_start += segment.len() + 1;
+    }
+    name_start += name.len() + 1;
+  }
+  out
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::lint;
 
-  fn layer(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "layer".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `@layer <params>;` with the default pattern.
+  fn layer(params: &str) -> Vec<Diagnostic> {
+    check(json!(DEFAULT_PATTERN), &format!("@layer {params};"))
+  }
+
+  fn check(options: Value, css: &str) -> Vec<Diagnostic> {
+    lint(NAME, options, css, Syntax::Css)
   }
 
   #[test]
-  fn reports_camel_case_layer_name() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("myLayer"), &ctx());
+  fn reports_camel_case_layer_name_at_the_name() {
+    let d = layer("myLayer");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myLayer"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (7, 7));
   }
 
   #[test]
   fn allows_kebab_case_layer_name() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("my-layer"), &ctx());
-    assert!(d.is_empty());
+    assert!(layer("my-layer").is_empty());
+    let block = "@LAYER my-layer { a { color: red } }";
+    assert!(check(json!(DEFAULT_PATTERN), block).is_empty());
   }
 
   #[test]
   fn reports_bad_segment_in_dotted_name() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("base.myUtils"), &ctx());
+    let d = layer("base.myUtils");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myUtils"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (12, 7));
   }
 
   #[test]
   fn allows_kebab_case_dotted_name() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("base.utilities"), &ctx());
-    assert!(d.is_empty());
+    assert!(layer("base.utilities").is_empty());
   }
 
   #[test]
   fn reports_bad_names_in_comma_list() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("reset, myBase, utilities"), &ctx());
+    let d = layer("reset, myBase, utilities");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myBase"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (14, 6));
   }
 
   #[test]
-  fn allows_all_kebab_case_comma_list() {
-    let rule = configured(&LayerNamePattern, None);
-    let d = rule.check(&layer("reset, base, utilities"), &ctx());
-    assert!(d.is_empty());
+  fn allows_all_kebab_case_comma_list_and_anonymous_layers() {
+    assert!(layer("reset, base, utilities").is_empty());
+    assert!(layer("\"Quoted\"").is_empty());
+    assert!(check(json!(DEFAULT_PATTERN), "@layer { a {} }").is_empty());
   }
 
   #[test]
   fn ignores_non_layer_at_rule() {
-    let rule = configured(&LayerNamePattern, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    let d = rule.check(&node, &ctx());
-    assert!(d.is_empty());
+    assert!(check(json!(DEFAULT_PATTERN), "@media (min-width: 768px) {}").is_empty());
   }
 
   #[test]
   fn custom_pattern() {
-    let opts = serde_json::json!("^[A-Z][a-zA-Z0-9]+$");
-    let rule = configured(&LayerNamePattern, opts.clone());
-    let c = ctx();
+    let opts = json!("^[A-Z][a-zA-Z0-9]+$");
     // PascalCase should pass
-    assert!(rule.check(&layer("MyLayer"), &c).is_empty());
+    assert!(check(opts.clone(), "@layer MyLayer;").is_empty());
     // kebab-case should fail
-    let d = rule.check(&layer("my-layer"), &c);
-    assert_eq!(d.len(), 1);
+    assert_eq!(check(opts, "@layer my-layer;").len(), 1);
   }
 
   #[test]

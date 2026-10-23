@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -12,7 +12,7 @@ const NAME: &str = "keyframes-name-pattern";
 declare_rule! {
   /// Enforces a naming pattern for keyframes names.
   ///
-  /// Checks `@keyframes` and `@-webkit-keyframes` at-rules.
+  /// Checks `@keyframes` at-rules, vendor-prefixed or not.
   /// Accepts a regex string as the primary option.
   /// Defaults to kebab-case pattern if no option is provided.
   ///
@@ -59,129 +59,106 @@ impl KeyframesNamePatternCheck {
 
 impl Check for KeyframesNamePatternCheck {
   /// Flags a `@keyframes` name that does not match the configured regex,
-  /// defaulting to kebab-case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    let lower_name = at.name.to_ascii_lowercase();
-    if lower_name != "keyframes" && lower_name != "-webkit-keyframes" {
-      return vec![];
-    }
-
+  /// defaulting to kebab-case, at the name.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
     let custom_message = self.custom_message.as_deref();
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !at.is_keyframes() {
+        continue;
+      }
+      let params = at.params();
+      let name = params.trim();
+      // Skip names with SCSS/Less interpolation — the actual runtime value
+      // is unknown, so pattern matching would produce false positives.
+      if name.is_empty() || name.contains("#{") || name.contains("@{") {
+        continue;
+      }
+      let name_offset = at.params_start() + (params.len() - params.trim_start().len());
 
-    let name = at.params.trim();
-    if name.is_empty() {
-      return vec![];
-    }
+      // Strip optional quotes around the keyframes name
+      let name = name
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(name);
 
-    // Skip names with SCSS/Less interpolation — the actual runtime value
-    // is unknown, so pattern matching would produce false positives.
-    if name.contains("#{") || name.contains("@{") {
-      return vec![];
-    }
-
-    // Strip optional quotes around the keyframes name
-    let name = name
-      .strip_prefix('"')
-      .and_then(|s| s.strip_suffix('"'))
-      .or_else(|| name.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-      .unwrap_or(name);
-
-    if !self.pattern.is_match(name) {
+      if self.pattern.is_match(name) {
+        continue;
+      }
       let message = if let Some(tmpl) = custom_message {
         tmpl.replace("${name}", name)
       } else {
         format!("Expected keyframes name \"{name}\" to match pattern \"{pattern_str}\"")
       };
-
-      // Compute the offset of the keyframes name in the source.
-      // The name starts after `@keyframes ` (or `@-webkit-keyframes `).
-      let name_offset = if at.span.offset < ctx.source.len() {
-        let source_slice = ctx.source_from(at.span.offset).unwrap_or("");
-        // Find where at.params starts in the source
-        let at_keyword = format!("@{}", at.name);
-        if let Some(kw_pos) = source_slice.find(&at_keyword) {
-          let after_kw = &source_slice[kw_pos + at_keyword.len()..];
-          let leading_ws = after_kw.len() - after_kw.trim_start().len();
-          at.span.offset + kw_pos + at_keyword.len() + leading_ws
-        } else {
-          at.span.offset
-        }
-      } else {
-        at.span.offset
-      };
-
-      return vec![
+      diags.push(
         Diagnostic::new(NAME, message)
           .span(Span::new(name_offset, name.len()))
           .message_args([name, pattern_str]),
-      ];
+      );
     }
-
-    vec![]
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
+  use gale_css_parser::Syntax;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::lint;
 
-  fn keyframes(name: &str, params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: name.to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `@at-rule params {}` in CSS.
+  fn check(options: Value, at_rule: &str, params: &str) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      options,
+      &format!("@{at_rule} {params} {{}}"),
+      Syntax::Css,
+    )
   }
 
   #[test]
-  fn reports_camel_case_keyframes() {
-    let rule = configured(&KeyframesNamePattern, None);
-    let d = rule.check(&keyframes("keyframes", "fadeIn"), &ctx());
+  fn reports_camel_case_keyframes_at_the_name() {
+    let d = check(json!(DEFAULT_PATTERN), "keyframes", "fadeIn");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("fadeIn"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (11, 6));
   }
 
   #[test]
   fn allows_kebab_case_keyframes() {
-    let rule = configured(&KeyframesNamePattern, None);
-    let d = rule.check(&keyframes("keyframes", "fade-in"), &ctx());
-    assert!(d.is_empty());
+    assert!(check(json!(DEFAULT_PATTERN), "keyframes", "fade-in").is_empty());
   }
 
   #[test]
-  fn checks_webkit_keyframes() {
-    let rule = configured(&KeyframesNamePattern, None);
-    let d = rule.check(&keyframes("-webkit-keyframes", "slideIn"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("slideIn"));
+  fn checks_prefixed_keyframes() {
+    for at_rule in ["-webkit-keyframes", "-moz-keyframes", "KEYFRAMES"] {
+      let d = check(json!(DEFAULT_PATTERN), at_rule, "slideIn");
+      assert_eq!(d.len(), 1, "{at_rule}");
+      assert!(d[0].message.contains("slideIn"));
+    }
+    let scss = "a {}\n@-webkit-keyframes slideIn {}";
+    let d = lint(NAME, json!(DEFAULT_PATTERN), scss, Syntax::Scss);
+    assert_eq!((d[0].span.offset, d[0].span.length), (24, 7));
   }
 
   #[test]
-  fn ignores_non_keyframes_at_rule() {
-    let rule = configured(&KeyframesNamePattern, None);
-    let d = rule.check(&keyframes("media", "(min-width: 768px)"), &ctx());
-    assert!(d.is_empty());
+  fn ignores_non_keyframes_at_rule_and_interpolation() {
+    assert!(check(json!(DEFAULT_PATTERN), "media", "(min-width: 768px)").is_empty());
+    let scss = "@keyframes #{$name}In {}";
+    assert!(lint(NAME, json!(DEFAULT_PATTERN), scss, Syntax::Scss).is_empty());
   }
 
   #[test]
   fn custom_pattern() {
-    let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
-    let rule = configured(&KeyframesNamePattern, opts.clone());
-    let c = ctx();
+    let opts = json!("^[a-z][a-zA-Z0-9]+$");
     // camelCase should pass
-    assert!(rule.check(&keyframes("keyframes", "fadeIn"), &c).is_empty());
+    assert!(check(opts.clone(), "keyframes", "fadeIn").is_empty());
     // kebab-case should fail
-    let d = rule.check(&keyframes("keyframes", "fade-in"), &c);
-    assert_eq!(d.len(), 1);
+    assert_eq!(check(opts, "keyframes", "fade-in").len(), 1);
   }
 
   #[test]

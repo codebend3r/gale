@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
@@ -58,24 +58,26 @@ const VENDOR_PREFIXED_FEATURES: &[&str] = &[
 impl Check for MediaFeatureNameNoVendorPrefixCheck {
   /// Flags each vendor-prefixed media feature in every `@media` query as
   /// written (nested ones included), skipping `ignoreMediaFeatureNames`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for at in &ctx.scanned_rules().at_rules {
-      if !at.name.eq_ignore_ascii_case("media") || !autoprefixable::media_feature_name(&at.params) {
+    for at in tree.walk_at_rules() {
+      let params = at.raw_params();
+      let first = diags.len();
+      if !at.name().eq_ignore_ascii_case("media") || !autoprefixable::media_feature_name(&params) {
         continue;
       }
       // Stylelint matches against the at-rule's text and reports each match
       // at its first occurrence there.
       let prelude = ctx
-        .source_slice(at.offset, at.params_offset + at.params.len())
+        .source_slice(at.start, at.params_start() + &params.len())
         .unwrap_or("");
-      for (index, feature) in find_features(&at.params) {
+      for (index, feature) in find_features(&params) {
         if self.ignore_media_feature_names.matches(feature) {
           continue;
         }
         let reported = prelude
           .find(feature)
-          .map_or(at.params_offset + index, |i| at.offset + i);
+          .map_or(at.params_start() + index, |i| at.start + i);
         let fixed = strip_first_prefix(feature);
         diags.push(
           Diagnostic::new(NAME, "Unexpected vendor-prefix")
@@ -83,11 +85,14 @@ impl Check for MediaFeatureNameNoVendorPrefixCheck {
             .fix(Fix::new(
               format!("Change \"{feature}\" to \"{fixed}\""),
               vec![Edit::new(
-                Span::new(at.params_offset + index, feature.len()),
+                Span::new(at.params_start() + index, feature.len()),
                 fixed,
               )],
             )),
         );
+      }
+      if !at.params_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
       }
     }
     diags

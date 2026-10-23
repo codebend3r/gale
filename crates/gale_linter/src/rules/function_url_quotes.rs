@@ -1,12 +1,12 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_css_whitespace_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
 use crate::standard_syntax;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "function-url-quotes";
 
@@ -63,26 +63,27 @@ impl Check for FunctionUrlQuotesCheck {
   /// Flags `url()` arguments whose quoting does not match the option, in
   /// declaration values and at-rule params. With `except: ["empty"]` the
   /// primary is inverted for empty URLs.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let (always, except_empty) = (self.always, self.except_empty);
 
     let mut diags = Vec::new();
-    if let CssNode::AtRule(at) = node
-      && let Some((params, start)) = source_text::at_rule_params(ctx.source, at)
-    {
-      self.check_text(params, start, always, except_empty, &mut diags);
-    }
-    for &decl in ctx.written_declarations(node).iter() {
-      if !contains_url_call(decl.value) || !is_standard_syntax_property(decl.prop) {
+    for node in tree.walk() {
+      let (text, start, fixable) = if let Some(at) = node.as_at_rule() {
+        // A Less mixin call is no at-rule in the source.
+        if at.mixin {
+          continue;
+        }
+        (at.raw_params(), at.params_start(), at.params_fixable())
+      } else if let Some(decl) = node.as_decl() {
+        let value = decl.raw_value();
+        if !contains_url_call(&value) || !is_standard_syntax_property(decl.prop()) {
+          continue;
+        }
+        (value, decl.value_start(), decl.value_fixable())
+      } else {
         continue;
-      }
-      self.check_text(
-        decl.value,
-        decl.value_start,
-        always,
-        except_empty,
-        &mut diags,
-      );
+      };
+      self.check_text(&text, start, always, except_empty, fixable, &mut diags);
     }
     diags
   }
@@ -97,6 +98,7 @@ impl FunctionUrlQuotesCheck {
     start: usize,
     always: bool,
     except_empty: bool,
+    fixable: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     let nodes = value_parser::parse(text);
@@ -145,11 +147,12 @@ impl FunctionUrlQuotesCheck {
             .collect(),
         ),
       };
-      diags.push(
-        Diagnostic::new(NAME, message)
-          .span(span)
-          .fix(Fix::new(description, edits)),
-      );
+      let diag = Diagnostic::new(NAME, message).span(span);
+      diags.push(if fixable {
+        diag.fix(Fix::new(description, edits))
+      } else {
+        diag
+      });
       true
     });
   }
@@ -244,7 +247,7 @@ fn requires_quotes(url: &str) -> bool {
 fn is_plain_url_token(content: &str) -> bool {
   let bytes = content.as_bytes();
   let mut i = 0;
-  while i < bytes.len() && is_css_whitespace(bytes[i]) {
+  while i < bytes.len() && is_css_whitespace_byte(bytes[i]) {
     i += 1;
   }
   if matches!(bytes.get(i), Some(b'"' | b'\'')) {
@@ -254,8 +257,8 @@ fn is_plain_url_token(content: &str) -> bool {
   while i < bytes.len() {
     match bytes[i] {
       b')' => return false,
-      b if is_css_whitespace(b) => {
-        while i < bytes.len() && is_css_whitespace(bytes[i]) {
+      b if is_css_whitespace_byte(b) => {
+        while i < bytes.len() && is_css_whitespace_byte(bytes[i]) {
           i += 1;
         }
         return i == bytes.len();
@@ -275,7 +278,7 @@ fn is_plain_url_token(content: &str) -> bool {
               i += 1;
               digits += 1;
             }
-            if i < bytes.len() && is_css_whitespace(bytes[i]) {
+            if i < bytes.len() && is_css_whitespace_byte(bytes[i]) {
               i += 1;
             }
             continue;
@@ -291,11 +294,6 @@ fn is_plain_url_token(content: &str) -> bool {
     i += 1;
   }
   true
-}
-
-/// Whitespace as CSS tokenization defines it.
-fn is_css_whitespace(b: u8) -> bool {
-  matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
 }
 
 #[cfg(test)]

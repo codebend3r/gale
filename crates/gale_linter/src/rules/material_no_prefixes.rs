@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -40,12 +40,7 @@ impl MaterialNoPrefixesCheck {
 
 impl Check for MaterialNoPrefixesCheck {
   /// Never fires; see the type docs for why this stub exists.
-  fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    vec![]
-  }
-
-  /// Never fires; see the type docs for why this stub exists.
-  fn check_root(&self, _nodes: &[CssNode], _context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
     vec![]
   }
 }
@@ -54,12 +49,12 @@ impl Check for MaterialNoPrefixesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx, invalid_options};
 
   #[test]
   fn test_always_passes() {
     let rule = configured(&MaterialNoPrefixes, None);
-    assert!(rule.check_root(&[], &ctx()).is_empty());
+    assert!(rule.check_source(&ctx()).is_empty());
   }
 
   #[test]

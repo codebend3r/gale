@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -61,7 +61,7 @@ const DEFAULT_MAX_LENGTH: usize = 120;
 impl Check for MaxLineLengthCheck {
   /// Flags source lines longer than the configured maximum, skipping any that
   /// match an `ignorePattern`.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let max_length = self.max_length;
     let mut diags = Vec::new();
     let mut offset = 0;
@@ -128,14 +128,14 @@ fn compile_ignore_patterns(
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
   #[test]
   fn reports_long_line() {
     let rule = configured(&MaxLineLength, None);
     let long_line = "a".repeat(121);
     let source = format!(".foo {{ color: {}; }}", long_line);
-    let d = rule.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_source(&ctx_with_source(&source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("121") || d[0].message.contains("120"));
   }
@@ -144,7 +144,7 @@ mod tests {
   fn allows_short_line() {
     let rule = configured(&MaxLineLength, None);
     let source = ".foo { color: red; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -152,7 +152,7 @@ mod tests {
   fn reports_correct_line_number() {
     let rule = configured(&MaxLineLength, None);
     let source = "a { }\n".to_string() + &"b".repeat(121);
-    let d = rule.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_source(&ctx_with_source(&source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("line 2"));
   }
@@ -163,7 +163,7 @@ mod tests {
     let opts = serde_json::json!(80);
     let rule = configured(&MaxLineLength, opts.clone());
     let source = "a".repeat(81);
-    let d = rule.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_source(&ctx_with_source(&source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("80 characters"));
   }
@@ -175,7 +175,7 @@ mod tests {
     let rule = configured(&MaxLineLength, opts.clone());
     // Line with URL that exceeds 100 chars
     let source = format!("// See https://example.com/{}", "x".repeat(100));
-    let d = rule.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_source(&ctx_with_source(&source));
     assert!(d.is_empty(), "Should ignore lines matching ignorePattern");
   }
 
@@ -184,7 +184,7 @@ mod tests {
     let opts = serde_json::json!([100, { "ignorePattern": "/https?://.*/" }]);
     let rule = configured(&MaxLineLength, opts.clone());
     let source = "a".repeat(101);
-    let d = rule.check_root(&[], &ctx_with_source(&source));
+    let d = rule.check_source(&ctx_with_source(&source));
     assert_eq!(d.len(), 1);
   }
 

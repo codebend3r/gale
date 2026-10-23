@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::chars::is_word_byte;
@@ -6,7 +7,6 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "hue-degree-notation";
 
@@ -53,17 +53,14 @@ const HUE_THIRD: &[&str] = &["lch", "oklch"];
 impl Check for HueDegreeNotationCheck {
   /// Reports every degree or unitless hue in the wrong notation, with a fix
   /// that adds or drops the `deg` unit.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(want_angle) = self.want_angle else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
-      let Some(value) = ctx.source_slice(decl.value_span.start, decl.value_span.end) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      let value = decl.written_value();
       if !mentions_hue_function(value) {
         continue;
       }
