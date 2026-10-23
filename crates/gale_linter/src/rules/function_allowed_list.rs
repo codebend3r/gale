@@ -1,6 +1,7 @@
+use gale_css_parser::postcss_tree::PostcssTree;
+
 use crate::list_rules::{Found, List, ListCheck, ListRule, Polarity, list_option, subjects};
 use crate::options::Options;
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "function-allowed-list";

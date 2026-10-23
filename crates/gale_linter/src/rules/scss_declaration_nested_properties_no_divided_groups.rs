@@ -1,9 +1,8 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind;
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "scss/declaration-nested-properties-no-divided-groups";
@@ -43,8 +42,7 @@ impl ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
 impl Check for ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
   /// Reports every group of a namespace that has more than one group in
   /// the same block.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     for parent in &tree.nodes {

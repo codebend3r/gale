@@ -1,4 +1,5 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, NodeRef, PostcssTree, RuleRef};
+use gale_css_parser::selector::postcss::rule_selectors;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::js_number;
@@ -89,365 +90,185 @@ impl MaxNestingDepthCheck {
 }
 
 impl Check for MaxNestingDepthCheck {
-  /// Walks the document from depth zero, since depth is a whole-tree property.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let is_scss = matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-    );
-    let mut diags = Vec::new();
-    check_nodes_depth(self, nodes, 0, is_scss, &mut diags);
-    diags
+  /// Flags every rule and at-rule with a block nested deeper than allowed,
+  /// counting depth the way Stylelint's `nestingDepth` does.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk()
+      .filter(|node| node.has_block())
+      .filter(|node| match node.kind {
+        NodeKind::Rule => node.as_rule().is_some_and(RuleRef::is_standard_syntax),
+        NodeKind::AtRule => !self.is_ignored_at_rule(*node),
+        _ => false,
+      })
+      .filter_map(|node| {
+        let depth = self.nesting_depth(node, 0);
+        self
+          .too_deep(depth)
+          .then(|| self.problem(depth, node.span()))
+      })
+      .collect()
   }
 }
 
-/// Returns true if the selector looks like a pseudo-class nesting
-/// (starts with `&:` but not `&::` which is a pseudo-element).
-fn is_pseudo_class_selector(selector: &str) -> bool {
-  let trimmed = selector.trim();
-  if let Some(rest) = trimmed.strip_prefix('&') {
-    let rest = rest.trim_start();
-    rest.starts_with(':') && !rest.starts_with("::")
-  } else {
-    false
+impl MaxNestingDepthCheck {
+  /// Whether `node` is an at-rule `ignoreAtRules` names.
+  fn is_ignored_at_rule(&self, node: NodeRef) -> bool {
+    node.as_at_rule().is_some_and(|at| {
+      self
+        .ignore_at_rules
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(at.name()))
+    })
   }
-}
 
-/// Recursively walk CssNode trees and check nesting depth.
-/// `depth` is the current nesting depth (0 at the top level).
-fn check_nodes_depth(
-  config: &MaxNestingDepthCheck,
-  nodes: &[CssNode],
-  depth: usize,
-  is_scss: bool,
-  diags: &mut Vec<Diagnostic>,
-) {
-  for node in nodes {
-    match node {
-      CssNode::Style(style) => {
-        // Stylelint skips rules whose selector contains SCSS
-        // interpolation (`#{...}`) via `isStandardSyntaxRule`.
-        // Skip this rule and all its children when that applies.
-        if is_scss && style.selector.contains("#{") {
-          continue;
-        }
-
-        // Check if this selector is a pseudo-class nesting that should
-        // be ignored for depth counting.
-        let is_ignored_pseudo =
-          config.ignore_pseudo_classes && is_pseudo_class_selector(&style.selector);
-
-        let effective_depth = if is_ignored_pseudo { depth } else { depth };
-
-        // A style rule at depth > 0 contributes to nesting.
-        // depth 0 is top-level and doesn't count.
-        if !is_ignored_pseudo && config.too_deep(effective_depth) && effective_depth > 0 {
-          diags.push(config.problem(effective_depth, style.span));
-        }
-
-        // Recurse into nested style rule children.
-        // If pseudo-class is ignored, don't increment depth.
-        let child_depth = if is_ignored_pseudo { depth } else { depth + 1 };
-        check_style_depth(config, style, child_depth, is_scss, diags);
+  /// Stylelint's `nestingDepth`: `level` plus the nesting between `node`
+  /// and the top level.  A rule directly in a top-level at-rule counts as
+  /// top level, an ignored at-rule resets the count, and the nodes the
+  /// `ignore` option names do not add to it.
+  fn nesting_depth(&self, node: NodeRef, level: usize) -> usize {
+    let Some(parent) = node.parent() else {
+      return level;
+    };
+    if self.is_ignored_at_rule(parent) {
+      return 0;
+    }
+    if parent.as_at_rule().is_some() && parent.parent().is_none() {
+      return level;
+    }
+    let transparent = match node.kind {
+      NodeKind::AtRule => {
+        self.ignore_blockless_at_rules && node.children().all(|child| child.as_decl().is_none())
       }
-      CssNode::AtRule(at_rule) => {
-        // Check if this at-rule should be completely ignored.
-        let is_ignored_at_rule = config
-          .ignore_at_rules
-          .iter()
-          .any(|name| name.eq_ignore_ascii_case(&at_rule.name));
-
-        if is_ignored_at_rule {
-          // Completely skip depth checking for all content inside
-          // ignored at-rules (matches Stylelint behavior).
-          // Do not recurse — everything inside is exempt.
-          continue;
-        }
-
-        // Check if this is a "blockless at-rule" that should be ignored.
-        let is_blockless_ignored = config.ignore_blockless_at_rules && depth > 0;
-
-        let child_depth = if is_blockless_ignored || depth == 0 {
-          // Ignored blockless at-rules and top-level at-rules don't
-          // increment nesting depth.
-          depth
-        } else {
-          depth + 1
-        };
-
-        // If not ignored and nested (depth > 0), check if it exceeds max.
-        if !is_blockless_ignored && depth > 0 && config.too_deep(depth) {
-          diags.push(config.problem(depth, at_rule.span));
-        }
-
-        check_nodes_depth(config, &at_rule.children, child_depth, is_scss, diags);
+      NodeKind::Rule => {
+        self.ignore_pseudo_classes
+          && node
+            .as_rule()
+            .is_some_and(|rule| contains_pseudo_classes_only(rule.selector()))
       }
-      _ => {}
-    }
+      _ => false,
+    };
+    self.nesting_depth(parent, if transparent { level } else { level + 1 })
   }
 }
 
-/// Recurses into nested rules, flagging those past the limit. Interpolated
-/// selectors and any ignored nesting are skipped along with their descendants.
-fn check_style_depth(
-  config: &MaxNestingDepthCheck,
-  style: &gale_css_parser::StyleRule,
-  depth: usize,
-  is_scss: bool,
-  diags: &mut Vec<Diagnostic>,
-) {
-  for child in &style.children {
-    // Stylelint skips rules whose selector contains SCSS interpolation.
-    // Skip this child and all its descendants.
-    if is_scss && child.selector.contains("#{") {
-      continue;
-    }
-
-    // Check if this child selector is a pseudo-class nesting that should
-    // be ignored.
-    let is_ignored_pseudo =
-      config.ignore_pseudo_classes && is_pseudo_class_selector(&child.selector);
-
-    let effective_depth = if is_ignored_pseudo { depth - 1 } else { depth };
-
-    if !is_ignored_pseudo && config.too_deep(effective_depth) {
-      diags.push(config.problem(effective_depth, child.span));
-    }
-
-    let child_depth = if is_ignored_pseudo { depth } else { depth + 1 };
-    check_style_depth(config, child, child_depth, is_scss, diags);
-  }
+/// Whether every selector in `selector` is a nested pseudo-class (`&:hover`
+/// but not `&::before`), as Stylelint's `containsPseudoClassesOnly` decides.
+fn contains_pseudo_classes_only(selector: &str) -> bool {
+  rule_selectors(selector)
+    .iter()
+    .all(|part| part.starts_with("&:") && !part.starts_with("&::"))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as CssAtRule, Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn make_decl() -> Declaration {
-    Declaration {
-      property: "color".to_string(),
-      value: "red".to_string(),
-      span: Span::new(0, 0),
-      important: false,
-    }
+  /// The depths reported for `source` in `syntax` with `options`, with the
+  /// text each report starts with.
+  fn depths(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<(String, &str)> {
+    configured(&MaxNestingDepth, options)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| {
+        let found = d.message.rsplit(' ').next().unwrap().to_string();
+        let text = &source[d.span.offset..d.span.offset + d.span.length];
+        (found, text.split(' ').next().unwrap())
+      })
+      .collect()
   }
 
-  fn make_nested(depth: usize) -> StyleRule {
-    if depth == 0 {
-      return StyleRule {
-        selector: ".leaf".to_string(),
-        declarations: vec![make_decl()],
-        span: Span::new(0, 0),
-        ..Default::default()
-      };
+  /// `.level-N { ... }` nested `depth` deep around a `.leaf`.
+  fn nested(depth: usize) -> String {
+    let mut source = ".leaf { color: red; }".to_string();
+    for level in 1..=depth {
+      source = format!(".level-{level} {{ color: red; {source} }}");
     }
-    StyleRule {
-      selector: format!(".level-{depth}"),
-      declarations: vec![make_decl()],
-      children: vec![make_nested(depth - 1)],
-      span: Span::new(0, 0),
-      ..Default::default()
-    }
+    source
   }
 
   #[test]
   fn reports_deep_nesting() {
-    // depth 5: .level-5 > .level-4 > .level-3 > .level-2 > .level-1 > .leaf
-    let root = CssNode::Style(make_nested(5));
-    let d = configured(&MaxNestingDepth, None).check_root(&[root], &ctx());
-    assert!(!d.is_empty(), "expected diagnostics for deep nesting");
+    let source = nested(5);
+    assert_eq!(
+      depths(&source, Syntax::Scss, serde_json::json!(3)),
+      [("4".to_string(), ".level-1"), ("5".to_string(), ".leaf")]
+    );
   }
 
   #[test]
   fn allows_shallow_nesting() {
-    // depth 2: .level-2 > .level-1 > .leaf
-    let root = CssNode::Style(make_nested(2));
-    let d = configured(&MaxNestingDepth, None).check_root(&[root], &ctx());
-    assert!(d.is_empty());
+    assert!(depths(&nested(2), Syntax::Scss, serde_json::json!(3)).is_empty());
+  }
+
+  #[test]
+  fn nested_at_rules_count_and_are_checked() {
+    let source = "a { @media print { b { @include x { c {} } } } }";
+    assert_eq!(
+      depths(source, Syntax::Scss, serde_json::json!(2)),
+      [("3".to_string(), "@include"), ("4".to_string(), "c")]
+    );
+    // A rule directly in a top-level at-rule is at the top level.
+    assert!(
+      depths(
+        "@media print { a { b {} } }",
+        Syntax::Css,
+        serde_json::json!(1)
+      )
+      .is_empty()
+    );
+  }
+
+  #[test]
+  fn non_standard_rules_count_but_are_not_reported() {
+    let source = "a { #{$b} { c {} } }";
+    assert_eq!(
+      depths(source, Syntax::Scss, serde_json::json!(1)),
+      [("2".to_string(), "c")]
+    );
   }
 
   #[test]
   fn ignore_at_rules_skips_all_content() {
-    // When ignoreAtRules includes "mixin", ALL content inside @mixin
-    // should be exempt from depth checking, even deeply nested rules.
-    let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = scss_ctx();
-
-    // @mixin { .a { .b { .c { .d { .e {} } } } } }
-    let e = StyleRule {
-      selector: ".e".to_string(),
-      declarations: vec![make_decl()],
-      span: Span::new(0, 0),
-      ..Default::default()
-    };
-    let d = StyleRule {
-      selector: ".d".to_string(),
-      declarations: vec![],
-      children: vec![e],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    };
-    let c = StyleRule {
-      selector: ".c".to_string(),
-      declarations: vec![],
-      children: vec![d],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    };
-    let b = StyleRule {
-      selector: ".b".to_string(),
-      declarations: vec![],
-      children: vec![c],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    };
-    let a = CssNode::Style(StyleRule {
-      selector: ".a".to_string(),
-      declarations: vec![],
-      children: vec![b],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    });
-    let mixin = CssNode::AtRule(CssAtRule {
-      name: "mixin".to_string(),
-      params: "my-mixin".to_string(),
-      span: Span::new(0, 0),
-      children: vec![a],
-    });
-
-    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[mixin], &ctx_with_opts);
-    assert!(
-      diags.is_empty(),
-      "expected no diagnostics inside ignored @mixin, got {diags:?}"
-    );
+    let options = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
+    let source = "@mixin m { .a { .b { .c { .d { .e { color: red; } } } } } }";
+    assert!(depths(source, Syntax::Scss, options).is_empty());
   }
 
   #[test]
   fn ignore_at_rules_still_flags_outside() {
-    // Content OUTSIDE ignored at-rules should still be checked.
-    let options: serde_json::Value = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
-    let ctx_with_opts = scss_ctx();
-
-    // .top { .nested { color: red; } }  -- depth 1 exceeds max 0
-    let nested = StyleRule {
-      selector: ".nested".to_string(),
-      declarations: vec![make_decl()],
-      span: Span::new(0, 0),
-      ..Default::default()
-    };
-    let top = CssNode::Style(StyleRule {
-      selector: ".top".to_string(),
-      declarations: vec![],
-      children: vec![nested],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    });
-
-    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[top], &ctx_with_opts);
-    assert!(
-      !diags.is_empty(),
-      "expected diagnostics for nesting outside @mixin"
-    );
+    let options = serde_json::json!([0, { "ignoreAtRules": ["mixin"] }]);
+    let source = ".top { .nested { color: red; } }";
+    assert_eq!(depths(source, Syntax::Scss, options).len(), 1);
   }
 
   #[test]
   fn ignore_blockless_at_rules() {
-    // With ignore: ["blockless-at-rules"], @media shouldn't count.
-    let options: serde_json::Value = serde_json::json!([2, { "ignore": ["blockless-at-rules"] }]);
-    let ctx_with_opts = ctx();
-
-    // .a { .b { @media { .c {} } } }
-    // Without ignore: depth of .c = 3 (exceeds 2)
-    // With blockless-at-rules ignore: @media doesn't count, so .c depth = 2 (ok)
-    let c = CssNode::Style(StyleRule {
-      selector: ".c".to_string(),
-      declarations: vec![make_decl()],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    let media = CssNode::AtRule(CssAtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![c],
-    });
-    let b = CssNode::Style(StyleRule {
-      selector: ".b".to_string(),
-      declarations: vec![],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    let a = CssNode::Style(StyleRule {
-      selector: ".a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-
-    // Since StyleRule can't hold CssNode children, simulate with
-    // top-level nodes: @media containing .a > .b > .c
-    // Actually, we need to test the at-rule at a nested depth.
-    // Let's test: .a (depth 0) has @media child containing .b.
-    let _ = a;
-    let _ = b;
-
-    // Simple test: top-level @media with nested rules shouldn't flag
-    // because blockless at-rules at any depth don't increment.
-    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[media], &ctx_with_opts);
-    assert!(
-      diags.is_empty(),
-      "expected no diagnostics with blockless-at-rules ignore, got {diags:?}"
+    // `@media` holds no declarations, so it does not count.
+    let source = ".a { .b { @media print { .c { color: red; } } } }";
+    let options = serde_json::json!([2, { "ignore": ["blockless-at-rules"] }]);
+    assert!(depths(source, Syntax::Scss, options).is_empty());
+    assert_eq!(
+      depths(source, Syntax::Scss, serde_json::json!(2)),
+      [("3".to_string(), ".c")]
     );
   }
 
   #[test]
   fn ignore_pseudo_classes() {
-    // With ignore: ["pseudo-classes"], &:hover shouldn't count.
-    let options: serde_json::Value = serde_json::json!([1, { "ignore": ["pseudo-classes"] }]);
-    let ctx_with_opts = ctx();
-
-    // .a { &:hover { .b {} } }
-    // Without pseudo-classes ignore: .b depth = 2 (exceeds 1)
-    // With pseudo-classes ignore: &:hover doesn't count, .b depth = 1 (ok)
-    let b = StyleRule {
-      selector: ".b".to_string(),
-      declarations: vec![make_decl()],
-      span: Span::new(0, 0),
-      ..Default::default()
-    };
-    let hover = StyleRule {
-      selector: "&:hover".to_string(),
-      declarations: vec![],
-      children: vec![b],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    };
-    let a = CssNode::Style(StyleRule {
-      selector: ".a".to_string(),
-      declarations: vec![],
-      children: vec![hover],
-      span: Span::new(0, 0),
-
-      nested_at_rules: Vec::new(),
-    });
-
-    let diags = configured(&MaxNestingDepth, options.clone()).check_root(&[a], &ctx_with_opts);
-    assert!(
-      diags.is_empty(),
-      "expected no diagnostics with pseudo-classes ignore, got {diags:?}"
+    let source = ".a { &:hover, &:focus { .b { color: red; } } &::before { .c {} } }";
+    let options = serde_json::json!([1, { "ignore": ["pseudo-classes"] }]);
+    assert_eq!(
+      depths(source, Syntax::Scss, options),
+      [("2".to_string(), ".c")]
     );
   }
 
   #[test]
+
   fn options_are_validated_like_stylelint() {
     assert!(
       invalid_options(

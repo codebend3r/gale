@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern::{self, Regex};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_order::{
   blocks, comments_after_node, comments_before_node, is_allowed_to_process,
@@ -442,14 +441,13 @@ fn node_description(tree: &PostcssTree, node: usize) -> String {
 
 impl Check for OrderOrderCheck {
   /// Checks the order of the nodes in every block of the document.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(config) = &self.config else {
       return vec![];
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
-    for (block, children) in blocks(&tree) {
-      self.check_block(&tree, config, block, children, &mut diags);
+    for (block, children) in blocks(tree) {
+      self.check_block(tree, config, block, children, &mut diags);
     }
     diags
   }
@@ -621,7 +619,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   const RULE: &str = "order/order";
 
@@ -629,7 +627,7 @@ mod tests {
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
     let ctx = context(source, syntax);
     configured(&OrderOrder, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -42,7 +42,7 @@ impl StylisticMaxEmptyLinesCheck {
 
 impl Check for StylisticMaxEmptyLinesCheck {
   /// Flags runs of blank lines longer than the maximum.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
     let source = context.source;
@@ -140,14 +140,13 @@ impl Check for StylisticMaxEmptyLinesCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_single_empty_line() {
     let max = serde_json::json!(1);
     let source = "a { }\n\nb { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -155,8 +154,7 @@ mod tests {
   fn reports_too_many_empty_lines() {
     let max = serde_json::json!(1);
     let source = "a { }\n\n\nb { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("no more than 1"));
   }
@@ -165,8 +163,7 @@ mod tests {
   fn allows_two_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\nb { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -174,8 +171,7 @@ mod tests {
   fn reports_three_empty_lines_when_max_is_two() {
     let max = serde_json::json!(2);
     let source = "a { }\n\n\n\nb { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
   }
 
@@ -186,8 +182,7 @@ mod tests {
     // Bootstrap's cover.css starts with exactly this pattern.
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n/* Custom button */\n.foo { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "two empty lines after a multi-line comment should be allowed with max=2"
@@ -198,8 +193,7 @@ mod tests {
   fn three_empty_lines_after_multiline_comment_is_flagged() {
     let max = serde_json::json!(2);
     let source = "/*\n * Globals\n */\n\n\n\n/* Custom button */\n.foo { }";
-    let d =
-      configured(&StylisticMaxEmptyLines, max.clone()).check_root(&[], &ctx_with_source(source));
+    let d = configured(&StylisticMaxEmptyLines, max.clone()).check_source(&ctx_with_source(source));
     assert!(
       !d.is_empty(),
       "three empty lines after a multi-line comment should be flagged with max=2"

@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -84,14 +85,12 @@ impl ScssSelectorNoRedundantNestingSelectorCheck {
 impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
   /// Flags a nested selector whose leading `&` is followed by a combinator or
   /// descendant, where dropping it changes nothing.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  ///
+  /// Every rule is read, as stylelint-scss reads them, wherever it sits.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
 
     let mut diags = Vec::new();
 
@@ -109,7 +108,7 @@ impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
     //   `& > .bar` → `> .bar`
     //   `& + .baz` → `+ .baz`
     //   `& ~ .qux` → `~ .qux`
-    for child in &rule.children {
+    for child in tree.walk_rules() {
       // Split selector list by commas and check each individual selector.
       // This handles cases like `.other, & .child` where only one part of
       // the comma-separated list contains a redundant `&`.
@@ -118,7 +117,9 @@ impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
       // the span pointing to the `&` character in the source.  To find
       // the byte offset of each part we track our position through the
       // original selector string.
-      let full_selector = &child.selector;
+      // The selector as written, comments and all, so offsets into it are
+      // offsets into the source.
+      let full_selector = &tree.source()[child.name_span.clone()];
       let mut search_start: usize = 0;
 
       for selector_part in full_selector.split(',') {
@@ -145,7 +146,7 @@ impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
           };
           if redundant {
             // Point the span at the `&` character in the source.
-            let ampersand_offset = child.span.offset + part_offset_in_selector + trim_offset;
+            let ampersand_offset = child.selector_start() + part_offset_in_selector + trim_offset;
             diags.push(
               Diagnostic::new(NAME, "Unnecessary nesting selector (&)".to_string())
                 .span(Span::new(ampersand_offset, 1)),
@@ -162,36 +163,21 @@ impl Check for ScssSelectorNoRedundantNestingSelectorCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn nested_rule(parent_sel: &str, child_sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: parent_sel.to_string(),
-      declarations: vec![],
-      span: Span::new(0, 50),
-      children: vec![StyleRule {
-        selector: child_sel.to_string(),
-        declarations: vec![Declaration {
-          property: "color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(10, 10),
-          important: false,
-        }],
-        span: Span::new(5, 40),
-        ..Default::default()
-      }],
-
-      nested_at_rules: Vec::new(),
-    })
+  /// A rule `parent_sel` holding a rule `child_sel`.
+  fn nested_rule(parent_sel: &str, child_sel: &str) -> String {
+    format!("{parent_sel} {{ {child_sel} {{ color: red; }} }}")
   }
 
   #[test]
   fn skips_non_scss() {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&");
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -199,7 +185,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // A bare `& { ... }` is a scoping mechanism and should NOT be flagged.
     let node = nested_rule(".foo", "&");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -207,7 +193,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& .bar` is redundant — can be written as `.bar`.
     let node = nested_rule(".foo", "& .bar");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
@@ -217,7 +203,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& > .bar` is redundant — can be written as `> .bar`.
     let node = nested_rule(".foo", "& > .bar");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
@@ -227,7 +213,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `& + .bar` is redundant — can be written as `+ .bar`.
     let node = nested_rule(".foo", "& + .bar");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
@@ -236,14 +222,14 @@ mod tests {
   fn allows_ampersand_with_pseudo() {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&:hover");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_ampersand_with_class() {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", "&.bar");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -251,14 +237,14 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&__element` is BEM-style concatenation, NOT redundant.
     let node = nested_rule(".foo", "&__element");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_non_ampersand_selector() {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     let node = nested_rule(".foo", ".bar");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -266,7 +252,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `.other, & .child` — the `& .child` part is redundant.
     let node = nested_rule(".foo", ".other, & .child");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
@@ -276,7 +262,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&:hover, & .child` — `&:hover` is fine but `& .child` is redundant.
     let node = nested_rule(".foo", "&:hover, & .child");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unnecessary nesting"));
   }
@@ -286,7 +272,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // `&:hover, &.active` — neither part is redundant.
     let node = nested_rule(".foo", "&:hover, &.active");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -294,7 +280,7 @@ mod tests {
     let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
     // Both `& .child1` and `& .child2` are redundant — report 2 diagnostics.
     let node = nested_rule(".foo", "& .child1, & .child2");
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 2);
     assert!(d[0].message.contains("Unnecessary nesting"));
     assert!(d[1].message.contains("Unnecessary nesting"));
@@ -339,5 +325,23 @@ mod tests {
       lint(serde_json::json!([true, { "ignoreKeywords": ["when", "/^el/"] }])),
       1
     );
+  }
+
+  #[test]
+  fn points_at_each_ampersand_as_written() {
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
+    let source = ".a {\n  // x, y\n  .b,\n  & .c { color: red; }\n}";
+    let d = rule.check_source(&scss_ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span, Span::new(source.find("& .c").unwrap(), 1));
+  }
+
+  #[test]
+  fn reads_rules_wherever_they_sit() {
+    // stylelint-scss walks every rule: those in a nested at-rule, in a
+    // mixin and at the top level too.
+    let rule = configured(&ScssSelectorNoRedundantNestingSelector, None);
+    let source = ".a { @media print { & .b {} } }\n@mixin m { & .c {} }\n& .d {}";
+    assert_eq!(rule.check_source(&scss_ctx_with_source(source)).len(), 3);
   }
 }

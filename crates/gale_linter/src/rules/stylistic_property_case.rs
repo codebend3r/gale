@@ -1,9 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::standard_syntax::is_standard_syntax_property;
 
 const NAME: &str = "@stylistic/property-case";
 
@@ -41,14 +42,16 @@ impl StylisticPropertyCaseCheck {
 
 impl Check for StylisticPropertyCaseCheck {
   /// Flags property names not in the configured case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let expected_case = self.expected_case;
 
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      let prop = &decl.property;
-      // Skip custom properties (--*) and SCSS variables ($*)
-      if prop.starts_with("--") || prop.starts_with('$') {
+    for decl in tree.walk_decls() {
+      let (prop, prop_start) = (decl.prop(), decl.prop_start());
+      // Skip custom properties (--*) and, as Stylelint's
+      // `isStandardSyntaxProperty` does, Sass variables (`$a`, `ns.$a`),
+      // Less variables and merges, and interpolated names.
+      if prop.starts_with("--") || !is_standard_syntax_property(prop) {
         continue;
       }
       // Skip vendor-prefixed properties for the case check
@@ -57,10 +60,10 @@ impl Check for StylisticPropertyCaseCheck {
         if let Some(idx) = prop[1..].find('-') {
           &prop[idx + 2..]
         } else {
-          prop.as_str()
+          prop
         }
       } else {
-        prop.as_str()
+        prop
       };
 
       let is_wrong = match expected_case {
@@ -77,10 +80,10 @@ impl Check for StylisticPropertyCaseCheck {
         };
         diags.push(
           Diagnostic::new(NAME, format!("Expected \"{prop}\" to be \"{fixed}\""))
-            .span(Span::new(decl.span.offset, prop.len()))
+            .span(Span::new(prop_start, prop.len()))
             .fix(Fix::new(
               format!("Convert to {expected_case}case"),
-              vec![Edit::new(Span::new(decl.span.offset, prop.len()), &fixed)],
+              vec![Edit::new(Span::new(prop_start, prop.len()), &fixed)],
             )),
         );
       }
@@ -92,47 +95,51 @@ impl Check for StylisticPropertyCaseCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_prop(prop: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, prop.len() + 6),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn style_with_prop(prop: &str) -> String {
+    format!("a {{ {prop}: red; }}")
   }
 
   #[test]
   fn reports_uppercase_property() {
     let rule = configured(&StylisticPropertyCase, None);
-    let ctx = ctx();
-    let d = rule.check(&style_with_prop("Color"), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_prop("Color")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("color"));
+    assert_eq!(d[0].span, Span::new(4, 5));
+    // Known properties too, which the CSS parser used to lower-case.
+    let d = rule.check_source(&ctx_with_source(&style_with_prop("COLOR")));
+    assert_eq!(d[0].message, "Expected \"COLOR\" to be \"color\"");
   }
 
   #[test]
   fn allows_lowercase_property() {
     let rule = configured(&StylisticPropertyCase, None);
-    let ctx = ctx();
-    let d = rule.check(&style_with_prop("color"), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_prop("color")));
     assert!(d.is_empty());
   }
 
   #[test]
   fn skips_custom_properties() {
     let rule = configured(&StylisticPropertyCase, None);
-    let ctx = ctx();
-    let d = rule.check(&style_with_prop("--myColor"), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_prop("--myColor")));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn skips_preprocessor_properties() {
+    let rule = configured(&StylisticPropertyCase, serde_json::json!("upper"));
+    for source in [
+      "a { #{$side}: 0; }",
+      "a { #{$side}-width: 0; }",
+      "mat.$theme-compat: true;",
+      "$Var: 1;",
+    ] {
+      let ctx = crate::testing::scss_ctx_with_source(source);
+      assert!(rule.check_source(&ctx).is_empty(), "{source}");
+    }
   }
 
   #[test]

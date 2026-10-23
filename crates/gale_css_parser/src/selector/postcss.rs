@@ -334,6 +334,55 @@ pub fn strip_comments(text: &str) -> String {
   out
 }
 
+/// `text` with each `/* ... */` comment blanked out with spaces, so that
+/// offsets into the result are offsets into `text`.
+pub fn blank_comments(text: &str) -> String {
+  let mut out = String::with_capacity(text.len());
+  let mut rest = text;
+  while let Some(open) = rest.find("/*") {
+    out.push_str(&rest[..open]);
+    let len = rest[open + 2..]
+      .find("*/")
+      .map_or(rest.len() - open, |close| close + 4);
+    out.extend(std::iter::repeat_n(' ', len));
+    rest = &rest[open + len..];
+  }
+  out.push_str(rest);
+  out
+}
+
+/// Stylelint's `getStrippedSelectorSource` for one selector of a list: the
+/// selector without the whitespace and comments around it, and where it
+/// starts in `part`.
+pub fn stripped_selector(part: &str) -> (usize, &str) {
+  let mut start = 0;
+  let mut end = part.len();
+  loop {
+    let rest = &part[start..end];
+    let trimmed = rest.trim_start();
+    start += rest.len() - trimmed.len();
+    if let Some(comment) = trimmed.strip_prefix("/*") {
+      start = comment
+        .find("*/")
+        .map_or(end, |close| start + 2 + close + 2);
+      continue;
+    }
+    break;
+  }
+  loop {
+    let trimmed = part[start..end].trim_end();
+    end = start + trimmed.len();
+    if let Some(comment) = trimmed.strip_suffix("*/")
+      && let Some(open) = comment.rfind("/*")
+    {
+      end = start + open;
+      continue;
+    }
+    break;
+  }
+  (start, &part[start..end])
+}
+
 // ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
@@ -1163,6 +1212,18 @@ mod tests {
       out.push((v.node.kind, v.node.value.clone(), v.node.start, v.node.end));
     });
     out
+  }
+
+  #[test]
+  fn strips_whitespace_and_comments_around_a_selector() {
+    assert_eq!(stripped_selector(" /* a */ 50% /* b */ "), (9, "50%"));
+    assert_eq!(stripped_selector("from"), (0, "from"));
+    assert_eq!(stripped_selector(" /* only */ "), (12, ""));
+  }
+
+  #[test]
+  fn blanks_comments_in_place() {
+    assert_eq!(blank_comments("a /* b */ c /* d"), "a         c     ");
   }
 
   #[test]

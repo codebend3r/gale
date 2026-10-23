@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -49,7 +50,7 @@ impl ScssAtFunctionParenthesesSpaceBeforeCheck {
 impl Check for ScssAtFunctionParenthesesSpaceBeforeCheck {
   /// Flags an `@function` whose space before the opening parenthesis does not
   /// match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -141,13 +142,15 @@ impl Check for ScssAtFunctionParenthesesSpaceBeforeCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn never_allows_no_space() {
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, None);
     let src = "@function foo($x) { @return $x; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -155,7 +158,7 @@ mod tests {
   fn never_reports_space() {
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, None);
     let src = "@function foo ($x) { @return $x; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }
@@ -166,7 +169,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, opts.clone());
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -176,7 +179,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, opts.clone());
     let ctx = scss_ctx_with_source(src);
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -185,14 +188,14 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, None);
     let ctx = ctx_with_source("@function foo($x) { }");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]
   fn handles_multiple_functions() {
     let rule = configured(&ScssAtFunctionParenthesesSpaceBefore, None);
     let src = "@function foo($x) { @return $x; }\n@function bar ($y) { @return $y; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert_eq!(d.len(), 1); // only bar has a space
   }
 

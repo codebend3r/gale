@@ -1,12 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable::vendor_prefix_len;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "shorthand-property-no-redundant-values";
 
@@ -123,20 +122,17 @@ const FOUR_DIRECTIONAL_PROPERTIES: &[&str] = &[
 impl Check for ShorthandPropertyNoRedundantValuesCheck {
   /// Flags shorthand values that repeat parts a shorter form would imply, and
   /// offers the shortened value as a fix.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_four_into_three = self.ignore_four_into_three;
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      let Some((prop, _)) = source_text::declaration_property(ctx.source, decl) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      let prop = decl.prop();
       // Custom properties, Sass and Less variables are not shorthands.
       if prop.starts_with("--") || prop.starts_with('$') || prop.starts_with('@') {
         continue;
       }
-      let Some((value, value_start)) = source_text::declaration_value(ctx.source, decl) else {
-        continue;
-      };
+      let raw = decl.raw_value();
+      let (value, value_start) = (&*raw, decl.value_start());
       if !value.contains(char::is_whitespace) || !is_standard_syntax_value(value) {
         continue;
       }
@@ -159,14 +155,16 @@ impl Check for ShorthandPropertyNoRedundantValuesCheck {
       };
 
       let span = Span::new(value_start, value.len());
-      diags.push(
-        Diagnostic::new(NAME, format!("Expected \"{value}\" to be \"{shortest}\""))
-          .span(span)
-          .fix(Fix::new(
-            format!("Shorten to \"{shortest}\""),
-            vec![Edit::new(span, &shortest)],
-          )),
-      );
+      let diag =
+        Diagnostic::new(NAME, format!("Expected \"{value}\" to be \"{shortest}\"")).span(span);
+      diags.push(if decl.value_fixable() {
+        diag.fix(Fix::new(
+          format!("Shorten to \"{shortest}\""),
+          vec![Edit::new(span, &shortest)],
+        ))
+      } else {
+        diag
+      });
     }
     diags
   }

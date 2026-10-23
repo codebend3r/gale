@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -51,32 +51,33 @@ impl SelectorIdPatternCheck {
 impl Check for SelectorIdPatternCheck {
   /// Flags ID selector names that do not match the configured regex, defaulting
   /// to kebab-case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// Rules that are not standard syntax (interpolation, placeholders, Less
+  /// mixins) are skipped, as Stylelint skips them.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
 
     let mut diags = Vec::new();
-    for id in extract_id_selectors(&rule.selector) {
-      // Skip IDs containing SCSS interpolation #{...}
-      if matches!(
-        ctx.syntax,
-        gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-      ) && id.contains("#{")
-      {
-        continue;
-      }
-      if !self.pattern.is_match(&id) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!("Expected ID selector \"#{id}\" to match pattern \"{pattern_str}\""),
-          )
-          .span(rule.span)
-          .message_args([format!("#{id}"), pattern_str.to_string()]),
-        );
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for id in extract_id_selectors(rule.selector()) {
+        // Skip IDs containing SCSS interpolation #{...}
+        if matches!(
+          ctx.syntax,
+          gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
+        ) && id.contains("#{")
+        {
+          continue;
+        }
+        if !self.pattern.is_match(&id) {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!("Expected ID selector \"#{id}\" to match pattern \"{pattern_str}\""),
+            )
+            .span(rule.span())
+            .message_args([format!("#{id}"), pattern_str.to_string()]),
+          );
+        }
       }
     }
     diags
@@ -141,29 +142,18 @@ fn extract_id_selectors(selector: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_camel_case_id() {
     let rule = configured(&SelectorIdPattern, None);
-    let d = rule.check(&style_with_selector("#myId"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("#myId")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myId"));
   }
@@ -173,23 +163,27 @@ mod tests {
     let rule = configured(&SelectorIdPattern, None);
     assert!(
       rule
-        .check(&style_with_selector("#my-id"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("#my-id")))
         .is_empty()
     );
-    assert!(rule.check(&style_with_selector("#foo"), &ctx()).is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&style_with_selector("#foo")))
+        .is_empty()
+    );
   }
 
   #[test]
   fn reports_underscore_id() {
     let rule = configured(&SelectorIdPattern, None);
-    let d = rule.check(&style_with_selector("#my_id"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("#my_id")));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn reports_multiple_bad_ids() {
     let rule = configured(&SelectorIdPattern, None);
-    let d = rule.check(&style_with_selector("#myId #anotherId"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("#myId #anotherId")));
     assert_eq!(d.len(), 2);
   }
 
@@ -197,24 +191,23 @@ mod tests {
   fn custom_pattern_camel_case() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&SelectorIdPattern, opts.clone());
-    let c = ctx();
     // camelCase should pass
-    assert!(rule.check(&style_with_selector("#myId"), &c).is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&style_with_selector("#myId")))
+        .is_empty()
+    );
     // kebab-case should fail
-    let d = rule.check(&style_with_selector("#my-id"), &c);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("#my-id")));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn ignores_non_style_nodes() {
     let rule = configured(&SelectorIdPattern, None);
-    let node = CssNode::AtRule(gale_css_parser::AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(
+      "@media (min-width: 768px) { color: red; }",
+    ));
     assert!(d.is_empty());
   }
 

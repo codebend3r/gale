@@ -1,12 +1,12 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{Kind, Node, split_selectors};
+use gale_css_parser::selector::specificity::{self, Specificity, is_pseudo_element};
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern;
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{Kind, Node, split_selectors};
-use crate::selector::specificity::{self, Specificity, is_pseudo_element};
 
 const NAME: &str = "selector-max-specificity";
 
@@ -169,43 +169,45 @@ impl Config {
 impl Check for SelectorMaxSpecificityCheck {
   /// Flags selectors whose specificity exceeds the maximum, stripping
   /// preprocessor interpolation first.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let config = &self.config;
 
-    let selector = if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
-    ) {
-      strip_preprocessor_interpolation(&rule.selector, ctx.syntax)
-    } else {
-      rule.selector.clone()
-    };
-
     let mut diags = Vec::new();
-    for (_, sel) in split_selectors(&selector) {
-      let sel = sel.trim();
-      if sel.is_empty() {
-        continue;
-      }
-
-      // Skip selectors that look like preprocessor constructs
-      if sel.starts_with('%') || sel.starts_with('$') || sel.contains("#{") || sel.contains("@{") {
-        continue;
-      }
-
-      // A selector postcss-selector-parser cannot read is skipped, as in
-      // Stylelint.
-      let Some(specificity) = config.specificity(sel) else {
-        continue;
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = if matches!(
+        ctx.syntax,
+        gale_css_parser::Syntax::Scss
+          | gale_css_parser::Syntax::Sass
+          | gale_css_parser::Syntax::Less
+      ) {
+        strip_preprocessor_interpolation(rule.selector(), ctx.syntax)
+      } else {
+        rule.selector().to_string()
       };
+      for (_, sel) in split_selectors(&selector) {
+        let sel = sel.trim();
+        if sel.is_empty() {
+          continue;
+        }
 
-      if specificity > config.max {
-        let Specificity { a, b, c } = specificity;
-        diags.push(
+        // Skip selectors that look like preprocessor constructs
+        if sel.starts_with('%') || sel.starts_with('$') || sel.contains("#{") || sel.contains("@{")
+        {
+          continue;
+        }
+
+        // A selector postcss-selector-parser cannot read is skipped, as in
+        // Stylelint.
+        let Some(specificity) = config.specificity(sel) else {
+          continue;
+        };
+
+        if specificity > config.max {
+          let Specificity { a, b, c } = specificity;
+          diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
@@ -213,8 +215,9 @@ impl Check for SelectorMaxSpecificityCheck {
                             config.max.a, config.max.b, config.max.c,
                         ),
                     )
-                    .span(rule.span),
+                    .span(rule.span()),
                 );
+        }
       }
     }
     diags
@@ -295,25 +298,20 @@ fn strip_preprocessor_interpolation(selector: &str, syntax: gale_css_parser::Syn
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::StyleRule;
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![],
-      span: Span::new(0, sel.len()),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_high_specificity() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // #id has specificity 1,0,0 which exceeds default 0,2,0
-    let d = rule.check(&style_with_selector("#id"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("#id"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
   }
@@ -322,7 +320,7 @@ mod tests {
   fn allows_low_specificity() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // .a .b has specificity 0,2,0 which is within default 0,2,0
-    let d = rule.check(&style_with_selector(".a .b"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a .b"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -330,7 +328,7 @@ mod tests {
   fn reports_too_many_classes() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // .a.b.c has specificity 0,3,0 which exceeds default 0,2,0
-    let d = rule.check(&style_with_selector(".a.b.c"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(".a.b.c"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0,3,0"));
   }
@@ -339,7 +337,7 @@ mod tests {
   fn where_has_zero_specificity() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // :where(#id) should have (0,0,0), well under the limit
-    let d = rule.check(&style_with_selector(":where(#id)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(":where(#id)"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -347,12 +345,12 @@ mod tests {
   fn is_takes_max_argument_specificity() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // :is(#id) should have (1,0,0) which exceeds limit
-    let d = rule.check(&style_with_selector(":is(#id)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(":is(#id)"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
 
     // :is(.a) should have (0,1,0) which is within default 0,2,0
-    let d = rule.check(&style_with_selector(":is(.a)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(":is(.a)"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -360,7 +358,7 @@ mod tests {
   fn not_takes_max_argument_specificity() {
     let rule = configured(&SelectorMaxSpecificity, None);
     // :not(#id) should have (1,0,0) which exceeds limit
-    let d = rule.check(&style_with_selector(":not(#id)"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(":not(#id)"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("1,0,0"));
   }
@@ -369,9 +367,8 @@ mod tests {
   fn custom_option_allows_higher_specificity() {
     let opts = serde_json::json!(["0,4,1"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx();
     // .a.b.c.d has specificity 0,4,0 -- within "0,4,1"
-    let d = rule.check(&style_with_selector(".a.b.c.d"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".a.b.c.d"), Syntax::Css));
     assert!(d.is_empty());
   }
 
@@ -379,9 +376,8 @@ mod tests {
   fn custom_option_restricts_specificity() {
     let opts = serde_json::json!(["0,1,0"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx();
     // .a.b has specificity 0,2,0 -- exceeds "0,1,0"
-    let d = rule.check(&style_with_selector(".a.b"), &c);
+    let d = rule.check_source(&context(&style_with_selector(".a.b"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0,1,0"));
   }
@@ -397,8 +393,7 @@ mod tests {
     // Only exceeds if a higher bucket is equal and a lower bucket exceeds.
     let opts = serde_json::json!(["0,2,0"]);
     let rule = configured(&SelectorMaxSpecificity, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector("span a"), &c);
+    let d = rule.check_source(&context(&style_with_selector("span a"), Syntax::Css));
     assert!(d.is_empty(), "span a should be allowed with max 0,2,0");
   }
 

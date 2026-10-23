@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{PostcssTree, RuleRef};
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -44,64 +45,37 @@ impl NoInvalidPositionAtImportRuleCheck {
 }
 
 impl Check for NoInvalidPositionAtImportRuleCheck {
-  /// Flags an `@import` that follows a non-import statement. SCSS and Sass are
-  /// skipped, where the ordering semantics differ.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    // In SCSS/Sass, `@import` can validly appear after `@mixin`, `@function`,
-    // and inside `@if` blocks. The import ordering semantics differ from CSS.
-    // Skip this rule entirely for SCSS/Sass to avoid false positives.
+  /// Flags an `@import` that follows a rule or an at-rule other than
+  /// `@charset`, `@import`, a blockless `@layer` or one `ignoreAtRules`
+  /// names, as Stylelint's walk does.  SCSS and Sass are skipped, where
+  /// `@import` validly follows `@mixin`, `@function` and `@if`.
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     if matches!(context.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
     let mut diagnostics = Vec::new();
-    let mut seen_non_import = false;
-    let is_scss = false;
-
-    for node in nodes {
-      match node {
-        // Comments are always allowed anywhere.
-        CssNode::Comment(_) => continue,
-
-        CssNode::AtRule(at_rule) => {
-          let name = at_rule.name.as_str();
-
-          // These are always allowed before @import.
-          if name == "charset" || name == "layer" {
-            continue;
+    let mut invalid_position = false;
+    for node in tree.walk() {
+      if let Some(at) = node.as_at_rule() {
+        let name = at.name().to_ascii_lowercase();
+        if name == "import" {
+          if invalid_position {
+            diagnostics.push(
+              Diagnostic::new(NAME, "Unexpected @import after other statements").span(at.span()),
+            );
           }
-
-          // In SCSS, @use and @forward are import-like and allowed
-          // before @import (and subject to the same ordering rule).
-          if is_scss && (name == "use" || name == "forward") {
-            if seen_non_import {
-              diagnostics.push(
-                Diagnostic::new(NAME, format!("Unexpected @{name} after other statements"))
-                  .span(at_rule.span),
-              );
-            }
-            continue;
-          }
-
-          if name == "import" {
-            if seen_non_import {
-              diagnostics.push(
-                Diagnostic::new(NAME, "Unexpected @import after other statements")
-                  .span(at_rule.span),
-              );
-            }
-          } else if !self.ignore_at_rules.matches(name) {
-            seen_non_import = true;
-          }
+          continue;
         }
-
-        // Any other node (style rules, declarations) counts as non-import.
-        _ => {
-          seen_non_import = true;
+        let allowed = name == "charset"
+          || (name == "layer" && !at.has_block())
+          || self.ignore_at_rules.matches(at.name());
+        if !allowed && at.is_standard_syntax() {
+          invalid_position = true;
         }
+      } else if node.as_rule().is_some_and(RuleRef::is_standard_syntax) {
+        invalid_position = true;
       }
     }
-
     diagnostics
   }
 }
@@ -109,159 +83,61 @@ impl Check for NoInvalidPositionAtImportRuleCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, lint};
+
+  /// The texts reported for `source` in `syntax`.
+  fn reported(source: &str, syntax: Syntax) -> Vec<&str> {
+    configured(&NoInvalidPositionAtImportRule, None)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| &source[d.span.offset..d.span.offset + d.span.length])
+      .collect()
+  }
 
   #[test]
   fn reports_import_after_style_rule() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    let nodes = vec![
-      CssNode::Style(StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![],
-        span: Span::new(0, 5),
-        ..Default::default()
-      }),
-      CssNode::AtRule(AtRule {
-        name: "import".to_string(),
-        params: "url.css".to_string(),
-        span: Span::new(10, 20),
-        children: vec![],
-      }),
-    ];
-    let context = ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert_eq!(diags.len(), 1);
-    assert!(diags[0].message.contains("@import"));
-  }
-
-  #[test]
-  fn allows_import_before_rules() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    let nodes = vec![
-      CssNode::AtRule(AtRule {
-        name: "import".to_string(),
-        params: "reset.css".to_string(),
-        span: Span::new(0, 20),
-        children: vec![],
-      }),
-      CssNode::Style(StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![],
-        span: Span::new(25, 5),
-        ..Default::default()
-      }),
-    ];
-    let context = ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn allows_use_and_forward_before_import_in_scss() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    // SCSS files now skip this rule entirely, so no diagnostics expected.
-    let nodes = vec![
-      CssNode::AtRule(AtRule {
-        name: "use".to_string(),
-        params: "'sass:math'".to_string(),
-        span: Span::new(0, 20),
-        children: vec![],
-      }),
-      CssNode::AtRule(AtRule {
-        name: "forward".to_string(),
-        params: "'variables'".to_string(),
-        span: Span::new(21, 25),
-        children: vec![],
-      }),
-      CssNode::AtRule(AtRule {
-        name: "import".to_string(),
-        params: "reset.css".to_string(),
-        span: Span::new(50, 20),
-        children: vec![],
-      }),
-    ];
-    let context = scss_ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn skips_use_after_style_rule_in_scss() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    // SCSS files now skip this rule entirely, so even misplaced @use is not flagged.
-    let nodes = vec![
-      CssNode::Style(StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![],
-        span: Span::new(0, 5),
-        ..Default::default()
-      }),
-      CssNode::AtRule(AtRule {
-        name: "use".to_string(),
-        params: "'sass:math'".to_string(),
-        span: Span::new(10, 20),
-        children: vec![],
-      }),
-    ];
-    let context = scss_ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert!(diags.is_empty());
-  }
-
-  #[test]
-  fn skips_rule_entirely_in_scss() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    let nodes = vec![
-      CssNode::Style(StyleRule {
-        selector: "a".to_string(),
-        declarations: vec![],
-        span: Span::new(0, 5),
-        ..Default::default()
-      }),
-      CssNode::AtRule(AtRule {
-        name: "import".to_string(),
-        params: "url.css".to_string(),
-        span: Span::new(10, 20),
-        children: vec![],
-      }),
-    ];
-    let context = scss_ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert!(
-      diags.is_empty(),
-      "SCSS files should skip this rule entirely"
+    let d = configured(&NoInvalidPositionAtImportRule, None)
+      .check_source(&context("a {}\n@import url(\"a.css\");", Syntax::Css));
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("@import"));
+    assert_eq!(
+      reported("a {}\n@IMPORT \"a.css\";", Syntax::Less),
+      ["@IMPORT \"a.css\";"]
     );
   }
 
   #[test]
-  fn allows_charset_and_layer_before_import() {
-    let rule = configured(&NoInvalidPositionAtImportRule, None);
-    let nodes = vec![
-      CssNode::AtRule(AtRule {
-        name: "charset".to_string(),
-        params: "UTF-8".to_string(),
-        span: Span::new(0, 15),
-        children: vec![],
-      }),
-      CssNode::AtRule(AtRule {
-        name: "layer".to_string(),
-        params: "base".to_string(),
-        span: Span::new(16, 12),
-        children: vec![],
-      }),
-      CssNode::AtRule(AtRule {
-        name: "import".to_string(),
-        params: "reset.css".to_string(),
-        span: Span::new(30, 20),
-        children: vec![],
-      }),
-    ];
-    let context = ctx();
-    let diags = rule.check_root(&nodes, &context);
-    assert!(diags.is_empty());
+  fn reports_imports_in_blocks_after_other_statements() {
+    let source = "@media print { @import \"a.css\"; }";
+    assert_eq!(reported(source, Syntax::Css), ["@import \"a.css\";"]);
+  }
+
+  #[test]
+  fn allows_import_before_rules() {
+    assert!(reported("@import \"a.css\";\na {}", Syntax::Css).is_empty());
+  }
+
+  #[test]
+  fn allows_charset_layer_and_declarations_before_import() {
+    let source = "@charset \"utf-8\";\n@layer base;\n/* c */\n@import \"a.css\";";
+    assert!(reported(source, Syntax::Css).is_empty());
+    // A `@layer` block is a statement like any other.
+    assert_eq!(
+      reported("@layer base {}\n@import \"a.css\";", Syntax::Css).len(),
+      1
+    );
+  }
+
+  #[test]
+  fn less_variables_and_mixin_calls_are_not_statements() {
+    let source = "@color: red;\n.mixin();\n@import \"a.less\";";
+    assert!(reported(source, Syntax::Less).is_empty());
+  }
+
+  #[test]
+  fn skips_rule_entirely_in_scss() {
+    assert!(reported("a {}\n@import \"a\";", Syntax::Scss).is_empty());
   }
 
   #[test]
@@ -282,8 +158,7 @@ mod tests {
 
   #[test]
   fn ignore_at_rules_may_come_before_an_import() {
-    use crate::testing::lint;
-    let source = "@my-rule;\n@import url(\"a.css\");";
+    let source = "@my-rule x;\n@import url(\"a.css\");";
     assert_eq!(
       lint(NAME, serde_json::json!(true), source, Syntax::Css).len(),
       1

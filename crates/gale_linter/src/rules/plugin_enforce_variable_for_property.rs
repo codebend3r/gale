@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -187,27 +187,30 @@ fn value_matches_patterns(value: &str, patterns: &[Pattern]) -> bool {
 }
 
 impl Check for PluginEnforceVariableForPropertyCheck {
-  /// Flags a configured property whose value matches none of its allowed patterns.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Flags a configured property whose value matches none of its allowed
+  /// patterns.  The value is `decl.value`, as the plugins this rule stands
+  /// in for read it, and the property and value are printed as written.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let property_map = &self.property_map;
     if property_map.is_empty() {
       return vec![];
     }
 
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      let prop_lower = decl.property.to_lowercase();
+    for decl in tree.walk_decls() {
+      let prop_lower = decl.prop().to_lowercase();
       if let Some(patterns) = property_map.get(&prop_lower) {
-        if !value_matches_patterns(&decl.value, patterns) {
+        if !value_matches_patterns(decl.value(), patterns) {
           diags.push(
             Diagnostic::new(
               NAME,
               format!(
                 "Expected variable or allowed value for '{}', got '{}'",
-                decl.property, decl.value
+                decl.prop(),
+                decl.value()
               ),
             )
-            .span(decl.span),
+            .span(decl.span()),
           );
         }
       }
@@ -219,25 +222,13 @@ impl Check for PluginEnforceVariableForPropertyCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
-  fn style_with_decl(prop: &str, val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: prop.to_string(),
-        value: val.to_string(),
-        span: Span::new(0, 10),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      children: vec![],
-      nested_at_rules: vec![],
-    })
+  /// A rule `a` declaring `prop: val`.
+  fn style_with_decl(prop: &str, val: &str) -> String {
+    format!("a {{ {prop}: {val}; }}")
   }
 
   #[test]
@@ -248,9 +239,8 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("color", "$text-primary");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert!(diags.is_empty());
   }
 
@@ -262,9 +252,8 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("color", "inherit");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert!(diags.is_empty());
   }
 
@@ -276,9 +265,8 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("color", "red");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert_eq!(diags.len(), 1);
     assert!(
       diags[0]
@@ -297,9 +285,8 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("color", "red");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert_eq!(diags.len(), 1);
   }
 
@@ -311,18 +298,16 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("font-size", "16px");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert!(diags.is_empty());
   }
 
   #[test]
   fn no_options_returns_empty() {
     let rule = configured(&PluginEnforceVariableForProperty, None);
-    let ctx = ctx();
     let node = style_with_decl("color", "red");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert!(diags.is_empty());
   }
 
@@ -334,9 +319,8 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
     let node = style_with_decl("color", "Inherit");
-    let diags = rule.check(&node, &ctx);
+    let diags = rule.check_source(&ctx_with_source(&node));
     assert!(diags.is_empty());
   }
 
@@ -349,16 +333,15 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
 
     let node1 = style_with_decl("color", "red");
-    assert_eq!(rule.check(&node1, &ctx).len(), 1);
+    assert_eq!(rule.check_source(&ctx_with_source(&node1)).len(), 1);
 
     let node2 = style_with_decl("background-color", "blue");
-    assert_eq!(rule.check(&node2, &ctx).len(), 1);
+    assert_eq!(rule.check_source(&ctx_with_source(&node2)).len(), 1);
 
     let node3 = style_with_decl("background-color", "transparent");
-    assert!(rule.check(&node3, &ctx).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node3)).is_empty());
   }
 
   #[test]
@@ -369,19 +352,18 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
 
     let node = style_with_decl("margin", "0");
-    assert!(rule.check(&node, &ctx).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
 
     let node = style_with_decl("margin", "auto");
-    assert!(rule.check(&node, &ctx).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
 
     let node = style_with_decl("margin", "$spacer-3");
-    assert!(rule.check(&node, &ctx).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
 
     let node = style_with_decl("margin", "10px");
-    assert_eq!(rule.check(&node, &ctx).len(), 1);
+    assert_eq!(rule.check_source(&ctx_with_source(&node)).len(), 1);
   }
 
   #[test]
@@ -392,15 +374,21 @@ mod tests {
         }
     }]);
     let rule = configured(&PluginEnforceVariableForProperty, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Declaration(Declaration {
-      property: "color".to_string(),
-      value: "red".to_string(),
-      span: Span::new(0, 10),
-      important: false,
-    });
-    let diags = rule.check(&node, &ctx);
+    let node = "@media print { color: red; }";
+    let diags = rule.check_source(&ctx_with_source(node));
     assert_eq!(diags.len(), 1);
+  }
+
+  #[test]
+  fn reads_and_prints_the_value_as_written() {
+    let opts = json!([true, { "properties": { "color": ["/^\\$text-/"] } }]);
+    let rule = configured(&PluginEnforceVariableForProperty, opts);
+    let diags = rule.check_source(&ctx_with_source("a { COLOR: #FFFFFF !important; }"));
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+      diags[0].message,
+      "Expected variable or allowed value for 'COLOR', got '#FFFFFF'"
+    );
   }
 
   #[test]

@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -46,95 +47,67 @@ impl ScssAtFunctionPatternCheck {
 
 impl Check for ScssAtFunctionPatternCheck {
   /// Flags an `@function` name that does not match the configured regex,
-  /// defaulting to kebab-case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// defaulting to kebab-case, at the name as stylelint-scss finds it.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "function" {
-      return vec![];
-    }
-
     let pattern_str = self.pattern.source.as_str();
-
-    // The function name is the first word in params (before `(`)
-    let first_token = at.params.split_whitespace().next().unwrap_or("");
-    let func_name = first_token.split('(').next().unwrap_or("");
-
-    if func_name.is_empty() {
-      return vec![];
-    }
-
-    if !self.pattern.is_match(func_name) {
-      vec![
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if at.name() != "function" {
+        continue;
+      }
+      // The function name is the first word in params (before `(`)
+      let first_token = at.params().split_whitespace().next().unwrap_or("");
+      let func_name = first_token.split('(').next().unwrap_or("");
+      if func_name.is_empty() || self.pattern.is_match(func_name) {
+        continue;
+      }
+      diags.push(
         Diagnostic::new(
           NAME,
-          format!(
-            "Expected @function name \"{}\" to match pattern \"{}\"",
-            func_name, pattern_str
-          ),
+          format!("Expected @function name \"{func_name}\" to match pattern \"{pattern_str}\""),
         )
-        .span(at.span),
-      ]
-    } else {
-      vec![]
+        .span(at.word_span(func_name)),
+      );
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn function(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "function".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  /// The reports for `source` in `syntax`, with the default pattern.
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&ScssAtFunctionPattern, None).check_source(&context(source, syntax))
   }
 
   #[test]
   fn allows_kebab_case() {
-    let rule = configured(&ScssAtFunctionPattern, None);
-    assert!(rule.check(&function("my-func($a)"), &scss_ctx()).is_empty());
+    assert!(check("@function my-func($a) { @return 1; }", Syntax::Scss).is_empty());
   }
 
   #[test]
-  fn reports_non_matching_pattern() {
-    let rule = configured(&ScssAtFunctionPattern, None);
-    let d = rule.check(&function("MyFunc($a)"), &scss_ctx());
+  fn reports_non_matching_pattern_at_the_name() {
+    let d = check("a {}\n@function MyFunc($a) { @return 1; }", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("MyFunc"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (15, 6));
   }
 
   #[test]
   fn skips_non_function_at_rule() {
-    let rule = configured(&ScssAtFunctionPattern, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "mixin".to_string(),
-      params: "MyMixin".to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(check("@mixin MyMixin { }", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtFunctionPattern, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&function("MyFunc"), &css_ctx).is_empty());
+    assert!(check("@function MyFunc { }", Syntax::Css).is_empty());
   }
 
   #[test]

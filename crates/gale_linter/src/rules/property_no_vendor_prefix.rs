@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable;
@@ -6,7 +6,6 @@ use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
 
 const NAME: &str = "property-no-vendor-prefix";
 
@@ -43,15 +42,10 @@ impl PropertyNoVendorPrefixCheck {
 impl Check for PropertyNoVendorPrefixCheck {
   /// Flags vendor-prefixed properties that have an unprefixed equivalent,
   /// skipping any listed in `ignoreProperties`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in node.declarations() {
-      if decl.span.length == 0 {
-        continue;
-      }
-      let Some((prop, prop_start)) = source_text::declaration_property(ctx.source, decl) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      let (prop, prop_start) = (decl.prop(), decl.prop_start());
       if self.ignore_properties.matches(prop) {
         continue;
       }
@@ -64,8 +58,7 @@ impl Check for PropertyNoVendorPrefixCheck {
       }
       // whatwg/compat#28: the prefixed form treats one length differently.
       if prop == "-webkit-background-size" {
-        let value = source_text::declaration_value(ctx.source, decl).map_or("", |(v, _)| v);
-        if !is_safe_background_size(value) {
+        if !is_safe_background_size(&decl.raw_value()) {
           continue;
         }
       }

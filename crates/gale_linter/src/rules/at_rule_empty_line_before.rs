@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "at-rule-empty-line-before";
@@ -82,11 +81,10 @@ impl AtRuleEmptyLineBeforeCheck {
 
 impl Check for AtRuleEmptyLineBeforeCheck {
   /// Checks every at-rule in the document, in source order.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let always = self.always;
     let except = |name: &str| self.except.contains(&name);
     let ignore = |name: &str| self.ignore.contains(&name);
-    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -98,8 +96,8 @@ impl Check for AtRuleEmptyLineBeforeCheck {
         continue;
       }
       let nested = tree.nodes[i].parent.is_some();
-      let blockless_after_blockless = is_blockless_after_blockless(&tree, i);
-      let blockless_after_same_name = blockless_after_blockless && is_after_same_name(&tree, i);
+      let blockless_after_blockless = is_blockless_after_blockless(tree, i);
+      let blockless_after_same_name = blockless_after_blockless && is_after_same_name(tree, i);
       if (ignore("blockless-after-blockless") && blockless_after_blockless)
         || (ignore("first-nested") && tree.is_first_nested(i))
         || (ignore("blockless-after-same-name-blockless") && blockless_after_same_name)
@@ -109,7 +107,7 @@ impl Check for AtRuleEmptyLineBeforeCheck {
         continue;
       }
 
-      let flip = (except("after-same-name") && is_after_same_name(&tree, i))
+      let flip = (except("after-same-name") && is_after_same_name(tree, i))
         || (except("inside-block") && nested)
         || (except("first-nested") && tree.is_first_nested(i))
         || (except("blockless-after-blockless") && blockless_after_blockless)
@@ -120,7 +118,7 @@ impl Check for AtRuleEmptyLineBeforeCheck {
       }
       diags.push(empty_line_report(
         NAME,
-        &tree,
+        tree,
         i,
         expect_empty_line,
         "at-rule",
@@ -156,13 +154,13 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx_with_source, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, fix, invalid_options};
 
   /// The messages for `source` with `options`.
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
     let ctx = ctx_with_source(source);
     configured(&AtRuleEmptyLineBefore, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()
@@ -184,9 +182,9 @@ mod tests {
   }
 
   #[test]
-  fn sees_at_rules_and_comments_the_css_parser_drops() {
+  fn sees_every_at_rule_and_comment() {
     let always = serde_json::json!("always");
-    // lightningcss drops `@import` after a rule and `@mixin` in CSS.
+    // `@import` after a rule and `@mixin` in CSS are at-rules like any other.
     assert_eq!(
       messages("@keyframes foo {}\n@import 'x.css'", always.clone()).len(),
       1

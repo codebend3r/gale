@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_color_function;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "color-function-notation";
 
@@ -56,18 +56,15 @@ impl Check for ColorFunctionNotationCheck {
   /// Reports color functions in the other notation.  Under `"modern"` the
   /// fix turns the channel commas into spaces, the alpha comma into ` / `,
   /// and drops the `a` of `rgba`/`hsla`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(modern) = self.modern else {
       return Vec::new();
     };
     let ignore_with_var = self.ignore_with_var;
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
-      let Some(value) = ctx.source_slice(decl.value_span.start, decl.value_span.end) else {
-        continue;
-      };
+    for decl in tree.walk_decls() {
+      let value = decl.written_value();
       if !mentions_legacy_function(value) || (modern && !value.contains(',')) {
         continue;
       }

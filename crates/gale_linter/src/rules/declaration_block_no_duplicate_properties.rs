@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::is_named_color;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::{is_standard_syntax_property, is_standard_syntax_value};
 use crate::value_syntax::{self, Node};
@@ -88,10 +87,9 @@ struct Ignore {
 
 impl Check for DeclarationBlockNoDuplicatePropertiesCheck {
   /// Checks the declarations of every block in the document.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut checker = Checker {
-      tree: &tree,
+      tree: tree,
       ignore: self.ignore,
       ignore_properties: &self.ignore_properties,
       diags: Vec::new(),
@@ -101,7 +99,7 @@ impl Check for DeclarationBlockNoDuplicatePropertiesCheck {
       let node = &tree.nodes[i];
       if matches!(node.kind, NodeKind::Rule | NodeKind::AtRule)
         && let Some(children) = &node.children
-        && is_walked(&tree, i)
+        && is_walked(tree, i)
       {
         checker.check_block(children);
       }
@@ -343,7 +341,7 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   const RULE: &str = "declaration-block-no-duplicate-properties";
 
@@ -351,7 +349,7 @@ mod tests {
   fn offsets(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<usize> {
     let ctx = context(source, syntax);
     configured(&DeclarationBlockNoDuplicateProperties, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.span.offset)
       .collect()

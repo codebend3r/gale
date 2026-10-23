@@ -1,13 +1,12 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{Node, PostcssTree};
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::js_number::parse_number;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::Node;
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "font-weight-notation";
 
@@ -73,15 +72,14 @@ enum Notation {
 impl Check for FontWeightNotationCheck {
   /// Reports font weights in the other notation, with a fix wherever the
   /// weight has an equivalent.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(notation) = self.notation else {
       return Vec::new();
     };
     let ignore_relative = self.ignore_relative;
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
-    for decl in tree.decls() {
-      self.check_decl(decl, ctx, notation, ignore_relative, &mut diags);
+    for decl in tree.walk_decls() {
+      self.check_decl(decl.data(), ctx, notation, ignore_relative, &mut diags);
     }
     diags
   }

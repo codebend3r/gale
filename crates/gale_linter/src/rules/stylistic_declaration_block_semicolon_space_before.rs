@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -43,102 +43,86 @@ impl StylisticDeclarationBlockSemicolonSpaceBeforeCheck {
 
 impl Check for StylisticDeclarationBlockSemicolonSpaceBeforeCheck {
   /// Flags a declaration semicolon whose preceding space does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+    let message = match self.option {
+      "always" => "Expected single space before \";\"",
+      "never" => "Unexpected whitespace before \";\"",
+      _ => return vec![],
     };
-    let option = self.option;
-
-    let mut diags = Vec::new();
-    let source = ctx.source;
-
-    for decl in &rule.declarations {
-      let decl_end = decl.span.offset + decl.span.length;
-      if decl_end >= source.len() {
-        continue;
-      }
-
-      // Find the semicolon following this declaration
-      let remaining = &source[decl_end..];
-      let semi_rel = match remaining.find(';') {
-        Some(pos) => pos,
-        None => continue,
-      };
-      let semi_offset = decl_end + semi_rel;
-
-      if semi_offset == 0 {
-        continue;
-      }
-
-      let char_before = source.as_bytes()[semi_offset - 1];
-      let has_space = char_before == b' ' || char_before == b'\t';
-
-      let violation = match option {
-        "always" => !has_space,
-        "never" => has_space,
-        _ => false,
-      };
-
-      if violation {
-        let msg = match option {
-          "always" => "Expected single space before \";\"",
-          "never" => "Unexpected whitespace before \";\"",
-          _ => continue,
-        };
-        diags.push(Diagnostic::new(NAME, msg).span(Span::new(semi_offset, 1)));
-      }
-    }
-
-    diags
+    let source = ctx.source.as_bytes();
+    tree
+      .walk_decls()
+      .filter(|decl| decl.parent_is_rule())
+      // The plugin lets `--x: ;` (a custom property set to a space) keep
+      // its space under "never".
+      .filter(|decl| !(self.option == "never" && is_space_custom_property(*decl)))
+      .filter_map(DeclRef::semicolon)
+      .filter(|&semi| {
+        let has_space = matches!(source[semi - 1], b' ' | b'\t');
+        has_space != (self.option == "always")
+      })
+      .map(|semi| {
+        // The plugin reports at the character before the `;`.
+        let before = ctx.source[..semi]
+          .char_indices()
+          .next_back()
+          .map_or(semi, |(i, _)| i);
+        Diagnostic::new(NAME, message).span(Span::new(before, 0))
+      })
+      .collect()
   }
+}
+
+/// Whether `decl` is a custom property whose value is a single space
+/// (`--x: ;`).
+fn is_space_custom_property(decl: DeclRef) -> bool {
+  let text = decl.source_text();
+  decl.is_custom_property()
+    && text
+      .split_once(':')
+      .is_some_and(|(_, value)| value.strip_suffix(';') == Some(" "))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+
+  /// The offsets reported for the CSS `source` with `option`.
+  fn offsets(source: &str, option: Option<serde_json::Value>) -> Vec<usize> {
+    configured(&StylisticDeclarationBlockSemicolonSpaceBefore, option)
+      .check_source(&ctx_with_source(source))
+      .into_iter()
+      .map(|d| d.span.offset)
+      .collect()
+  }
 
   #[test]
   fn allows_no_space_before_semicolon() {
-    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceBefore, None);
-    let source = "a { color: red; }";
-    let ctx = ctx_with_source(source);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(4, 10),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx);
-    assert!(d.is_empty());
+    assert!(offsets("a { color: red; }", None).is_empty());
   }
 
   #[test]
   fn reports_space_before_semicolon_when_never() {
-    let rule = configured(&StylisticDeclarationBlockSemicolonSpaceBefore, None);
-    let source = "a { color: red ; }";
-    let ctx = ctx_with_source(source);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(4, 10),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx);
+    let d = configured(&StylisticDeclarationBlockSemicolonSpaceBefore, None)
+      .check_source(&ctx_with_source("a { color: red ; }"));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
+    assert_eq!(d[0].span.offset, 14);
+  }
+
+  #[test]
+  fn never_lets_a_custom_property_be_a_space() {
+    assert!(offsets("a { --x: ; --y: 1 ; }", None) == [17]);
+  }
+
+  #[test]
+  fn tests_each_declarations_own_semicolon() {
+    let source = "a { color: red ; top: 0; left: 0 }\nb { right: 0; }";
+    assert_eq!(offsets(source, None), [14]);
+    let always = Some(serde_json::json!("always"));
+    assert_eq!(offsets(source, always), [22, 46]);
   }
 
   #[test]

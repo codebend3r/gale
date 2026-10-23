@@ -430,8 +430,8 @@ gale [OPTIONS] [FILES]...
 | Flag | Description |
 |------|-------------|
 | `<files>` | Files, directories, or glob patterns to lint |
-| `--fix` | Automatically fix problems (default: strict — skips files with parse errors) |
-| `--fix=lax` | Also fix files that have parse errors |
+| `--fix` | Automatically fix problems |
+| `--fix=lax` | Accepted for Stylelint compatibility; gale recovers from every syntax error, so it fixes like `--fix` |
 | `-q, --quiet` | Only report errors |
 | `-f, --formatter <type>` | Output: `text`, `string`, `json`, `compact`, `verbose`, `tap`, `unix`, `agent`. Defaults to the config's `formatter`, else `text`. An unknown value is rejected, on the command line or in the config |
 | `-c, --config <path>` | Config file path |
@@ -646,7 +646,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
   +-- gale_config       Config loading, resolution, presets, per-file rule sets
   |     +-- gale_linter        Its rule table, which gale:all and the presets come from
   +-- gale_linter       Rule trait, registry, runner, 279 built-in rules
-  |     +-- gale_css_parser    CSS/SCSS/Less parser (lightningcss + raffia)
+  |     +-- gale_css_parser    CSS/SCSS/Less parser (the PostCSS-shaped tree)
   |     +-- gale_diagnostics   Span, Diagnostic, LintResult, Fix/Edit types
   +-- gale_formatter    Output formatters (text, json, compact, verbose, tap, unix, agent)
   +-- gale_lsp          Language Server Protocol server
@@ -654,7 +654,7 @@ gale_cli         CLI definition (clap), file discovery, orchestration
 
 | Crate | Responsibility |
 |-------|----------------|
-| `gale_css_parser` | Wraps **lightningcss** (CSS) and **raffia** (SCSS/Less) into a unified, owned AST |
+| `gale_css_parser` | Parses CSS, SCSS and Less into the statement tree PostCSS builds (with `postcss-scss` / `postcss-less`), plus the value and selector parsers rules use and the Sass to SCSS conversion |
 | `gale_diagnostics` | Core types: `Span`, `Diagnostic`, `LintResult`, `Fix`, `Edit` |
 | `gale_linter` | `Rule` trait, `RuleRegistry`, `RuleSet` (the one way a file is linted), inline disable comments, all rule implementations |
 | `gale_config` | Config file discovery, parsing (JSON/YAML/TOML/JS), `extends` resolution, built-in presets, and `RuleSetResolver`: whether a file is ignored, its parser and its `RuleSet`, shared by the CLI and the LSP |

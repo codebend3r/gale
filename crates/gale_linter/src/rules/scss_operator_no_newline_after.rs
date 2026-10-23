@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -40,7 +41,7 @@ const OPERATORS: &[char] = &['+', '-', '*', '/'];
 impl Check for ScssOperatorNoNewlineAfterCheck {
   /// Flags a line ending in a binary arithmetic operator, scanning line by line
   /// and tracking whether the position is inside a block comment.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -183,13 +184,15 @@ fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn reports_plus_before_newline() {
     let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let source = "$a: 1 +\n  2;";
-    let d = rule.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_source(&scss_ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains('+'));
   }
@@ -198,7 +201,7 @@ mod tests {
   fn allows_operator_in_middle_of_line() {
     let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let source = "$a: 1 + 2;";
-    let d = rule.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_source(&scss_ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -206,7 +209,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let ctx = ctx_with_source("$a: 1 +\n  2;");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -216,14 +219,14 @@ mod tests {
     let ctx = scss_ctx_with_source(
       "/* two-line options (title +\n * description) render in a popover */\n.a { width: 1px + 2px; }\n",
     );
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]
   fn reports_operator_after_block_comment_on_same_line() {
     let rule = configured(&ScssOperatorNoNewlineAfter, None);
     let ctx = scss_ctx_with_source(".a { width: /* c */ 1px +\n 2px; }\n");
-    assert_eq!(rule.check_root(&[], &ctx).len(), 1);
+    assert_eq!(rule.check_source(&ctx).len(), 1);
   }
 
   #[test]
@@ -231,7 +234,7 @@ mod tests {
     let rule = configured(&ScssOperatorNoNewlineAfter, None);
     // A line ending with ` -` after a colon is likely unary (start of value)
     let source = "color:\n  -1rem;";
-    let d = rule.check_root(&[], &scss_ctx_with_source(source));
+    let d = rule.check_source(&scss_ctx_with_source(source));
     // No operator at end of line — "color:" ends with ":", not an operator
     assert!(d.is_empty());
   }

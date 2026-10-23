@@ -1,10 +1,11 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, ValueNode};
 
 const NAME: &str = "scss/function-color-relative";
 
@@ -58,15 +59,14 @@ fn is_color_function(node: &ValueNode<'_>) -> bool {
 impl Check for ScssFunctionColorRelativeCheck {
   /// Reports the name of every relative colour function called in a
   /// declaration value, and in a `filter` the ones inside `drop-shadow()`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return Vec::new();
     }
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
-      let Some(value_index) = tree.declaration_value_index(decl) else {
+    for decl in tree.walk_decls() {
+      let Some(value_index) = decl.value_index() else {
         continue;
       };
       let is_filter = decl.name == "filter";

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -40,63 +40,54 @@ impl StylisticSelectorMaxEmptyLinesCheck {
 
 impl Check for StylisticSelectorMaxEmptyLinesCheck {
   /// Flags runs of blank lines inside a selector longer than the maximum.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  ///
+  /// Reads the selector of every rule as written, as the plugin does.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
+    let mut diags = Vec::new();
+    for rule in tree.walk_rules() {
+      // Check for consecutive empty lines within the selector string.
+      let selector = rule.raw_selector();
+      let mut consecutive_empty = 0usize;
+      let mut max_found = 0usize;
 
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    // Check for consecutive empty lines within the selector string.
-    let selector = &rule.selector;
-    let mut consecutive_empty = 0usize;
-    let mut max_found = 0usize;
-
-    for line in selector.lines() {
-      if line.trim().is_empty() {
-        consecutive_empty += 1;
-        if consecutive_empty > max_found {
-          max_found = consecutive_empty;
+      for line in selector.lines() {
+        if line.trim().is_empty() {
+          consecutive_empty += 1;
+          if consecutive_empty > max_found {
+            max_found = consecutive_empty;
+          }
+        } else {
+          consecutive_empty = 0;
         }
-      } else {
-        consecutive_empty = 0;
+      }
+
+      if max_found > max {
+        diags.push(
+          Diagnostic::new(NAME, format!("Expected no more than {max} empty line(s)"))
+            .span(rule.span()),
+        );
       }
     }
-
-    if max_found > max {
-      vec![
-        Diagnostic::new(NAME, format!("Expected no more than {max} empty line(s)")).span(rule.span),
-      ]
-    } else {
-      vec![]
-    }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
+  /// What the rule allowing `max` empty lines reports for a CSS rule with
+  /// the selector `selector`.
   fn check_selector(selector: &str, max: u64) -> Vec<Diagnostic> {
-    let opts = serde_json::json!(max);
-    let rule = configured(&StylisticSelectorMaxEmptyLines, opts.clone());
-    let ctx = ctx();
-    let node = CssNode::Style(StyleRule {
-      selector: selector.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    rule.check(&node, &ctx)
+    let rule = configured(&StylisticSelectorMaxEmptyLines, serde_json::json!(max));
+    rule.check_source(&context(
+      &format!("{selector} {{ color: red; }}"),
+      Syntax::Css,
+    ))
   }
 
   #[test]

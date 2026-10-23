@@ -137,8 +137,8 @@ fn lint_and_report(cli: &Cli, root: &RootConfig, settings: &Settings) -> Result<
     }
   };
 
-  if let Some(mode) = settings.fix {
-    fix::fix(&mut linted, mode, cli.stdin);
+  if settings.fix.is_some() {
+    fix::fix(&mut linted, cli.stdin);
   }
 
   if settings.use_cache {

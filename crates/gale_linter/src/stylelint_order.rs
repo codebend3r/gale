@@ -10,7 +10,7 @@
 
 use gale_diagnostics::{Edit, Span};
 
-use crate::postcss_tree::{NodeKind, PostcssTree, has_delimited};
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree, has_delimited};
 
 /// `vendor.prefix`: the `-\w+-` a property starts with, or `""`.
 pub fn vendor_prefix(prop: &str) -> &str {

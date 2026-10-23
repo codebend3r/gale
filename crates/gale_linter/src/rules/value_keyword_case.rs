@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::CSS_WIDE_KEYWORDS;
@@ -881,9 +881,7 @@ impl Check for ValueKeywordCaseCheck {
   /// Every declaration counts, as with Stylelint's `walkDecls`: those
   /// directly inside at-rules, SCSS variables and nested properties, and
   /// ones whose value the CSS parser would reject.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
-
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expect_upper = self.expect_upper;
     let ignore_keywords = &self.ignore_keywords;
     let ignore_properties = &self.ignore_properties;
@@ -900,7 +898,7 @@ impl Check for ValueKeywordCaseCheck {
 
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
+    for decl in tree.walk_decls() {
       // Stylelint skips a declaration whose value is not standard syntax
       // (a variable, a module member, interpolation).
       if !is_standard_syntax_value(&decl.value) {
@@ -926,10 +924,7 @@ impl Check for ValueKeywordCaseCheck {
 
       // The raw value as written (Stylelint's `getDeclarationValue`):
       // comments kept, `!important` left out.
-      let Some(value_to_tokenize) = ctx.source_slice(decl.value_span.start, decl.value_span.end)
-      else {
-        continue;
-      };
+      let value_to_tokenize = decl.written_value();
       let value_abs_start = decl.value_span.start;
 
       let tokens = tokenize_value(value_to_tokenize);
@@ -1023,12 +1018,12 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   /// The diagnostics for `source` in `syntax` with `options`.
   fn lint(source: &str, syntax: Syntax, options: Option<&serde_json::Value>) -> Vec<Diagnostic> {
     let ctx = context(source, syntax);
-    configured(&ValueKeywordCase, options.cloned()).check_root(&[], &ctx)
+    configured(&ValueKeywordCase, options.cloned()).check_source(&ctx)
   }
 
   /// The diagnostics for `a { <prop>: <value>; }` with no options.

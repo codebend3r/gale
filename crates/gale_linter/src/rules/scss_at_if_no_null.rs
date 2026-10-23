@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -35,95 +36,82 @@ impl ScssAtIfNoNullCheck {
 
 impl Check for ScssAtIfNoNullCheck {
   /// Flags an `@if` condition comparing against `null` — `not $x` and `$x` say
-  /// the same thing more directly.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// the same thing more directly — at the condition, as stylelint-scss
+  /// reports it.  `@else if` is left alone, as stylelint-scss leaves it.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "if" {
-      return vec![];
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if at.name() != "if" {
+        continue;
+      }
+      let params = at.params().to_ascii_lowercase();
+      // Stylelint's scss/at-if-no-null skips `!= null and ...` patterns —
+      // these are compound conditions where the null check is part of a
+      // larger boolean expression and removing it would change semantics.
+      if params.contains("!= null and ")
+        || !(params.contains("== null") || params.contains("!= null"))
+      {
+        continue;
+      }
+      diags.push(
+        Diagnostic::new(NAME, "Unexpected null comparison in @if condition")
+          .span(at.word_span(at.params())),
+      );
     }
-
-    let params = at.params.to_ascii_lowercase();
-
-    // Stylelint's scss/at-if-no-null skips `!= null and ...` patterns —
-    // these are compound conditions where the null check is part of a
-    // larger boolean expression and removing it would change semantics.
-    if params.contains("!= null and ") {
-      return vec![];
-    }
-
-    if params.contains("== null") || params.contains("!= null") {
-      vec![Diagnostic::new(NAME, "Unexpected null comparison in @if condition").span(at.span)]
-    } else {
-      vec![]
-    }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn if_rule(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "if".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 10),
-      children: vec![],
-    })
+  /// The reports for `@if <params> {}` in `syntax`.
+  fn if_rule(params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let source = format!("@if {params} {{ a: b }}");
+    configured(&ScssAtIfNoNull, None).check_source(&context(&source, syntax))
   }
 
   #[test]
-  fn reports_equals_null() {
-    let rule = configured(&ScssAtIfNoNull, None);
-    let d = rule.check(&if_rule("$var == null"), &scss_ctx());
+  fn reports_equals_null_at_the_condition() {
+    let d = if_rule("$var == null", Syntax::Scss);
     assert_eq!(d.len(), 1);
+    assert_eq!((d[0].span.offset, d[0].span.length), (4, 12));
   }
 
   #[test]
   fn reports_not_equals_null() {
-    let rule = configured(&ScssAtIfNoNull, None);
-    let d = rule.check(&if_rule("$var != null"), &scss_ctx());
+    assert_eq!(if_rule("$var != null", Syntax::Scss).len(), 1);
+  }
+
+  #[test]
+  fn reports_inside_rules_but_not_else_if() {
+    let scss = "a { @if $a == null { b: c } @else if $d == null { e: f } }";
+    let d = configured(&ScssAtIfNoNull, None).check_source(&context(scss, Syntax::Scss));
     assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span.offset, 8);
   }
 
   #[test]
   fn allows_non_null_comparison() {
-    let rule = configured(&ScssAtIfNoNull, None);
-    let d = rule.check(&if_rule("$var"), &scss_ctx());
-    assert!(d.is_empty());
-  }
-
-  #[test]
-  fn allows_not_variable() {
-    let rule = configured(&ScssAtIfNoNull, None);
-    let d = rule.check(&if_rule("not $var"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(if_rule("$var", Syntax::Scss).is_empty());
+    assert!(if_rule("not $var", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn allows_not_equals_null_and_compound() {
-    let rule = configured(&ScssAtIfNoNull, None);
     // `!= null and <expr>` is a compound condition — Stylelint skips these.
-    let d = rule.check(&if_rule("$var != null and $var != ''"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(if_rule("$var != null and $var != ''", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtIfNoNull, None);
-    let ctx = ctx();
-    assert!(rule.check(&if_rule("$var == null"), &ctx).is_empty());
+    assert!(if_rule("$var == null", Syntax::Css).is_empty());
   }
 
   #[test]

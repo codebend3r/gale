@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::hex_colors::find_hex_colors;
@@ -41,19 +41,15 @@ impl ColorHexCaseCheck {
 
 impl Check for ColorHexCaseCheck {
   /// Flags hex colors not in the configured case and fixes them.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      let decl_start = decl.span.offset;
-      let decl_end = decl_start + decl.span.length;
-      let search_area = if decl_end <= ctx.source.len() && decl_start < decl_end {
-        ctx.source_slice(decl_start, decl_end).unwrap_or("")
-      } else {
-        &decl.value
-      };
+    // The declarations of style rules, read whole: property through `;`.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
+      let decl_start = decl.span().offset;
+      let search_area = decl.source_text();
 
       for (rel_offset, hex) in find_hex_colors(search_area) {
         let expected = if self.upper {
@@ -62,11 +58,7 @@ impl Check for ColorHexCaseCheck {
           hex.to_ascii_lowercase()
         };
         if expected != hex {
-          let abs_offset = if decl_end <= ctx.source.len() && decl_start < decl_end {
-            decl_start + rel_offset
-          } else {
-            decl_start
-          };
+          let abs_offset = decl_start + rel_offset;
           diags.push(
             Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{expected}\""))
               .span(Span::new(abs_offset, hex.len()))
@@ -88,53 +80,50 @@ impl Check for ColorHexCaseCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn check(rule: &dyn Check, value: &str) -> Vec<Diagnostic> {
+    let source = format!("a {{ color: {value}; }}");
+    rule.check_source(&ctx_with_source(&source))
   }
 
   #[test]
   fn reports_uppercase_hex() {
     let rule = configured(&ColorHexCase, None);
-    let d = rule.check(&style_with_value("#FFFFFF"), &ctx());
+    let d = check(&*rule, "#FFFFFF");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#ffffff"));
     assert!(d[0].fix.is_some());
+    assert_eq!(d[0].span, Span::new(11, 7));
   }
 
   #[test]
   fn allows_lowercase_hex() {
     let rule = configured(&ColorHexCase, None);
-    let d = rule.check(&style_with_value("#abc"), &ctx());
-    assert!(d.is_empty());
+    assert!(check(&*rule, "#abc").is_empty());
   }
 
   #[test]
   fn reports_mixed_case_hex() {
     let rule = configured(&ColorHexCase, None);
-    let d = rule.check(&style_with_value("#aBcDeF"), &ctx());
+    let d = check(&*rule, "#aBcDeF");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#abcdef"));
   }
 
   #[test]
+  fn reads_style_rule_declarations_only() {
+    let rule = configured(&ColorHexCase, None);
+    let ctx = ctx_with_source("@font-face { color: #FFF; }");
+    assert!(rule.check_source(&ctx).is_empty());
+  }
+
+  #[test]
   fn upper_reports_and_fixes_lowercase_digits() {
     let rule = configured(&ColorHexCase, serde_json::json!("upper"));
-    assert!(rule.check(&style_with_value("#ABCDEF"), &ctx()).is_empty());
-    let d = rule.check(&style_with_value("#aBc"), &ctx());
+    assert!(check(&*rule, "#ABCDEF").is_empty());
+    let d = check(&*rule, "#aBc");
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Expected \"#aBc\" to be \"#ABC\"");
     assert_eq!(d[0].fix.as_ref().unwrap().edits[0].new_text, "#ABC");

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -40,7 +40,7 @@ impl StylisticFunctionParenthesesNewlineInsideCheck {
 
 impl Check for StylisticFunctionParenthesesNewlineInsideCheck {
   /// Flags function parentheses whose inner newlines do not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -209,14 +209,14 @@ fn find_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_multi_line_allows_newlines_inside_parens() {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"\n); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -229,7 +229,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"\n); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline after \"(\""));
   }
@@ -239,7 +239,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\n  \"foo.png\"); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(
       d.iter()
@@ -254,7 +254,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let source = "a { background: url(\"foo.png\"); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -263,7 +263,7 @@ mod tests {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(\n  1px,\n  2px); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Unexpected newline after \"(\""));
   }
@@ -273,7 +273,7 @@ mod tests {
     let opt = serde_json::json!("never-multi-line");
     let source = "a { transform: translate(1px,\n  2px); }";
     let d = configured(&StylisticFunctionParenthesesNewlineInside, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -34,8 +34,8 @@ impl NoEmptySourceCheck {
 
 impl Check for NoEmptySourceCheck {
   /// Flags a file that parsed to nothing and holds only whitespace.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    if nodes.is_empty() && context.source.trim().is_empty() {
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
+    if tree.root_nodes().next().is_none() && context.source.trim().is_empty() {
       vec![Diagnostic::new(NAME, "Unexpected empty source").span(Span::new(0, 0))]
     } else {
       vec![]
@@ -47,13 +47,12 @@ impl Check for NoEmptySourceCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
   #[test]
   fn reports_empty_source() {
     let rule = configured(&NoEmptySource, None);
-    let context = ctx_with_source("   \n  ");
-    let diags = rule.check_root(&[], &context);
+    let diags = rule.check_source(&ctx_with_source("   \n  "));
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected empty source");
   }
@@ -61,20 +60,12 @@ mod tests {
   #[test]
   fn ignores_non_empty_source() {
     let rule = configured(&NoEmptySource, None);
-    let context = ctx_with_source("a { color: red; }");
-    let nodes = vec![CssNode::Style(gale_css_parser::StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![gale_css_parser::Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: gale_diagnostics::Span::new(4, 10),
-        important: false,
-      }],
-      span: gale_diagnostics::Span::new(0, 17),
-      ..Default::default()
-    })];
-    let diags = rule.check_root(&nodes, &context);
-    assert!(diags.is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source("a { color: red; }"))
+        .is_empty()
+    );
+    assert!(rule.check_source(&ctx_with_source("/* */")).is_empty());
   }
 
   #[test]

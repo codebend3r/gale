@@ -1,10 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "rule-empty-line-before";
@@ -67,13 +66,12 @@ impl RuleEmptyLineBeforeCheck {
 
 impl Check for RuleEmptyLineBeforeCheck {
   /// Checks every rule in the document, in source order.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let expectation = self.expectation;
     let multi_line_only = expectation.contains("multi-line");
     let always = expectation.contains("always");
     let except = |name: &str| self.except.contains(&name);
     let ignore = |name: &str| self.ignore.contains(&name);
-    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -92,7 +90,7 @@ impl Check for RuleEmptyLineBeforeCheck {
         continue;
       }
 
-      let after_rule = is_after_rule(&tree, i);
+      let after_rule = is_after_rule(tree, i);
       let flip = (except("first-nested") && tree.is_first_nested(i))
         || (except("after-rule") && after_rule)
         || (except("inside-block-and-after-rule") && nested && after_rule)
@@ -102,7 +100,7 @@ impl Check for RuleEmptyLineBeforeCheck {
       if expect_empty_line == has_empty_line(tree.before(i)) {
         continue;
       }
-      diags.push(empty_line_report(NAME, &tree, i, expect_empty_line, "rule"));
+      diags.push(empty_line_report(NAME, tree, i, expect_empty_line, "rule"));
     }
     diags
   }
@@ -121,13 +119,13 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix};
+  use crate::testing::{CheckSource, configured, context, fix};
 
   /// The messages for `source` in `syntax` with `options`.
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
     let ctx = context(source, syntax);
     configured(&RuleEmptyLineBefore, options.clone())
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()

@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{Node, NodeKind, PostcssTree};
+use gale_css_parser::value_parser;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
-use crate::postcss_tree::{Node, NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::installed_at_least_patch;
-use crate::value_parser;
 
 const NAME: &str = "declaration-block-no-redundant-longhand-properties";
 
@@ -433,9 +432,8 @@ impl Check for DeclarationBlockNoRedundantLonghandPropertiesCheck {
   /// Checks every declaration block (rule, at-rule and the root), reporting
   /// what Stylelint reports and attaching, to each problem, one edit that
   /// rewrites the block the way Stylelint's fix leaves it.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let options = &self.options;
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     // Stylelint visits blocks through rules and at-rules only, so nothing
     // under an SCSS nested property counts.
@@ -446,11 +444,11 @@ impl Check for DeclarationBlockNoRedundantLonghandPropertiesCheck {
         .iter()
         .enumerate()
         .filter(|(_, n)| matches!(n.kind, NodeKind::Rule | NodeKind::AtRule))
-        .filter(|(_, n)| !has_decl_ancestor(&tree, n.parent))
+        .filter(|(_, n)| !has_decl_ancestor(tree, n.parent))
         .map(|(i, _)| Some(i)),
     );
     for parent in containers {
-      if let Some(block) = Block::read(&tree, ctx, parent) {
+      if let Some(block) = Block::read(tree, parent) {
         self.check_block(&block, options, &mut diags);
       }
     }
@@ -607,7 +605,8 @@ struct Block<'a> {
 impl<'a> Block<'a> {
   /// The block of `parent` (the root for `None`), if it holds a declaration
   /// and its text can be rebuilt from its children.
-  fn read(tree: &PostcssTree<'a>, ctx: &RuleContext<'a>, parent: Option<usize>) -> Option<Self> {
+  fn read(tree: &PostcssTree<'a>, parent: Option<usize>) -> Option<Self> {
+    let source = tree.source();
     let children = tree.children_of(parent);
     if !children
       .iter()
@@ -621,11 +620,11 @@ impl<'a> Block<'a> {
         let open = node.block_open?;
         (
           open + 1,
-          block_close(ctx.source, node, open + 1),
+          block_close(source, node, open + 1),
           node.semicolon,
         )
       }
-      None => (0, ctx.source.len(), tree.root_semicolon),
+      None => (0, source.len(), tree.root_semicolon),
     };
     let mut slots = Vec::with_capacity(children.len());
     for &index in children {
@@ -635,24 +634,24 @@ impl<'a> Block<'a> {
       // The tree's `end` takes in a terminating `;`; PostCSS prints that
       // separately.
       let has_semicolon =
-        takes_semicolon && ctx.source.as_bytes().get(node.end.wrapping_sub(1)) == Some(&b';');
+        takes_semicolon && source.as_bytes().get(node.end.wrapping_sub(1)) == Some(&b';');
       let text_end = if has_semicolon {
         node.end - 1
       } else {
         node.end
       };
-      let text = ctx.source_slice(node.start, text_end)?;
+      let text = source.get(node.start..text_end)?;
       let decl = if node.kind == NodeKind::Decl {
-        let prop = ctx.source_slice(node.name_span.start, node.name_span.end)?;
+        let prop = source.get(node.name_span.start..node.name_span.end)?;
         Some(DeclInfo {
           prop,
           prop_lower: prop.to_ascii_lowercase(),
           value: node.value.clone(),
           important: node.important,
           prop_span: Span::from_range(node.name_span.start, node.name_span.end),
-          hack: ctx.source_slice(node.start, node.name_span.start)?,
-          between: ctx.source_slice(node.name_span.end, node.value_span.start)?,
-          important_raw: ctx.source_slice(node.value_span.end, text_end)?,
+          hack: source.get(node.start..node.name_span.start)?,
+          between: source.get(node.name_span.end..node.value_span.start)?,
+          important_raw: source.get(node.value_span.end..text_end)?,
         })
       } else {
         None
@@ -661,7 +660,7 @@ impl<'a> Block<'a> {
         kind: node.kind,
         // The tree lets a `*`/`_` hack overlap `before`; it belongs to the
         // node's text here.
-        before: ctx.source_slice(node.before.start, node.start)?,
+        before: source.get(node.before.start..node.start)?,
         text,
         takes_semicolon,
         start: node.start,
@@ -671,12 +670,12 @@ impl<'a> Block<'a> {
     }
     let after_start = slots.last().map_or(start, |s| s.end_with_semicolon);
     let block = Block {
-      after: ctx.source_slice(after_start, end)?,
+      after: source.get(after_start..end)?,
       start: children
         .first()
         .map_or(start, |&i| tree.nodes[i].before.start),
       end,
-      text: ctx.source_slice(start, end)?,
+      text: source.get(start..end)?,
       slots,
       semicolon,
       is_root: parent.is_none(),

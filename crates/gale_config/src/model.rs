@@ -162,8 +162,9 @@ impl ResolvedOverride {
 
 /// How autofix behaves when it is switched on from the config file.
 ///
-/// Mirrors the `--fix` flag: `Strict` skips files with parse errors, `Lax`
-/// fixes them anyway.
+/// Mirrors the `--fix` flag.  Stylelint's `strict` skips files with a syntax
+/// error and `lax` fixes them anyway; gale's parser recovers from every
+/// syntax error, so the two fix alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FixMode {
   Strict,

@@ -1,6 +1,7 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::braces::is_block_multiline;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -41,7 +42,7 @@ impl StylisticDeclarationBlockSemicolonNewlineAfterCheck {
 
 impl Check for StylisticDeclarationBlockSemicolonNewlineAfterCheck {
   /// Flags a declaration semicolon whose trailing newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -270,61 +271,18 @@ impl Check for StylisticDeclarationBlockSemicolonNewlineAfterCheck {
   }
 }
 
-/// Check if the enclosing block around `pos` is multi-line.
-fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
-  // Find the opening { before pos
-  let mut brace_depth = 0;
-  let mut k = pos;
-  let mut open_brace = None;
-  while k > 0 {
-    k -= 1;
-    if bytes[k] == b'}' {
-      brace_depth += 1;
-    } else if bytes[k] == b'{' {
-      if brace_depth == 0 {
-        open_brace = Some(k);
-        break;
-      }
-      brace_depth -= 1;
-    }
-  }
-
-  if let Some(open) = open_brace {
-    // Find the closing }
-    let mut depth = 1;
-    let mut j = open + 1;
-    while j < bytes.len() && depth > 0 {
-      if bytes[j] == b'{' {
-        depth += 1;
-      } else if bytes[j] == b'}' {
-        depth -= 1;
-      }
-      if depth > 0 {
-        j += 1;
-      }
-    }
-    // Check if there's a newline between open and close
-    for b in &bytes[open..j] {
-      if *b == b'\n' {
-        return true;
-      }
-    }
-  }
-  false
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn always_allows_newline_after_semicolon() {
     let opt = serde_json::json!("always");
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  color: red;\n  display: block;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "got: {:?}",
@@ -337,7 +295,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
     assert!(d[0].message.contains("Expected newline"));
   }
@@ -347,7 +305,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a { color: red; display: block; }";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -356,7 +314,7 @@ mod tests {
     let opt = serde_json::json!("always-multi-line");
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  color: red; display: block;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(!d.is_empty());
   }
 
@@ -366,7 +324,7 @@ mod tests {
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     // @include with a content block ending in ;
     let source = "a {\n  @include mixin { color: red; };\n  display: block;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(
       d.is_empty(),
       "Should not flag semicolon after @include content block, got: {:?}",
@@ -381,7 +339,7 @@ mod tests {
     let opt = serde_json::json!("always");
     let rule = configured(&StylisticDeclarationBlockSemicolonNewlineAfter, opt.clone());
     let source = "a {\n  @include mixin;\n  color: red;\n}";
-    let d = rule.check_root(&[], &ctx_with_source(source));
+    let d = rule.check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 

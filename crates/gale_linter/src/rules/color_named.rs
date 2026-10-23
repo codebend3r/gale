@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::{is_named_color, named_color_for_rgb};
@@ -82,43 +82,37 @@ const NON_COLOR_PROPERTIES: &[&str] = &[
 impl Check for ColorNamedCheck {
   /// Flags named colors under "never", or hex/function colors that have an exact
   /// name under "always-where-possible", honouring the ignore secondaries.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = self.expectation;
     let ignore_inside_function = self.ignore_inside_function;
     let ignore_properties = &self.ignore_properties;
 
     let mut diags = Vec::new();
 
-    for decl in &rule.declarations {
+    // The declarations of style rules.
+    for decl in tree.walk_decls() {
+      if !decl.in_style_rule() {
+        continue;
+      }
       // Check if this property should be ignored
-      let prop_lower = decl.property.to_ascii_lowercase();
+      let prop_lower = decl.prop().to_ascii_lowercase();
       if ignore_properties.matches(&prop_lower) {
         continue;
       }
 
-      // Get value from source text
-      let decl_start = decl.span.offset;
-      let decl_end = decl_start + decl.span.length;
-      let (value, value_offset) = if decl_end <= ctx.source.len() && decl_start < decl_end {
-        let full = ctx.source_slice(decl_start, decl_end).unwrap_or("");
-        if let Some(colon_pos) = full.find(':') {
+      // The value as written, `!important` included: everything after the
+      // first `:` of the declaration.
+      let decl_start = decl.span().offset;
+      let full = decl.source_text();
+      let (value, value_offset) = match full.find(':') {
+        Some(colon_pos) => {
           let after_colon = &full[colon_pos + 1..];
           let trimmed = after_colon.trim_start();
           let leading_ws = after_colon.len() - trimmed.len();
           let val = trimmed.trim_end_matches(';').trim_end();
           (val, decl_start + colon_pos + 1 + leading_ws)
-        } else {
-          (
-            ctx.source_slice(decl_start, decl_end).unwrap_or(""),
-            decl_start,
-          )
         }
-      } else {
-        (decl.value.as_str(), decl_start)
+        None => (full, decl_start),
       };
 
       match option {
@@ -478,6 +472,10 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
           offset: args_start,
           full_len,
         });
+      } else if bytes.get(i) == Some(&b';') {
+        // value-parser reads `red;` (in an `if()` branch, say) as one
+        // word, which names no color.
+        tokens.push(ValueToken::Other);
       } else {
         tokens.push(ValueToken::Word {
           text: word.to_string(),
@@ -814,87 +812,56 @@ fn hwb_to_rgb(h: f64, w: f64, b: f64) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options, lint};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options, lint};
 
-  fn style_with_decl(property: &str, value: &str) -> (CssNode, String) {
+  fn check(property: &str, value: &str) -> Vec<Diagnostic> {
     let source = format!("a {{ {property}: {value}; }}");
-    let prop_start = 4;
-    let decl_text = format!("{property}: {value}");
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: property.to_string(),
-        value: value.to_string(),
-        span: Span::new(prop_start, decl_text.len()),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    (node, source)
+    configured(&ColorNamed, None).check_source(&ctx_with_source(&source))
   }
 
   #[test]
   fn reports_named_color() {
-    let (node, source) = style_with_decl("color", "red");
-    let c = RuleContext {
-      env: Default::default(),
-      source: &source,
-      ..ctx()
-    };
-    let d = configured(&ColorNamed, None).check(&node, &c);
+    let d = check("color", "red");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("red"));
+    assert_eq!(d[0].span, Span::new(11, 3));
   }
 
   #[test]
   fn allows_hex_color() {
-    let (node, source) = style_with_decl("color", "#ff0000");
-    let c = RuleContext {
-      env: Default::default(),
-      source: &source,
-      ..ctx()
-    };
-    let d = configured(&ColorNamed, None).check(&node, &c);
-    assert!(d.is_empty());
+    assert!(check("color", "#ff0000").is_empty());
   }
 
   #[test]
   fn skips_url_function() {
-    let (node, source) = style_with_decl("background-image", "url(./black.png)");
-    let c = RuleContext {
-      env: Default::default(),
-      source: &source,
-      ..ctx()
-    };
-    let d = configured(&ColorNamed, None).check(&node, &c);
-    assert!(d.is_empty());
+    assert!(check("background-image", "url(./black.png)").is_empty());
   }
 
   #[test]
   fn skips_animation_property() {
-    let (node, source) = style_with_decl("animation", "blue 2s linear");
-    let c = RuleContext {
-      env: Default::default(),
-      source: &source,
-      ..ctx()
-    };
-    let d = configured(&ColorNamed, None).check(&node, &c);
-    assert!(d.is_empty());
+    assert!(check("animation", "blue 2s linear").is_empty());
   }
 
   #[test]
   fn skips_font_family() {
-    let (node, source) = style_with_decl("font-family", "blue");
-    let c = RuleContext {
-      env: Default::default(),
-      source: &source,
-      ..ctx()
-    };
-    let d = configured(&ColorNamed, None).check(&node, &c);
-    assert!(d.is_empty());
+    assert!(check("font-family", "blue").is_empty());
+  }
+
+  #[test]
+  fn reads_the_declarations_of_style_rules() {
+    let rule = configured(&ColorNamed, None);
+    let at = |source| rule.check_source(&ctx_with_source(source)).len();
+    // `@nest` is a style rule too; `@media` is not.
+    assert_eq!(at(".a { @nest .b & { color: blue; } }"), 1);
+    assert_eq!(at("@media print { color: blue; }"), 0);
+  }
+
+  #[test]
+  fn a_word_glued_to_a_semicolon_is_no_color() {
+    // value-parser reads `red;` as one word, as in an `if()` branch.
+    assert!(check("color", "if(media(print): red; else: blue;)").is_empty());
+    assert_eq!(check("color", "if(media(print): red; else: blue)").len(), 1);
   }
 
   #[test]

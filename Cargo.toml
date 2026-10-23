@@ -20,10 +20,6 @@ publish = false
 description = "An extremely fast CSS linter, written in Rust"
 
 [workspace.dependencies]
-# CSS Parsing
-lightningcss = { version = "1.0.0-alpha.72", features = ["visitor", "serde"] }
-raffia = "0.13.0"
-
 # CLI & Config
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }

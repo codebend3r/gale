@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::js_number::to_js_string;
@@ -43,147 +43,77 @@ impl DeclarationBlockSingleLineMaxDeclarationsCheck {
 const MAX_DECLARATIONS: f64 = 1.0;
 
 impl Check for DeclarationBlockSingleLineMaxDeclarationsCheck {
-  /// Flags single-line blocks holding more than the configured number of
-  /// declarations. Multi-line blocks are skipped.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    // Skip if span is unavailable (zero-length means parser didn't set it)
-    if rule.span.length == 0 {
-      return vec![];
-    }
-
-    let max = self.max;
-
-    // Determine if this rule block is single-line by checking the source span.
-    let is_single_line = is_single_line_block(rule.span.offset, rule.span.length, ctx.source);
-
-    if !is_single_line {
-      return vec![];
-    }
-
-    let count = rule.declarations.len();
-    if count as f64 > max {
-      vec![
-        Diagnostic::new(
-          NAME,
-          format!(
-            "Expected no more than {} declaration(s) in a single-line block, found {count}",
-            to_js_string(max)
-          ),
-        )
-        .span(rule.span),
-      ]
-    } else {
-      vec![]
-    }
+  /// Flags single-line rules holding more than the configured number of
+  /// declarations. Rules written over several lines are skipped.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk_rules()
+      // The whole rule, selector included, must sit on one line.
+      .filter(|rule| !rule.source_text().contains('\n'))
+      .filter_map(|rule| {
+        let count = rule.child_decls().count();
+        (count as f64 > self.max).then(|| {
+          Diagnostic::new(
+            NAME,
+            format!(
+              "Expected no more than {} declaration(s) in a single-line block, found {count}",
+              to_js_string(self.max)
+            ),
+          )
+          .span(rule.span())
+        })
+      })
+      .collect()
   }
-}
-
-/// Check if the source text for the given span is all on one line.
-fn is_single_line_block(offset: usize, length: usize, source: &str) -> bool {
-  let end = offset + length;
-  if end > source.len() {
-    // If we can't check the source, fall back to not reporting.
-    return false;
-  }
-  let block = &source[offset..end];
-  !block.contains('\n')
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_decls(decls: Vec<(&str, &str)>, span_offset: usize, span_len: usize) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: decls
-        .into_iter()
-        .map(|(p, v)| Declaration {
-          property: p.to_string(),
-          value: v.to_string(),
-          span: Span::new(0, 0),
-          important: false,
-        })
-        .collect(),
-      span: Span::new(span_offset, span_len),
-      ..Default::default()
-    })
+  /// The messages reported for the CSS `source` with `options`.
+  fn messages(source: &str, options: Option<serde_json::Value>) -> Vec<String> {
+    configured(&DeclarationBlockSingleLineMaxDeclarations, options)
+      .check_source(&ctx_with_source(source))
+      .into_iter()
+      .map(|d| d.message)
+      .collect()
   }
 
   #[test]
   fn reports_multiple_decls_single_line() {
-    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
-    let source = "a { color: red; font-size: 16px; }";
-    let node = style_with_decls(
-      vec![("color", "red"), ("font-size", "16px")],
-      0,
-      source.len(),
-    );
-    let d = rule.check(&node, &ctx_with_source(source));
+    let d = configured(&DeclarationBlockSingleLineMaxDeclarations, None)
+      .check_source(&ctx_with_source("a { color: red; font-size: 16px; }"));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 2"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 34));
   }
 
   #[test]
   fn allows_single_decl_single_line() {
-    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
-    let source = "a { color: red; }";
-    let node = style_with_decls(vec![("color", "red")], 0, source.len());
-    let d = rule.check(&node, &ctx_with_source(source));
-    assert!(d.is_empty());
+    assert!(messages("a { color: red; }", None).is_empty());
   }
 
   #[test]
   fn allows_multiple_decls_multi_line() {
-    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
-    let source = "a {\n  color: red;\n  font-size: 16px;\n}";
-    let node = style_with_decls(
-      vec![("color", "red"), ("font-size", "16px")],
-      0,
-      source.len(),
-    );
-    let d = rule.check(&node, &ctx_with_source(source));
-    assert!(d.is_empty());
+    assert!(messages("a {\n  color: red;\n  font-size: 16px;\n}", None).is_empty());
   }
 
   #[test]
-  fn skips_zero_length_span() {
-    let rule = configured(&DeclarationBlockSingleLineMaxDeclarations, None);
-    // Simulates a parser-generated style node with no real span (e.g. from @tailwind directives)
+  fn ignores_blockless_at_rules() {
     let source = "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n";
-    let node = style_with_decls(
-      vec![("color", "red"), ("font-size", "16px")],
-      0,
-      0, // zero-length span — parser didn't set it
-    );
-    let d = rule.check(&node, &ctx_with_source(source));
-    assert!(d.is_empty(), "should not report on zero-length span");
+    assert!(messages(source, None).is_empty());
   }
 
   #[test]
   fn reads_the_configured_maximum() {
     let source = "a { color: red; top: 0; }";
-    let node = style_with_decls(vec![("color", "red"), ("top", "0")], 0, source.len());
-    let ctx = ctx_with_source(source);
-    let two = configured(
-      &DeclarationBlockSingleLineMaxDeclarations,
-      serde_json::json!(2),
-    );
-    assert!(two.check(&node, &ctx).is_empty());
+    assert!(messages(source, Some(serde_json::json!(2))).is_empty());
     // The array form Stylelint configs use for secondary options.
-    let one = configured(
-      &DeclarationBlockSingleLineMaxDeclarations,
-      serde_json::json!([1, { "severity": "warning" }]),
-    );
-    assert_eq!(one.check(&node, &ctx).len(), 1);
+    let one = Some(serde_json::json!([1, { "severity": "warning" }]));
+    assert_eq!(messages(source, one).len(), 1);
   }
 
   #[test]

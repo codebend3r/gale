@@ -1,12 +1,11 @@
-use gale_css_parser::CssNode;
 use gale_diagnostics::Diagnostic;
 
 use crate::empty_lines::{empty_line_report, has_empty_line};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::pattern::{self, Regex};
-use crate::postcss_tree::NodeKind;
 use crate::rule::{Check, RuleContext, declare_rule};
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use std::sync::Arc;
 
 const NAME: &str = "comment-empty-line-before";
@@ -69,10 +68,9 @@ impl CommentEmptyLineBeforeCheck {
 
 impl Check for CommentEmptyLineBeforeCheck {
   /// Checks every comment node in the document, in source order.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let always = self.always;
     let ignore = |name: &str| self.ignore.contains(&name);
-    let tree = ctx.postcss_tree();
 
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
@@ -98,7 +96,7 @@ impl Check for CommentEmptyLineBeforeCheck {
       }
       diags.push(empty_line_report(
         NAME,
-        &tree,
+        tree,
         i,
         expect_empty_line,
         "comment",
@@ -164,7 +162,7 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   const RULE: &str = "comment-empty-line-before";
 
@@ -172,7 +170,7 @@ mod tests {
   fn messages(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<String> {
     let ctx = context(source, syntax);
     configured(&CommentEmptyLineBefore, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()

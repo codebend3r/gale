@@ -1,7 +1,8 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::blank_comments;
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::data::is_known_pseudo_class;
+use crate::data::{is_known_pseudo_class, is_legacy_pseudo_element};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -72,24 +73,36 @@ impl SelectorPseudoClassNoUnknownCheck {
 impl Check for SelectorPseudoClassNoUnknownCheck {
   /// Flags pseudo-classes that are not standard, skipping vendor-prefixed names,
   /// interpolated selectors, and anything in the ignore list.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  ///
+  /// Reads every standard-syntax rule's selector and every `@page`'s params
+  /// as written, and reports each pseudo-class where it stands.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let ignore_list = &self.ignore_pseudo_classes;
+    let mut diags = Vec::new();
+    let report = |diags: &mut Vec<Diagnostic>, start: usize, entry: &PseudoClassEntry| {
+      diags.push(
+        Diagnostic::new(
+          NAME,
+          format!(
+            "Unexpected unknown pseudo-class selector \":{}\"",
+            entry.name
+          ),
+        )
+        .span(Span::new(start + entry.offset, entry.name.len() + 1)),
+      );
+    };
 
-    match node {
-      CssNode::Style(rule) => {
-        if rule.selector.contains("#{") || rule.selector.contains("@{") {
-          return vec![];
+    for node in tree.walk() {
+      if let Some(rule) = node.as_rule() {
+        if !rule.is_standard_syntax() {
+          continue;
         }
-        let mut diags = Vec::new();
-        let entries = extract_pseudo_classes_with_context(&rule.selector);
-        for entry in &entries {
+        let selector = blank_comments(&rule.raw_selector());
+        for entry in &extract_pseudo_classes_with_context(&selector) {
           if entry.name.starts_with('-') {
             continue;
           }
-          if matches!(
-            entry.name.as_str(),
-            "before" | "after" | "first-line" | "first-letter"
-          ) {
+          if is_legacy_pseudo_element(&entry.name) {
             continue;
           }
           // Webkit scrollbar pseudo-classes are valid after pseudo-elements
@@ -98,180 +111,68 @@ impl Check for SelectorPseudoClassNoUnknownCheck {
           }
           // Page pseudo-classes are NOT valid in regular selectors
           if is_page_pseudo_class(&entry.name) {
-            let span = find_pseudo_class_span(ctx.source, rule.span.offset, entry);
-            diags.push(
-              Diagnostic::new(
-                NAME,
-                format!(
-                  "Unexpected unknown pseudo-class selector \":{}\"",
-                  entry.name
-                ),
-              )
-              .span(span),
-            );
+            report(&mut diags, rule.selector_start(), entry);
             continue;
           }
           if ignore_list.matches(&entry.name) {
             continue;
           }
           if !is_known_pseudo_class(&entry.name) {
-            let span = find_pseudo_class_span(ctx.source, rule.span.offset, entry);
-            diags.push(
-              Diagnostic::new(
-                NAME,
-                format!(
-                  "Unexpected unknown pseudo-class selector \":{}\"",
-                  entry.name
-                ),
-              )
-              .span(span),
-            );
+            report(&mut diags, rule.selector_start(), entry);
           }
         }
-        diags
-      }
-      CssNode::AtRule(at) => {
-        if at.name != "page" {
-          return vec![];
+      } else if let Some(at_rule) = node.as_at_rule() {
+        if at_rule.name() != "page" || at_rule.params().is_empty() || !at_rule.is_standard_syntax()
+        {
+          continue;
         }
-        let params = at.params.trim();
-        if params.is_empty() {
-          return vec![];
-        }
-
-        let mut diags = Vec::new();
-        let entries = extract_pseudo_classes_with_context(params);
-        for entry in &entries {
+        let params = blank_comments(&at_rule.raw_params());
+        for entry in &extract_pseudo_classes_with_context(&params) {
           if entry.name.starts_with('-') {
             continue;
           }
           if is_page_pseudo_class(&entry.name) {
             continue;
           }
-          if entry.name == "nth" {
-            continue;
-          }
           if ignore_list.matches(&entry.name) {
             continue;
           }
           if !is_known_pseudo_class(&entry.name) {
-            let span = find_page_pseudo_span(ctx.source, at.span.offset, entry);
-            diags.push(
-              Diagnostic::new(
-                NAME,
-                format!(
-                  "Unexpected unknown pseudo-class selector \":{}\"",
-                  entry.name
-                ),
-              )
-              .span(span),
-            );
+            report(&mut diags, at_rule.params_start(), entry);
           }
         }
-        diags
-      }
-      _ => vec![],
-    }
-  }
-
-  /// Catches pseudo-classes in selectors the parser did not surface, by scanning
-  /// the source outside the ranges the AST already covers.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_list = &self.ignore_pseudo_classes;
-    let mut diags = Vec::new();
-    let source = ctx.source;
-
-    for entry in scan_source_for_unparsed_pseudo_classes(source, nodes) {
-      if entry.name.starts_with('-') {
-        continue;
-      }
-      if matches!(
-        entry.name.as_str(),
-        "before" | "after" | "first-line" | "first-letter"
-      ) {
-        continue;
-      }
-      if entry.after_pseudo_element && is_webkit_scrollbar_pseudo_class(&entry.name) {
-        continue;
-      }
-      if ignore_list.matches(&entry.name) {
-        continue;
-      }
-      if !is_known_pseudo_class(&entry.name) && !is_page_pseudo_class(&entry.name) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Unexpected unknown pseudo-class selector \":{}\"",
-              entry.name
-            ),
-          )
-          .span(Span::new(entry.byte_offset_in_source, entry.name.len() + 1)),
-        );
       }
     }
-
     diags
   }
 }
 
+/// A pseudo-class found in a selector.
 struct PseudoClassEntry {
+  /// The name, without the colon.
   name: String,
-  char_offset_in_selector: usize,
+  /// The byte offset of its colon in the selector.
+  offset: usize,
+  /// Whether a pseudo-element comes before it in its selector.
   after_pseudo_element: bool,
-  byte_offset_in_source: usize,
-}
-
-/// Compute the span for a pseudo-class diagnostic, pointing at the colon.
-fn find_pseudo_class_span(source: &str, rule_offset: usize, entry: &PseudoClassEntry) -> Span {
-  let selector_source = &source[rule_offset..];
-  let search_pattern = format!(":{}", entry.name);
-  let search_pattern_lower = search_pattern.to_ascii_lowercase();
-
-  let mut search_start = 0;
-  while search_start < selector_source.len() {
-    let remaining = &selector_source[search_start..];
-    if let Some(pos) = remaining.to_ascii_lowercase().find(&search_pattern_lower) {
-      let abs_pos = rule_offset + search_start + pos;
-      // Make sure it's not a `::` pseudo-element
-      if pos > 0 && remaining.as_bytes().get(pos.wrapping_sub(1)) == Some(&b':') {
-        search_start += pos + search_pattern.len();
-        continue;
-      }
-      return Span::new(abs_pos, search_pattern.len());
-    } else {
-      break;
-    }
-  }
-
-  Span::new(rule_offset, entry.name.len() + 1)
-}
-
-/// Compute span for a pseudo-class in an @page params.
-fn find_page_pseudo_span(source: &str, at_offset: usize, entry: &PseudoClassEntry) -> Span {
-  let search_pattern = format!(":{}", entry.name);
-  let search_pattern_lower = search_pattern.to_ascii_lowercase();
-
-  let at_source = &source[at_offset..];
-  if let Some(pos) = at_source.to_ascii_lowercase().find(&search_pattern_lower) {
-    if pos > 0 && at_source.as_bytes().get(pos - 1) == Some(&b':') {
-      return Span::new(at_offset, search_pattern.len());
-    }
-    return Span::new(at_offset + pos, search_pattern.len());
-  }
-
-  Span::new(at_offset, search_pattern.len())
 }
 
 /// Extract pseudo-class names from a selector string, with context.
 fn extract_pseudo_classes_with_context(selector: &str) -> Vec<PseudoClassEntry> {
   let mut classes = Vec::new();
   let chars: Vec<char> = selector.chars().collect();
+  let byte_offsets: Vec<usize> = selector.char_indices().map(|(at, _)| at).collect();
   let len = chars.len();
   let mut i = 0;
   let mut after_pseudo_element = false;
 
   while i < len {
+    // An escaped character (`.md\:flex`) is part of a name, never a colon
+    // that starts a pseudo-class.
+    if chars[i] == '\\' {
+      i += 2;
+      continue;
+    }
     if i + 1 < len && chars[i] == '#' && chars[i + 1] == '{' {
       i += 2;
       let mut depth = 1;
@@ -338,9 +239,8 @@ fn extract_pseudo_classes_with_context(selector: &str) -> Vec<PseudoClassEntry> 
         let name: String = chars[start..i].iter().collect();
         classes.push(PseudoClassEntry {
           name,
-          char_offset_in_selector: colon_pos,
+          offset: byte_offsets[colon_pos],
           after_pseudo_element,
-          byte_offset_in_source: 0,
         });
       }
       if i < len && chars[i] == '(' {
@@ -363,265 +263,22 @@ fn extract_pseudo_classes_with_context(selector: &str) -> Vec<PseudoClassEntry> 
   classes
 }
 
-/// Scan the full source text for pseudo-classes in selectors that the parser
-/// might have dropped (e.g., webkit scrollbar selectors).
-fn scan_source_for_unparsed_pseudo_classes(
-  source: &str,
-  nodes: &[CssNode],
-) -> Vec<PseudoClassEntry> {
-  let mut covered_ranges: Vec<(usize, usize)> = Vec::new();
-  collect_node_ranges(nodes, &mut covered_ranges);
-  let covered_ranges = merge_ranges(covered_ranges);
-
-  let mut results = Vec::new();
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i < len {
-    if let Some(end) = covered_range_end(i, &covered_ranges) {
-      i = end;
-      continue;
-    }
-
-    // Skip comments
-    if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-      i += 2;
-      while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-        i += 1;
-      }
-      if i + 1 < len {
-        i += 2;
-      }
-      continue;
-    }
-
-    // Look for :: pseudo-element followed by : pseudo-classes
-    if i + 1 < len && bytes[i] == b':' && bytes[i + 1] == b':' {
-      i += 2;
-      while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-') {
-        i += 1;
-      }
-      while i < len && bytes[i] == b':' && (i + 1 >= len || bytes[i + 1] != b':') {
-        let colon_offset = i;
-        i += 1;
-        let name_start = i;
-        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-') {
-          i += 1;
-        }
-        if i > name_start {
-          let name = String::from_utf8_lossy(&bytes[name_start..i]).to_string();
-          results.push(PseudoClassEntry {
-            name,
-            char_offset_in_selector: 0,
-            after_pseudo_element: true,
-            byte_offset_in_source: colon_offset,
-          });
-        }
-        if i < len && bytes[i] == b'(' {
-          let mut depth = 1;
-          i += 1;
-          while i < len && depth > 0 {
-            if bytes[i] == b'(' {
-              depth += 1;
-            } else if bytes[i] == b')' {
-              depth -= 1;
-            }
-            i += 1;
-          }
-        }
-      }
-      continue;
-    }
-
-    // Look for @page pseudo-classes that the parser dropped
-    // Compared as bytes: `i` walks byte offsets, so `source[i..i + 5]` would
-    // panic whenever a multi-byte character straddles either end.
-    if i + 5 < len && bytes[i..].starts_with(b"@page") {
-      // Skip the @page keyword
-      let page_start = i;
-      i += 5;
-      // Skip whitespace
-      while i < len && bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      // Find end of @page selector (opening brace)
-      let selector_start = i;
-      let mut end = i;
-      while end < len && bytes[end] != b'{' {
-        end += 1;
-      }
-      if end < len && !is_in_covered_range(page_start, &covered_ranges) {
-        let selector = &source[selector_start..end].trim();
-        if !selector.is_empty() {
-          let entries = extract_pseudo_classes_with_context(selector);
-          for entry in entries {
-            let byte_offset = selector_start
-              + selector
-                .char_indices()
-                .nth(entry.char_offset_in_selector)
-                .map(|(idx, _)| idx)
-                .unwrap_or(0);
-            results.push(PseudoClassEntry {
-              name: entry.name,
-              char_offset_in_selector: entry.char_offset_in_selector,
-              after_pseudo_element: entry.after_pseudo_element,
-              byte_offset_in_source: byte_offset,
-            });
-          }
-        }
-      }
-      i = if end < len { end + 1 } else { end };
-      continue;
-    }
-
-    // Look for standalone pseudo-classes at selector boundaries
-    if bytes[i] == b':' && (i + 1 >= len || bytes[i + 1] != b':') {
-      let before = if i > 0 {
-        let mut j = i - 1;
-        while j > 0 && bytes[j].is_ascii_whitespace() {
-          j -= 1;
-        }
-        bytes[j]
-      } else {
-        b'\n'
-      };
-
-      let is_selector_start =
-        before == b'}' || before == b';' || before == b'\n' || before == b'\r' || i == 0;
-
-      if is_selector_start && !is_in_covered_range(i, &covered_ranges) {
-        let selector_start = i;
-        let mut end = i;
-        while end < len && bytes[end] != b'{' {
-          end += 1;
-        }
-        if end < len {
-          let selector_text = &source[selector_start..end];
-          let entries = extract_pseudo_classes_with_context(selector_text);
-          for entry in entries {
-            let byte_offset = selector_start
-              + selector_text
-                .char_indices()
-                .nth(entry.char_offset_in_selector)
-                .map(|(idx, _)| idx)
-                .unwrap_or(0);
-            results.push(PseudoClassEntry {
-              name: entry.name,
-              char_offset_in_selector: entry.char_offset_in_selector,
-              after_pseudo_element: entry.after_pseudo_element,
-              byte_offset_in_source: byte_offset,
-            });
-          }
-        }
-        i = if end < len { end + 1 } else { end };
-        continue;
-      }
-    }
-
-    i += 1;
-  }
-
-  results
-}
-
-/// Records the source range each node covers, recursing into children.
-fn collect_node_ranges(nodes: &[CssNode], ranges: &mut Vec<(usize, usize)>) {
-  for node in nodes {
-    match node {
-      CssNode::Style(rule) => {
-        if rule.span.length > 0 {
-          ranges.push((rule.span.offset, rule.span.offset + rule.span.length));
-        }
-        collect_style_children(&rule.children, ranges);
-      }
-      CssNode::AtRule(at) => {
-        if at.span.length > 0 {
-          ranges.push((at.span.offset, at.span.offset + at.span.length));
-        }
-        collect_node_ranges(&at.children, ranges);
-      }
-      CssNode::Comment(c) => {
-        if c.span.length > 0 {
-          ranges.push((c.span.offset, c.span.offset + c.span.length));
-        }
-      }
-      CssNode::Declaration(d) => {
-        if d.span.length > 0 {
-          ranges.push((d.span.offset, d.span.offset + d.span.length));
-        }
-      }
-    }
-  }
-}
-
-/// Records the source range of each nested style rule.
-fn collect_style_children(
-  children: &[gale_css_parser::StyleRule],
-  ranges: &mut Vec<(usize, usize)>,
-) {
-  for child in children {
-    if child.span.length > 0 {
-      ranges.push((child.span.offset, child.span.offset + child.span.length));
-    }
-    collect_style_children(&child.children, ranges);
-  }
-}
-
-/// Sort ranges and merge any that overlap or nest (a rule's span contains
-/// its declarations' spans) into disjoint intervals, so lookups can binary
-/// search instead of scanning every node range for every byte.
-fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
-  ranges.sort_unstable();
-  let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
-  for (start, end) in ranges {
-    match merged.last_mut() {
-      Some(last) if start <= last.1 => last.1 = last.1.max(end),
-      _ => merged.push((start, end)),
-    }
-  }
-  merged
-}
-
-/// If `offset` falls inside one of the merged ranges, return that range's end.
-fn covered_range_end(offset: usize, ranges: &[(usize, usize)]) -> Option<usize> {
-  let idx = ranges.partition_point(|&(start, _)| start <= offset);
-  match idx.checked_sub(1) {
-    Some(i) if offset < ranges[i].1 => Some(ranges[i].1),
-    _ => None,
-  }
-}
-
-/// Whether `offset` falls inside a range the AST already covers.
-fn is_in_covered_range(offset: usize, ranges: &[(usize, usize)]) -> bool {
-  covered_range_end(offset, ranges).is_some()
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, StyleRule};
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_unknown_pseudo_class() {
     let rule = configured(&SelectorPseudoClassNoUnknown, None);
-    let d = rule.check(&style_with_selector("a:hoverr"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("a:hoverr"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(":hoverr"));
   }
@@ -631,12 +288,15 @@ mod tests {
     let rule = configured(&SelectorPseudoClassNoUnknown, None);
     assert!(
       rule
-        .check(&style_with_selector("a:hover"), &ctx())
+        .check_source(&context(&style_with_selector("a:hover"), Syntax::Css))
         .is_empty()
     );
     assert!(
       rule
-        .check(&style_with_selector("a:nth-child(2)"), &ctx())
+        .check_source(&context(
+          &style_with_selector("a:nth-child(2)"),
+          Syntax::Css
+        ))
         .is_empty()
     );
   }
@@ -646,7 +306,7 @@ mod tests {
     let rule = configured(&SelectorPseudoClassNoUnknown, None);
     assert!(
       rule
-        .check(&style_with_selector("a::before"), &ctx())
+        .check_source(&context(&style_with_selector("a::before"), Syntax::Css))
         .is_empty()
     );
   }
@@ -656,7 +316,9 @@ mod tests {
     let rule = configured(&SelectorPseudoClassNoUnknown, None);
     for sel in ["p:before", "p:after", "p:first-line", "p:first-letter"] {
       assert!(
-        rule.check(&style_with_selector(sel), &ctx()).is_empty(),
+        rule
+          .check_source(&context(&style_with_selector(sel), Syntax::Css))
+          .is_empty(),
         "should not flag legacy pseudo-element in selector \"{sel}\"",
       );
     }
@@ -665,18 +327,47 @@ mod tests {
   #[test]
   fn rejects_first_in_regular_selector() {
     let rule = configured(&SelectorPseudoClassNoUnknown, None);
-    let d = rule.check(&style_with_selector(":first"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector(":first"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains(":first"));
   }
 
   #[test]
-  fn handles_multibyte_selectors_in_the_source_scan() {
-    // The scan walks byte offsets and compares a fixed five-byte window against
-    // "@page", which lands mid-character on a non-ASCII selector.
-    let src = ".\u{4e2d}\u{6587}\u{540d} { color: red; }";
-    let entries = scan_source_for_unparsed_pseudo_classes(src, &[]);
-    assert_eq!(entries.len(), 0, "no pseudo-classes in this selector");
+  fn reports_each_pseudo_class_where_it_is_written() {
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
+    // A repeated name is reported twice, each where it stands, and a name
+    // past non-ASCII text lands on its own colon.
+    let source = "a:foo, \u{4e2d}:foo /* :bar */ {}\n@page :baz { margin: 0; }";
+    let d = rule.check_source(&context(source, Syntax::Css));
+    let found: Vec<_> = d
+      .iter()
+      .map(|d| (d.span.offset, &source[d.span.offset..d.span.end()]))
+      .collect();
+    assert_eq!(
+      found,
+      [
+        (1, ":foo"),
+        (10, ":foo"),
+        (source.find(":baz").unwrap(), ":baz")
+      ]
+    );
+  }
+
+  #[test]
+  fn an_escaped_colon_starts_no_pseudo_class() {
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
+    let source = ".xl\\:container, .\\32 xl\\:col-3:hover {}";
+    assert!(rule.check_source(&context(source, Syntax::Css)).is_empty());
+  }
+
+  #[test]
+  fn reads_rules_wherever_they_are() {
+    // Rules with vendor pseudo-elements and rules nested in at-rules are
+    // read like any other.
+    let rule = configured(&SelectorPseudoClassNoUnknown, None);
+    let source = "::-webkit-scrollbar:horizontal:nope {}\na { @media print { &:nope {} } }";
+    let d = rule.check_source(&context(source, Syntax::Scss));
+    assert_eq!(d.len(), 2);
   }
 
   #[test]

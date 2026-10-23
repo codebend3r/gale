@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -49,62 +50,37 @@ impl ScssAtImportPartialExtensionCheck {
 
 impl Check for ScssAtImportPartialExtensionCheck {
   /// Flags an `@import` whose file extension does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if at.name != "import" {
-      return vec![];
-    }
-
-    let option = self.expectation;
-
     let mut diags = Vec::new();
-
-    // Parse the import paths from params. May be comma-separated and quoted.
-    for part in at.params.split(',') {
-      let path = part.trim().trim_matches('"').trim_matches('\'');
-
-      // Skip URLs and CSS imports
-      if path.starts_with("http://")
-        || path.starts_with("https://")
-        || path.starts_with("//")
-        || path.ends_with(".css")
-      {
+    for at in tree.walk_at_rules() {
+      if at.name() != "import" {
         continue;
       }
+      // Parse the import paths from params. May be comma-separated and quoted.
+      for part in at.params().split(',') {
+        let path = part.trim().trim_matches('"').trim_matches('\'');
 
-      let has_scss_ext = path.ends_with(".scss") || path.ends_with(".sass");
+        // Skip URLs and CSS imports
+        if path.starts_with("http://")
+          || path.starts_with("https://")
+          || path.starts_with("//")
+          || path.ends_with(".css")
+        {
+          continue;
+        }
 
-      match option {
-        "never" => {
-          if has_scss_ext {
-            diags.push(
-              Diagnostic::new(
-                NAME,
-                format!("Unexpected extension in @import \"{}\"", path),
-              )
-              .span(at.span),
-            );
-          }
-        }
-        "always" => {
-          if !has_scss_ext {
-            diags.push(
-              Diagnostic::new(NAME, format!("Expected extension in @import \"{}\"", path))
-                .span(at.span),
-            );
-          }
-        }
-        _ => {}
+        let has_scss_ext = path.ends_with(".scss") || path.ends_with(".sass");
+        let message = match self.expectation {
+          "never" if has_scss_ext => format!("Unexpected extension in @import \"{path}\""),
+          "always" if !has_scss_ext => format!("Expected extension in @import \"{path}\""),
+          _ => continue,
+        };
+        diags.push(Diagnostic::new(NAME, message).span(at.span()));
       }
     }
-
     diags
   }
 }
@@ -112,55 +88,48 @@ impl Check for ScssAtImportPartialExtensionCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn import(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 20),
-      children: vec![],
-    })
+  /// The reports for `@import <params>;` in `syntax`.
+  fn import(options: Option<Value>, params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let source = format!("@import {params};");
+    configured(&ScssAtImportPartialExtension, options).check_source(&context(&source, syntax))
   }
 
   #[test]
   fn allows_import_without_extension() {
-    let rule = configured(&ScssAtImportPartialExtension, None);
-    assert!(rule.check(&import("\"foo\""), &scss_ctx()).is_empty());
+    assert!(import(None, "\"foo\"", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn reports_import_with_scss_extension() {
-    let rule = configured(&ScssAtImportPartialExtension, None);
-    let d = rule.check(&import("\"foo.scss\""), &scss_ctx());
+    let d = import(None, "\"foo.scss\"", Syntax::Scss);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("foo.scss"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 19));
   }
 
   #[test]
-  fn allows_css_import() {
-    let rule = configured(&ScssAtImportPartialExtension, None);
-    assert!(rule.check(&import("\"foo.css\""), &scss_ctx()).is_empty());
-  }
-
-  #[test]
-  fn allows_url_import() {
-    let rule = configured(&ScssAtImportPartialExtension, None);
-    assert!(
-      rule
-        .check(&import("\"https://example.com/foo.scss\""), &scss_ctx())
-        .is_empty()
+  fn always_reports_each_path_without_one() {
+    let d = import(
+      Some(json!("always")),
+      "\"a\", \"b.scss\", 'c'",
+      Syntax::Scss,
     );
+    assert_eq!(d.len(), 2);
+  }
+
+  #[test]
+  fn allows_css_and_url_imports() {
+    assert!(import(None, "\"foo.css\"", Syntax::Scss).is_empty());
+    assert!(import(None, "\"https://example.com/foo.scss\"", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
-    let rule = configured(&ScssAtImportPartialExtension, None);
-    let css_ctx = ctx();
-    assert!(rule.check(&import("\"foo.scss\""), &css_ctx).is_empty());
+    assert!(import(None, "\"foo.scss\"", Syntax::Css).is_empty());
   }
 
   #[test]

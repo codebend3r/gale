@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
@@ -53,117 +53,79 @@ fn strip_known_vendor_prefix(name: &str) -> &str {
 }
 
 impl Check for AtRuleNoVendorPrefixCheck {
-  /// Flags a vendor-prefixed at-rule and offers a fix that drops the prefix,
-  /// locating the name in the source so the edit span is exact.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(rule) = node else {
-      return vec![];
-    };
-    if self.ignore_at_rules.matches(&rule.name) {
-      return vec![];
-    }
-    if rule.name.starts_with('-') {
-      let unprefixed = strip_known_vendor_prefix(&rule.name);
-      // Search the source within the at-rule span for `@-prefix-name`
-      let rule_start = rule.span.offset;
-      let rule_end = rule_start + rule.span.length;
-      let prefixed_at = format!("@{}", rule.name);
-      let unprefixed_at = format!("@{unprefixed}");
-
-      let fix = if rule_end <= ctx.source.len() && rule_start < rule_end {
-        let search_area = ctx.source_slice(rule_start, rule_end).unwrap_or("");
-        // Case-insensitive search for the prefixed at-rule name
-        let lower_search = search_area.to_ascii_lowercase();
-        let lower_target = prefixed_at.to_ascii_lowercase();
-        lower_search.find(&lower_target).map(|rel_offset| {
-          let abs_offset = rule_start + rel_offset;
-          Fix::new(
-            format!("Remove vendor prefix from @{}", rule.name),
-            vec![Edit::new(
-              Span::new(abs_offset, prefixed_at.len()),
-              &unprefixed_at,
-            )],
-          )
-        })
-      } else {
-        None
-      };
-
-      let mut diag = Diagnostic::new(
-        NAME,
-        format!("Unexpected vendor-prefixed at-rule \"@{}\"", rule.name),
-      )
-      .span(rule.span);
-
-      if let Some(f) = fix {
-        diag = diag.fix(f);
+  /// Flags a vendor-prefixed at-rule at its `@name` word, with a fix that
+  /// drops the prefix.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      let name = at.name();
+      if !at.is_standard_syntax() || self.ignore_at_rules.matches(name) || !name.starts_with('-') {
+        continue;
       }
-
-      vec![diag]
-    } else {
-      vec![]
+      let unprefixed = strip_known_vendor_prefix(name);
+      // `@` and the name, exactly as written.
+      let word = Span::new(at.start, name.len() + 1);
+      diags.push(
+        Diagnostic::new(
+          NAME,
+          format!("Unexpected vendor-prefixed at-rule \"@{name}\""),
+        )
+        .span(word)
+        .fix(Fix::new(
+          format!("Remove vendor prefix from @{name}"),
+          vec![Edit::new(word, format!("@{unprefixed}"))],
+        )),
+      );
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule as CssAtRule;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx, ctx_with_source, invalid_options};
-
-  fn at_rule(name: &str) -> CssNode {
-    CssNode::AtRule(CssAtRule {
-      name: name.to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
-  }
+  use crate::testing::{fix, invalid_options, lint};
 
   #[test]
-  fn reports_vendor_prefixed_at_rule() {
-    let rule = configured(&AtRuleNoVendorPrefix, None);
-    let d = rule.check(&at_rule("-webkit-keyframes"), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("-webkit-keyframes"));
+  fn reports_vendor_prefixed_at_rule_at_its_name() {
+    for syntax in [Syntax::Css, Syntax::Scss] {
+      let d = lint(
+        NAME,
+        json!(true),
+        "a {}\n@-webkit-keyframes fade {}",
+        syntax,
+      );
+      assert_eq!(d.len(), 1);
+      assert!(d[0].message.contains("-webkit-keyframes"));
+      assert_eq!((d[0].span.offset, d[0].span.length), (5, 18));
+    }
   }
 
   #[test]
   fn allows_standard_at_rule() {
-    let rule = configured(&AtRuleNoVendorPrefix, None);
-    assert!(rule.check(&at_rule("keyframes"), &ctx()).is_empty());
-    assert!(rule.check(&at_rule("media"), &ctx()).is_empty());
+    let css = "@keyframes fade {}\n@media screen {}";
+    assert!(lint(NAME, json!(true), css, Syntax::Css).is_empty());
   }
 
   #[test]
-  fn emits_fix_for_vendor_prefixed_at_rule() {
-    let rule = configured(&AtRuleNoVendorPrefix, None);
-    let source = "@-webkit-keyframes fade { }";
-    let ctx = ctx_with_source(source);
-    let node = CssNode::AtRule(CssAtRule {
-      name: "-webkit-keyframes".to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, source.len()),
-      children: vec![],
-    });
-    let d = rule.check(&node, &ctx);
-    assert_eq!(d.len(), 1);
-    assert!(d[0].fix.is_some());
-    let fix = d[0].fix.as_ref().unwrap();
-    assert_eq!(fix.edits.len(), 1);
-    assert_eq!(fix.edits[0].new_text, "@keyframes");
+  fn fix_drops_the_prefix() {
+    let css = "@-webkit-keyframes fade { }\n@-MOZ-document url(x) { }";
+    assert_eq!(
+      fix(NAME, json!(true), css, Syntax::Css),
+      "@keyframes fade { }\n@document url(x) { }"
+    );
   }
 
   #[test]
   fn ignore_at_rules_skips_listed_names() {
-    let rule = configured(
-      &AtRuleNoVendorPrefix,
-      serde_json::json!([true, { "ignoreAtRules": ["/^-moz-/"] }]),
-    );
-    assert!(rule.check(&at_rule("-moz-document"), &ctx()).is_empty());
-    assert_eq!(rule.check(&at_rule("-webkit-keyframes"), &ctx()).len(), 1);
+    let options = json!([true, { "ignoreAtRules": ["/^-moz-/"] }]);
+    let css = "@-moz-document url(x) {}\n@-webkit-keyframes fade {}";
+    let d = lint(NAME, options, css, Syntax::Css);
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains("-webkit-keyframes"));
   }
 
   #[test]

@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::chars::{is_ident_byte, is_ident_start_byte};
@@ -76,11 +76,16 @@ const RANGE_FEATURES: &[&str] = &[
 impl Check for MediaFeatureRangeNotationCheck {
   /// Flags media features written in the notation the option forbids, in
   /// every `@media` query as written (nested ones included).
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for at in &ctx.scanned_rules().at_rules {
-      if at.name.eq_ignore_ascii_case("media") {
-        self.check_params(&at.params, at.params_offset, ctx, &mut diags);
+    for at in tree.walk_at_rules() {
+      let params = at.raw_params();
+      let first = diags.len();
+      if at.name().eq_ignore_ascii_case("media") {
+        self.check_params(&params, at.params_start(), ctx, &mut diags);
+      }
+      if !at.params_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
       }
     }
     diags

@@ -126,16 +126,15 @@ pub fn serialize_ident(text: &str) -> String {
   let chars: Vec<char> = text.chars().collect();
   let mut out = String::new();
   let escape_code_point = |c: char, out: &mut String| out.push_str(&format!("\\{:x} ", c as u32));
-  let mut rest_from = 0;
-  match chars.as_slice() {
+  let rest_from = match chars.as_slice() {
     [] => return out,
     ['\0', ..] => {
       out.push('\u{FFFD}');
-      rest_from = 1;
+      1
     }
     ['-', '-', ..] => {
       out.push_str("--");
-      rest_from = 2;
+      2
     }
     ['-', second, ..] => {
       out.push('-');
@@ -144,7 +143,7 @@ pub fn serialize_ident(text: &str) -> String {
       } else {
         escape_code_point(*second, &mut out);
       }
-      rest_from = 2;
+      2
     }
     ['-'] => return "\\-".to_string(),
     [first, ..] => {
@@ -153,9 +152,9 @@ pub fn serialize_ident(text: &str) -> String {
       } else {
         escape_code_point(*first, &mut out);
       }
-      rest_from = 1;
+      1
     }
-  }
+  };
   for &c in &chars[rest_from..] {
     if c == '\0' {
       out.push('\u{FFFD}');

@@ -1,16 +1,14 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{PostcssTree, RuleRef};
+use gale_css_parser::selector::nesting::{resolve_nested, resolve_nested_list};
+use gale_css_parser::selector::{
+  Pseudo, Selector, SelectorList, SelectorNode, parse_selector_list, walk_pseudos,
+};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::{is_experimental_html_element, is_known_html_element};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::nesting::{resolve_nested, resolve_nested_list};
-use crate::selector::{
-  Pseudo, Selector, SelectorList, SelectorNode, is_standard_syntax_selector, parse_selector_list,
-  walk_pseudos,
-};
-use crate::style_rules::RawStyleRule;
 
 const NAME: &str = "selector-no-unmatchable";
 
@@ -105,18 +103,18 @@ impl Check for SelectorNoUnmatchableCheck {
   /// Checks every style rule's selectors, resolving nested selectors against
   /// their ancestors first.
   ///
-  /// Preludes are read from the source text rather than the parsed AST so
-  /// that selectors are seen exactly as written.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let scanned = ctx.scanned_rules();
-    let rules = &scanned.style_rules;
+  /// Selectors are read as written, from the statement tree.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    // Each rule's resolved selector list, for its nested rules to build on.
-    // Parents precede their children, so one pass in document order does.
-    let mut resolved: Vec<Option<SelectorList>> = Vec::with_capacity(rules.len());
-    for raw in rules {
-      let entry = self.check_rule(raw, &resolved, &mut diagnostics);
-      resolved.push(entry);
+    // Each rule's resolved selector list, by node, for its nested rules to
+    // build on.  Parents precede their children, so one pass in document
+    // order does.
+    let mut resolved: Vec<Option<SelectorList>> = (0..tree.nodes.len()).map(|_| None).collect();
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      resolved[rule.id()] = self.check_rule(rule, &resolved, &mut diagnostics);
     }
     diagnostics
   }
@@ -127,16 +125,14 @@ impl SelectorNoUnmatchableCheck {
   /// parent, or `None` when the rule or an ancestor cannot be resolved.
   fn check_rule(
     &self,
-    raw: &RawStyleRule,
+    rule: RuleRef,
     resolved: &[Option<SelectorList>],
     diagnostics: &mut Vec<Diagnostic>,
   ) -> Option<SelectorList> {
-    if !is_standard_syntax_selector(&raw.prelude) {
-      return None;
-    }
-    let own = parse_selector_list(&raw.prelude).ok()?;
-    let parent = match raw.parent {
-      Some(index) => Some(resolved[index].as_ref()?),
+    let (prelude, offset) = (rule.raw_selector(), rule.selector_start());
+    let own = parse_selector_list(&prelude).ok()?;
+    let parent = match rule.parent_rule() {
+      Some(parent) => Some(resolved[parent.id()].as_ref()?),
       None => None,
     };
 
@@ -151,14 +147,14 @@ impl SelectorNoUnmatchableCheck {
         continue;
       };
 
-      let text = &raw.prelude[selector.offset..selector.end];
+      let text = &prelude[selector.offset..selector.end];
       let written = match &nested {
         Some(nested) => format!("\"{text}\" (\"{}\")", nested.to_string().trim()),
         None => format!("\"{text}\""),
       };
       diagnostics.push(
         Diagnostic::new(NAME, format!("Unmatchable selector {written}, {reason}")).span(
-          Span::from_range(raw.offset + selector.offset, raw.offset + selector.end),
+          Span::from_range(offset + selector.offset, offset + selector.end),
         ),
       );
     }
@@ -495,13 +491,12 @@ fn group_compounds(nodes: &[SelectorNode]) -> (Compounds<'_>, Compounds<'_>) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
-  use gale_css_parser::{Syntax, parse};
+  use crate::testing::{CheckSource, configured, invalid_options};
+  use gale_css_parser::Syntax;
   use gale_diagnostics::SourceLineIndex;
 
   /// (message, line, column, endLine, endColumn) for every warning, in order.
   fn lint_with(css: &str, syntax: Syntax) -> Vec<(String, usize, usize, usize, usize)> {
-    let parsed = parse(css, syntax).expect("fixture should parse");
     let options = serde_json::json!([true]);
     let ctx = RuleContext {
       env: Default::default(),
@@ -512,7 +507,7 @@ mod tests {
     };
     let index = SourceLineIndex::build(css);
     configured(&SelectorNoUnmatchable, options.clone())
-      .check_root(&parsed.nodes, &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| {
         let (l, c) = index.offset_to_location(d.span.offset);

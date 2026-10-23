@@ -1,13 +1,12 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text::WrittenDeclaration;
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "font-family-name-quotes";
 
@@ -373,16 +372,18 @@ fn find_font_family(value: &str) -> Vec<Family> {
 impl Check for FontFamilyNameQuotesCheck {
   /// Flags font family names in `font-family` and `font` values whose
   /// quoting does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mode = self.mode;
     let mut diags = Vec::new();
-    for &decl in ctx.written_declarations(node).iter() {
-      let prop = decl.prop.to_ascii_lowercase();
-      if (prop != "font" && prop != "font-family") || !is_standard_syntax_value(decl.value) {
+    for decl in tree.walk_decls() {
+      let prop = decl.prop().to_ascii_lowercase();
+      let value = decl.raw_value();
+      if (prop != "font" && prop != "font-family") || !is_standard_syntax_value(&value) {
         continue;
       }
-      for family in find_font_family(decl.value) {
-        self.check_family(ctx, &decl, &family, mode, &mut diags);
+      let fixable = decl.value_fixable();
+      for family in find_font_family(&value) {
+        self.check_family(ctx, decl, &family, mode, fixable, &mut diags);
       }
     }
     diags
@@ -394,9 +395,10 @@ impl FontFamilyNameQuotesCheck {
   fn check_family(
     &self,
     ctx: &RuleContext,
-    decl: &WrittenDeclaration,
+    decl: DeclRef,
     family: &Family,
     mode: &str,
+    fixable: bool,
     diags: &mut Vec<Diagnostic>,
   ) {
     let raw = family.raw_name();
@@ -423,14 +425,15 @@ impl FontFamilyNameQuotesCheck {
     }
     // Stylelint reports at the first occurrence of the family in the
     // declaration, or the whole declaration when it is not found there.
+    let prop_start = decl.prop_start();
     let decl_text = ctx
-      .source_slice(decl.prop_start, decl.value_start + decl.value.len())
+      .source_slice(prop_start, decl.value_span.end)
       .unwrap_or("");
     let span = decl_text.find(&raw).map_or_else(
-      || Span::new(decl.prop_start, decl_text.len()),
-      |i| Span::new(decl.prop_start + i, raw.len()),
+      || Span::new(prop_start, decl_text.len()),
+      |i| Span::new(prop_start + i, raw.len()),
     );
-    let start = decl.value_start + family.source_index;
+    let start = decl.value_start() + family.source_index;
     let (message, edit) = if expect_quotes {
       (
         format!("Expected quotes around \"{name}\""),
@@ -442,7 +445,12 @@ impl FontFamilyNameQuotesCheck {
         Edit::new(Span::new(start, name.len() + 2), name.to_string()),
       )
     };
-    diags.push(Diagnostic::new(NAME, message).span(span).fix(Fix::new(
+    let diag = Diagnostic::new(NAME, message).span(span);
+    if !fixable {
+      diags.push(diag);
+      return;
+    }
+    diags.push(diag.fix(Fix::new(
       if expect_quotes {
         "Add quotes"
       } else {

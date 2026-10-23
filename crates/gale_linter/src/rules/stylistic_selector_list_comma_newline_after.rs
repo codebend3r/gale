@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -42,30 +42,42 @@ impl StylisticSelectorListCommaNewlineAfterCheck {
 
 impl Check for StylisticSelectorListCommaNewlineAfterCheck {
   /// Flags a selector list comma whose trailing newline does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  ///
+  /// Reads the selector of every standard-syntax rule as written, as the
+  /// plugin does: a list is multi-line when it is written over more than one
+  /// line.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
-    let selector = &rule.selector;
-
-    // Check if this is a selector list (contains commas)
-    if !selector.contains(',') {
-      return vec![];
-    }
-
-    let is_multi_line = selector.contains('\n');
-
     let mut diags = Vec::new();
-    let sel_offset = rule.span.offset;
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = rule.raw_selector();
+      // Check if this is a selector list (contains commas)
+      if selector.contains(',') {
+        let is_multi_line = selector.contains('\n');
+        check_commas(
+          &selector,
+          rule.selector_start(),
+          is_multi_line,
+          option,
+          &mut diags,
+        );
+      }
+    }
+    diags
+  }
+}
 
-    // Find commas in the selector as the author wrote it, so spans are
-    // accurate.  The parsed selector may be re-serialised (the CSS parser
-    // normalises whitespace), so its length says nothing about the source.
-    let Some(sel_source) = ctx.selector_source(sel_offset) else {
-      return vec![];
-    };
-
+/// Reports the commas of `sel_source`, a selector list starting at
+/// `sel_offset` in the source, whose trailing newline does not match
+/// `option`.
+fn check_commas(
+  sel_source: &str,
+  sel_offset: usize,
+  is_multi_line: bool,
+  option: &str,
+  diags: &mut Vec<Diagnostic>,
+) {
+  {
     let bytes = sel_source.as_bytes();
     let len = bytes.len();
     let mut paren_depth = 0i32;
@@ -185,32 +197,27 @@ impl Check for StylisticSelectorListCommaNewlineAfterCheck {
       }
       i += 1;
     }
-    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::StyleRule;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![],
-      span: Span::new(0, sel.len()),
-      ..Default::default()
-    })
+  /// An empty rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{}}")
   }
 
   #[test]
   fn reports_missing_newline_after_comma_multiline() {
     let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a,\nb, c";
-    let ctx = ctx_with_source(sel);
-    let d = rule.check(&style_with_selector(sel), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(sel)));
     // The second comma (b, c) has a space instead of newline
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("newline"));
@@ -220,8 +227,7 @@ mod tests {
   fn allows_newline_after_all_commas() {
     let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a,\nb,\nc";
-    let ctx = ctx_with_source(sel);
-    let d = rule.check(&style_with_selector(sel), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(sel)));
     assert!(d.is_empty());
   }
 
@@ -229,8 +235,7 @@ mod tests {
   fn allows_scss_line_comment_after_comma() {
     let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "&[aria-disabled=\"true\"]:enabled, // This catches a situation\n&[aria-disabled=\"true\"]:active:enabled";
-    let ctx = ctx_with_source(sel);
-    let d = rule.check(&style_with_selector(sel), &ctx);
+    let d = rule.check_source(&scss_ctx_with_source(&style_with_selector(sel)));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by SCSS line comment, got {} diagnostics",
@@ -242,8 +247,7 @@ mod tests {
   fn allows_block_comment_newline_after_comma() {
     let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a, /* comment */\nb,\nc";
-    let ctx = ctx_with_source(sel);
-    let d = rule.check(&style_with_selector(sel), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(sel)));
     assert!(
       d.is_empty(),
       "Should not flag comma followed by block comment then newline, got {} diagnostics",
@@ -255,10 +259,18 @@ mod tests {
   fn allows_single_line_with_default() {
     let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
     let sel = "a, b, c";
-    let ctx = ctx_with_source(sel);
-    let d = rule.check(&style_with_selector(sel), &ctx);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(sel)));
     // Default is "always-multi-line", single line is fine
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn a_list_written_over_several_lines_is_multi_line_in_css_too() {
+    let rule = configured(&StylisticSelectorListCommaNewlineAfter, None);
+    let source = "a { b,\n  c, d {} }";
+    let d = rule.check_source(&ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span, Span::new(source.find(", d").unwrap(), 1));
   }
 
   #[test]

@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use gale_css_parser::CssNode;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::lint_env::LintEnv;
+use crate::lint_env::{LintEnv, find_node_modules};
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
@@ -88,14 +89,9 @@ fn is_valid_options(value: &serde_json::Value) -> bool {
 // ── Rule implementation ─────────────────────────────────────────────────
 
 impl Check for PluginBrowserCompatCheck {
-  /// Unused: the work happens in `check_root`, which needs whole-file context.
-  fn check(&self, _node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    vec![]
-  }
-
   /// Resolves the browserslist targets and MDN compat data, then flags properties
   /// and selectors the targets do not support. Missing data disables the rule.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let Some(opts) = &self.options else {
       return vec![];
     };
@@ -125,14 +121,33 @@ impl Check for PluginBrowserCompatCheck {
     };
 
     let mut diagnostics = Vec::new();
-    collect_from_nodes(
-      nodes,
-      context,
-      opts,
-      &compat_data,
-      &targets,
-      &mut diagnostics,
-    );
+    for node in tree.walk() {
+      if let Some(rule) = node.as_rule() {
+        // The selector as written, for the offsets of its pseudos.
+        let start = rule.selector_start();
+        let selector = context
+          .source_slice(start, rule.name_span.end)
+          .unwrap_or("");
+        check_selectors(
+          selector,
+          start,
+          context,
+          opts,
+          &compat_data,
+          &targets,
+          &mut diagnostics,
+        );
+      } else if let Some(decl) = node.as_decl() {
+        check_property(
+          decl,
+          context,
+          opts,
+          &compat_data,
+          &targets,
+          &mut diagnostics,
+        );
+      }
+    }
     diagnostics
   }
 }
@@ -723,120 +738,17 @@ fn parse_version_f64(v: &str) -> f64 {
 
 // ── Feature collection and checking ─────────────────────────────────────
 
-/// Runs [`collect_from_node`] over a node list.
-fn collect_from_nodes(
-  nodes: &[CssNode],
-  ctx: &RuleContext,
-  opts: &BrowserCompatOptions,
-  compat_data: &CompatData,
-  targets: &[BrowserTarget],
-  diagnostics: &mut Vec<Diagnostic>,
-) {
-  for node in nodes {
-    collect_from_node(node, ctx, opts, compat_data, targets, diagnostics);
-  }
-}
-
-/// Checks one node's selectors and declarations, recursing into children.
-fn collect_from_node(
-  node: &CssNode,
-  ctx: &RuleContext,
-  opts: &BrowserCompatOptions,
-  compat_data: &CompatData,
-  targets: &[BrowserTarget],
-  diagnostics: &mut Vec<Diagnostic>,
-) {
-  match node {
-    CssNode::Style(rule) => {
-      // Check selectors for pseudo-elements and pseudo-classes
-      check_selectors(
-        &rule.selector,
-        rule.span.offset,
-        ctx,
-        opts,
-        compat_data,
-        targets,
-        diagnostics,
-      );
-      // Check declarations directly on this style rule
-      for decl in &rule.declarations {
-        check_property(decl, ctx, opts, compat_data, targets, diagnostics);
-      }
-      // Check nested style rule children
-      for child in &rule.children {
-        collect_from_style_rule(child, ctx, opts, compat_data, targets, diagnostics);
-      }
-      // Check nested at-rules
-      collect_from_nodes(
-        &rule.nested_at_rules,
-        ctx,
-        opts,
-        compat_data,
-        targets,
-        diagnostics,
-      );
-    }
-    CssNode::AtRule(at_rule) => {
-      collect_from_nodes(
-        &at_rule.children,
-        ctx,
-        opts,
-        compat_data,
-        targets,
-        diagnostics,
-      );
-    }
-    CssNode::Declaration(decl) => {
-      check_property(decl, ctx, opts, compat_data, targets, diagnostics);
-    }
-    CssNode::Comment(_) => {}
-  }
-}
-
-/// Checks a style rule's selector and declarations, then its nested rules.
-fn collect_from_style_rule(
-  rule: &gale_css_parser::StyleRule,
-  ctx: &RuleContext,
-  opts: &BrowserCompatOptions,
-  compat_data: &CompatData,
-  targets: &[BrowserTarget],
-  diagnostics: &mut Vec<Diagnostic>,
-) {
-  check_selectors(
-    &rule.selector,
-    rule.span.offset,
-    ctx,
-    opts,
-    compat_data,
-    targets,
-    diagnostics,
-  );
-  for decl in &rule.declarations {
-    check_property(decl, ctx, opts, compat_data, targets, diagnostics);
-  }
-  for child in &rule.children {
-    collect_from_style_rule(child, ctx, opts, compat_data, targets, diagnostics);
-  }
-  collect_from_nodes(
-    &rule.nested_at_rules,
-    ctx,
-    opts,
-    compat_data,
-    targets,
-    diagnostics,
-  );
-}
-
 /// Check CSS properties for browser compatibility.
 fn check_property(
-  decl: &gale_css_parser::Declaration,
+  decl: DeclRef,
   ctx: &RuleContext,
   opts: &BrowserCompatOptions,
   compat_data: &CompatData,
   targets: &[BrowserTarget],
   diagnostics: &mut Vec<Diagnostic>,
 ) {
-  let prop = &decl.property;
+  // MDN's keys are lower-case.
+  let prop = &decl.prop().to_ascii_lowercase();
 
   // Try direct match first (handles -webkit-tap-highlight-color etc.)
   let feature_id = format!("properties.{}", prop);
@@ -847,7 +759,7 @@ fn check_property(
     check_support_and_report(
       entry,
       &format!("\"{}\" property", prop),
-      decl.span.offset,
+      decl.span().offset,
       ctx,
       opts,
       targets,
@@ -866,7 +778,7 @@ fn check_property(
       check_support_and_report(
         entry,
         &format!("\"{}\" property", stripped),
-        decl.span.offset,
+        decl.span().offset,
         ctx,
         opts,
         targets,
@@ -891,7 +803,21 @@ fn check_selectors(
   let len = bytes.len();
   let mut i = 0;
 
+  let line_comments = !matches!(ctx.syntax, Syntax::Css);
+
   while i < len {
+    // Skip comments, which hold no selectors.
+    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      i = selector[i + 2..]
+        .find("*/")
+        .map_or(len, |end| i + 2 + end + 2);
+      continue;
+    }
+    if line_comments && bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+      i = selector[i..].find('\n').map_or(len, |end| i + end);
+      continue;
+    }
+
     // Skip strings
     if bytes[i] == b'"' || bytes[i] == b'\'' {
       let quote = bytes[i];
@@ -1038,23 +964,6 @@ fn strip_vendor_prefix(prop: &str) -> Option<&str> {
     }
   }
   None
-}
-
-/// Nearest `node_modules` directory at or above `file_path`.
-fn find_node_modules(file_path: &Path) -> Option<std::path::PathBuf> {
-  let mut dir = if file_path.is_file() {
-    file_path.parent()?
-  } else {
-    file_path
-  };
-
-  loop {
-    let nm = dir.join("node_modules");
-    if nm.is_dir() {
-      return Some(nm);
-    }
-    dir = dir.parent()?;
-  }
 }
 
 #[cfg(test)]

@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
-use crate::chars::is_word_or_hyphen_byte;
+use crate::custom_properties::{collect_definitions_from_source, var_references};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -52,7 +52,7 @@ impl SpectrumToolsNoUnknownCustomPropertiesCheck {
 impl Check for SpectrumToolsNoUnknownCustomPropertiesCheck {
   /// In `index.css` only, collects custom properties from this file and sibling
   /// `themes/*.css`, then flags `var()` references defined by none of them.
-  fn check_root(&self, nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let file_path = context.file_path;
 
     // The plugin only checks index.css files.
@@ -79,13 +79,9 @@ impl Check for SpectrumToolsNoUnknownCustomPropertiesCheck {
 
     // Walk all declarations, find var() references, report unknown ones.
     let mut diagnostics = Vec::new();
-    walk_nodes_for_vars(
-      nodes,
-      source,
-      &known_props,
-      &self.ignore_list,
-      &mut diagnostics,
-    );
+    for decl in tree.walk_decls() {
+      check_declaration(decl, &known_props, &self.ignore_list, &mut diagnostics);
+    }
 
     diagnostics
   }
@@ -172,133 +168,27 @@ fn collect_theme_definitions(component_root: &str, props: &mut HashSet<String>) 
   }
 }
 
-// ---------------------------------------------------------------------------
-// Collecting custom property definitions
-// ---------------------------------------------------------------------------
-
-/// Extract all custom property definitions (`--name: value`) from a CSS source.
-fn collect_definitions_from_source(source: &str, props: &mut HashSet<String>) {
-  let bytes = source.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i + 2 < len {
-    if bytes[i] == b'-' && bytes[i + 1] == b'-' {
-      let is_prop_start = if i == 0 {
-        true
-      } else {
-        let prev = bytes[i - 1];
-        prev == b' '
-          || prev == b'\t'
-          || prev == b'\n'
-          || prev == b'\r'
-          || prev == b'{'
-          || prev == b';'
-          || prev == b'('
-      };
-
-      if is_prop_start {
-        let name_start = i;
-        let mut j = i + 2;
-        while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-' || bytes[j] == b'_')
-        {
-          j += 1;
-        }
-        let name = &source[name_start..j];
-
-        let mut k = j;
-        while k < len && (bytes[k] == b' ' || bytes[k] == b'\t') {
-          k += 1;
-        }
-
-        if k < len && bytes[k] == b':' && (k + 1 >= len || bytes[k + 1] != b':') {
-          props.insert(name.to_string());
-        }
-
-        i = j;
-        continue;
-      }
-    }
-    i += 1;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Walking AST for var() references
-// ---------------------------------------------------------------------------
-
-/// Recursively walk AST nodes, checking declarations for unknown var() references.
-fn walk_nodes_for_vars(
-  nodes: &[CssNode],
-  source: &str,
-  known_props: &HashSet<String>,
-  ignore_patterns: &[String],
-  diagnostics: &mut Vec<Diagnostic>,
-) {
-  for node in nodes {
-    for decl in node.declarations() {
-      check_declaration(decl, source, known_props, ignore_patterns, diagnostics);
-    }
-    match node {
-      CssNode::Style(style_rule) => {
-        // Recurse into nested style rule children.
-        walk_nodes_for_vars(
-          &style_rule
-            .children
-            .iter()
-            .map(|c| CssNode::Style(c.clone()))
-            .collect::<Vec<_>>(),
-          source,
-          known_props,
-          ignore_patterns,
-          diagnostics,
-        );
-        // Recurse into nested at-rules.
-        walk_nodes_for_vars(
-          &style_rule.nested_at_rules,
-          source,
-          known_props,
-          ignore_patterns,
-          diagnostics,
-        );
-      }
-      CssNode::AtRule(at_rule) => {
-        walk_nodes_for_vars(
-          &at_rule.children,
-          source,
-          known_props,
-          ignore_patterns,
-          diagnostics,
-        );
-      }
-      CssNode::Declaration(_) | CssNode::Comment(_) => {}
-    }
-  }
-}
-
 /// Check a single declaration for unknown var() custom property references.
 fn check_declaration(
-  decl: &gale_css_parser::Declaration,
-  source: &str,
+  decl: DeclRef,
   known_props: &HashSet<String>,
   ignore_patterns: &[String],
   diagnostics: &mut Vec<Diagnostic>,
 ) {
-  if !decl.value.contains("var(") && !decl.value.contains("VAR(") {
+  // The plugin reads `decl.value`.
+  let value = decl.value();
+  if !value.contains("var(") && !value.contains("VAR(") {
     return;
   }
 
-  // Find all var() references in the value.
-  let var_refs = find_var_refs_in_value(&decl.value);
-
-  for vr in &var_refs {
+  for vr in var_references(value) {
     // Check ignoreList
-    if is_ignored(&vr.name, ignore_patterns) {
+    if is_ignored(vr.name, ignore_patterns) {
       continue;
     }
 
     // Check if defined locally or in themes
-    if known_props.contains(&vr.name) {
+    if known_props.contains(vr.name) {
       continue;
     }
 
@@ -310,83 +200,15 @@ fn check_declaration(
     // Report at the declaration position (matching Stylelint's behavior
     // which uses `node: decl` in the report call).
     diagnostics.push(
-      Diagnostic::new(NAME, format!("Custom property {} not defined", vr.name)).span(decl.span),
+      Diagnostic::new(NAME, format!("Custom property {} not defined", vr.name)).span(decl.span()),
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// var() reference finding
-// ---------------------------------------------------------------------------
-
-struct VarRef {
-  name: String,
-}
-
-/// Find all `var(--name)` references in a value string, at all nesting levels.
-fn find_var_refs_in_value(value: &str) -> Vec<VarRef> {
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut refs = Vec::new();
-  let mut i = 0;
-
-  while i < len {
-    if i + 4 <= len
-      && (bytes[i] == b'v' || bytes[i] == b'V')
-      && (bytes[i + 1] == b'a' || bytes[i + 1] == b'A')
-      && (bytes[i + 2] == b'r' || bytes[i + 2] == b'R')
-      && bytes[i + 3] == b'('
-    {
-      if i > 0
-        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-' || bytes[i - 1] == b'_')
-      {
-        i += 1;
-        continue;
-      }
-
-      i += 4; // skip "var("
-
-      // Skip whitespace
-      while i < len && is_whitespace(bytes[i]) {
-        i += 1;
-      }
-
-      if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
-        let name_start = i;
-        while i < len && is_word_or_hyphen_byte(bytes[i]) {
-          i += 1;
-        }
-        let prop_name = &value[name_start..i];
-
-        // Skip whitespace
-        while i < len && is_whitespace(bytes[i]) {
-          i += 1;
-        }
-
-        refs.push(VarRef {
-          name: prop_name.to_string(),
-        });
-
-        continue;
-      }
-    }
-
-    i += 1;
-  }
-
-  refs
-}
-
-/// Whether the byte is CSS whitespace.
-#[inline]
-fn is_whitespace(b: u8) -> bool {
-  b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
+  use crate::testing::{CheckSource, configured, invalid_options};
 
   #[test]
   fn find_component_root_absolute() {
@@ -435,7 +257,7 @@ mod tests {
 
   #[test]
   fn find_vars_with_fallback() {
-    let refs = find_var_refs_in_value("var(--a, var(--b))");
+    let refs = var_references("var(--a, var(--b))");
     assert_eq!(refs.len(), 2);
     assert_eq!(refs[0].name, "--a");
     assert_eq!(refs[1].name, "--b");
@@ -451,8 +273,7 @@ mod tests {
       syntax: gale_css_parser::Syntax::Css,
       cache: None,
     };
-    let parsed = gale_css_parser::parse(ctx.source, gale_css_parser::Syntax::Css).unwrap();
-    let diags = rule.check_root(&parsed.nodes, &ctx);
+    let diags = rule.check_source(&ctx);
     assert!(diags.is_empty());
   }
 

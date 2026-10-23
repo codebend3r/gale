@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{self, Kind, Node, Selector};
+use gale_css_parser::selector::specificity::is_pseudo_element;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{self, Kind, Node, Selector};
-use crate::standard_syntax::is_standard_syntax_selector;
 
 const NAME: &str = "selector-not-notation";
 
@@ -47,7 +47,7 @@ impl SelectorNotNotationCheck {
 impl Check for SelectorNotNotationCheck {
   /// Flags `:not()` written in the notation the option forbids, in every
   /// style rule's selector as written. Interpolated selectors are skipped.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let simple = self.simple;
     let message = if simple {
       "Expected simple :not() pseudo-class notation"
@@ -56,13 +56,16 @@ impl Check for SelectorNotNotationCheck {
     };
 
     let mut diags = Vec::new();
-    for rule in &ctx.scanned_rules().style_rules {
-      if !rule.prelude.to_ascii_lowercase().contains(":not(")
-        || !is_standard_syntax_selector(&rule.prelude)
-      {
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let first = diags.len();
+      if !prelude.to_ascii_lowercase().contains(":not(") {
         continue;
       }
-      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+      let Some(selectors) = postcss::parse(&prelude, rule.selector_start()) else {
         continue;
       };
       postcss::walk(&selectors, &mut |visit| {
@@ -95,6 +98,9 @@ impl Check for SelectorNotNotationCheck {
         }
         diags.push(diag);
       });
+      if !rule.selector_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
+      }
     }
     diags
   }
@@ -108,11 +114,7 @@ fn is_not(node: &Node) -> bool {
 /// Whether a pseudo is a pseudo-class, as postcss-selector-parser tells:
 /// not `::name`, nor one of the four legacy single-colon pseudo-elements.
 fn is_pseudo_class(node: &Node) -> bool {
-  node.kind == Kind::Pseudo
-    && !node.value.starts_with("::")
-    && ![":before", ":after", ":first-letter", ":first-line"]
-      .iter()
-      .any(|legacy| node.value.eq_ignore_ascii_case(legacy))
+  node.kind == Kind::Pseudo && !is_pseudo_element(node)
 }
 
 /// Stylelint's `isSimpleSelector`: a pseudo-class, attribute, class,
@@ -236,6 +238,20 @@ mod tests {
   use crate::testing::{fix, invalid_options, lint};
 
   const RULE: &str = "selector-not-notation";
+
+  /// postcss-scss hands Stylelint the selector with its `//` comments
+  /// written as `/* */` ones, so the chain after them is reported where
+  /// Stylelint reports it; the fix is left out, since its offsets would
+  /// land two bytes off per comment.
+  #[test]
+  fn selectors_with_line_comments_are_reported_without_a_fix() {
+    let complex = serde_json::json!("complex");
+    let source = "a,\n// note\ninput:not(.b):not(.c) {}";
+    let found = lint(RULE, complex.clone(), source, Syntax::Scss);
+    assert!(!found.is_empty());
+    assert!(found.iter().all(|d| d.fix.is_none()));
+    assert_eq!(fix(RULE, complex, source, Syntax::Scss), source);
+  }
 
   #[test]
   fn simple_splits_lists_of_simple_selectors() {

@@ -1,5 +1,6 @@
-use gale_css_parser::{CssNode, Syntax};
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
+use gale_diagnostics::{Diagnostic, Span};
 use std::collections::HashSet;
 
 use crate::lint_env::LintEnv;
@@ -83,127 +84,70 @@ impl ScssDollarVariablePatternCheck {
 impl Check for ScssDollarVariablePatternCheck {
   /// Flags `$variable` names that do not match the configured regex. Loop
   /// iterators in `@each`/`@for` are never checked, being bindings, not declarations.
-  fn check_root(&self, nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let mut diagnostics = Vec::new();
-
-    for node in nodes {
-      self.walk(
-        node,
-        false, // not inside an at-rule at top level
-        false, // not inside any block at top level
-        &HashSet::new(),
-        &mut diagnostics,
-      );
-    }
-
-    diagnostics
+    // Every declaration, as stylelint-scss's `root.walkDecls` visits them.
+    tree
+      .walk_decls()
+      .filter(|&decl| self.is_problem(decl))
+      .map(|decl| {
+        let message = self
+          .custom_message
+          .clone()
+          .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());
+        // stylelint-scss reports the variable (`word: prop`).
+        Diagnostic::new(NAME, message).span(Span::new(decl.prop_start(), decl.prop().len()))
+      })
+      .collect()
   }
 }
 
 impl ScssDollarVariablePatternCheck {
-  /// Recursively walk the AST, tracking at-rule context and loop variables.
-  fn walk(
-    &self,
-    node: &CssNode,
-    inside_at_rule: bool,
-    inside_block: bool,
-    loop_vars: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-  ) {
-    match node {
-      CssNode::Declaration(decl) => {
-        if !decl.property.starts_with('$') {
-          return;
-        }
-
-        let var_name = &decl.property[1..];
-        if var_name.is_empty() {
-          return;
-        }
-
-        // Skip the loop iterator variables themselves (e.g., $color in
-        // `@each $color in $list`). Other variables declared inside loops
-        // are still checked, matching Stylelint-scss behavior.
-        if loop_vars.contains(var_name) {
-          return;
-        }
-
-        // Skip all variables inside at-rules when ignoreInside is set
-        if self.ignore_inside_at_rule && inside_at_rule {
-          return;
-        }
-
-        // Skip local (non-top-level) variables when ignore: "local", and
-        // top-level ones when ignore: "global"
-        if (self.ignore_local && inside_block) || (self.ignore_global && !inside_block) {
-          return;
-        }
-
-        if !self.pattern.is_match(var_name) {
-          let message = self
-            .custom_message
-            .clone()
-            .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());
-          diagnostics.push(Diagnostic::new(NAME, message).span(decl.span));
-        }
-      }
-
-      CssNode::AtRule(at_rule) => {
-        // Extract loop variable names from @each and @for params.
-        let mut child_loop_vars = loop_vars.clone();
-        let name_lower = at_rule.name.to_lowercase();
-
-        if name_lower == "each" {
-          // @each $var1, $var2 in $list
-          // params: "$var1, $var2 in $list"
-          extract_each_vars(&at_rule.params, &mut child_loop_vars);
-        } else if name_lower == "for" {
-          // @for $i from 1 through 10
-          // params: "$i from 1 through 10"
-          extract_for_var(&at_rule.params, &mut child_loop_vars);
-        }
-        for child in &at_rule.children {
-          self.walk(
-            child,
-            true, // inside an at-rule
-            true, // inside a block
-            &child_loop_vars,
-            diagnostics,
-          );
-        }
-      }
-
-      CssNode::Style(style_rule) => {
-        // Declarations inside style rules
-        for decl in &style_rule.declarations {
-          let decl_node = CssNode::Declaration(decl.clone());
-          self.walk(
-            &decl_node,
-            inside_at_rule,
-            true, // inside a style rule block
-            loop_vars,
-            diagnostics,
-          );
-        }
-        // Nested style rules
-        for child in &style_rule.children {
-          let child_node = CssNode::Style(child.clone());
-          self.walk(
-            &child_node,
-            inside_at_rule,
-            true, // inside a style rule block
-            loop_vars,
-            diagnostics,
-          );
-        }
-      }
-
-      CssNode::Comment(_) => {}
+  /// Whether `decl` declares a `$variable` whose name the rule rejects.
+  fn is_problem(&self, decl: DeclRef) -> bool {
+    let Some(var_name) = decl.prop().strip_prefix('$') else {
+      return false;
+    };
+    if var_name.is_empty() {
+      return false;
     }
+
+    // Skip the loop iterator variables themselves (e.g., $color in
+    // `@each $color in $list`). Other variables declared inside loops
+    // are still checked, matching Stylelint-scss behavior.
+    let mut loop_vars = HashSet::new();
+    let mut inside_at_rule = false;
+    for at_rule in decl.ancestors().filter_map(|node| node.as_at_rule()) {
+      inside_at_rule = true;
+      let name = at_rule.name();
+      if name.eq_ignore_ascii_case("each") {
+        // @each $var1, $var2 in $list
+        extract_each_vars(at_rule.params(), &mut loop_vars);
+      } else if name.eq_ignore_ascii_case("for") {
+        // @for $i from 1 through 10
+        extract_for_var(at_rule.params(), &mut loop_vars);
+      }
+    }
+    if loop_vars.contains(var_name) {
+      return false;
+    }
+
+    // Skip all variables inside at-rules when ignoreInside is set
+    if self.ignore_inside_at_rule && inside_at_rule {
+      return false;
+    }
+
+    // Skip local (non-top-level) variables when ignore: "local", and
+    // top-level ones when ignore: "global"
+    let inside_block = decl.parent().is_some();
+    if (self.ignore_local && inside_block) || (self.ignore_global && !inside_block) {
+      return false;
+    }
+
+    !self.pattern.is_match(var_name)
   }
 }
 
@@ -244,138 +188,69 @@ fn extract_for_var(params: &str, vars: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule as ParserAtRule, Declaration};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn dollar_var(name: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: name.to_string(),
-      value: "red".to_string(),
-      span: Span::new(0, 10),
-      important: false,
-    })
+  /// What the rule, configured with `options`, reports for `source` in
+  /// SCSS.
+  fn check(options: Option<serde_json::Value>, source: &str) -> Vec<Diagnostic> {
+    configured(&ScssDollarVariablePattern, options).check_source(&scss_ctx_with_source(source))
   }
 
   #[test]
   fn allows_kebab_case() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    let nodes = vec![dollar_var("$my-var")];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    assert!(check(None, "$my-var: red;").is_empty());
   }
 
   #[test]
   fn reports_non_matching_pattern() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    let nodes = vec![dollar_var("$myVar")];
-    let d = rule.check_root(&nodes, &scss_ctx());
+    let source = "a { b: c; }\n$myVar: red;";
+    let d = check(None, source);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
+    assert_eq!(&source[d[0].span.offset..d[0].span.end()], "$myVar");
   }
 
   #[test]
   fn skips_non_dollar_declarations() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    let node = CssNode::Declaration(Declaration {
-      property: "color".to_string(),
-      value: "red".to_string(),
-      span: Span::new(0, 10),
-      important: false,
-    });
-    let nodes = vec![node];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    assert!(check(None, "a { color: red; }").is_empty());
   }
 
   #[test]
   fn skips_non_scss() {
     let rule = configured(&ScssDollarVariablePattern, None);
-    let css_ctx = ctx();
-    let nodes = vec![dollar_var("$myVar")];
-    assert!(rule.check_root(&nodes, &css_ctx).is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source("$myVar: red;"))
+        .is_empty()
+    );
   }
 
   // -- Loop variable tests --
 
   #[test]
   fn ignores_each_loop_variable() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @each $breakpoint-name in $list { $breakpoint-name: "test"; }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "each".to_string(),
-      params: "$breakpoint-name in $grid-breakpoints".to_string(),
-      span: Span::new(0, 80),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$breakpoint-name".to_string(),
-        value: "test".to_string(),
-        span: Span::new(50, 20),
-        important: false,
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    let source = "@each $breakpoint-name in $grid-breakpoints { $breakpoint-name: \"test\"; }";
+    assert!(check(None, source).is_empty());
   }
 
   #[test]
   fn ignores_each_loop_multiple_variables() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @each $name, $value in $map { $name: ...; $value: ...; }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "each".to_string(),
-      params: "$name, $value in $map".to_string(),
-      span: Span::new(0, 100),
-      children: vec![
-        CssNode::Declaration(Declaration {
-          property: "$name".to_string(),
-          value: "test".to_string(),
-          span: Span::new(40, 15),
-          important: false,
-        }),
-        CssNode::Declaration(Declaration {
-          property: "$value".to_string(),
-          value: "test".to_string(),
-          span: Span::new(60, 15),
-          important: false,
-        }),
-      ],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    let source = "@each $name, $value in $map { $name: test; $value: test; }";
+    assert!(check(None, source).is_empty());
   }
 
   #[test]
   fn ignores_for_loop_variable() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @for $i from 1 through 10 { $i: "override"; }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "for".to_string(),
-      params: "$i from 1 through 10".to_string(),
-      span: Span::new(0, 60),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$i".to_string(),
-        value: "override".to_string(),
-        span: Span::new(30, 15),
-        important: false,
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    assert!(check(None, "@for $i from 1 through 10 { $i: \"override\"; }").is_empty());
   }
 
   #[test]
   fn reports_non_loop_vars_inside_each_loop() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @each $name in $list { $otherBad: "test"; }
     // $otherBad is NOT the loop iterator — should still be checked.
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "each".to_string(),
-      params: "$name in $list".to_string(),
-      span: Span::new(0, 60),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$otherBad".to_string(),
-        value: "test".to_string(),
-        span: Span::new(30, 15),
-        important: false,
-      })],
-    })];
-    let d = rule.check_root(&nodes, &scss_ctx());
+    let d = check(None, "@each $name in $list { $otherBad: \"test\"; }");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
   }
@@ -384,59 +259,30 @@ mod tests {
 
   #[test]
   fn ignore_inside_at_rule_skips_all_vars_in_at_rules() {
-    use serde_json::json;
-    let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
-    let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx();
-
+    let opts = serde_json::json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
     // Variable inside a @mixin — should be ignored
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "mixin".to_string(),
-      params: "my-mixin".to_string(),
-      span: Span::new(0, 60),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$local-var".to_string(),
-        value: "red".to_string(),
-        span: Span::new(30, 15),
-        important: false,
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &ctx).is_empty());
+    assert!(check(Some(opts), "@mixin my-mixin { $local-var: red; }").is_empty());
   }
 
   #[test]
   fn ignore_inside_at_rule_still_reports_top_level() {
-    use serde_json::json;
-    let opts = json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
-    let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx();
-
+    let opts = serde_json::json!(["^pf-v[56]-", {"ignoreInside": "at-rule"}]);
     // Top-level variable that doesn't match — should still be reported
-    let nodes = vec![dollar_var("$bad-name")];
-    let d = rule.check_root(&nodes, &ctx);
+    let d = check(Some(opts), "$bad-name: red;");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
   }
 
   #[test]
   fn ignore_inside_inside_at_rule_synonym() {
-    use serde_json::json;
-    let opts = json!(["^pf-", {"ignoreInside": "inside-at-rule"}]);
-    let rule = configured(&ScssDollarVariablePattern, opts.clone());
-    let ctx = scss_ctx();
-
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "function".to_string(),
-      params: "my-fn()".to_string(),
-      span: Span::new(0, 60),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$local".to_string(),
-        value: "1".to_string(),
-        span: Span::new(30, 10),
-        important: false,
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &ctx).is_empty());
+    let opts = serde_json::json!(["^pf-", {"ignoreInside": "inside-at-rule"}]);
+    assert!(
+      check(
+        Some(opts),
+        "@function my-fn() { $local: 1; @return $local; }"
+      )
+      .is_empty()
+    );
   }
 
   // -- Helper extraction tests --
@@ -470,122 +316,41 @@ mod tests {
 
   #[test]
   fn ignores_local_var_and_reassignment_inside_each() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @each $breakpoint, $breakpoint-value in $map {
-    //   $breakpoint-name: "";           <- local var, not iterator
-    //   $breakpoint: "md";              <- reassignment of iterator
-    // }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "each".to_string(),
-      params: "$breakpoint, $breakpoint-value in $pf-v6-map".to_string(),
-      span: Span::new(0, 120),
-      children: vec![
-        CssNode::Declaration(Declaration {
-          property: "$breakpoint-name".to_string(),
-          value: "\"\"".to_string(),
-          span: Span::new(60, 20),
-          important: false,
-        }),
-        CssNode::Declaration(Declaration {
-          property: "$breakpoint".to_string(),
-          value: "\"md\"".to_string(),
-          span: Span::new(85, 18),
-          important: false,
-        }),
-      ],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    let source = "@each $breakpoint, $breakpoint-value in $pf-v6-map {\n  $breakpoint-name: \"\";\n  $breakpoint: \"md\";\n}";
+    assert!(check(None, source).is_empty());
   }
 
   #[test]
   fn ignores_vars_in_nested_at_rule_inside_each() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @each $name in $list {
-    //   @if $name != "base" {
-    //     $breakpoint-name: -on-#{$name};
-    //   }
-    // }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "each".to_string(),
-      params: "$name in $list".to_string(),
-      span: Span::new(0, 120),
-      children: vec![CssNode::AtRule(ParserAtRule {
-        name: "if".to_string(),
-        params: "$name != \"base\"".to_string(),
-        span: Span::new(30, 60),
-        children: vec![CssNode::Declaration(Declaration {
-          property: "$breakpoint-name".to_string(),
-          value: "-on-#{$name}".to_string(),
-          span: Span::new(50, 30),
-          important: false,
-        })],
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    let source = "@each $name in $list {\n  @if $name != \"base\" {\n    $breakpoint-name: -on-#{$name};\n  }\n}";
+    assert!(check(None, source).is_empty());
   }
 
   #[test]
   fn ignores_vars_inside_for_loop() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // @for $i from 1 through 10 {
-    //   $width: $i * 10%;
-    // }
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "for".to_string(),
-      params: "$i from 1 through 10".to_string(),
-      span: Span::new(0, 80),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$width".to_string(),
-        value: "$i * 10%".to_string(),
-        span: Span::new(40, 18),
-        important: false,
-      })],
-    })];
-    assert!(rule.check_root(&nodes, &scss_ctx()).is_empty());
+    assert!(check(None, "@for $i from 1 through 10 {\n  $width: $i * 10%;\n}").is_empty());
   }
 
   #[test]
   fn still_reports_non_matching_vars_inside_and_outside_loop() {
-    let rule = configured(&ScssDollarVariablePattern, None);
-    // $myBadVar: red;  (top-level, camelCase, doesn't match default kebab pattern)
-    // @each $name in $list { $localVar: "test"; }  ($localVar also doesn't match)
-    let nodes = vec![
-      dollar_var("$myBadVar"),
-      CssNode::AtRule(ParserAtRule {
-        name: "each".to_string(),
-        params: "$name in $list".to_string(),
-        span: Span::new(20, 60),
-        children: vec![CssNode::Declaration(Declaration {
-          property: "$localVar".to_string(),
-          value: "test".to_string(),
-          span: Span::new(50, 15),
-          important: false,
-        })],
-      }),
-    ];
-    let d = rule.check_root(&nodes, &scss_ctx());
     // Both $myBadVar and $localVar should be reported (neither is a loop iterator)
-    assert_eq!(d.len(), 2);
+    let source = "$myBadVar: red;\n@each $name in $list { $localVar: \"test\"; }";
+    assert_eq!(check(None, source).len(), 2);
   }
 
   #[test]
   fn reports_non_matching_var_inside_mixin_without_ignore_option() {
-    let rule = configured(&ScssDollarVariablePattern, None);
     // Without ignoreInside, vars in @mixin (non-loop) should still be checked
-    let nodes = vec![CssNode::AtRule(ParserAtRule {
-      name: "mixin".to_string(),
-      params: "my-mixin".to_string(),
-      span: Span::new(0, 60),
-      children: vec![CssNode::Declaration(Declaration {
-        property: "$myBadVar".to_string(),
-        value: "red".to_string(),
-        span: Span::new(30, 15),
-        important: false,
-      })],
-    })];
-    let d = rule.check_root(&nodes, &scss_ctx());
+    let d = check(None, "@mixin my-mixin { $myBadVar: red; }");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected $ variable name"));
+  }
+
+  #[test]
+  fn checks_variables_in_at_rules_nested_in_style_rules() {
+    // stylelint-scss walks every declaration.
+    let source = "a { @if $x { $badVar: 1; } @include m { $otherBad: 2; } }";
+    assert_eq!(check(None, source).len(), 2);
   }
 
   #[test]

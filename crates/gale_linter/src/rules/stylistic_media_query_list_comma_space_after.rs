@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -41,7 +41,7 @@ impl StylisticMediaQueryListCommaSpaceAfterCheck {
 
 impl Check for StylisticMediaQueryListCommaSpaceAfterCheck {
   /// Flags a media query list comma whose trailing space does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
     let source = context.source;
     let bytes = source.as_bytes();
@@ -173,14 +173,14 @@ impl Check for StylisticMediaQueryListCommaSpaceAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
   #[test]
   fn allows_space_after_comma() {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media screen, print { }";
     let d = configured(&StylisticMediaQueryListCommaSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert!(d.is_empty());
   }
 
@@ -189,7 +189,7 @@ mod tests {
     let opt = serde_json::Value::String("always".to_string());
     let source = "@media screen,print { }";
     let d = configured(&StylisticMediaQueryListCommaSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected a space"));
   }
@@ -199,7 +199,7 @@ mod tests {
     let opt = serde_json::Value::String("never".to_string());
     let source = "@media screen, print { }";
     let d = configured(&StylisticMediaQueryListCommaSpaceAfter, opt.clone())
-      .check_root(&[], &ctx_with_source(source));
+      .check_source(&ctx_with_source(source));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected space"));
   }

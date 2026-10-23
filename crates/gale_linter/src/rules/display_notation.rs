@@ -1,7 +1,7 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::chars::{is_ident_char, is_ident_start};
+use crate::chars::{is_css_whitespace_byte, is_ident_char, is_ident_start};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -116,20 +116,17 @@ const LONG_TO_SHORT: &[(&str, &[&str])] = &[
 impl Check for DisplayNotationCheck {
   /// Reports `display` values in the other notation, with a fix that
   /// rewrites the keywords.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(table) = self.table else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
-      let (Some(prop), Some(value)) = (
-        ctx.source_slice(decl.name_span.start, decl.name_span.end),
-        ctx.source_slice(decl.value_span.start, decl.value_span.end),
-      ) else {
+    for decl in tree.walk_decls() {
+      let Some(prop) = ctx.source_slice(decl.name_span.start, decl.name_span.end) else {
         continue;
       };
+      let value = decl.written_value();
       if !prop.eq_ignore_ascii_case("display")
         || !mentions_display_keyword(value)
         || !is_standard_syntax_value(value)
@@ -240,8 +237,8 @@ fn tokenize(css: &str) -> Option<Vec<Token>> {
   while pos < bytes.len() {
     let start = pos;
     let b = bytes[pos];
-    if is_whitespace(b) {
-      while pos < bytes.len() && is_whitespace(bytes[pos]) {
+    if is_css_whitespace_byte(b) {
+      while pos < bytes.len() && is_css_whitespace_byte(bytes[pos]) {
         pos += 1;
       }
       tokens.push(Token {
@@ -278,11 +275,6 @@ fn tokenize(css: &str) -> Option<Vec<Token>> {
     }
   }
   Some(tokens)
-}
-
-/// CSS whitespace: space, tab and newlines.
-fn is_whitespace(b: u8) -> bool {
-  matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
 }
 
 /// Whether `text` starts with a valid escape: `\` not followed by a newline.
@@ -344,7 +336,11 @@ fn consume_escape(css: &str, pos: usize) -> (char, usize) {
   let mut end = pos + hex.len();
   if css[end..].starts_with("\r\n") {
     end += 2;
-  } else if css.as_bytes().get(end).is_some_and(|b| is_whitespace(*b)) {
+  } else if css
+    .as_bytes()
+    .get(end)
+    .is_some_and(|b| is_css_whitespace_byte(*b))
+  {
     end += 1;
   }
   let code = u32::from_str_radix(&hex, 16).unwrap_or(0);

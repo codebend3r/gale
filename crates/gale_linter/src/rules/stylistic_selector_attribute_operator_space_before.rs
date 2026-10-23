@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -42,49 +42,50 @@ const ATTR_OPERATORS: &[&str] = &["~=", "|=", "^=", "$=", "*=", "="];
 
 impl Check for StylisticSelectorAttributeOperatorSpaceBeforeCheck {
   /// Flags an attribute operator whose preceding space does not match the option.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
+  ///
+  /// Reads the selector of every standard-syntax rule as written, as the
+  /// plugin does.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let option = self.option;
-    let selector = &rule.selector;
-
     let mut diags = Vec::new();
-    let sel_offset = rule.span.offset;
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = rule.raw_selector();
+      let sel_offset = rule.selector_start();
 
-    // Find attribute selectors [...]
-    let bytes = selector.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
+      // Find attribute selectors [...]
+      let bytes = selector.as_bytes();
+      let len = bytes.len();
+      let mut i = 0;
 
-    while i < len {
-      if bytes[i] == b'[' {
-        let bracket_start = i;
-        // Find the closing bracket
-        let mut depth = 1;
+      while i < len {
+        if bytes[i] == b'[' {
+          let bracket_start = i;
+          // Find the closing bracket
+          let mut depth = 1;
+          i += 1;
+          while i < len && depth > 0 {
+            if bytes[i] == b'[' {
+              depth += 1;
+            } else if bytes[i] == b']' {
+              depth -= 1;
+            }
+            if depth > 0 {
+              i += 1;
+            }
+          }
+          let bracket_end = i;
+          if bracket_end < len {
+            let attr_content = &selector[bracket_start + 1..bracket_end];
+            check_attr_operator(
+              attr_content,
+              sel_offset + bracket_start + 1,
+              option,
+              &mut diags,
+            );
+          }
+        }
         i += 1;
-        while i < len && depth > 0 {
-          if bytes[i] == b'[' {
-            depth += 1;
-          } else if bytes[i] == b']' {
-            depth -= 1;
-          }
-          if depth > 0 {
-            i += 1;
-          }
-        }
-        let bracket_end = i;
-        if bracket_end < len {
-          let attr_content = &selector[bracket_start + 1..bracket_end];
-          check_attr_operator(
-            attr_content,
-            sel_offset + bracket_start + 1,
-            option,
-            &mut diags,
-          );
-        }
       }
-      i += 1;
     }
 
     diags
@@ -128,23 +129,19 @@ fn check_attr_operator(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::StyleRule;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![],
-      span: Span::new(0, sel.len()),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_space_before_operator_when_never() {
     let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
-    let d = rule.check(&style_with_selector("[attr =value]"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("[attr =value]"), Syntax::Css));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected whitespace"));
   }
@@ -152,15 +149,33 @@ mod tests {
   #[test]
   fn allows_no_space_before_operator_when_never() {
     let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
-    let d = rule.check(&style_with_selector("[attr=value]"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("[attr=value]"), Syntax::Css));
     assert!(d.is_empty());
   }
 
   #[test]
   fn no_report_for_simple_attribute() {
     let rule = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
-    let d = rule.check(&style_with_selector("[disabled]"), &ctx());
+    let d = rule.check_source(&context(&style_with_selector("[disabled]"), Syntax::Css));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn reads_the_selector_as_written() {
+    let never = configured(&StylisticSelectorAttributeOperatorSpaceBefore, None);
+    let source = "a,\n  b[x  ^=\"y\"] {}";
+    let d = never.check_source(&context(source, Syntax::Css));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span.offset, source.find("^=").unwrap());
+    let always = configured(
+      &StylisticSelectorAttributeOperatorSpaceBefore,
+      serde_json::json!("always"),
+    );
+    assert!(
+      always
+        .check_source(&context(source, Syntax::Css))
+        .is_empty()
+    );
   }
 
   #[test]

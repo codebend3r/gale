@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::NodeKind as StatementKind;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 use regex::Regex;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind as StatementKind;
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 const NAME: &str = "scss/no-duplicate-load-rules";
 
@@ -67,8 +67,7 @@ static SPACE: LazyLock<Regex> =
 impl Check for ScssNoDuplicateLoadRulesCheck {
   /// Reports every `@use`, `@forward` or `@import` that loads a URL an
   /// earlier one of its kind already loaded under the same conditions.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     // Conditions loaded so far, by at-rule name and URL.
     let mut imports: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     let mut diags = Vec::new();

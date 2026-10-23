@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::braces::counted_block_close;
@@ -46,7 +47,7 @@ impl ScssAtElseClosingBraceNewlineAfterCheck {
 impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
   /// Scans the SCSS source for `@else` chains and flags a closing brace whose
   /// following newline does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -107,13 +108,13 @@ impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, scss_ctx_with_source};
+  use crate::testing::{CheckSource, configured, ctx_with_source, scss_ctx_with_source};
 
   #[test]
   fn allows_newline_after_else() {
     let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $c { a: b; } @else { c: d; }\n.foo {}");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -121,7 +122,7 @@ mod tests {
   fn allows_eof_after_else() {
     let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = scss_ctx_with_source("@if $c { a: b; } @else { c: d; }");
-    let d = rule.check_root(&[], &ctx);
+    let d = rule.check_source(&ctx);
     assert!(d.is_empty());
   }
 
@@ -129,7 +130,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssAtElseClosingBraceNewlineAfter, None);
     let ctx = ctx_with_source("@else { } .foo {}");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]

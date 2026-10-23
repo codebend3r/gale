@@ -25,10 +25,51 @@ pub fn is_known_at_rule_for_syntax(name: &str, syntax: Syntax) -> bool {
   }
 }
 
+/// Whether `name` is an at-rule Stylelint knows for `syntax`: the shared
+/// table plus [`MORE_STYLELINT_AT_KEYWORDS`], in any case.
+pub fn is_stylelint_at_keyword(name: &str, syntax: Syntax) -> bool {
+  is_known_at_rule_for_syntax(name, syntax) || lookup(MORE_STYLELINT_AT_KEYWORDS, name)
+}
+
 /// Whether `name` is a standard CSS media feature.
 pub fn is_known_media_feature(name: &str) -> bool {
   lookup(KNOWN_MEDIA_FEATURES, name)
 }
+
+/// The names in Stylelint's `atKeywords` that the shared at-rule table does
+/// not list: `@apply` and the other nesting-era keywords, the page-margin
+/// at-rules that sit in `@page`, and the feature-value blocks of
+/// `@font-feature-values` (sorted).
+static MORE_STYLELINT_AT_KEYWORDS: &[&str] = &[
+  "annotation",
+  "apply",
+  "bottom-center",
+  "bottom-left",
+  "bottom-left-corner",
+  "bottom-right",
+  "bottom-right-corner",
+  "character-variant",
+  "custom-media",
+  "custom-selector",
+  "historical-forms",
+  "left-bottom",
+  "left-middle",
+  "left-top",
+  "nest",
+  "ornaments",
+  "right-bottom",
+  "right-middle",
+  "right-top",
+  "scroll-timeline",
+  "styleset",
+  "stylistic",
+  "swash",
+  "top-center",
+  "top-left",
+  "top-left-corner",
+  "top-right",
+  "top-right-corner",
+];
 
 static KNOWN_AT_RULES: &[&str] = &[
   "charset",
@@ -177,6 +218,7 @@ mod tests {
     assert_sorted(KNOWN_AT_RULES, "KNOWN_AT_RULES");
     assert_sorted(KNOWN_SCSS_AT_RULES, "KNOWN_SCSS_AT_RULES");
     assert_sorted(KNOWN_LESS_AT_RULES, "KNOWN_LESS_AT_RULES");
+    assert_sorted(MORE_STYLELINT_AT_KEYWORDS, "MORE_STYLELINT_AT_KEYWORDS");
     assert_sorted(KNOWN_MEDIA_FEATURES, "KNOWN_MEDIA_FEATURES");
   }
 }

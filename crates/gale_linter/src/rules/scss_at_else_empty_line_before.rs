@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -41,7 +42,7 @@ impl ScssAtElseEmptyLineBeforeCheck {
 
 impl Check for ScssAtElseEmptyLineBeforeCheck {
   /// Flags an `@else` whose preceding blank line does not match the option.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
@@ -172,13 +173,15 @@ fn has_empty_line_before(source: &str, offset: usize) -> bool {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
   #[test]
   fn never_allows_no_empty_line() {
     let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; }\n@else { color: blue; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -186,7 +189,7 @@ mod tests {
   fn never_reports_empty_line() {
     let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; }\n\n@else { color: blue; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Unexpected empty line"));
   }
@@ -196,7 +199,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtElseEmptyLineBefore, opts.clone());
     let src = "@if $a { color: red; }\n\n@else { color: blue; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -205,7 +208,7 @@ mod tests {
     let opts = serde_json::json!("always");
     let rule = configured(&ScssAtElseEmptyLineBefore, opts.clone());
     let src = "@if $a { color: red; }\n@else { color: blue; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("Expected empty line"));
   }
@@ -214,7 +217,7 @@ mod tests {
   fn never_same_line_no_report() {
     let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let src = "@if $a { color: red; } @else { color: blue; }";
-    let d = rule.check_root(&[], &scss_ctx_with_source(src));
+    let d = rule.check_source(&scss_ctx_with_source(src));
     assert!(d.is_empty());
   }
 
@@ -222,7 +225,7 @@ mod tests {
   fn skips_non_scss() {
     let rule = configured(&ScssAtElseEmptyLineBefore, None);
     let ctx = ctx_with_source("@if $a {}\n\n@else {}");
-    assert!(rule.check_root(&[], &ctx).is_empty());
+    assert!(rule.check_source(&ctx).is_empty());
   }
 
   #[test]

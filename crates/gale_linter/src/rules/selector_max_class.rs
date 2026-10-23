@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -45,58 +45,37 @@ const MAX_CLASS: usize = 3;
 
 impl Check for SelectorMaxClassCheck {
   /// Flags a selector holding more class selectors than allowed.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    // Read configured max from options (primary option is a number).
+  ///
+  /// The selector is read as PostCSS stores it, without its comments, and
+  /// rules that are not standard syntax are skipped, as in Stylelint.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let max = self.max;
 
-    // Strip SCSS line comments from the selector text
-    let selector = if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
-    ) {
-      strip_comment_lines(&rule.selector)
-    } else {
-      rule.selector.clone()
-    };
-
     let mut diags = Vec::new();
-    // Check each comma-separated selector individually
-    for sel in selector.split(',') {
-      let sel = sel.trim();
-      if sel.is_empty() {
-        continue;
-      }
-      let count = count_class_selectors(sel);
-      if count > max {
-        diags.push(
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      let selector = rule.selector();
+      // Check each comma-separated selector individually
+      for sel in selector.split(',') {
+        let sel = sel.trim();
+        if sel.is_empty() {
+          continue;
+        }
+        let count = count_class_selectors(sel);
+        if count > max {
+          diags.push(
                     Diagnostic::new(
                         NAME,
                         format!(
                             "Expected selector \"{sel}\" to have no more than {max} class selector(s), found {count}",
                         ),
                     )
-                    .span(rule.span),
+                    .span(rule.span()),
                 );
+        }
       }
     }
     diags
   }
-}
-
-/// The selector without the lines that are only a `//` comment (SCSS,
-/// Less).  A comment after a selector on the same line is left in, unlike
-/// [`crate::selector::strip_line_comments`]: this rule has always counted
-/// classes in it, and the message quotes the selector as it is cut here.
-fn strip_comment_lines(selector: &str) -> String {
-  selector
-    .lines()
-    .filter(|line| !line.trim_start().starts_with("//"))
-    .collect::<Vec<_>>()
-    .join("\n")
 }
 
 /// Count `.` characters that are class selectors (followed by a CSS ident start character).
@@ -117,29 +96,18 @@ fn count_class_selectors(selector: &str) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_too_many_classes() {
     let rule = configured(&SelectorMaxClass, None);
-    let d = rule.check(&style_with_selector(".a .b .c .d"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".a .b .c .d")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("found 4"));
   }
@@ -147,15 +115,32 @@ mod tests {
   #[test]
   fn allows_within_limit() {
     let rule = configured(&SelectorMaxClass, None);
-    let d = rule.check(&style_with_selector(".a .b .c"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".a .b .c")));
     assert!(d.is_empty());
   }
 
   #[test]
   fn allows_no_classes() {
     let rule = configured(&SelectorMaxClass, None);
-    let d = rule.check(&style_with_selector("div span"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("div span")));
     assert!(d.is_empty());
+  }
+
+  #[test]
+  fn reads_the_selector_without_its_comments() {
+    use crate::testing::context;
+    use gale_css_parser::Syntax;
+    let rule = configured(&SelectorMaxClass, None);
+    let source = ".a .b, // .x .y\n.c .d /* .e */ .f .g {}";
+    let d = rule.check_source(&context(source, Syntax::Scss));
+    assert_eq!(d.len(), 1);
+    assert_eq!(
+      d[0].message,
+      "Expected selector \".c .d  .f .g\" to have no more than 3 class selector(s), found 4"
+    );
+    // Not standard syntax, so not read.
+    let less = ".m() when (@a) { .a .b .c .d {} }\n.n(@x) {}";
+    assert_eq!(rule.check_source(&context(less, Syntax::Less)).len(), 1);
   }
 
   #[test]

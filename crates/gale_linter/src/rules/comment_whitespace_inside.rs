@@ -1,9 +1,9 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_css_whitespace;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
-use crate::postcss_tree::NodeKind;
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::installed_at_least;
 
@@ -77,9 +77,8 @@ impl Problem {
 
 impl Check for CommentWhitespaceInsideCheck {
   /// Checks every comment node in the document, in source order.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let never = self.never;
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {
       let node = &tree.nodes[i];
@@ -139,13 +138,13 @@ fn problems(raw: &str, never: bool) -> Vec<(Problem, usize, usize)> {
   if never && left_space.is_some() {
     found.push((Problem::RejectedOpening, opener, opener + left_word));
   }
-  if !never && !left_space.is_some_and(is_css_space) {
+  if !never && !left_space.is_some_and(is_css_whitespace) {
     found.push((Problem::ExpectedOpening, opener, opener));
   }
   if never && right_space.is_some() {
     found.push((Problem::RejectedClosing, right_word_start, closer_start));
   }
-  if !never && !right_space.is_some_and(is_css_space) {
+  if !never && !right_space.is_some_and(is_css_whitespace) {
     let before_closer = raw[..closer_start]
       .char_indices()
       .next_back()
@@ -210,12 +209,6 @@ fn fixed_comment(raw: &str, never: bool) -> String {
   format!("/*{left}{text}{right}*/")
 }
 
-/// Stylelint's `isWhitespace`: space, tab, line feed, carriage return or
-/// form feed.
-fn is_css_space(c: char) -> bool {
-  matches!(c, ' ' | '\n' | '\t' | '\r' | '\u{c}')
-}
-
 /// JavaScript's `\s`.
 fn is_js_space(c: char) -> bool {
   matches!(
@@ -267,14 +260,14 @@ mod tests {
   }
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options, lint};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options, lint};
 
   /// The messages for `source` in `syntax` with `option`, with their
   /// offsets.
   fn messages(source: &str, syntax: Syntax, option: &str) -> Vec<(String, usize)> {
     let ctx = context(source, syntax);
     configured(&CommentWhitespaceInside, serde_json::json!(option))
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| (d.message, d.span.offset))
       .collect()

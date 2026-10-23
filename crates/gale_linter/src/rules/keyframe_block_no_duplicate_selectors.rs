@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{split_selectors, stripped_selector};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -38,34 +39,37 @@ impl KeyframeBlockNoDuplicateSelectorsCheck {
 }
 
 impl Check for KeyframeBlockNoDuplicateSelectorsCheck {
-  /// Flags two keyframe blocks in one `@keyframes` sharing a selector.
-  fn check(&self, node: &CssNode, _context: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at_rule) = node else {
-      return vec![];
-    };
-
-    if at_rule.name != "keyframes" {
-      return vec![];
-    }
-
-    let mut seen = HashSet::new();
+  /// Flags a keyframe selector that an earlier one in the same `@keyframes`
+  /// (vendor-prefixed or not, in any case) already names, comparing the
+  /// selectors of each list one by one, as written and ignoring case.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-
-    for child in &at_rule.children {
-      if let CssNode::Style(style_rule) = child {
-        let selector = style_rule.selector.trim().to_ascii_lowercase();
-        if !seen.insert(selector.clone()) {
-          diagnostics.push(
-            Diagnostic::new(
-              NAME,
-              format!("Unexpected duplicate keyframe selector \"{}\"", selector),
-            )
-            .span(style_rule.span),
-          );
+    for keyframes in tree
+      .walk_at_rules()
+      .filter(|at_rule| at_rule.is_keyframes())
+    {
+      let mut seen = HashSet::new();
+      for rule in keyframes
+        .walk_rules()
+        .filter(|rule| rule.is_standard_syntax())
+      {
+        let prelude = rule.raw_selector();
+        let start = rule.selector_start();
+        for (offset, part) in split_selectors(&prelude) {
+          let (index, selector) = stripped_selector(part);
+          if !seen.insert(selector.to_lowercase()) {
+            let index = start + offset + index;
+            diagnostics.push(
+              Diagnostic::new(
+                NAME,
+                format!("Unexpected duplicate keyframe selector \"{selector}\""),
+              )
+              .span(Span::from_range(index, index + selector.len())),
+            );
+          }
         }
       }
     }
-
     diagnostics
   }
 }
@@ -73,133 +77,67 @@ impl Check for KeyframeBlockNoDuplicateSelectorsCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration, StyleRule, Syntax};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, ctx, scss_ctx_with_source};
+  use crate::testing::{CheckSource, configured, context};
+
+  /// What the rule reports for `source`.
+  fn check(source: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    configured(&KeyframeBlockNoDuplicateSelectors, None).check_source(&context(source, syntax))
+  }
 
   #[test]
   fn reports_duplicate_keyframe_selectors() {
-    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, 80),
-      children: vec![
-        CssNode::Style(StyleRule {
-          selector: "from".to_string(),
-          declarations: vec![Declaration {
-            property: "opacity".to_string(),
-            value: "0".to_string(),
-            span: Span::new(25, 10),
-            important: false,
-          }],
-          span: Span::new(19, 20),
-          ..Default::default()
-        }),
-        CssNode::Style(StyleRule {
-          selector: "to".to_string(),
-          declarations: vec![Declaration {
-            property: "opacity".to_string(),
-            value: "1".to_string(),
-            span: Span::new(48, 10),
-            important: false,
-          }],
-          span: Span::new(40, 20),
-          ..Default::default()
-        }),
-        CssNode::Style(StyleRule {
-          selector: "from".to_string(),
-          declarations: vec![Declaration {
-            property: "opacity".to_string(),
-            value: "0.5".to_string(),
-            span: Span::new(68, 12),
-            important: false,
-          }],
-          span: Span::new(61, 22),
-          ..Default::default()
-        }),
-      ],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
-    assert_eq!(
-      diags[0].message,
-      "Unexpected duplicate keyframe selector \"from\""
-    );
+    let source =
+      "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
+    for syntax in [Syntax::Css, Syntax::Scss, Syntax::Less] {
+      let diags = check(source, syntax);
+      assert_eq!(diags.len(), 1, "{syntax:?}");
+      assert_eq!(
+        diags[0].message,
+        "Unexpected duplicate keyframe selector \"from\""
+      );
+      assert_eq!(diags[0].span, Span::new(58, 4));
+    }
   }
 
   #[test]
   fn ignores_unique_keyframe_selectors() {
-    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "fade".to_string(),
-      span: Span::new(0, 60),
-      children: vec![
-        CssNode::Style(StyleRule {
-          selector: "from".to_string(),
-          declarations: vec![],
-          span: Span::new(19, 15),
-          ..Default::default()
-        }),
-        CssNode::Style(StyleRule {
-          selector: "to".to_string(),
-          declarations: vec![],
-          span: Span::new(35, 13),
-          ..Default::default()
-        }),
-      ],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("@keyframes fade { from {} to {} }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn ignores_non_keyframes_at_rules() {
-    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 40),
-      children: vec![],
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("@media print { a {} a {} }", Syntax::Css).is_empty());
   }
 
   #[test]
-  fn detects_duplicates_in_parsed_css_keyframes() {
-    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
-    let css = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
-    let result = gale_css_parser::parse(css, Syntax::Css).expect("should parse CSS");
-    let ctx = ctx();
-    let mut all_diags = Vec::new();
-    for node in &result.nodes {
-      all_diags.extend(rule.check(node, &ctx));
-    }
+  fn compares_the_selectors_of_a_list_one_by_one() {
+    // As Stylelint does: `50%` repeats the second selector of the first
+    // list, and the report quotes each repeat as written, where it stands.
+    let source = "@-webkit-keyframes k { 0%, /* c */ 50% {} FROM {} 50% {} from {} }";
+    let diags = check(source, Syntax::Css);
+    let found: Vec<_> = diags
+      .iter()
+      .map(|d| (d.message.as_str(), &source[d.span.offset..d.span.end()]))
+      .collect();
     assert_eq!(
-      all_diags.len(),
-      1,
-      "should detect duplicate 'from' in CSS keyframes"
+      found,
+      [
+        ("Unexpected duplicate keyframe selector \"50%\"", "50%"),
+        ("Unexpected duplicate keyframe selector \"from\"", "from"),
+      ]
     );
+    assert_eq!(diags[0].span.offset, source.rfind("50%").unwrap());
   }
 
   #[test]
-  fn detects_duplicates_in_parsed_scss_keyframes() {
-    let rule = configured(&KeyframeBlockNoDuplicateSelectors, None);
-    let scss = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } from { opacity: 0.5; } }";
-    let result = gale_css_parser::parse(scss, Syntax::Scss).expect("should parse SCSS");
-    let ctx = scss_ctx_with_source(scss);
-    let mut all_diags = Vec::new();
-    for node in &result.nodes {
-      all_diags.extend(rule.check(node, &ctx));
+  fn reads_prefixed_and_upper_case_keyframes_in_every_syntax() {
+    for name in ["-webkit-keyframes", "KEYFRAMES", "-moz-Keyframes"] {
+      let source = format!("@{name} k {{ to {{}} to {{}} }}");
+      assert_eq!(check(&source, Syntax::Scss).len(), 1, "{name}");
     }
-    assert_eq!(
-      all_diags.len(),
-      1,
-      "should detect duplicate 'from' in SCSS keyframes"
-    );
+    assert!(check("@-foo-keyframes k { to {} to {} }", Syntax::Css).is_empty());
   }
 
   #[test]

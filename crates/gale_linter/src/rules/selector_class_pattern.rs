@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{blank_comments, split_selectors};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::split_selectors;
 
 const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
 
@@ -50,33 +50,38 @@ impl SelectorClassPatternCheck {
 impl Check for SelectorClassPatternCheck {
   /// Flags class names that do not match the configured regex, defaulting to
   /// kebab-case.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  ///
+  /// Rules that are not standard syntax (interpolation, placeholders, Less
+  /// mixins) are skipped, as Stylelint skips them.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
 
     let mut diags = Vec::new();
-
-    // In Stylelint (with postcss-scss), when a selector contains SCSS
-    // interpolation `#{...}`, the entire selector is skipped because the
-    // resolved class name is unknown at lint time.  Match this behaviour
-    // by skipping all class checks when the selector contains interpolation.
-    if matches!(
-      ctx.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
-    ) && rule.selector.contains("#{")
-    {
-      return diags;
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      // The selector as written, its comments blanked out so that a class
+      // named in one is not read and offsets still line up with the source.
+      let selector = blank_comments(&rule.raw_selector());
+      self.check_selector(&selector, rule.selector_start(), pattern_str, &mut diags);
     }
+    diags
+  }
+}
 
+impl SelectorClassPatternCheck {
+  /// Reports the classes of `selector`, which starts at `selector_start` in
+  /// the source, that do not match the pattern.
+  fn check_selector(
+    &self,
+    selector: &str,
+    selector_start: usize,
+    pattern_str: &str,
+    diags: &mut Vec<Diagnostic>,
+  ) {
     // Stylelint checks each individual selector in a comma-separated
     // list and reports per-class violations with the position of the
     // class within the source.  We split by comma, extract classes from
     // each part, and compute byte offsets for accurate reporting.
-    let selector_start = rule.span.offset;
-    let parts: Vec<&str> = split_selectors(&rule.selector)
+    let parts: Vec<&str> = split_selectors(selector)
       .into_iter()
       .map(|(_, part)| part)
       .collect();
@@ -88,7 +93,7 @@ impl Check for SelectorClassPatternCheck {
         cursor += 1; // the comma
       }
       // Skip whitespace between comma and start of this part.
-      let sel_bytes = rule.selector.as_bytes();
+      let sel_bytes = selector.as_bytes();
       while cursor < sel_bytes.len() && matches!(sel_bytes[cursor], b' ' | b'\t' | b'\n' | b'\r') {
         cursor += 1;
       }
@@ -113,7 +118,6 @@ impl Check for SelectorClassPatternCheck {
         }
       }
     }
-    diags
   }
 }
 
@@ -200,28 +204,18 @@ fn extract_class_names_with_offsets(selector: &str) -> Vec<(String, usize)> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_camel_case_class() {
     let rule = configured(&SelectorClassPattern, None);
-    let d = rule.check(&style_with_selector(".myClass"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".myClass")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("myClass"));
   }
@@ -231,16 +225,20 @@ mod tests {
     let rule = configured(&SelectorClassPattern, None);
     assert!(
       rule
-        .check(&style_with_selector(".my-class"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector(".my-class")))
         .is_empty()
     );
-    assert!(rule.check(&style_with_selector(".foo"), &ctx()).is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".foo")))
+        .is_empty()
+    );
   }
 
   #[test]
   fn reports_underscore_class() {
     let rule = configured(&SelectorClassPattern, None);
-    let d = rule.check(&style_with_selector(".my_class"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".my_class")));
     assert_eq!(d.len(), 1);
   }
 
@@ -248,11 +246,14 @@ mod tests {
   fn custom_pattern_camel_case() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&SelectorClassPattern, opts.clone());
-    let c = ctx();
     // camelCase should pass
-    assert!(rule.check(&style_with_selector(".myClass"), &c).is_empty());
+    assert!(
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".myClass")))
+        .is_empty()
+    );
     // kebab-case should fail
-    let d = rule.check(&style_with_selector(".my-class"), &c);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".my-class")));
     assert_eq!(d.len(), 1);
   }
 
@@ -260,8 +261,7 @@ mod tests {
   fn custom_pattern_in_message() {
     let opts = serde_json::json!("^[a-z][a-zA-Z0-9]+$");
     let rule = configured(&SelectorClassPattern, opts.clone());
-    let c = ctx();
-    let d = rule.check(&style_with_selector(".my-class"), &c);
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(".my-class")));
     assert!(d[0].message.contains("^[a-z][a-zA-Z0-9]+$"));
   }
 
@@ -270,25 +270,34 @@ mod tests {
     let rule = configured(&SelectorClassPattern, None);
     // These are numeric values (e.g. `opacity: .5`), not class selectors.
     // Gale should not report them as class pattern violations.
-    let c = ctx();
     assert!(
-      rule.check(&style_with_selector(".5"), &c).is_empty(),
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".5")))
+        .is_empty(),
       ".5 should be ignored (numeric value)"
     );
     assert!(
-      rule.check(&style_with_selector(".2"), &c).is_empty(),
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".2")))
+        .is_empty(),
       ".2 should be ignored (numeric value)"
     );
     assert!(
-      rule.check(&style_with_selector(".15"), &c).is_empty(),
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".15")))
+        .is_empty(),
       ".15 should be ignored (numeric value)"
     );
     assert!(
-      rule.check(&style_with_selector(".65"), &c).is_empty(),
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".65")))
+        .is_empty(),
       ".65 should be ignored (numeric value)"
     );
     assert!(
-      rule.check(&style_with_selector(".8"), &c).is_empty(),
+      rule
+        .check_source(&ctx_with_source(&style_with_selector(".8")))
+        .is_empty(),
       ".8 should be ignored (numeric value)"
     );
   }
@@ -308,6 +317,24 @@ mod tests {
     // But real class names still work
     assert_eq!(names(".foo"), vec!["foo"]);
     assert_eq!(names(".foo-bar"), vec!["foo-bar"]);
+  }
+
+  #[test]
+  fn reports_at_the_class_as_written_and_skips_comments() {
+    use crate::testing::context;
+    use gale_css_parser::Syntax;
+    let rule = configured(&SelectorClassPattern, None);
+    let source = "a>.fooBar,\n  .x /* .Skip */ .barBaz {}";
+    let d = rule.check_source(&ctx_with_source(source));
+    let found: Vec<_> = d
+      .iter()
+      .map(|d| &source[d.span.offset..d.span.end()])
+      .collect();
+    assert_eq!(found, [".fooBar", ".barBaz"]);
+    let scss = ".a { // .Skip\n  .bAd {} }\n.#{$x} .Interpolated {}\n%p .Placeholder {}";
+    let d = rule.check_source(&context(scss, Syntax::Scss));
+    assert_eq!(d.len(), 1);
+    assert!(d[0].message.contains(".bAd"));
   }
 
   #[test]

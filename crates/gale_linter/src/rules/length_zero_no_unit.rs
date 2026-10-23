@@ -1,14 +1,13 @@
 use std::sync::OnceLock;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
+use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::data::MATH_FUNCTIONS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, ValueNode};
 
 const NAME: &str = "length-zero-no-unit";
 
@@ -87,8 +86,7 @@ fn may_include_zero_length(text: &str) -> bool {
 impl Check for LengthZeroNoUnitCheck {
   /// Checks every at-rule prelude, then every declaration value, as
   /// Stylelint's `walkAtRules` and `walkDecls` do.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-    let tree = ctx.postcss_tree();
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     for i in 0..tree.nodes.len() {
@@ -100,7 +98,7 @@ impl Check for LengthZeroNoUnitCheck {
       {
         continue;
       }
-      self.check_value(ctx, &tree, i, false, &mut diags);
+      self.check_value(ctx, tree, i, false, &mut diags);
     }
 
     for i in 0..tree.nodes.len() {
@@ -118,7 +116,7 @@ impl Check for LengthZeroNoUnitCheck {
       {
         continue;
       }
-      self.check_value(ctx, &tree, i, prop == "font", &mut diags);
+      self.check_value(ctx, tree, i, prop == "font", &mut diags);
     }
     diags
   }
@@ -216,7 +214,7 @@ mod tests {
   use super::*;
   use gale_css_parser::Syntax;
 
-  use crate::testing::{configured, context, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, context, fix, invalid_options};
 
   const RULE: &str = "length-zero-no-unit";
 
@@ -224,7 +222,7 @@ mod tests {
   fn reports(source: &str, syntax: Syntax, options: Option<serde_json::Value>) -> Vec<usize> {
     let ctx = context(source, syntax);
     configured(&LengthZeroNoUnit, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.span.offset)
       .collect()

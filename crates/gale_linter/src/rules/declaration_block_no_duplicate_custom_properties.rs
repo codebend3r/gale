@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -38,44 +39,38 @@ impl DeclarationBlockNoDuplicateCustomPropertiesCheck {
 }
 
 impl Check for DeclarationBlockNoDuplicateCustomPropertiesCheck {
-  /// Flags a custom property declared more than once in the same block.
-  /// Interpolated names are skipped, as they cannot be resolved.
-  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    let is_preprocessor = matches!(
-      context.syntax,
-      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
-    );
-
-    let mut seen = HashSet::new();
+  /// Flags a custom property declared more than once in the same style
+  /// rule.  Interpolated names are skipped, as they cannot be resolved.
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
+    let is_preprocessor = !matches!(context.syntax, Syntax::Css);
     let mut diagnostics = Vec::new();
-
-    for decl in &rule.declarations {
-      if !decl.property.starts_with("--") {
-        continue;
-      }
-      // Skip properties with SCSS/Less interpolation — we can't resolve the
-      // actual name, so duplicate detection would produce false positives.
-      if is_preprocessor && decl.property.contains("#{") {
-        continue;
-      }
-      if self.ignore_properties.matches(&decl.property) {
-        continue;
-      }
-      if !seen.insert(decl.property.clone()) {
-        diagnostics.push(
-          Diagnostic::new(
-            NAME,
-            format!("Unexpected duplicate custom property \"{}\"", decl.property),
-          )
-          .span(decl.span),
-        );
+    for rule in tree.walk_rules() {
+      let mut seen = HashSet::new();
+      for decl in rule.child_decls() {
+        let prop = decl.prop();
+        if !prop.starts_with("--") {
+          continue;
+        }
+        // Skip properties with SCSS/Less interpolation: the actual name
+        // cannot be resolved, so duplicate detection would produce false
+        // positives.
+        if is_preprocessor && prop.contains("#{") {
+          continue;
+        }
+        if self.ignore_properties.matches(prop) {
+          continue;
+        }
+        if !seen.insert(prop) {
+          diagnostics.push(
+            Diagnostic::new(
+              NAME,
+              format!("Unexpected duplicate custom property \"{prop}\""),
+            )
+            .span(decl.span()),
+          );
+        }
       }
     }
-
     diagnostics
   }
 }
@@ -83,122 +78,79 @@ impl Check for DeclarationBlockNoDuplicateCustomPropertiesCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
+
+  /// The messages and spans reported for `source` in `syntax`.
+  fn check(
+    source: &str,
+    syntax: Syntax,
+    options: Option<serde_json::Value>,
+  ) -> Vec<(String, &str)> {
+    let ctx = context(source, syntax);
+    configured(&DeclarationBlockNoDuplicateCustomProperties, options)
+      .check_source(&ctx)
+      .into_iter()
+      .map(|d| {
+        (
+          d.message,
+          &source[d.span.offset..d.span.offset + d.span.length],
+        )
+      })
+      .collect()
+  }
 
   #[test]
   fn reports_duplicate_custom_properties() {
-    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
-    let node = CssNode::Style(StyleRule {
-      selector: ":root".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "--color-primary".to_string(),
-          value: "red".to_string(),
-          span: Span::new(8, 22),
-          important: false,
-        },
-        Declaration {
-          property: "--color-secondary".to_string(),
-          value: "blue".to_string(),
-          span: Span::new(31, 24),
-          important: false,
-        },
-        Declaration {
-          property: "--color-primary".to_string(),
-          value: "green".to_string(),
-          span: Span::new(56, 24),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 82),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert_eq!(diags.len(), 1);
+    let source = ":root { --color-primary: red; --color-secondary: blue; --color-primary: green; }";
     assert_eq!(
-      diags[0].message,
-      "Unexpected duplicate custom property \"--color-primary\""
+      check(source, Syntax::Css, None),
+      [(
+        "Unexpected duplicate custom property \"--color-primary\"".to_string(),
+        "--color-primary: green;"
+      )]
     );
+  }
+
+  #[test]
+  fn each_rule_is_its_own_block() {
+    let source = "a { --x: 1; b { --x: 2; } --y: 1; } c { --y: 2; }";
+    assert!(check(source, Syntax::Scss, None).is_empty());
   }
 
   #[test]
   fn ignores_duplicate_non_custom_properties() {
-    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "color".to_string(),
-          value: "red".to_string(),
-          span: Span::new(4, 10),
-          important: false,
-        },
-        Declaration {
-          property: "color".to_string(),
-          value: "blue".to_string(),
-          span: Span::new(15, 11),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 30),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(check("a { color: red; color: blue; }", Syntax::Css, None).is_empty());
   }
 
   #[test]
   fn ignores_unique_custom_properties() {
-    let rule = configured(&DeclarationBlockNoDuplicateCustomProperties, None);
-    let node = CssNode::Style(StyleRule {
-      selector: ":root".to_string(),
-      declarations: vec![
-        Declaration {
-          property: "--color-a".to_string(),
-          value: "red".to_string(),
-          span: Span::new(8, 16),
-          important: false,
-        },
-        Declaration {
-          property: "--color-b".to_string(),
-          value: "blue".to_string(),
-          span: Span::new(25, 17),
-          important: false,
-        },
-      ],
-      span: Span::new(0, 44),
-      ..Default::default()
-    });
-    let diags = rule.check(&node, &ctx());
-    assert!(diags.is_empty());
+    assert!(
+      check(
+        ":root { --color-a: red; --color-b: blue; }",
+        Syntax::Css,
+        None
+      )
+      .is_empty()
+    );
+  }
+
+  #[test]
+  fn skips_interpolated_names_in_preprocessors() {
+    let source = "a { --#{$x}: 1; --#{$x}: 2; }";
+    assert!(check(source, Syntax::Scss, None).is_empty());
   }
 
   #[test]
   fn ignore_properties_may_repeat() {
-    let rule = configured(
-      &DeclarationBlockNoDuplicateCustomProperties,
-      serde_json::json!([true, { "ignoreProperties": ["/^--x/"] }]),
+    let d = check(
+      "a { --x-a: 1; --x-a: 1; --y: 1; --y: 1 }",
+      Syntax::Css,
+      Some(serde_json::json!([true, { "ignoreProperties": ["/^--x/"] }])),
     );
-    let decl = |property: &str| Declaration {
-      property: property.to_string(),
-      value: "1".to_string(),
-      span: Span::new(0, 4),
-      important: false,
-    };
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![decl("--x-a"), decl("--x-a"), decl("--y"), decl("--y")],
-      span: Span::new(0, 0),
-      ..Default::default()
-    });
-    let d = rule.check(&node, &ctx());
     assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("--y"));
+    assert!(d[0].0.contains("--y"));
   }
-
   #[test]
   fn options_are_validated_like_stylelint() {
     assert!(

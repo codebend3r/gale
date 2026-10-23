@@ -1,5 +1,5 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -80,36 +80,32 @@ fn is_known_descriptor(descriptors: &[&str], name: &str) -> bool {
 }
 
 impl Check for AtRuleDescriptorNoUnknownCheck {
-  /// Flags declarations inside a descriptor-taking at-rule whose property is not
-  /// a known descriptor. Vendor-prefixed names are skipped.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    let Some(known) = known_descriptors_for_at_rule(&at.name) else {
-      return vec![];
-    };
-
+  /// Flags declarations directly inside a descriptor-taking at-rule whose
+  /// property is not a known descriptor, at the property as Stylelint
+  /// reports it.  Vendor-prefixed names are skipped, and so is what
+  /// Stylelint's `isStandardSyntaxAtRule` / `isStandardSyntaxDeclaration`
+  /// reject (Sass variables among them).
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for child in &at.children {
-      if let CssNode::Declaration(decl) = child {
-        // Skip vendor-prefixed descriptors
-        if decl.property.starts_with('-') {
+    for at in tree.walk_at_rules() {
+      let Some(known) = known_descriptors_for_at_rule(at.name()) else {
+        continue;
+      };
+      if !at.is_standard_syntax() {
+        continue;
+      }
+      for decl in at.child_decls() {
+        let prop = decl.prop();
+        if prop.starts_with('-') || !decl.is_standard_syntax() || is_known_descriptor(known, prop) {
           continue;
         }
-        if !is_known_descriptor(known, &decl.property) {
-          diags.push(
-            Diagnostic::new(
-              NAME,
-              format!(
-                "Unexpected unknown descriptor \"{}\" in @{}",
-                decl.property, at.name
-              ),
-            )
-            .span(decl.span),
-          );
-        }
+        diags.push(
+          Diagnostic::new(
+            NAME,
+            format!("Unexpected unknown descriptor \"{prop}\" in @{}", at.name()),
+          )
+          .span(Span::new(decl.start, prop.len())),
+        );
       }
     }
     diags
@@ -119,147 +115,97 @@ impl Check for AtRuleDescriptorNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, Declaration};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{invalid_options, lint};
 
-  fn font_face_node(descriptors: &[(&str, &str)]) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "font-face".to_string(),
-      params: String::new(),
-      span: Span::new(0, 0),
-      children: descriptors
-        .iter()
-        .map(|(p, v)| {
-          CssNode::Declaration(Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-        })
-        .collect(),
-    })
-  }
-
-  fn counter_style_node(descriptors: &[(&str, &str)]) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "counter-style".to_string(),
-      params: "my-counter".to_string(),
-      span: Span::new(0, 0),
-      children: descriptors
-        .iter()
-        .map(|(p, v)| {
-          CssNode::Declaration(Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-        })
-        .collect(),
-    })
-  }
-
-  fn property_node(descriptors: &[(&str, &str)]) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "property".to_string(),
-      params: "--my-prop".to_string(),
-      span: Span::new(0, 0),
-      children: descriptors
-        .iter()
-        .map(|(p, v)| {
-          CssNode::Declaration(Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-        })
-        .collect(),
-    })
+  /// The reports for `@at-rule <params> { <descriptors> }` in `syntax`.
+  fn check(at_rule: &str, descriptors: &[(&str, &str)], syntax: Syntax) -> Vec<Diagnostic> {
+    let body: String = descriptors
+      .iter()
+      .map(|(prop, value)| format!(" {prop}: {value};"))
+      .collect();
+    lint(
+      NAME,
+      json!(true),
+      &format!("@{at_rule} {{{body} }}"),
+      syntax,
+    )
   }
 
   #[test]
-  fn reports_unknown_font_face_descriptor() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = font_face_node(&[("font-family", "MyFont"), ("unknown-thing", "value")]);
-    let d = rule.check(&node, &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("unknown-thing"));
-    assert!(d[0].message.contains("@font-face"));
+  fn reports_unknown_font_face_descriptor_at_its_name() {
+    for syntax in [Syntax::Css, Syntax::Scss] {
+      let d = check(
+        "font-face",
+        &[("font-family", "MyFont"), ("unknown-thing", "value")],
+        syntax,
+      );
+      assert_eq!(d.len(), 1);
+      assert!(d[0].message.contains("unknown-thing"));
+      assert!(d[0].message.contains("@font-face"));
+      assert_eq!((d[0].span.offset, d[0].span.length), (34, 13));
+    }
   }
 
   #[test]
   fn allows_known_font_face_descriptors() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = font_face_node(&[
+    let descriptors = [
       ("font-family", "MyFont"),
       ("src", "url(font.woff2)"),
       ("font-weight", "400"),
-      ("font-display", "swap"),
-    ]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+      ("FONT-DISPLAY", "swap"),
+    ];
+    assert!(check("font-face", &descriptors, Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_unknown_counter_style_descriptor() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = counter_style_node(&[("system", "cyclic"), ("bad-desc", "x")]);
-    let d = rule.check(&node, &ctx());
+    let descriptors = [("system", "cyclic"), ("bad-desc", "x")];
+    let d = check("counter-style my-counter", &descriptors, Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("bad-desc"));
   }
 
   #[test]
   fn allows_known_counter_style_descriptors() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = counter_style_node(&[("system", "cyclic"), ("symbols", "A B C")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    let descriptors = [("system", "cyclic"), ("symbols", "A B C")];
+    assert!(check("counter-style my-counter", &descriptors, Syntax::Css).is_empty());
   }
 
   #[test]
   fn reports_unknown_property_descriptor() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = property_node(&[("syntax", "\"<color>\""), ("bad", "value")]);
-    let d = rule.check(&node, &ctx());
+    let descriptors = [("syntax", "\"<color>\""), ("bad", "value")];
+    let d = check("property --my-prop", &descriptors, Syntax::Css);
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("bad"));
   }
 
   #[test]
   fn allows_known_property_descriptors() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = property_node(&[
+    let descriptors = [
       ("syntax", "\"<color>\""),
       ("inherits", "false"),
       ("initial-value", "red"),
-    ]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    ];
+    assert!(check("property --my-prop", &descriptors, Syntax::Css).is_empty());
   }
 
   #[test]
   fn ignores_other_at_rules() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: "(min-width: 768px)".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &ctx()).is_empty());
+    let descriptors = [("color", "red")];
+    assert!(check("media (min-width: 768px)", &descriptors, Syntax::Css).is_empty());
   }
 
   #[test]
-  fn skips_vendor_prefixed_descriptors() {
-    let rule = configured(&AtRuleDescriptorNoUnknown, None);
-    let node = font_face_node(&[
+  fn skips_vendor_prefixed_and_non_standard_descriptors() {
+    let descriptors = [
       ("font-family", "MyFont"),
       ("-webkit-font-smoothing", "auto"),
-    ]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+      ("$weight", "400"),
+    ];
+    assert!(check("font-face", &descriptors, Syntax::Scss).is_empty());
   }
 
   #[test]

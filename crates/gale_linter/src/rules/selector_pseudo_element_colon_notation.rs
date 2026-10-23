@@ -1,11 +1,11 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::selector::postcss::{self, Kind};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::data::is_legacy_pseudo_element;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::selector::postcss::{self, Kind};
-use crate::standard_syntax::is_standard_syntax_selector;
 use crate::stylelint_version::stylelint_major_version;
 
 const NAME: &str = "selector-pseudo-element-colon-notation";
@@ -42,13 +42,10 @@ impl SelectorPseudoElementColonNotationCheck {
   }
 }
 
-/// Stylelint's `levelOneAndTwoPseudoElements`.
-const LEGACY_PSEUDO_ELEMENTS: &[&str] = &["before", "after", "first-line", "first-letter"];
-
 impl Check for SelectorPseudoElementColonNotationCheck {
   /// Flags the four dual-syntax pseudo-elements written with the colon
   /// notation the option forbids, in every style rule's selector as written.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let single = self.single;
     let (colons, message) = if single {
       (":", "Expected single colon pseudo-element notation")
@@ -62,11 +59,16 @@ impl Check for SelectorPseudoElementColonNotationCheck {
     let second_colon = single && stylelint_major_version() <= 13;
 
     let mut diags = Vec::new();
-    for rule in &ctx.scanned_rules().style_rules {
-      if !rule.prelude.contains(':') || !is_standard_syntax_selector(&rule.prelude) {
+    for rule in tree
+      .walk_rules()
+      .filter(|rule| rule.is_standard_syntax() && !rule.in_keyframes())
+    {
+      let prelude = rule.raw_selector();
+      let first = diags.len();
+      if !prelude.contains(':') {
         continue;
       }
-      let Some(selectors) = postcss::parse(&rule.prelude, rule.offset) else {
+      let Some(selectors) = postcss::parse(&prelude, rule.selector_start()) else {
         continue;
       };
       postcss::walk(&selectors, &mut |visit| {
@@ -75,7 +77,7 @@ impl Check for SelectorPseudoElementColonNotationCheck {
           return;
         }
         let name = node.value.trim_start_matches(':');
-        if !LEGACY_PSEUDO_ELEMENTS.contains(&name.to_ascii_lowercase().as_str()) {
+        if !is_legacy_pseudo_element(name) {
           return;
         }
         let written = node.value.len() - name.len();
@@ -96,6 +98,9 @@ impl Check for SelectorPseudoElementColonNotationCheck {
             )),
         );
       });
+      if !rule.selector_fixable() {
+        diags[first..].iter_mut().for_each(|diag| diag.fix = None);
+      }
     }
     diags
   }

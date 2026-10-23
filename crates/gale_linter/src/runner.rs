@@ -9,7 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use gale_css_parser::{CssNode, ParseResult, Syntax, parse};
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::{SourceMap, Syntax, lintable_source};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisableReports};
@@ -93,8 +94,8 @@ fn debug_panic(rule_name: &str, source: &str) {
 /// select it like any other target (`GALE_LOG=gale_perf=debug`).
 pub const PERF_TARGET: &str = "gale_perf";
 
-/// A `check_root` that takes longer than this is timed on its own.
-const SLOW_CHECK_ROOT_SECS: f64 = 0.001;
+/// A rule that takes longer than this on a file is timed on its own.
+const SLOW_RULE_SECS: f64 = 0.001;
 
 /// Times the phases of linting one style sheet, when the timings are on.
 ///
@@ -468,32 +469,19 @@ impl RuleSet {
   /// [`Self::lint_sheet`] without the file-level panic guard.
   fn lint_sheet_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
     let mut timer = PhaseTimer::start(file_path);
-    let mut parse_result = match parse(source, syntax) {
-      Ok(result) => result,
-      Err(err) => {
-        let diag = Diagnostic::new("parse-error", format!("Failed to parse file: {err}"))
-          .severity(Severity::Error)
-          .span(Span::new(0, 0));
-        return LintResult::new(file_path, source, vec![diag]);
-      }
-    };
+    // Rules read the text the tree is parsed from, which for Sass is the
+    // converted SCSS.  `finish` maps their spans back.
+    let (text, source_map) = lintable_source(source, syntax);
+    // Parsed here, before any rule runs and outside their panic guards, so
+    // a parser bug is one internal error on the file (see `guard_file`)
+    // rather than one per rule.
+    let cache = FileCache::new(&text, syntax);
+    let tree = cache.postcss_tree();
     timer.lap("parse");
-    // The walk below is the tree's last use, so it takes the nodes; `finish`
-    // needs only the source map.
-    let nodes = std::mem::take(&mut parse_result.nodes);
-    // Rules read the text the parser saw, which for Sass is the converted
-    // SCSS that every node span points into.  `finish` maps the spans back.
-    let text = parse_result.source.as_str();
 
-    let cache = FileCache::new(text, syntax);
     let mut run = RuleRun::new(self, file_path, &cache);
-
-    run.check_root(&nodes, timer.on());
-    timer.lap("check_root");
-    for node in nodes {
-      run.walk(node);
-    }
-    timer.lap("walk");
+    run.check(&tree, timer.on());
+    timer.lap("rules");
     let RuleRun {
       mut diagnostics,
       failures,
@@ -507,10 +495,20 @@ impl RuleSet {
       self.settle(diag);
     }
 
-    if let Some(rejected) =
-      self.apply_disables(&mut diagnostics, source, &parse_result, &cache, file_path)
-    {
-      return finish(file_path, source, &parse_result, vec![rejected], Vec::new());
+    if let Some(rejected) = self.apply_disables(
+      &mut diagnostics,
+      source,
+      source_map.as_ref(),
+      &cache,
+      file_path,
+    ) {
+      return finish(
+        file_path,
+        source,
+        source_map.as_ref(),
+        vec![rejected],
+        Vec::new(),
+      );
     }
     timer.lap("disables");
 
@@ -519,7 +517,7 @@ impl RuleSet {
     diagnostics.extend(failures);
 
     let unknown = self.unknown_rule_problems(source, file_path);
-    let mut result = finish(file_path, source, &parse_result, diagnostics, unknown);
+    let mut result = finish(file_path, source, source_map.as_ref(), diagnostics, unknown);
     result.invalid_option_warnings = self.invalid_options.clone();
     timer.lap("finish");
     result
@@ -554,8 +552,8 @@ impl RuleSet {
   /// Apply the file's configuration comments to `diagnostics`: drop the
   /// problems they disable and add the reports about the comments.
   ///
-  /// The rules linted `parsed.source` (the converted SCSS, for Sass), whose
-  /// offsets the source map takes back to `source` so that lines are those
+  /// The rules linted `cache`'s text (the converted SCSS, for Sass), whose
+  /// offsets `source_map` takes back to `source` so that lines are those
   /// of the file the author wrote.  In a style sheet embedded in an
   /// HTML-like file the host applies the ranges of the whole document
   /// instead, so only the reports are added here.  The comments are found
@@ -568,7 +566,7 @@ impl RuleSet {
     &self,
     diagnostics: &mut Vec<Diagnostic>,
     source: &str,
-    parsed: &ParseResult,
+    source_map: Option<&SourceMap>,
     cache: &FileCache,
     file_path: &str,
   ) -> Option<Diagnostic> {
@@ -577,7 +575,7 @@ impl RuleSet {
       return None;
     }
     let lines = SourceLineIndex::build(source);
-    let line_of = |offset: usize| match &parsed.source_map {
+    let line_of = |offset: usize| match source_map {
       Some(map) => lines.line(map.to_original(offset)),
       None => lines.line(offset),
     };
@@ -634,7 +632,7 @@ impl RuleSet {
 /// Turn a file's diagnostics into its [`LintResult`] against the source the
 /// caller passed in.
 ///
-/// When the parser linted converted text (Sass), every span is mapped back
+/// When the rules linted converted text (Sass), every span is mapped back
 /// to the original and autofixes are dropped: their edits target the
 /// converted SCSS, so applying them to the Sass file would corrupt it.
 ///
@@ -648,11 +646,11 @@ impl RuleSet {
 fn finish(
   file_path: &str,
   source: &str,
-  parsed: &ParseResult,
+  source_map: Option<&SourceMap>,
   mut diagnostics: Vec<Diagnostic>,
   unknown_rules: Vec<Diagnostic>,
 ) -> LintResult {
-  if let Some(map) = &parsed.source_map {
+  if let Some(map) = source_map {
     for diag in &mut diagnostics {
       let start = clamp_to_char_boundary(source, map.to_original(diag.span.offset));
       let end = clamp_to_char_boundary(source, map.to_original(diag.span.end()));
@@ -677,8 +675,9 @@ fn finish(
 ///
 /// It is an error whatever the rule's configured severity, so the run exits
 /// non-zero, and it carries the panic message and location so the report is
-/// enough to file a bug.
-fn internal_error(active: &ActiveRule, caught: &Caught, offset: usize) -> Diagnostic {
+/// enough to file a bug.  It sits at the start of the file: a rule checks
+/// the whole file at once.
+fn internal_error(active: &ActiveRule, caught: &Caught) -> Diagnostic {
   Diagnostic::new(
     active.config_name.as_str(),
     format!(
@@ -688,7 +687,7 @@ fn internal_error(active: &ActiveRule, caught: &Caught, offset: usize) -> Diagno
     ),
   )
   .severity(Severity::Error)
-  .span(Span::new(offset, 0))
+  .span(Span::new(0, 0))
 }
 
 /// The rule name for a crash that happened outside any one rule, such as in
@@ -696,7 +695,7 @@ fn internal_error(active: &ActiveRule, caught: &Caught, offset: usize) -> Diagno
 pub const INTERNAL_ERROR_RULE: &str = "internal-error";
 
 /// Lint one file through `lint`, reporting a panic that escapes it (from the
-/// parser or the disable-comment scanner, say) as a single internal-error
+/// tree's parser or the disable-comment scanner, say) as a single internal-error
 /// problem on the file rather than aborting the whole run.
 ///
 /// Panics inside a rule never get this far: [`RuleRun`] catches those per
@@ -719,9 +718,9 @@ fn guard_file(source: &str, file_path: &str, lint: impl FnOnce() -> LintResult) 
 
 /// One file's pass over a rule set's rules.
 ///
-/// Every `check_root` and `check` call runs inside [`panic_guard::catch`].  A
-/// rule that panics is reported once, as an internal error at the node it was
-/// checking, and skipped for the rest of the file; the other rules carry on.
+/// Every rule's check runs inside [`panic_guard::catch`].  A rule that
+/// panics is reported once, as an internal error at the start of the file;
+/// the other rules carry on.
 struct RuleRun<'a> {
   set: &'a RuleSet,
   file_path: &'a str,
@@ -729,8 +728,6 @@ struct RuleRun<'a> {
   syntax: Syntax,
   /// What the rules share for this file, built from `source`.
   cache: &'a FileCache<'a>,
-  /// `failed[i]` once rule `i` has panicked on this file.
-  failed: Vec<bool>,
   /// What the rules reported.
   diagnostics: Vec<Diagnostic>,
   /// One internal-error problem per rule that panicked.  Kept apart from
@@ -747,118 +744,62 @@ impl<'a> RuleRun<'a> {
       source: cache.source(),
       syntax: cache.syntax(),
       cache,
-      failed: vec![false; set.rules.len()],
       diagnostics: Vec::new(),
       failures: Vec::new(),
     }
   }
 
-  /// The context rule `index` is called with: the same in `check_root` and
-  /// in every `check`.
-  fn context(&self, index: usize) -> RuleContext<'a> {
-    let set: &'a RuleSet = self.set;
+  /// The context every rule is called with.
+  fn context(&self) -> RuleContext<'a> {
     RuleContext {
       file_path: self.file_path,
       source: self.source,
       syntax: self.syntax,
       cache: Some(self.cache),
-      env: set.env,
+      env: self.set.env,
     }
   }
 
-  /// Keep what rule `index` returned, or record its panic and retire it.
-  fn record(&mut self, index: usize, outcome: Result<Vec<Diagnostic>, Caught>, offset: usize) {
+  /// Keep what rule `index` returned, or record its panic.
+  fn record(&mut self, index: usize, outcome: Result<Vec<Diagnostic>, Caught>) {
     match outcome {
       Ok(found) => self.diagnostics.extend(found),
-      Err(caught) => {
-        self.failed[index] = true;
-        let offset = clamp_to_char_boundary(self.source, offset);
-        self
-          .failures
-          .push(internal_error(&self.set.rules[index], &caught, offset));
-      }
+      Err(caught) => self
+        .failures
+        .push(internal_error(&self.set.rules[index], &caught)),
     }
   }
 
-  /// Run every rule's document-level `check_root`.
+  /// Run every rule over `tree`, the tree of the file's text.
   ///
-  /// With `timed`, a rule whose `check_root` is slow is timed on its own.
-  fn check_root(&mut self, nodes: &[CssNode], timed: bool) {
+  /// With `timed`, a rule that is slow on the file is timed on its own.
+  fn check(&mut self, tree: &PostcssTree, timed: bool) {
+    let context = self.context();
     for index in 0..self.set.rules.len() {
       let set: &'a RuleSet = self.set;
       let rule = set.rules[index].rule;
       let Some(check) = set.rules[index].check.as_deref() else {
         continue;
       };
-      let context = self.context(index);
       let started = timed.then(Instant::now);
       let source = self.source;
       let outcome = panic_guard::catch(|| {
         debug_panic(rule.name(), source);
-        check.check_root(nodes, &context)
+        check.check(tree, &context)
       });
+      self.record(index, outcome);
       if let Some(started) = started {
         let secs = started.elapsed().as_secs_f64();
-        if secs > SLOW_CHECK_ROOT_SECS {
+        if secs > SLOW_RULE_SECS {
           tracing::debug!(
             target: PERF_TARGET,
             file = self.file_path,
             rule = rule.name(),
             secs,
-            "slow check_root"
+            "slow rule"
           );
         }
       }
-      self.record(index, outcome, 0);
-    }
-  }
-
-  /// Recursively walk the AST, invoking each rule's `check` on every node.
-  ///
-  /// Takes the node by value: each rule sees a node with its whole subtree
-  /// before the walk moves the children out to visit them, so nested style
-  /// rules are wrapped as nodes without copying their subtrees.
-  fn walk(&mut self, node: CssNode) {
-    let offset = node.span().offset;
-    // `node` stays put until `leave_node`, as `enter_node` requires.
-    self.cache.enter_node(&node);
-    for index in 0..self.set.rules.len() {
-      if self.failed[index] {
-        continue;
-      }
-      let set: &'a RuleSet = self.set;
-      let Some(check) = set.rules[index].check.as_deref() else {
-        continue;
-      };
-      let context = self.context(index);
-      let outcome = panic_guard::catch(|| check.check(&node, &context));
-      self.record(index, outcome, offset);
-    }
-    self.cache.leave_node();
-
-    // Recurse into children based on node type.
-    match node {
-      CssNode::Style(style_rule) => {
-        let gale_css_parser::StyleRule {
-          children,
-          nested_at_rules,
-          ..
-        } = style_rule;
-        for child in children {
-          self.walk(CssNode::Style(child));
-        }
-        // Walk at-rules nested inside the style rule (e.g. @include,
-        // @if/@else, @media) so lint rules can inspect their contents.
-        for at_node in nested_at_rules {
-          self.walk(at_node);
-        }
-      }
-      CssNode::AtRule(at_rule) => {
-        for child in at_rule.children {
-          self.walk(child);
-        }
-      }
-      CssNode::Comment(_) | CssNode::Declaration(_) => {}
     }
   }
 }
@@ -870,7 +811,10 @@ fn clamp_to_char_boundary(source: &str, offset: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+  use gale_css_parser::postcss_tree::PostcssTree;
+
   use super::*;
+
   use crate::options::InvalidOption;
   use crate::registry::RuleRegistry;
 
@@ -1024,13 +968,11 @@ mod tests {
   }
 
   impl Check for FlagsRules {
-    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-      match node {
-        CssNode::Style(rule) => {
-          vec![Diagnostic::new("test/flags", self.word).span(Span::new(rule.span.offset, 1))]
-        }
-        _ => vec![],
-      }
+    fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+      tree
+        .walk_rules()
+        .map(|rule| Diagnostic::new("test/flags", self.word).span(Span::new(rule.start, 1)))
+        .collect()
     }
   }
 
@@ -1200,16 +1142,16 @@ mod tests {
 
   // -- Panic isolation --
 
-  /// A rule that panics on every style rule, the way an out-of-bounds slice
+  /// A rule that panics on any style rule, the way an out-of-bounds slice
   /// would.
   struct PanickingRule;
 
   test_rule!(PanickingRule, "test/panics", "Panics on every style rule");
 
   impl Check for PanickingRule {
-    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-      if let CssNode::Style(rule) = node {
-        let _ = &rule.selector[..rule.selector.len() + 1];
+    fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+      for rule in tree.walk_rules() {
+        let _ = &rule.selector()[..rule.selector().len() + 1];
       }
       vec![]
     }
@@ -1247,7 +1189,7 @@ mod tests {
     );
     assert!(crash.message.contains("out of bounds"), "{}", crash.message);
     assert!(crash.message.contains(ISSUES_URL), "{}", crash.message);
-    assert_eq!(crash.span.offset, 0, "reported at the node it was checking");
+    assert_eq!(crash.span.offset, 0, "reported at the start of the file");
 
     let empty_blocks = result
       .diagnostics
@@ -1380,66 +1322,6 @@ mod tests {
     );
   }
 
-  /// A rule that reports the primary option it was configured with, from
-  /// `check_root` and from `check` on each style rule.
-  struct ReportsOptionsCheck(Option<serde_json::Value>);
-
-  impl ReportsOptionsCheck {
-    fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-      Ok(Self(setting.primary().cloned()))
-    }
-  }
-
-  impl Check for ReportsOptionsCheck {
-    /// Reports the option at the root.
-    fn check_root(&self, _nodes: &[CssNode], _ctx: &RuleContext) -> Vec<Diagnostic> {
-      vec![Diagnostic::new(
-        "test/reports-options",
-        format!("root {:?}", self.0),
-      )]
-    }
-
-    /// Reports the option on a style rule.
-    fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-      match node {
-        CssNode::Style(_) => vec![
-          Diagnostic::new("test/reports-options", format!("node {:?}", self.0))
-            .span(Span::new(node.span().offset, 1)),
-        ],
-        _ => vec![],
-      }
-    }
-  }
-
-  crate::rule::declare_rule! {
-    /// Reports the options it sees.
-    struct ReportsOptions => ReportsOptionsCheck {
-      name: "test/reports-options",
-      description: "Reports the options it sees",
-      default_severity: Warning,
-    }
-  }
-
-  #[test]
-  fn a_rule_sees_the_same_options_in_check_root_and_check() {
-    let mut registry = RuleRegistry::default();
-    registry.register(Box::new(ReportsOptions));
-    let set = set_in(
-      registry,
-      RuleSetSpec {
-        rules: vec![RuleSetting::new("test/reports-options").with_options(serde_json::json!(3))],
-        ..RuleSetSpec::default()
-      },
-    );
-    let result = set.lint("a {}", "test.css", Syntax::Css);
-    let messages: Vec<&str> = result
-      .diagnostics
-      .iter()
-      .map(|d| d.message.as_str())
-      .collect();
-    assert_eq!(messages, ["root Some(Number(3))", "node Some(Number(3))"]);
-  }
-
   #[test]
   fn rules_see_the_environment_of_their_set() {
     let src = "a { height: 100dvh; }";
@@ -1478,34 +1360,14 @@ mod tests {
   );
 
   impl Check for ReportsTreeRules {
-    /// Reports each style rule of the shared tree.
-    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-      let tree = ctx.postcss_tree();
+    /// Reports each style rule of the tree it is handed, which must be the
+    /// one every rule shares.
+    fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+      assert!(std::ptr::eq(tree, &*ctx.postcss_tree()), "the shared tree");
       tree
-        .nodes
-        .iter()
-        .filter(|node| node.kind == crate::postcss_tree::NodeKind::Rule)
-        .map(|node| Diagnostic::new("test/tree-rules", "rule").span(Span::new(node.start, 1)))
+        .walk_rules()
+        .map(|rule| Diagnostic::new("test/tree-rules", "rule").span(Span::new(rule.start, 1)))
         .collect()
-    }
-  }
-
-  /// A rule that is first to ask for the shared tree and whose build of it
-  /// panics, standing in for a bug in the tree's parser.
-  struct BreaksTreeBuild;
-
-  test_rule!(
-    BreaksTreeBuild,
-    "test/breaks-tree-build",
-    "Panics while building the shared statement tree"
-  );
-
-  impl Check for BreaksTreeBuild {
-    /// Builds the shared tree with a builder that panics.
-    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-      let cache = ctx.cache.expect("the runner shares a cache");
-      cache.postcss_tree_built_by(|| panic!("tree build failed"));
-      vec![]
     }
   }
 
@@ -1519,53 +1381,9 @@ mod tests {
   );
 
   impl Check for PanicsHoldingTree {
-    /// Takes the shared tree, then panics.
-    fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
-      let tree = ctx.postcss_tree();
+    /// Panics holding the shared tree.
+    fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
       panic!("crashed holding {} statements", tree.nodes.len());
-    }
-  }
-
-  /// A rule that reports every declaration of the node it checks, read
-  /// through the shared per-node cache, at its property.
-  struct ReportsDeclarations;
-
-  test_rule!(
-    ReportsDeclarations,
-    "test/declarations",
-    "Reports every declaration of the node it checks"
-  );
-
-  impl Check for ReportsDeclarations {
-    /// Reports each declaration of `node` by property.
-    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-      ctx
-        .written_declarations(node)
-        .iter()
-        .map(|decl| {
-          Diagnostic::new("test/declarations", decl.prop).span(Span::new(decl.prop_start, 1))
-        })
-        .collect()
-    }
-  }
-
-  /// A rule that panics while it holds a node's shared declarations.
-  struct PanicsHoldingDeclarations;
-
-  test_rule!(
-    PanicsHoldingDeclarations,
-    "test/panics-holding-declarations",
-    "Panics while holding a node's shared declarations"
-  );
-
-  impl Check for PanicsHoldingDeclarations {
-    /// Takes the node's declarations, then panics if there are any.
-    fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-      let found = ctx.written_declarations(node);
-      if !found.is_empty() {
-        panic!("crashed holding {} declarations", found.len());
-      }
-      vec![]
     }
   }
 
@@ -1574,10 +1392,7 @@ mod tests {
   fn set_with_tree_rules(rules: &[&str]) -> RuleSet {
     let mut registry = RuleRegistry::default();
     registry.register(Box::new(ReportsTreeRules));
-    registry.register(Box::new(BreaksTreeBuild));
     registry.register(Box::new(PanicsHoldingTree));
-    registry.register(Box::new(ReportsDeclarations));
-    registry.register(Box::new(PanicsHoldingDeclarations));
     set_in(registry, spec_for(rules))
   }
 
@@ -1589,37 +1404,6 @@ mod tests {
       .filter(|d| d.rule_name == rule)
       .map(|d| (d.span.offset, d.message.as_str()))
       .collect()
-  }
-
-  /// A rule whose build of the shared tree panics reports an internal
-  /// error; the next rule to ask builds the tree, and so do the disable
-  /// comments read after the rules.
-  #[test]
-  fn a_shared_build_that_panics_is_built_again_for_the_next_rule() {
-    let set = set_with_tree_rules(&["test/breaks-tree-build", "test/tree-rules"]);
-    // The disable comment is read from the same shared tree, after the
-    // failed build: it must still apply.
-    let src = "a {}
-/* stylelint-disable-next-line test/tree-rules */
-b {}
-c {}
-";
-    let result = set.lint(src, "test.css", Syntax::Css);
-
-    let crashes = problems_of(&result, "test/breaks-tree-build");
-    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
-    assert!(
-      crashes[0].1.contains("tree build failed"),
-      "{}",
-      crashes[0].1
-    );
-
-    let c = src.find("c {").unwrap();
-    assert_eq!(
-      problems_of(&result, "test/tree-rules"),
-      vec![(0, "rule"), (c, "rule")],
-      "the next rule builds the tree and the disable comment applies"
-    );
   }
 
   /// A rule that panics while holding the shared tree only drops its
@@ -1646,28 +1430,6 @@ b {}
       problems_of(&result, "test/tree-rules"),
       vec![(0, "rule"), (5, "rule")]
     );
-  }
-
-  /// A rule that panics while holding a node's shared declarations does
-  /// not lock them: the next rule reads them for that node and every other.
-  #[test]
-  fn a_rule_that_panics_holding_shared_declarations_leaves_them_to_the_others() {
-    let set = set_with_tree_rules(&["test/panics-holding-declarations", "test/declarations"]);
-    let src = "a { color: red; top: 0 }\nb { left: 0 }\n";
-    let result = set.lint(src, "test.css", Syntax::Css);
-
-    let crashes = problems_of(&result, "test/panics-holding-declarations");
-    assert_eq!(crashes.len(), 1, "{:?}", result.diagnostics);
-    assert!(
-      crashes[0].1.contains("crashed holding 2 declarations"),
-      "{}",
-      crashes[0].1
-    );
-    let props: Vec<&str> = problems_of(&result, "test/declarations")
-      .into_iter()
-      .map(|(_, prop)| prop)
-      .collect();
-    assert_eq!(props, ["color", "top", "left"]);
   }
 
   #[test]
@@ -1854,23 +1616,12 @@ b {}
   }
 
   #[test]
-  fn sass_parses_successfully() {
-    // Sass indented syntax is now converted to SCSS before parsing,
-    // so it should produce lint results, not parse-error diagnostics.
-    let set = set_for(&["block-no-empty"]);
-    let src = ".foo\n  color: red";
-    let result = set.lint(src, "test.sass", Syntax::Sass);
-
+  fn sass_is_linted_as_the_scss_it_converts_to() {
+    let set = set_for(&["color-named"]);
+    let result = set.lint(".foo\n  color: red", "test.sass", Syntax::Sass);
     assert_eq!(result.file_path, "test.sass");
-    // The file should parse without a parse-error diagnostic.
-    let has_parse_error = result
-      .diagnostics
-      .iter()
-      .any(|d| d.rule_name == "parse-error");
-    assert!(
-      !has_parse_error,
-      "Sass should now parse successfully, but got parse-error diagnostic"
-    );
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].span.offset, 14);
   }
 
   #[test]
@@ -1907,20 +1658,22 @@ b {}
   }
 
   #[test]
-  fn malformed_scss_does_not_silently_swallow() {
-    // Malformed SCSS should either produce lint diagnostics (via
-    // the lightningcss fallback) or a parse-error diagnostic. It
-    // should never silently return empty results.
+  fn malformed_scss_is_linted_as_far_as_it_parses() {
+    // The tree recovers from the unclosed string the way
+    // `postcss-safe-parser` does, so the rules still see the file.
     let set = set_for(&["block-no-empty"]);
-    let src = ".foo { content: \"unclosed; }";
-    let result = set.lint(src, "test.scss", Syntax::Scss);
-
-    // Verify file_path is set regardless of parse outcome.
+    let result = set.lint(
+      "a {}\n.foo { content: \"unclosed; }",
+      "test.scss",
+      Syntax::Scss,
+    );
     assert_eq!(result.file_path, "test.scss");
-    // The result should not be empty — either rules detected violations
-    // from the fallback parse, or a parse-error diagnostic was emitted.
-    // (If both parsers happen to recover and produce a clean AST with no
-    // violations, that is also acceptable — but the code path is correct.)
+    let rules: Vec<&str> = result
+      .diagnostics
+      .iter()
+      .map(|d| d.rule_name.as_str())
+      .collect();
+    assert_eq!(rules, ["block-no-empty"]);
   }
 
   // -- Secondary options every rule accepts --

@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -107,67 +108,57 @@ fn is_plain_css_import(import: &str) -> bool {
 
 impl Check for GaleScssNoImportCheck {
   /// Reports an `@import` that loads at least one Sass file.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if !at.name.eq_ignore_ascii_case("import") {
-      return vec![];
-    }
-    if split_imports(&at.params)
-      .into_iter()
-      .all(is_plain_css_import)
-    {
-      return vec![];
-    }
-
-    vec![Diagnostic::new(NAME, "Expected @use or @forward instead of @import").span(at.span)]
+    tree
+      .walk_at_rules()
+      .filter(|at| at.name().eq_ignore_ascii_case("import"))
+      .filter(|at| {
+        !split_imports(&at.raw_params())
+          .into_iter()
+          .all(is_plain_css_import)
+      })
+      .map(|at| {
+        Diagnostic::new(NAME, "Expected @use or @forward instead of @import").span(at.span())
+      })
+      .collect()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, scss_ctx};
+  use crate::testing::{CheckSource, configured, context};
 
-  fn import(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "import".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 20),
-      children: vec![],
-    })
+  /// The reports for `@import <params>;` in `syntax`.
+  fn check(params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    let source = format!("@import {params};");
+    configured(&GaleScssNoImport, None).check_source(&context(&source, syntax))
   }
 
   fn reports(params: &str) -> bool {
-    !configured(&GaleScssNoImport, None)
-      .check(&import(params), &scss_ctx())
-      .is_empty()
+    !check(params, Syntax::Scss).is_empty()
   }
 
   #[test]
   fn reports_a_sass_import() {
-    let rule = configured(&GaleScssNoImport, None);
-    let diags = rule.check(&import("\"variables\""), &scss_ctx());
+    let diags = check("\"variables\"", Syntax::Scss);
     assert_eq!(diags.len(), 1);
     assert_eq!(
       diags[0].message,
       "Expected @use or @forward instead of @import"
     );
+    assert_eq!((diags[0].span.offset, diags[0].span.length), (0, 20));
   }
 
   #[test]
   fn reports_a_list_once_when_any_import_is_sass() {
-    let rule = configured(&GaleScssNoImport, None);
     assert!(reports("\"mixins\", \"functions\""));
     assert!(reports("\"theme.css\", \"mixins\""));
-    assert_eq!(rule.check(&import("\"a\", \"b\""), &scss_ctx()).len(), 1);
+    assert_eq!(check("\"a\", \"b\"", Syntax::Scss).len(), 1);
   }
 
   #[test]
@@ -199,20 +190,14 @@ mod tests {
 
   #[test]
   fn skips_css_files() {
-    let rule = configured(&GaleScssNoImport, None);
-    assert!(rule.check(&import("\"variables\""), &ctx()).is_empty());
+    assert!(check("\"variables\"", Syntax::Css).is_empty());
   }
 
   #[test]
   fn ignores_other_at_rules() {
+    let source = "@use \"variables\";";
     let rule = configured(&GaleScssNoImport, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "use".to_string(),
-      params: "\"variables\"".to_string(),
-      span: Span::new(0, 16),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&context(source, Syntax::Scss)).is_empty());
   }
 
   #[test]

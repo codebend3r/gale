@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::{NodeKind, NodeRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -38,96 +39,37 @@ impl BlockNoEmptyCheck {
 }
 
 impl Check for BlockNoEmptyCheck {
-  /// Flags a block with no declarations or children. With `ignore: ["comments"]`
-  /// a block holding only comments is allowed, so the source is re-checked.
-  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
-    let ignore_comments = self.ignore_comments;
-    match node {
-      CssNode::Style(rule) => {
-        // If the AST recorded declarations or children, it's not empty.
-        if !rule.declarations.is_empty() || !rule.children.is_empty() {
-          return vec![];
-        }
-        check_block_source(
-          context,
-          rule.span.offset,
-          rule.span.offset + rule.span.length,
-          ignore_comments,
-        )
-      }
-      CssNode::AtRule(at_rule) => {
-        // Only check at-rules that have a block body (e.g., @media, @supports).
-        // At-rules without children in the AST need source-level checking.
-        // Skip at-rules that don't have blocks (like @import).
-        if !at_rule.children.is_empty() {
-          return vec![];
-        }
-        let start = at_rule.span.offset;
-        let end = start + at_rule.span.length;
-        if end > context.source.len() {
-          return vec![];
-        }
-        let block_src = context.source_slice(start, end).unwrap_or("");
-        // Only check at-rules that have a block (contain `{`)
-        if !block_src.contains('{') {
-          return vec![];
-        }
-        check_block_source(context, start, end, ignore_comments)
-      }
-      _ => vec![],
-    }
+  /// Flags a rule or at-rule whose block holds nothing. With `ignore:
+  /// ["comments"]` a block holding only comments counts as empty.
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
+    tree
+      .walk()
+      .filter(|node| matches!(node.kind, NodeKind::Rule | NodeKind::AtRule))
+      .filter_map(|node| self.check_block(node, context))
+      .collect()
   }
 }
 
-/// Check the source text between `{` and `}` for a block at `[span_start..span_end]`.
-/// Returns a diagnostic if the block is empty.
-fn check_block_source(
-  context: &RuleContext,
-  span_start: usize,
-  span_end: usize,
-  ignore_comments: bool,
-) -> Vec<Diagnostic> {
-  if span_end > context.source.len() || span_start >= span_end {
-    return vec![];
-  }
-
-  let block_src = context.source_slice(span_start, span_end).unwrap_or("");
-
-  // Find the opening `{`
-  let Some(open_brace_rel) = block_src.find('{') else {
-    return vec![];
-  };
-
-  // Body is between `{` and the last `}`
-  let body = &block_src[open_brace_rel + 1..];
-  let body = body.strip_suffix('}').unwrap_or(body);
-
-  let make_diag = || {
-    let brace_offset = span_start + open_brace_rel;
-    vec![
-      Diagnostic::new(NAME, "Unexpected empty block")
-        .span(Span::new(brace_offset, span_end - brace_offset)),
-    ]
-  };
-
-  match analyze_block_body(body, context.syntax) {
-    BlockContent::HasContent => vec![],
-    BlockContent::Empty => make_diag(),
-    BlockContent::OnlyCoveringDisable => {
-      // Block contains only a disable directive that covers block-no-empty.
-      // Don't emit the diagnostic — it would be suppressed anyway but the
-      // span is at the `{` which is before the disable comment.
-      vec![]
-    }
-    BlockContent::OnlyRegularComments => {
-      if ignore_comments {
-        // `ignore: ["comments"]` — comments don't count as content
-        make_diag()
-      } else {
-        // Default — regular comments count as content
-        vec![]
-      }
-    }
+impl BlockNoEmptyCheck {
+  /// The report for `node`'s block, if it has one and it is empty.
+  fn check_block(&self, node: NodeRef, context: &RuleContext) -> Option<Diagnostic> {
+    let open = node.block_open?;
+    let end = node.span().end();
+    // The text between the braces (the `}` is missing at the end of an
+    // unclosed file).
+    let body = context.source_slice(open + 1, end)?;
+    let body = body.strip_suffix('}').unwrap_or(body);
+    let empty = match analyze_block_body(body, context.syntax) {
+      BlockContent::HasContent => false,
+      BlockContent::Empty => true,
+      // Block contains only a disable directive that covers block-no-empty:
+      // the report would be suppressed anyway, but it would start at the
+      // `{`, before the directive.
+      BlockContent::OnlyCoveringDisable => false,
+      // Comments count as content unless `ignore: ["comments"]`.
+      BlockContent::OnlyRegularComments => self.ignore_comments,
+    };
+    empty.then(|| Diagnostic::new(NAME, "Unexpected empty block").span(Span::new(open, end - open)))
   }
 }
 
@@ -274,119 +216,75 @@ fn is_covering_disable(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx_with_source, invalid_options, lint, scss_ctx_with_source};
+  use crate::testing::{CheckSource, configured, context, invalid_options, lint};
+
+  /// The offsets and lengths reported for `source` in `syntax`.
+  fn spans(source: &str, syntax: Syntax) -> Vec<(usize, usize)> {
+    configured(&BlockNoEmpty, None)
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| (d.span.offset, d.span.length))
+      .collect()
+  }
 
   #[test]
   fn reports_empty_style_rule() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = "a { }";
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
+    let diags = configured(&BlockNoEmpty, None).check_source(&context("a { }", Syntax::Css));
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "Unexpected empty block");
-    // Should point to the `{`
-    assert_eq!(diags[0].span.offset, 2);
+    // From the `{` to the end of the block.
+    assert_eq!((diags[0].span.offset, diags[0].span.length), (2, 3));
   }
 
   #[test]
   fn ignores_non_empty_style_rule() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = "a { color: red; }";
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(4, 10),
-        important: false,
-      }],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
-    assert!(diags.is_empty());
+    assert!(spans("a { color: red; }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn block_with_comment_is_non_empty_by_default() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = "a { /* foo */ }";
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
-    assert!(diags.is_empty());
+    assert!(spans("a { /* foo */ }", Syntax::Css).is_empty());
+    assert!(spans("a { // foo\n}", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn block_with_semicolons_is_non_empty() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = "a { ; }";
-    let node = CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
-    assert!(diags.is_empty());
+    assert!(spans("a { ; }", Syntax::Css).is_empty());
   }
 
   #[test]
   fn allows_scss_block_with_include() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = ".btn { @include button-styles; }";
-    let node = CssNode::Style(StyleRule {
-      selector: ".btn".to_string(),
-      declarations: vec![],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = scss_ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
-    assert!(diags.is_empty());
+    assert!(spans(".btn { @include button-styles; }", Syntax::Scss).is_empty());
   }
 
   #[test]
   fn reports_truly_empty_scss_block() {
-    let rule = configured(&BlockNoEmpty, None);
-    let source = ".btn {  }";
-    let node = CssNode::Style(StyleRule {
-      selector: ".btn".to_string(),
-      declarations: vec![],
-      span: Span::new(0, source.len()),
-      ..Default::default()
-    });
-    let ctx = scss_ctx_with_source(source);
-    let diags = rule.check(&node, &ctx);
-    assert_eq!(diags.len(), 1);
+    assert_eq!(spans(".btn {  }", Syntax::Scss).len(), 1);
   }
 
   #[test]
-  fn ignores_non_style_rule_nodes() {
-    let rule = configured(&BlockNoEmpty, None);
-    let node = CssNode::Comment(gale_css_parser::Comment {
-      text: "/* hi */".to_string(),
-      span: Span::new(0, 8),
-      is_line: false,
-    });
-    let ctx = ctx_with_source("/* hi */");
-    let diags = rule.check(&node, &ctx);
-    assert!(diags.is_empty());
+  fn reports_empty_at_rule_blocks_but_not_blockless_ones() {
+    let source = "@import \"x\"; @media print {} a {}";
+    assert_eq!(spans(source, Syntax::Css), [(26, 2), (31, 2)]);
+  }
+
+  #[test]
+  fn reports_nested_blocks_wherever_they_are() {
+    let source = "a { @media print { } b { } }";
+    assert_eq!(spans(source, Syntax::Scss), [(17, 3), (23, 3)]);
+    // `@else` is a sibling of `@if`, so the empty `@if` is reported too.
+    let source = "@if $a {} @else { b: c }";
+    assert_eq!(spans(source, Syntax::Scss), [(7, 2)]);
+  }
+
+  #[test]
+  fn a_covering_disable_comment_keeps_the_block_quiet() {
+    let source = "a { /* stylelint-disable-line block-no-empty */ }";
+    assert!(spans(source, Syntax::Css).is_empty());
+    // Other directives are not content.
+    let source = "a { /* stylelint-disable color-named */ }";
+    assert_eq!(spans(source, Syntax::Css).len(), 1);
   }
 
   #[test]

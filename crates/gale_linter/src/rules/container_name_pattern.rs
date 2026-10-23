@@ -1,4 +1,5 @@
-use gale_css_parser::{AtRule, CssNode, Declaration};
+use gale_css_parser::postcss_tree::{AtRuleRef, DeclRef, PostcssTree};
+use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_css_wide_keyword;
@@ -6,8 +7,6 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
 use crate::pattern::{self, Regex};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::source_text;
-use crate::value_parser::{self, ValueNode};
 
 const NAME: &str = "container-name-pattern";
 
@@ -117,23 +116,16 @@ impl ContainerNamePatternCheck {
   }
 
   /// Reports for the names in a `container` or `container-name` declaration.
-  fn check_declaration(
-    &self,
-    decl: &Declaration,
-    re: &Regex,
-    pattern: &str,
-    ctx: &RuleContext,
-  ) -> Vec<Diagnostic> {
-    let property = decl.property.to_ascii_lowercase();
-    if property != "container" && property != "container-name" {
+  fn check_declaration(&self, decl: DeclRef, re: &Regex, pattern: &str) -> Vec<Diagnostic> {
+    let property = decl.prop().to_ascii_lowercase();
+    if (property != "container" && property != "container-name") || !decl.is_standard_syntax() {
       return vec![];
     }
-    let Some((value, offset)) = source_text::declaration_value(ctx.source, decl) else {
-      return vec![];
-    };
+    let value = decl.raw_value();
+    let offset = decl.value_start();
     let mut diags = Vec::new();
     let mut container_type = false;
-    value_parser::walk(&value_parser::parse(value), &mut |node: &ValueNode| {
+    value_parser::walk(&value_parser::parse(&value), &mut |node: &ValueNode| {
       if container_type {
         return true;
       }
@@ -154,21 +146,14 @@ impl ContainerNamePatternCheck {
   }
 
   /// Reports for the names in `@container` params.
-  fn check_at_rule(
-    &self,
-    at: &AtRule,
-    re: &Regex,
-    pattern: &str,
-    ctx: &RuleContext,
-  ) -> Vec<Diagnostic> {
-    if !at.name.eq_ignore_ascii_case("container") {
+  fn check_at_rule(&self, at: AtRuleRef, re: &Regex, pattern: &str) -> Vec<Diagnostic> {
+    if !at.name().eq_ignore_ascii_case("container") || !at.is_standard_syntax() {
       return vec![];
     }
-    let Some((params, offset)) = source_text::at_rule_params(ctx.source, at) else {
-      return vec![];
-    };
+    let params = at.raw_params();
+    let offset = at.params_start();
     let mut diags = Vec::new();
-    value_parser::walk(&value_parser::parse(params), &mut |node: &ValueNode| {
+    value_parser::walk(&value_parser::parse(&params), &mut |node: &ValueNode| {
       if !node.is_word() {
         return false;
       }
@@ -188,29 +173,27 @@ impl ContainerNamePatternCheck {
 impl Check for ContainerNamePatternCheck {
   /// Flags container names in declarations and `@container` params that do
   /// not match the configured pattern.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(pattern) = &self.pattern else {
       return vec![];
     };
     let (re, pattern_str) = (&pattern.regex, pattern.source.as_str());
-
-    match node {
-      CssNode::Style(rule) => rule
-        .declarations
-        .iter()
-        .flat_map(|decl| self.check_declaration(decl, re, pattern_str, ctx))
-        .collect(),
-      CssNode::Declaration(decl) => self.check_declaration(decl, re, pattern_str, ctx),
-      CssNode::AtRule(at) => self.check_at_rule(at, re, pattern_str, ctx),
-      CssNode::Comment(_) => vec![],
+    let mut diags = Vec::new();
+    for node in tree.walk() {
+      if let Some(decl) = node.as_decl() {
+        diags.extend(self.check_declaration(decl, re, pattern_str));
+      } else if let Some(at) = node.as_at_rule() {
+        diags.extend(self.check_at_rule(at, re, pattern_str));
+      }
     }
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::testing::{configured, invalid_options};
+  use crate::testing::{CheckSource, configured, context, invalid_options};
   use gale_css_parser::Syntax;
 
   const KEBAB: &str = "^([a-z][a-z0-9]*)(-[a-z0-9]+)*$";
@@ -218,30 +201,12 @@ mod tests {
   /// Lint `source` with the real parser, returning `(offset, message)` for
   /// each report.
   fn lint(source: &str, syntax: Syntax, options: serde_json::Value) -> Vec<(usize, String)> {
-    let parsed = gale_css_parser::parse(source, syntax).expect("parses");
     let rule = configured(&ContainerNamePattern, options);
-    let ctx = RuleContext {
-      env: Default::default(),
-      file_path: "t.scss",
-      source,
-      syntax,
-      cache: None,
-    };
-    let mut out = Vec::new();
-    let mut stack: Vec<CssNode> = parsed.nodes.clone();
-    while let Some(node) = stack.pop() {
-      for d in rule.check(&node, &ctx) {
-        out.push((d.span.offset, d.message));
-      }
-      match &node {
-        CssNode::AtRule(at) => stack.extend(at.children.iter().cloned()),
-        CssNode::Style(rule) => {
-          stack.extend(rule.nested_at_rules.iter().cloned());
-          stack.extend(rule.children.iter().cloned().map(CssNode::Style));
-        }
-        _ => {}
-      }
-    }
+    let mut out: Vec<(usize, String)> = rule
+      .check_source(&context(source, syntax))
+      .into_iter()
+      .map(|d| (d.span.offset, d.message))
+      .collect();
     out.sort();
     out
   }

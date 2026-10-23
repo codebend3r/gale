@@ -263,7 +263,6 @@ fn ignores_disables(d: &Diagnostic) -> bool {
     || d.is_unknown_rule()
     || d.is_invalid_option()
     || d.message.starts_with("Internal error")
-    || d.rule_name == "parse-error"
 }
 
 /// Drop the problems the document's configuration comments disable.

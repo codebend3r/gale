@@ -1,7 +1,7 @@
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Span;
 
 use crate::list_rules::{Found, List, ListCheck, ListRule, Polarity, subjects};
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "comment-word-disallowed-list";

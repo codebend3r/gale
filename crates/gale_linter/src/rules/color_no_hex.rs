@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser;
 
 const NAME: &str = "color-no-hex";
 
@@ -57,11 +57,12 @@ impl ColorNoHexCheck {
 
 impl Check for ColorNoHexCheck {
   /// Flags every valid hex color (3, 4, 6 or 8 digits) in a declaration value.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
-    for decl in node.declarations() {
-      let value = &decl.value;
+    for decl in tree.walk_decls() {
+      let value = &*decl.raw_value();
+      let value_start = decl.value_start();
       let ignored = self.ignored_ranges(value);
       let bytes = value.as_bytes();
       let len = bytes.len();
@@ -86,7 +87,7 @@ impl Check for ColorNoHexCheck {
             let hex_str = &value[start..start + 1 + hex_len];
             diags.push(
               Diagnostic::new(NAME, format!("Unexpected hex color \"{hex_str}\""))
-                .span(Span::new(decl.span.offset + start, 1 + hex_len)),
+                .span(Span::new(value_start + start, 1 + hex_len)),
             );
           }
         } else {
@@ -102,36 +103,25 @@ impl Check for ColorNoHexCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_value(val: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: val.to_string(),
-        span: Span::new(0, val.len()),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  fn check(rule: &dyn Check, value: &str) -> Vec<Diagnostic> {
+    let source = format!("a {{ color: {value}; }}");
+    rule.check_source(&ctx_with_source(&source))
   }
 
   #[test]
   fn flags_three_digit_hex() {
-    let rule = configured(&ColorNoHex, None);
-    let d = rule.check(&style_with_value("#fff"), &ctx());
+    let d = check(&*configured(&ColorNoHex, None), "#fff");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#fff"));
+    assert_eq!(d[0].span, Span::new(11, 4));
   }
 
   #[test]
   fn flags_six_digit_hex() {
-    let rule = configured(&ColorNoHex, None);
-    let d = rule.check(&style_with_value("#ff0000"), &ctx());
+    let d = check(&*configured(&ColorNoHex, None), "#ff0000");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("#ff0000"));
   }
@@ -139,15 +129,16 @@ mod tests {
   #[test]
   fn allows_named_colors() {
     let rule = configured(&ColorNoHex, None);
-    let d = rule.check(&style_with_value("red"), &ctx());
-    assert!(d.is_empty());
+    assert!(check(&*rule, "red").is_empty());
+    // The CSS parser used to write `white` and `transparent` as hex.
+    assert!(check(&*rule, "white").is_empty());
+    assert!(check(&*rule, "transparent").is_empty());
   }
 
   #[test]
   fn allows_rgb_function() {
     let rule = configured(&ColorNoHex, None);
-    let d = rule.check(&style_with_value("rgb(255, 0, 0)"), &ctx());
-    assert!(d.is_empty());
+    assert!(check(&*rule, "rgb(255, 0, 0)").is_empty());
   }
 
   #[test]
@@ -161,17 +152,8 @@ mod tests {
       &ColorNoHex,
       serde_json::json!([true, { "ignoreFunctions": ["/^theme$/"] }]),
     );
-    assert!(
-      rule
-        .check(&style_with_value("theme(#fff)"), &ctx())
-        .is_empty()
-    );
-    assert_eq!(
-      rule
-        .check(&style_with_value("mix(#fff, theme(#000))"), &ctx())
-        .len(),
-      1
-    );
+    assert!(check(&*rule, "theme(#fff)").is_empty());
+    assert_eq!(check(&*rule, "mix(#fff, theme(#000))").len(), 1);
   }
 
   #[test]
