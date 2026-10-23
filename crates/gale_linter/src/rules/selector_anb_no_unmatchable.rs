@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -162,21 +162,19 @@ fn extract_anb_expressions(selector: &str) -> Vec<String> {
 
 impl Check for SelectorAnbNoUnmatchableCheck {
   /// Flags An+B expressions such as `:nth-child(0n+0)` that can never match.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for expr in extract_anb_expressions(&rule.selector) {
-      if is_unmatchable(&expr) {
-        diags.push(
-          Diagnostic::new(
-            NAME,
-            format!("Unexpected unmatchable An+B selector \"{}\"", expr.trim()),
-          )
-          .span(rule.span),
-        );
+    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
+      for expr in extract_anb_expressions(rule.selector()) {
+        if is_unmatchable(&expr) {
+          diags.push(
+            Diagnostic::new(
+              NAME,
+              format!("Unexpected unmatchable An+B selector \"{}\"", expr.trim()),
+            )
+            .span(rule.span()),
+          );
+        }
       }
     }
     diags
@@ -186,29 +184,18 @@ impl Check for SelectorAnbNoUnmatchableCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{CssNode, Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 
-  fn style_with_selector(sel: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: sel.to_string(),
-      declarations: vec![Declaration {
-        property: "color".to_string(),
-        value: "red".to_string(),
-        span: Span::new(0, 0),
-        important: false,
-      }],
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule with the selector `sel`.
+  fn style_with_selector(sel: &str) -> String {
+    format!("{sel} {{ color: red; }}")
   }
 
   #[test]
   fn reports_zero() {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
-    let d = rule.check(&style_with_selector("li:nth-child(0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("li:nth-child(0)")));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("0"));
   }
@@ -216,14 +203,19 @@ mod tests {
   #[test]
   fn reports_0n_plus_0() {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
-    let d = rule.check(&style_with_selector("li:nth-child(0n+0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("li:nth-child(0n+0)")));
     assert_eq!(d.len(), 1);
+    // Quoted as written, as Stylelint quotes it.
+    assert_eq!(
+      d[0].message,
+      "Unexpected unmatchable An+B selector \"0n+0\""
+    );
   }
 
   #[test]
   fn reports_negative_n_plus_0() {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
-    let d = rule.check(&style_with_selector("li:nth-child(-n+0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("li:nth-child(-n+0)")));
     assert_eq!(d.len(), 1);
   }
 
@@ -232,7 +224,7 @@ mod tests {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(odd)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(odd)")))
         .is_empty()
     );
   }
@@ -242,7 +234,7 @@ mod tests {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(even)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(even)")))
         .is_empty()
     );
   }
@@ -252,7 +244,7 @@ mod tests {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(2n+1)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(2n+1)")))
         .is_empty()
     );
   }
@@ -262,7 +254,7 @@ mod tests {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(n+3)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(n+3)")))
         .is_empty()
     );
   }
@@ -273,7 +265,7 @@ mod tests {
     // -n+5 matches elements 1 through 5
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(-n+5)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(-n+5)")))
         .is_empty()
     );
   }
@@ -283,7 +275,7 @@ mod tests {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
     assert!(
       rule
-        .check(&style_with_selector("li:nth-child(3)"), &ctx())
+        .check_source(&ctx_with_source(&style_with_selector("li:nth-child(3)")))
         .is_empty()
     );
   }
@@ -291,14 +283,16 @@ mod tests {
   #[test]
   fn works_with_nth_of_type() {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
-    let d = rule.check(&style_with_selector("li:nth-of-type(0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector("li:nth-of-type(0)")));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn works_with_nth_last_child() {
     let rule = configured(&SelectorAnbNoUnmatchable, None);
-    let d = rule.check(&style_with_selector("li:nth-last-child(0)"), &ctx());
+    let d = rule.check_source(&ctx_with_source(&style_with_selector(
+      "li:nth-last-child(0)",
+    )));
     assert_eq!(d.len(), 1);
   }
 

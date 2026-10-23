@@ -1,10 +1,11 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, ValueNode};
 
 const NAME: &str = "scss/function-color-channel";
 
@@ -62,18 +63,17 @@ const FUNCTION_NAMES: &[&str] = &[
 impl Check for ScssFunctionColorChannelCheck {
   /// Reports the name of every channel function called in a declaration
   /// value, outside `filter`.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return Vec::new();
     }
-    let tree = ctx.postcss_tree();
     let mut diags = Vec::new();
 
-    for decl in tree.decls() {
+    for decl in tree.walk_decls() {
       if decl.name == "filter" {
         continue;
       }
-      let Some(value_index) = tree.declaration_value_index(decl) else {
+      let Some(value_index) = decl.value_index() else {
         continue;
       };
       let parsed = value_parser::parse(&decl.value);

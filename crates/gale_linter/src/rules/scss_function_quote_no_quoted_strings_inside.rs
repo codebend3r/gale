@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -32,79 +33,75 @@ impl ScssFunctionQuoteNoQuotedStringsInsideCheck {
 
 impl Check for ScssFunctionQuoteNoQuotedStringsInsideCheck {
   /// Flags `quote()` calls whose argument is already a quoted string.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let CssNode::Declaration(decl) = node else {
-      return vec![];
+    tree
+      .walk_decls()
+      .filter(|decl| has_quoted_argument(decl.written_value()))
+      .map(|decl| {
+        Diagnostic::new(NAME, "Unexpected quoted string inside quote()").span(decl.span())
+      })
+      .collect()
+  }
+}
+
+/// Whether a `quote(` in `value` (as written) takes a quoted string.
+fn has_quoted_argument(value: &str) -> bool {
+  let bytes = value.as_bytes();
+  let len = bytes.len();
+  let mut i = 0;
+
+  while i < len {
+    // Look for "quote(" but ensure it's not part of another function name
+    // like "unquote(" or "str-quote("
+    let Some(pos) = value[i..].find("quote(") else {
+      break;
+    };
+    let abs_pos = i + pos;
+    // Check that the character before "quote(" is not alphanumeric, hyphen, or underscore
+    let is_standalone = abs_pos == 0 || {
+      let prev = bytes[abs_pos - 1];
+      !prev.is_ascii_alphanumeric() && prev != b'-' && prev != b'_'
     };
 
-    let value = &decl.value;
-    let bytes = value.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-      // Look for "quote(" but ensure it's not part of another function name
-      // like "unquote(" or "str-quote("
-      if let Some(pos) = value[i..].find("quote(") {
-        let abs_pos = i + pos;
-        // Check that the character before "quote(" is not alphanumeric, hyphen, or underscore
-        let is_standalone = abs_pos == 0 || {
-          let prev = bytes[abs_pos - 1];
-          !prev.is_ascii_alphanumeric() && prev != b'-' && prev != b'_'
-        };
-
-        if is_standalone {
-          let after = &value[abs_pos + 6..];
-          let trimmed = after.trim_start();
-          if trimmed.starts_with('"') || trimmed.starts_with('\'') {
-            return vec![
-              Diagnostic::new(NAME, "Unexpected quoted string inside quote()").span(decl.span),
-            ];
-          }
-        }
-
-        i = abs_pos + 6;
-      } else {
-        break;
+    if is_standalone {
+      let trimmed = value[abs_pos + 6..].trim_start();
+      if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+        return true;
       }
     }
 
-    vec![]
+    i = abs_pos + 6;
   }
+
+  false
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Declaration;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, invalid_options, scss_ctx_with_source};
 
-  fn decl(value: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: "content".to_string(),
-      value: value.to_string(),
-      span: Span::new(0, 10),
-      important: false,
-    })
+  /// A top-level `$content` variable set to `value`.
+  fn decl(value: &str) -> String {
+    format!("$content: {value};")
   }
 
   #[test]
   fn reports_quoted_string_inside_quote() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
-    let d = rule.check(&decl("quote(\"hello\")"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("quote(\"hello\")")));
     assert_eq!(d.len(), 1);
   }
 
   #[test]
   fn allows_unquoted_inside_quote() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
-    let d = rule.check(&decl("quote($var)"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("quote($var)")));
     assert!(d.is_empty());
   }
 
@@ -112,7 +109,7 @@ mod tests {
   fn allows_unquote_with_quoted_string() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
     // `unquote("hello")` should NOT be flagged — it's unquote, not quote
-    let d = rule.check(&decl("unquote(\"hello\")"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("unquote(\"hello\")")));
     assert!(d.is_empty());
   }
 
@@ -120,7 +117,7 @@ mod tests {
   fn allows_str_quote_variant() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
     // Function names ending in `-quote` should not be flagged
-    let d = rule.check(&decl("str-quote(\"hello\")"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("str-quote(\"hello\")")));
     assert!(d.is_empty());
   }
 
@@ -128,7 +125,7 @@ mod tests {
   fn reports_standalone_quote_with_quoted() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
     // Standalone `quote("hello")` should still be flagged
-    let d = rule.check(&decl("quote(\"hello\")"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("quote(\"hello\")")));
     assert_eq!(d.len(), 1);
   }
 
@@ -136,8 +133,17 @@ mod tests {
   fn reports_quote_after_space() {
     let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
     // `foo quote("hello")` — quote after space is standalone
-    let d = rule.check(&decl("foo quote(\"hello\")"), &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&decl("foo quote(\"hello\")")));
     assert_eq!(d.len(), 1);
+  }
+
+  #[test]
+  fn looks_at_every_declaration() {
+    let rule = configured(&ScssFunctionQuoteNoQuotedStringsInside, None);
+    let source = "@mixin m { content: quote(\"x\"); }\na { content: quote(\"x\"); }";
+    let d = rule.check_source(&scss_ctx_with_source(source));
+    let spans: Vec<(usize, usize)> = d.iter().map(|d| (d.span.offset, d.span.length)).collect();
+    assert_eq!(spans, [(11, 20), (38, 20)]);
   }
 
   #[test]

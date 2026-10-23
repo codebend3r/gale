@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -38,64 +39,43 @@ impl ScssOperatorNoUnspacedCheck {
 }
 
 impl Check for ScssOperatorNoUnspacedCheck {
-  /// Checks declaration values, and interpolations inside property names, for
-  /// operators missing their surrounding spaces.
-  fn check(&self, node: &CssNode, context: &RuleContext) -> Vec<Diagnostic> {
+  /// Checks the values of style rules' declarations, interpolations inside
+  /// their property names, and what only the source shows (variable
+  /// assignments anywhere, media queries, interpolation in selectors and
+  /// comments, multi-space `calc()` operands) for operators missing their
+  /// surrounding spaces.
+  ///
+  /// The two passes overlap (a `$var:` in a rule, an interpolation in a
+  /// value), so an operator both find is reported once.
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass) {
       return vec![];
     }
-    let style = match node {
-      CssNode::Style(s) => s,
-      _ => return vec![],
-    };
+    let source = tree.source();
     let mut diagnostics = Vec::new();
-    for decl in &style.declarations {
-      let slash_is_sep = is_shorthand_with_slash(&decl.property);
+    for decl in tree.walk_decls() {
+      let slash_is_sep = is_shorthand_with_slash(decl.prop());
       // Check interpolations in property name
-      check_interpolations_only(
-        &decl.property,
-        find_prop_offset(context.source, &decl.property, decl.span.offset),
-        &mut diagnostics,
-      );
+      check_interpolations_only(decl.prop(), decl.prop_start(), &mut diagnostics);
+      // The value as written, so that offsets into it are offsets into the
+      // source.
+      let value_start = decl.value_start();
       check_value(
-        &decl.value,
-        decl.span.offset,
+        decl.written_value(),
+        value_start,
         slash_is_sep,
         false,
         &mut diagnostics,
       );
     }
+    check_source_level(source, &mut diagnostics);
+    check_calc_multi_space(source, &mut diagnostics);
+    diagnostics.sort_by(|a, b| {
+      (a.span.offset, a.span.length, &a.message).cmp(&(b.span.offset, b.span.length, &b.message))
+    });
+    diagnostics.dedup_by(|a, b| a.span == b.span && a.message == b.message);
     diagnostics
   }
-
-  /// Covers what the AST loses: source-level constructs such as variable
-  /// assignments and media queries, plus multi-space `calc()` operands.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
-    if !matches!(context.syntax, Syntax::Scss | Syntax::Less | Syntax::Sass) {
-      return vec![];
-    }
-    let mut diagnostics = Vec::new();
-    check_source_level(context.source, &mut diagnostics);
-    check_calc_multi_space(context.source, &mut diagnostics);
-    diagnostics
-  }
-}
-
-/// Byte offset of `prop` in the source, searched backwards from its value.
-///
-/// Both ends of the search window are arithmetic, so they are floored to char
-/// boundaries: a multi-byte character anywhere in the preceding 20-odd bytes
-/// (box-drawing rules in section comments, an em dash, an emoji) would
-/// otherwise put the slice mid-character and panic.
-fn find_prop_offset(source: &str, prop: &str, val_offset: usize) -> usize {
-  if val_offset > prop.len() + 2 {
-    let end = source.floor_char_boundary(val_offset.min(source.len()));
-    let start = source.floor_char_boundary(end.saturating_sub(prop.len() + 20));
-    if let Some(pos) = source[start..end].rfind(prop) {
-      return start + pos;
-    }
-  }
-  0
 }
 
 /// Whether the property is a shorthand where `/` separates values rather than
@@ -127,7 +107,7 @@ fn is_shorthand_with_slash(property: &str) -> bool {
   )
 }
 
-// ── Source-level scan (check_root) ──────────────────────────────────────
+// ── Source-level scan ───────────────────────────────────────────────────
 
 /// Scan the full source for contexts the per-node check misses:
 /// interpolation in selectors/comments, variable declarations,
@@ -864,8 +844,8 @@ fn check_value_inner(
         }
         continue;
       }
-      // Hyphen in identifier
-      if ch == b'-' && is_ident_hyphen(b, i) {
+      // Hyphen in identifier, including a private variable's `$-name`
+      if ch == b'-' && (is_ident_hyphen(b, i) || (i > 0 && b[i - 1] == b'$')) {
         i += 1;
         continue;
       }
@@ -1079,6 +1059,15 @@ fn is_ident_hyphen(b: &[u8], i: usize) -> bool {
   let next = b[i + 1];
 
   let prev_ok = prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'}' || prev == b'%';
+  // `zoom-$value`, `-webkit-$value`: a keyword glued to a variable is one
+  // string to stylelint-scss, unlike `$a-$b` or `1-$b`.
+  if next == b'$' && prev.is_ascii_alphabetic() {
+    let mut ts = i - 1;
+    while ts > 0 && (b[ts - 1].is_ascii_alphanumeric() || b[ts - 1] == b'_' || b[ts - 1] == b'-') {
+      ts -= 1;
+    }
+    return (ts == 0 || b[ts - 1] != b'$') && !b[ts].is_ascii_digit();
+  }
   let next_ok = next.is_ascii_alphanumeric() || next == b'_' || next == b'#' || next == b'-';
   if !prev_ok || !next_ok {
     return false;
@@ -1632,60 +1621,52 @@ fn has_nl_after(b: &[u8], i: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx, scss_ctx_with_source};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn make_node(property: &str, value: &str) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: vec![Declaration {
-        property: property.to_string(),
-        value: value.to_string(),
-        span: Span::new(4, value.len()),
-        important: false,
-      }],
-      span: Span::new(0, value.len() + 20),
-      ..Default::default()
-    })
+  /// A rule `a` declaring `property: value`.
+  fn make_node(property: &str, value: &str) -> String {
+    format!("a {{\n  {property}: {value};\n}}\n")
   }
 
   #[test]
   fn skips_css_files() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "10px+5px");
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn reports_unspaced_plus() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a+$b");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn reports_unspaced_multiply() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a*2");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn allows_spaced_operators() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a + $b");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_unary_minus() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("margin", "-10px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_calc_operators() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "calc(100%+20px)");
     assert!(
-      rule.check(&node, &scss_ctx()).is_empty(),
+      rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
       "calc operators should be skipped"
     );
   }
@@ -1693,67 +1674,67 @@ mod tests {
   fn skips_font_shorthand_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("font", "14px/1.5 sans-serif");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_unary_after_operator() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a * -1");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_border_radius_shorthand_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "10px 5px / 20px 15px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_border_radius_unspaced_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "10px/5px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_grid_shorthand_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid", "auto-flow / 1fr 1fr 1fr");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_grid_column_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-column", "1 / 3");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_grid_row_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-row", "1/3");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_grid_area_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-area", "1 / 1 / 3 / 3");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_grid_template_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("grid-template", "'a a' 100px / 1fr 1fr");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_background_shorthand_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("background", "url(img.png) center/cover no-repeat");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_list_style_shorthand_slash() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("list-style", "disc outside/inside");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_in_url() {
@@ -1762,7 +1743,7 @@ mod tests {
       "background-image",
       "url(https://example.com/path/to/image.png)",
     );
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_in_url_with_quotes() {
@@ -1771,122 +1752,122 @@ mod tests {
       "background-image",
       "url('https://example.com/path/to/image.png')",
     );
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_vendor_prefixed_border_radius() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("-webkit-border-radius", "10px/5px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn still_reports_unspaced_slash_in_math() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a/2");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_inline_comment() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("box-shadow", "0 0 0 3px blue, // comment");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_negative_value_after_space() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("margin", "-10px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
     let node = make_node("top", "-2px");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
     let node = make_node("box-shadow", "0 -2px red");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn flags_negative_variable_as_subtraction() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("box-shadow", "0 -$offset red");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn still_reports_unspaced_subtraction() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a-$b");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
     let node = make_node("width", "$a -$b");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn still_reports_unspaced_operators_in_shorthand() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("border-radius", "$a+$b");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(255 0 0 / 0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_unspaced() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(255 0 0/0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgba() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgba(255 0 0 / 50%)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsl() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hsl(120 100% 50% / .5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hsla() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hsla(120 100% 50% / 0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_hwb() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "hwb(120 0% 0% / 0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_oklch() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "oklch(0.5 0.2 240 / 0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_rgb_with_var() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "rgb(from var(--color) r g b / 50%)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_separator_in_color_function() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("color", "color(srgb 1 0 0 / 0.5)");
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn still_reports_unspaced_division_outside_color_fn() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let node = make_node("width", "$a/2");
-    assert!(!rule.check(&node, &scss_ctx()).is_empty());
+    assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
   #[test]
   fn skips_slash_alpha_in_rgb_variable_assignment() {
     let rule = configured(&ScssOperatorNoUnspaced, None);
     let source = "$color: rgb(255 0 0 / 0.5);\n";
     let ctx = scss_ctx_with_source(source);
-    let diags = rule.check_root(&[], &ctx);
+    let diags = rule.check_source(&ctx);
     assert!(
       diags.is_empty(),
       "Expected no diagnostics for rgb alpha separator in variable assignment, got: {:?}",
@@ -1900,7 +1881,7 @@ mod tests {
     // Block comment inside a value should not trigger on * or /
     let node = make_node("color", "red /* fallback */ blue");
     assert!(
-      rule.check(&node, &scss_ctx()).is_empty(),
+      rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
       "Block comment content should not trigger operator spacing"
     );
   }
@@ -1911,7 +1892,7 @@ mod tests {
     let source =
       "/**\n * @summary Focus state\n * @selector .slds-has-focus\n */\n.foo { color: red; }\n";
     let ctx = scss_ctx_with_source(source);
-    let diags = rule.check_root(&[], &ctx);
+    let diags = rule.check_source(&ctx);
     assert!(
       diags.is_empty(),
       "JSDoc-style block comments should not trigger operator spacing, got: {:?}",
@@ -1925,7 +1906,7 @@ mod tests {
     // Simulates a value containing a block comment with star-prefixed lines
     let node = make_node("color", "/* * * * */ red");
     assert!(
-      rule.check(&node, &scss_ctx()).is_empty(),
+      rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
       "Stars inside block comments should not be flagged"
     );
   }
@@ -1936,9 +1917,8 @@ mod tests {
     // This pattern appears in multi-line SCSS expressions.
     let scss = "$x: 4 *\n  $y;";
     let rule = configured(&ScssOperatorNoUnspaced, None);
-    let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
     let ctx = scss_ctx_with_source(scss);
-    let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
+    let diags: Vec<_> = rule.check_source(&ctx);
     assert!(
       diags.is_empty(),
       "operator at end of line should not be flagged, got: {:?}",
@@ -1952,9 +1932,8 @@ mod tests {
     // and a newline follows — Stylelint does not flag this.
     let scss = "$x: $a ==\n  'string';";
     let rule = configured(&ScssOperatorNoUnspaced, None);
-    let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
     let ctx = scss_ctx_with_source(scss);
-    let diags: Vec<_> = rule.check_root(&result.nodes, &ctx);
+    let diags: Vec<_> = rule.check_source(&ctx);
     assert!(
       diags.is_empty(),
       "== followed by newline should not be flagged, got: {:?}",
@@ -1963,33 +1942,60 @@ mod tests {
   }
 
   #[test]
-  fn find_prop_offset_handles_multibyte_chars_in_the_window() {
-    // The backwards search window is sized in bytes, so its start can land
-    // inside a multi-byte character such as the `\u{2500}` used in section comments.
-    let source = "// \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\na { width: 10px; }";
-    let val_offset = source.find("10px").expect("value present");
-    assert_eq!(
-      find_prop_offset(source, "width", val_offset),
-      source.find("width").expect("property present")
-    );
-  }
-
-  #[test]
   fn checks_declarations_below_box_drawing_comments() {
     let scss = "// \u{2500}\u{2500} geometry \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n.a {\n  width: 10px;\n}";
     let rule = configured(&ScssOperatorNoUnspaced, None);
-    let result = gale_css_parser::parse(scss, Syntax::Scss).unwrap();
-    let ctx = scss_ctx_with_source(scss);
-    let diags: Vec<_> = result
-      .nodes
-      .iter()
-      .flat_map(|n| rule.check(n, &ctx))
-      .collect();
+    let diags = rule.check_source(&scss_ctx_with_source(scss));
     assert!(
       diags.is_empty(),
       "clean declaration should not be flagged, got: {:?}",
       diags
     );
+  }
+
+  #[test]
+  fn reports_each_operator_once_where_written() {
+    let source = "a {\n  width: 1px+2px;\n  $b: 1+2;\n  margin: #{$x+1}px;\n  #{$p+1}-x: 1;\n}\n";
+    let rule = configured(&ScssOperatorNoUnspaced, None);
+    let found: Vec<usize> = rule
+      .check_source(&scss_ctx_with_source(source))
+      .iter()
+      .map(|d| d.span.offset)
+      .collect();
+    let plus = |line: &str| source.find(line).unwrap() + line.find('+').unwrap();
+    assert_eq!(
+      found,
+      [plus("1px+2px"), plus("1+2"), plus("$x+1"), plus("$p+1"),]
+    );
+  }
+
+  #[test]
+  fn skips_private_variable_names() {
+    let rule = configured(&ScssOperatorNoUnspaced, None);
+    let node = make_node("padding-inline-end", "$-icon-size");
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
+    let node = make_node("width", "$a-$-b");
+    assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 1);
+  }
+
+  #[test]
+  fn skips_keywords_glued_to_variables() {
+    let rule = configured(&ScssOperatorNoUnspaced, None);
+    for value in ["-webkit-$value", "zoom-$value"] {
+      let node = make_node("cursor", value);
+      assert!(
+        rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
+        "{value}"
+      );
+    }
+    for value in ["$a-$b", "1-$b"] {
+      let node = make_node("width", value);
+      assert_eq!(
+        rule.check_source(&scss_ctx_with_source(&node)).len(),
+        1,
+        "{value}"
+      );
+    }
   }
 
   #[test]

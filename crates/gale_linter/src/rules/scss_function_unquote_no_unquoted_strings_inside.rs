@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -32,72 +33,72 @@ impl ScssFunctionUnquoteNoUnquotedStringsInsideCheck {
 
 impl Check for ScssFunctionUnquoteNoUnquotedStringsInsideCheck {
   /// Flags `unquote()` calls whose argument is already unquoted.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let CssNode::Declaration(decl) = node else {
-      return vec![];
-    };
-
-    let value = &decl.value;
-    // Simple pattern: look for `unquote(` followed by something that is NOT a quote
-    if let Some(idx) = value.find("unquote(") {
-      let after = &value[idx + 8..];
-      let trimmed = after.trim_start();
-      if !trimmed.is_empty()
-        && !trimmed.starts_with('"')
-        && !trimmed.starts_with('\'')
-        && !trimmed.starts_with('$')
-        && !trimmed.starts_with(')')
-      {
-        return vec![
-          Diagnostic::new(NAME, "Unexpected unquoted string inside unquote()").span(decl.span),
-        ];
-      }
-    }
-
-    vec![]
+    tree
+      .walk_decls()
+      .filter(|decl| has_unquoted_argument(decl.written_value()))
+      .map(|decl| {
+        Diagnostic::new(NAME, "Unexpected unquoted string inside unquote()").span(decl.span())
+      })
+      .collect()
   }
+}
+
+/// Whether the first `unquote(` in `value` (as written) takes something
+/// other than a string, a variable or nothing.
+fn has_unquoted_argument(value: &str) -> bool {
+  // Simple pattern: look for `unquote(` followed by something that is NOT a quote
+  let Some(idx) = value.find("unquote(") else {
+    return false;
+  };
+  let trimmed = value[idx + 8..].trim_start();
+  !trimmed.is_empty()
+    && !trimmed.starts_with('"')
+    && !trimmed.starts_with('\'')
+    && !trimmed.starts_with('$')
+    && !trimmed.starts_with(')')
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::Declaration;
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, invalid_options, scss_ctx};
+  use crate::testing::{CheckSource, configured, invalid_options, scss_ctx_with_source};
 
-  fn decl(value: &str) -> CssNode {
-    CssNode::Declaration(Declaration {
-      property: "font-family".to_string(),
-      value: value.to_string(),
-      span: Span::new(0, 10),
-      important: false,
-    })
+  /// What the rule reports for `source`, in SCSS.
+  fn check(source: &str) -> Vec<Diagnostic> {
+    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
+    rule.check_source(&scss_ctx_with_source(source))
   }
 
   #[test]
   fn reports_unquoted_string_inside_unquote() {
-    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
-    let d = rule.check(&decl("unquote(bold)"), &scss_ctx());
+    let d = check("$font: unquote(bold);");
     assert_eq!(d.len(), 1);
+    assert_eq!((d[0].span.offset, d[0].span.length), (0, 21));
   }
 
   #[test]
   fn allows_quoted_inside_unquote() {
-    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
-    let d = rule.check(&decl("unquote(\"bold\")"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(check("$font: unquote(\"bold\");").is_empty());
   }
 
   #[test]
   fn allows_variable_inside_unquote() {
-    let rule = configured(&ScssFunctionUnquoteNoUnquotedStringsInside, None);
-    let d = rule.check(&decl("unquote($var)"), &scss_ctx());
-    assert!(d.is_empty());
+    assert!(check("$font: unquote($var);").is_empty());
+  }
+
+  #[test]
+  fn looks_at_every_declaration() {
+    assert_eq!(
+      check("@mixin m { font-family: unquote(bold); }\na { @media x { b: unquote(c); } }").len(),
+      2
+    );
+    assert_eq!(check("a { font-family: unquote(bold); }").len(), 1);
   }
 
   #[test]

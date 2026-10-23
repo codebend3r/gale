@@ -1,4 +1,5 @@
-use gale_css_parser::{CssNode, Syntax};
+use gale_css_parser::Syntax;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
@@ -284,18 +285,18 @@ fn extract_functions(value: &str) -> Vec<String> {
 impl Check for ScssFunctionNoUnknownCheck {
   /// Flags function calls that are neither standard CSS nor built-in SCSS,
   /// skipping any listed in `ignoreFunctions`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
 
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      for func_name in extract_functions(&decl.value) {
+    // The declarations of style rules (keyframe blocks included), with
+    // their values as written.
+    let decls = tree.walk_decls().filter(|decl| decl.parent_is_rule());
+    for decl in decls {
+      let value = decl.written_value();
+      for func_name in extract_functions(value) {
         // Skip vendor-prefixed functions
         if func_name.starts_with('-') {
           continue;
@@ -308,10 +309,10 @@ impl Check for ScssFunctionNoUnknownCheck {
         // would yield `adjust`. These are user module calls — allow them.
         // We handle this by checking if the character before the function
         // name in the value is `.`.
-        let func_start = decl.value.find(&format!("{}(", func_name));
+        let func_start = value.find(&format!("{}(", func_name));
         if let Some(pos) = func_start
           && pos > 0
-          && decl.value.as_bytes()[pos - 1] == b'.'
+          && value.as_bytes()[pos - 1] == b'.'
         {
           continue;
         }
@@ -333,7 +334,7 @@ impl Check for ScssFunctionNoUnknownCheck {
             NAME,
             format!("Unexpected unknown function \"{}\"", func_name),
           )
-          .span(decl.span),
+          .span(decl.span()),
         );
       }
     }
@@ -344,54 +345,43 @@ impl Check for ScssFunctionNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{Declaration, StyleRule};
-  use gale_diagnostics::Span;
 
-  use crate::testing::{configured, ctx, invalid_options, scss_ctx};
+  use crate::testing::{
+    CheckSource, configured, ctx_with_source, invalid_options, scss_ctx_with_source,
+  };
 
-  fn style_node(props: &[(&str, &str)]) -> CssNode {
-    CssNode::Style(StyleRule {
-      selector: "a".to_string(),
-      declarations: props
-        .iter()
-        .map(|(p, v)| Declaration {
-          property: p.to_string(),
-          value: v.to_string(),
-          span: Span::new(0, 0),
-          important: false,
-        })
-        .collect(),
-      span: Span::new(0, 0),
-      ..Default::default()
-    })
+  /// A rule `a` holding `props`.
+  fn style_node(props: &[(&str, &str)]) -> String {
+    let body: Vec<String> = props.iter().map(|(p, v)| format!("{p}: {v};")).collect();
+    format!("a {{ {} }}", body.join(" "))
   }
 
   #[test]
   fn skips_non_scss() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("color", "unknownfn(red)")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_known_css_functions() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("width", "calc(100% - 20px)"), ("color", "rgb(255, 0, 0)")]);
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_known_scss_functions() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("color", "darken(#000, 10%)")]);
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn reports_unknown_function() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("color", "totally-unknown(red)")]);
-    let d = rule.check(&node, &scss_ctx());
+    let d = rule.check_source(&scss_ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("totally-unknown"));
   }
@@ -400,14 +390,23 @@ mod tests {
   fn allows_vendor_prefixed() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("background", "-webkit-linear-gradient(red, blue)")]);
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn allows_namespaced_module_calls() {
     let rule = configured(&ScssFunctionNoUnknown, None);
     let node = style_node(&[("color", "color.adjust(red, $red: 10)")]);
-    assert!(rule.check(&node, &scss_ctx()).is_empty());
+    assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
+  }
+
+  #[test]
+  fn reports_style_rule_declarations_where_written() {
+    let rule = configured(&ScssFunctionNoUnknown, None);
+    let source = "@include m { color: foo(1); }\na { @media x { b { color: bar(1); } } }";
+    let d = rule.check_source(&scss_ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(&source[d[0].span.offset..d[0].span.end()], "color: bar(1);");
   }
 
   #[test]
