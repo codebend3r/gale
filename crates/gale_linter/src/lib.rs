@@ -30,6 +30,7 @@ pub mod stylelint_version;
 #[cfg(test)]
 pub mod testing;
 pub mod value_syntax;
+pub mod whitespace;
 
 pub use lint_env::LintEnv;
 pub use options::{InvalidOption, Setting};

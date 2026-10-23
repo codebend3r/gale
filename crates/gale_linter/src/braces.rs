@@ -23,50 +23,6 @@ pub fn is_block_single_line(source: &str, closing_brace_pos: usize) -> bool {
   true
 }
 
-/// Whether the block enclosing `pos` spans more than one line: a newline
-/// between its `{` and its `}`, counting braces as plain bytes.
-pub fn is_block_multiline(bytes: &[u8], pos: usize) -> bool {
-  // Find the opening { before pos
-  let mut brace_depth = 0;
-  let mut k = pos;
-  let mut open_brace = None;
-  while k > 0 {
-    k -= 1;
-    if bytes[k] == b'}' {
-      brace_depth += 1;
-    } else if bytes[k] == b'{' {
-      if brace_depth == 0 {
-        open_brace = Some(k);
-        break;
-      }
-      brace_depth -= 1;
-    }
-  }
-
-  if let Some(open) = open_brace {
-    // Find the closing }
-    let mut depth = 1;
-    let mut j = open + 1;
-    while j < bytes.len() && depth > 0 {
-      if bytes[j] == b'{' {
-        depth += 1;
-      } else if bytes[j] == b'}' {
-        depth -= 1;
-      }
-      if depth > 0 {
-        j += 1;
-      }
-    }
-    // Check if there's a newline between open and close
-    for b in &bytes[open..j] {
-      if *b == b'\n' {
-        return true;
-      }
-    }
-  }
-  false
-}
-
 /// Offset of the `}` closing the block that opens at the first `{` at or
 /// after `start`, reading SCSS: `#{...}` interpolation, strings and
 /// comments do not count.
