@@ -1,9 +1,10 @@
 //! Shared helpers for rule tests.
 //!
-//! Tests that call a rule's `check` or `check_root` directly configure it
-//! with [`configured`] and build their [`RuleContext`] with [`ctx`],
-//! [`scss_ctx`] and the other builders here.  [`invalid_options`] is what a
-//! rule set reports for a rule's options.
+//! Tests that call a rule's check directly configure it with [`configured`]
+//! and build their [`RuleContext`] with [`ctx`], [`scss_ctx`] and the other
+//! builders here; [`CheckSource::check_source`]
+//! runs its `check` over the context's source.  [`invalid_options`] is
+//! what a rule set reports for a rule's options.
 //! Tests that start from source text use [`lint`] and [`fix`], which lint a
 //! snippet with one rule through the real parser and runner, then apply fixes
 //! and re-lint until the source settles, the way `gale --fix` does.
@@ -38,7 +39,7 @@ pub fn fix(rule: &str, options: Value, source: &str, syntax: Syntax) -> String {
 }
 
 /// `rule` configured with `options` (or none), for tests that call its
-/// `check` or `check_root` directly.  Panics if the options are invalid.
+/// check directly.  Panics if the options are invalid.
 pub fn configured(rule: &'static dyn Rule, options: impl Into<Option<Value>>) -> Box<dyn Check> {
   configured_in(rule, options, LintEnv::default())
 }
@@ -55,6 +56,18 @@ pub fn configured_in(
   match rule.configure(&setting, &env) {
     Ok(check) => check,
     Err(problems) => panic!("invalid options for {}: {problems:?}", meta.name),
+  }
+}
+
+/// Run a configured rule's `check` the way the runner does.
+pub trait CheckSource {
+  /// What `check` reports for the tree of `ctx`'s source.
+  fn check_source(&self, ctx: &RuleContext) -> Vec<Diagnostic>;
+}
+
+impl<C: Check + ?Sized> CheckSource for C {
+  fn check_source(&self, ctx: &RuleContext) -> Vec<Diagnostic> {
+    self.check(&ctx.postcss_tree(), ctx)
   }
 }
 

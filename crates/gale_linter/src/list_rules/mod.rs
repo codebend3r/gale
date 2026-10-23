@@ -29,14 +29,13 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Options, Setting, is_object_of_string_lists};
 use crate::pattern::{self, Regex};
-use crate::postcss_tree::PostcssTree;
 use crate::rule::{Check, RuleContext};
 
 /// Whether a list names what is allowed or what is not.
@@ -285,17 +284,16 @@ impl<R: ListRule> ListCheck<R> {
 
 impl<R: ListRule> Check for ListCheck<R> {
   /// Report every subject the list rejects.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(list) = &self.list else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut found = Vec::new();
-    R::find(&tree, ctx, &self.options, &mut found);
+    R::find(tree, ctx, &self.options, &mut found);
     found
       .iter()
       .filter_map(|subject| {
-        let entry = R::listed(list, &self.options, subject, &tree);
+        let entry = R::listed(list, &self.options, subject, tree);
         R::POLARITY.reports(entry.is_some()).then(|| {
           Diagnostic::new(R::NAME, R::message(subject, entry)).span(R::span(list, subject, entry))
         })
@@ -467,13 +465,12 @@ impl<R: KeyedListRule> KeyedCheck<R> {
 
 impl<R: KeyedListRule> Check for KeyedCheck<R> {
   /// Report every subject the list for its key rejects.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(lists) = &self.lists else {
       return Vec::new();
     };
-    let tree = ctx.postcss_tree();
     let mut found = Vec::new();
-    R::find(&tree, ctx, &self.options, &mut found);
+    R::find(tree, ctx, &self.options, &mut found);
     found
       .iter()
       .filter(|subject| self.rejects(lists, subject))
