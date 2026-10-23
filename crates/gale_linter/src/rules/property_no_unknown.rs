@@ -1,5 +1,5 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::{NodeRef, PostcssTree};
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::data::is_known_property;
 use crate::lint_env::LintEnv;
@@ -76,18 +76,21 @@ impl PropertyNoUnknownCheck {
 impl Check for PropertyNoUnknownCheck {
   /// Flags properties that are not standard CSS, skipping any matched by
   /// `ignoreProperties`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::Style(rule) = node else {
-      return vec![];
-    };
-
-    if self.ignore_selectors.matches(&rule.selector) {
-      return vec![];
-    }
-
+  ///
+  /// Only the declarations of style rules are read (keyframe blocks
+  /// included); Stylelint also reads those of at-rules.
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for decl in &rule.declarations {
-      let prop = &decl.property;
+    for decl in tree.walk_decls() {
+      let Some(rule) = decl.parent().and_then(NodeRef::as_rule) else {
+        continue;
+      };
+      // SCSS nested properties (`font: { family: x }`) and other
+      // non-standard declarations are not properties.
+      if !decl.is_standard_syntax() || self.ignore_selectors.matches(rule.selector()) {
+        continue;
+      }
+      let prop = decl.prop();
       // Skip custom properties and vendor-prefixed
       if prop.starts_with("--") || prop.starts_with('-') {
         continue;
@@ -122,8 +125,11 @@ impl Check for PropertyNoUnknownCheck {
         continue;
       }
       if !is_known_property(prop) {
+        // Stylelint reports the property, not the whole declaration.
+        let start = decl.prop_start();
         diags.push(
-          Diagnostic::new(NAME, format!("Unexpected unknown property \"{prop}\"")).span(decl.span),
+          Diagnostic::new(NAME, format!("Unexpected unknown property \"{prop}\""))
+            .span(Span::from_range(start, start + prop.len())),
         );
       }
     }
@@ -134,32 +140,57 @@ impl Check for PropertyNoUnknownCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use gale_css_parser::Syntax;
 
-  use gale_linter_test_helper::*;
+  use crate::testing::{CheckSource, configured, context, ctx_with_source};
 
-  use crate::testing::{configured, ctx};
+  /// A rule `sel` holding the declarations `props`.
+  fn style_node(sel: &str, props: &[(&str, &str)]) -> String {
+    let decls: String = props.iter().map(|(p, v)| format!(" {p}: {v};")).collect();
+    format!("{sel} {{{decls} }}")
+  }
 
   #[test]
   fn reports_unknown() {
     let rule = configured(&PropertyNoUnknown, None);
     let node = style_node("a", &[("colr", "red")]);
-    let d = rule.check(&node, &ctx());
+    let d = rule.check_source(&ctx_with_source(&node));
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("colr"));
+    // At the property, as Stylelint reports it.
+    assert_eq!(d[0].span, Span::new(4, 4));
   }
 
   #[test]
   fn allows_known() {
     let rule = configured(&PropertyNoUnknown, None);
-    let node = style_node("a", &[("color", "red")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    let node = style_node("a", &[("color", "red"), ("COLOR", "red")]);
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
   fn skips_custom_and_vendor() {
     let rule = configured(&PropertyNoUnknown, None);
     let node = style_node("a", &[("--my-var", "1"), ("-webkit-appearance", "none")]);
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
+  }
+
+  #[test]
+  fn skips_preprocessor_declarations() {
+    let rule = configured(&PropertyNoUnknown, None);
+    let scss = "a { $v: 1; #{$p}-x: 1; font: { family: x; } }";
+    assert!(rule.check_source(&context(scss, Syntax::Scss)).is_empty());
+    let less = "a { @v: 1; .m(); }";
+    assert!(rule.check_source(&context(less, Syntax::Less)).is_empty());
+  }
+
+  #[test]
+  fn reads_only_the_declarations_of_style_rules() {
+    let rule = configured(&PropertyNoUnknown, None);
+    let source = "@keyframes k { to { colr: red; } }\n@font-face { colr: x; }";
+    let d = rule.check_source(&ctx_with_source(source));
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].span.offset, 20);
   }
 
   #[test]
@@ -167,11 +198,7 @@ mod tests {
     let node = style_node("a", &[("mso-padding-alt", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["mso-padding-alt"] });
     let rule = configured(&PropertyNoUnknown, opts.clone());
-    let c = RuleContext {
-      env: Default::default(),
-      ..ctx()
-    };
-    assert!(rule.check(&node, &c).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -179,11 +206,7 @@ mod tests {
     let node = style_node("a", &[("mso-padding-alt", "0"), ("mso-table-lspace", "0")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
     let rule = configured(&PropertyNoUnknown, opts.clone());
-    let c = RuleContext {
-      env: Default::default(),
-      ..ctx()
-    };
-    assert!(rule.check(&node, &c).is_empty());
+    assert!(rule.check_source(&ctx_with_source(&node)).is_empty());
   }
 
   #[test]
@@ -191,32 +214,7 @@ mod tests {
     let node = style_node("a", &[("colr", "red")]);
     let opts = serde_json::json!({ "ignoreProperties": ["/^mso-/"] });
     let rule = configured(&PropertyNoUnknown, opts.clone());
-    let c = RuleContext {
-      env: Default::default(),
-      ..ctx()
-    };
-    assert_eq!(rule.check(&node, &c).len(), 1);
-  }
-
-  mod gale_linter_test_helper {
-    use gale_css_parser::*;
-    use gale_diagnostics::Span;
-    pub fn style_node(sel: &str, props: &[(&str, &str)]) -> CssNode {
-      CssNode::Style(StyleRule {
-        selector: sel.to_string(),
-        declarations: props
-          .iter()
-          .map(|(p, v)| Declaration {
-            property: p.to_string(),
-            value: v.to_string(),
-            span: Span::new(0, 0),
-            important: false,
-          })
-          .collect(),
-        span: Span::new(0, 0),
-        ..Default::default()
-      })
-    }
+    assert_eq!(rule.check_source(&ctx_with_source(&node)).len(), 1);
   }
 
   #[test]
@@ -241,16 +239,9 @@ mod tests {
       &PropertyNoUnknown,
       serde_json::json!([true, { "ignoreSelectors": ["/^:export/"] }]),
     );
-    assert!(
-      rule
-        .check(&style_node(":export", &[("colr", "red")]), &ctx())
-        .is_empty()
-    );
-    assert_eq!(
-      rule
-        .check(&style_node("a", &[("colr", "red")]), &ctx())
-        .len(),
-      1
-    );
+    let ignored = style_node(":export", &[("colr", "red")]);
+    assert!(rule.check_source(&ctx_with_source(&ignored)).is_empty());
+    let checked = style_node("a", &[("colr", "red")]);
+    assert_eq!(rule.check_source(&ctx_with_source(&checked)).len(), 1);
   }
 }

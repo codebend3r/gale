@@ -1,10 +1,10 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
-use crate::value_parser::{self, NodeKind, ValueNode};
 
 /// Stylelint's `DEPRECATED_PROPS_REMAP`: deprecated properties and their
 /// replacements, sorted for binary search.  `None` means there is no
@@ -116,10 +116,13 @@ impl PropertyNoDeprecatedCheck {
 impl Check for PropertyNoDeprecatedCheck {
   /// Flags deprecated properties, naming the replacement when one exists,
   /// and skipping `ignoreProperties`.
-  fn check(&self, node: &CssNode, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    for &decl in ctx.written_declarations(node).iter() {
-      let prop = decl.prop;
+    for decl in tree.walk_decls() {
+      let raw = decl.raw_value();
+      let value: &str = &raw;
+      let fixable = decl.value_fixable();
+      let prop = decl.prop();
       // Sass and Less variables are not properties.
       if prop.starts_with('$') || (prop.starts_with('@') && !prop.starts_with("@{")) {
         continue;
@@ -131,10 +134,10 @@ impl Check for PropertyNoDeprecatedCheck {
       let Some(replacement) = find_deprecated_property(&lower) else {
         continue;
       };
-      if lower == "-webkit-box-orient" && decl.value.eq_ignore_ascii_case("vertical") {
+      if lower == "-webkit-box-orient" && value.eq_ignore_ascii_case("vertical") {
         continue;
       }
-      let span = Span::new(decl.prop_start, prop.len());
+      let span = Span::new(decl.prop_start(), prop.len());
       let mut diag = Diagnostic::new(
         NAME,
         match replacement {
@@ -143,14 +146,14 @@ impl Check for PropertyNoDeprecatedCheck {
         },
       )
       .span(span);
-      if let Some(repl) = replacement {
+      if fixable && let Some(repl) = replacement {
         let mut edits = vec![Edit::new(span, repl)];
-        value_parser::walk(&value_parser::parse(decl.value), &mut |node: &ValueNode| {
+        value_parser::walk(&value_parser::parse(value), &mut |node: &ValueNode| {
           if node.kind == NodeKind::Word
             && let Some(value) = remapped_value(&lower, &node.value.to_ascii_lowercase())
           {
             edits.push(Edit::new(
-              Span::new(decl.value_start + node.source_index, node.value.len()),
+              Span::new(decl.value_start() + node.source_index, node.value.len()),
               value,
             ));
           }

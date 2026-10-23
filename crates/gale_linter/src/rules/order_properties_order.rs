@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::empty_lines::newline_of;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
-use crate::postcss_tree::{NodeKind, PostcssTree};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_order::{
   blocks, comments_after_declaration, comments_before_declaration, is_allowed_to_process,
@@ -303,16 +302,15 @@ struct PropertyData<'c> {
 impl Check for OrderPropertiesOrderCheck {
   /// Checks the property order and the empty lines between groups in every
   /// block of the document.
-  fn check_root(&self, _nodes: &[CssNode], ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(config) = &self.config else {
       return vec![];
     };
-    let tree = ctx.postcss_tree();
     let newline = newline_of(ctx.source);
     let mut diags = Vec::new();
-    for (block, children) in blocks(&tree) {
-      let sorting = self.check_order(&tree, config, block, children, &mut diags);
-      self.check_empty_lines(&tree, config, children, newline, !sorting, &mut diags);
+    for (block, children) in blocks(tree) {
+      let sorting = self.check_order(tree, config, block, children, &mut diags);
+      self.check_empty_lines(tree, config, children, newline, !sorting, &mut diags);
     }
     diags
   }
@@ -811,7 +809,7 @@ mod tests {
   use gale_css_parser::Syntax;
   use serde_json::json;
 
-  use crate::testing::{configured, ctx_with_source, fix, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, fix, invalid_options};
 
   const RULE: &str = "order/properties-order";
 
@@ -819,7 +817,7 @@ mod tests {
   fn messages(source: &str, options: serde_json::Value) -> Vec<String> {
     let ctx = ctx_with_source(source);
     configured(&OrderPropertiesOrder, options)
-      .check_root(&[], &ctx)
+      .check_source(&ctx)
       .into_iter()
       .map(|d| d.message)
       .collect()

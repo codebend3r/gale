@@ -1,6 +1,7 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
+use crate::braces::parens_balance;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -11,9 +12,8 @@ declare_rule! {
   /// Reports obviously invalid media queries.
   ///
   /// Checks for common errors in `@media` params such as:
-  /// - Empty media query params
   /// - Unbalanced parentheses
-  /// - Consecutive operators (and/or/not) without a condition
+  /// - Empty parentheses
   ///
   /// Equivalent to Stylelint's `media-query-no-invalid` rule.
   pub struct MediaQueryNoInvalid => MediaQueryNoInvalidCheck {
@@ -40,96 +40,81 @@ impl MediaQueryNoInvalidCheck {
 }
 
 impl Check for MediaQueryNoInvalidCheck {
-  /// Flags media queries that are empty, have unbalanced parentheses, or chain
-  /// operators with no condition between them.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-    if at.name != "media" {
-      return vec![];
-    }
-
-    let params = at.params.trim();
-
-    // Empty media query
-    if params.is_empty() {
-      return vec![Diagnostic::new(NAME, "Unexpected empty media query").span(at.span)];
-    }
-
-    // Check for unbalanced parentheses
-    let mut depth: i32 = 0;
-    for ch in params.chars() {
-      match ch {
-        '(' => depth += 1,
-        ')' => {
-          depth -= 1;
-          if depth < 0 {
-            return vec![
-              Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
-                .span(at.span),
-            ];
-          }
-        }
-        _ => {}
+  /// Flags media queries with unbalanced parentheses, at the params, or with
+  /// empty parentheses, at the `()`, where Stylelint reports them.  An empty
+  /// query (`@media {}`) is valid to Stylelint, so it is left alone.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !at.name().eq_ignore_ascii_case("media") {
+        continue;
+      }
+      // The params as Stylelint's `getAtRuleParams` reads them.
+      let params = at.raw_params();
+      let start = at.params_start();
+      if !parens_balance(&params) {
+        diags.push(
+          Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query")
+            .span(Span::new(start, params.len())),
+        );
+      } else if let Some(empty) = params.find("()") {
+        diags.push(
+          Diagnostic::new(NAME, "Unexpected empty parentheses in media query")
+            .span(Span::new(start + empty, 2)),
+        );
       }
     }
-    if depth != 0 {
-      return vec![
-        Diagnostic::new(NAME, "Unexpected unbalanced parentheses in media query").span(at.span),
-      ];
-    }
-
-    // Check for empty parentheses ()
-    if params.contains("()") {
-      return vec![
-        Diagnostic::new(NAME, "Unexpected empty parentheses in media query").span(at.span),
-      ];
-    }
-
-    vec![]
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::AtRule;
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::json;
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::lint;
 
-  fn media(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `a {}` then `@media <params> {}` in `syntax`.
+  fn media(params: &str, syntax: Syntax) -> Vec<Diagnostic> {
+    lint(
+      NAME,
+      json!(true),
+      &format!("a {{}}\n@media {params} {{}}"),
+      syntax,
+    )
   }
 
   #[test]
-  fn reports_empty_media_query() {
-    let rule = configured(&MediaQueryNoInvalid, None);
-    let d = rule.check(&media(""), &ctx());
-    assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("empty"));
+  fn accepts_an_empty_media_query() {
+    assert!(media("", Syntax::Css).is_empty());
+    assert!(media("", Syntax::Scss).is_empty());
   }
 
   #[test]
-  fn reports_empty_parentheses() {
-    let rule = configured(&MediaQueryNoInvalid, None);
-    let d = rule.check(&media("screen and ()"), &ctx());
+  fn reports_empty_parentheses_at_them() {
+    for syntax in [Syntax::Css, Syntax::Scss] {
+      let d = media("screen and ()", syntax);
+      assert_eq!(d.len(), 1);
+      assert!(d[0].message.contains("empty parentheses"));
+      assert_eq!((d[0].span.offset, d[0].span.length), (23, 2));
+    }
+  }
+
+  #[test]
+  fn reports_unbalanced_parentheses_at_the_params() {
+    let d = media("(min-width: 1px))", Syntax::Css);
     assert_eq!(d.len(), 1);
-    assert!(d[0].message.contains("empty parentheses"));
+    assert!(d[0].message.contains("unbalanced"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (12, 17));
   }
 
   #[test]
   fn allows_valid_media_queries() {
-    let rule = configured(&MediaQueryNoInvalid, None);
-    assert!(rule.check(&media("(min-width: 768px)"), &ctx()).is_empty());
-    assert!(rule.check(&media("screen and (color)"), &ctx()).is_empty());
-    assert!(rule.check(&media("(hover: hover)"), &ctx()).is_empty());
+    for params in ["(min-width: 768px)", "screen and (color)", "(hover: hover)"] {
+      assert!(media(params, Syntax::Css).is_empty(), "{params}");
+    }
   }
 
   #[test]

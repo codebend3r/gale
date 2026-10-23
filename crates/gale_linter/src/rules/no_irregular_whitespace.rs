@@ -1,4 +1,4 @@
-use gale_css_parser::CssNode;
+use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
@@ -118,7 +118,7 @@ const IRREGULAR_WHITESPACE_CHARS: &[char] = &[
 
 impl Check for NoIrregularWhitespaceCheck {
   /// Flags irregular Unicode whitespace outside comments, which Stylelint allows.
-  fn check_root(&self, _nodes: &[CssNode], context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Build a set of byte ranges that are inside comments so we can skip them.
@@ -155,14 +155,14 @@ impl Check for NoIrregularWhitespaceCheck {
 mod tests {
   use super::*;
 
-  use crate::testing::{configured, ctx_with_source};
+  use crate::testing::{CheckSource, configured, ctx_with_source};
 
   #[test]
   fn reports_non_breaking_space() {
     let rule = configured(&NoIrregularWhitespace, None);
     let source = "a {\u{00A0}color: red; }";
     let context = ctx_with_source(source);
-    let diags = rule.check_root(&[], &context);
+    let diags = rule.check_source(&context);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("U+00A0"));
   }
@@ -172,7 +172,7 @@ mod tests {
     let rule = configured(&NoIrregularWhitespace, None);
     let source = "a { color:\u{200B}red; }";
     let context = ctx_with_source(source);
-    let diags = rule.check_root(&[], &context);
+    let diags = rule.check_source(&context);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("U+200B"));
   }
@@ -181,7 +181,7 @@ mod tests {
   fn ignores_normal_whitespace() {
     let rule = configured(&NoIrregularWhitespace, None);
     let context = ctx_with_source("a { color: red; }");
-    let diags = rule.check_root(&[], &context);
+    let diags = rule.check_source(&context);
     assert!(diags.is_empty());
   }
 

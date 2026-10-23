@@ -1,5 +1,5 @@
-use gale_css_parser::CssNode;
-use gale_diagnostics::Diagnostic;
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, Span};
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -31,25 +31,42 @@ fn is_deprecated_media_type(name: &str) -> bool {
 ///   - `"screen and (min-width: 768px)"` → `["screen"]`
 ///   - `"tty, projection"` → `["tty", "projection"]`
 ///   - `"not handheld"` → `["handheld"]`
-fn extract_media_types(params: &str) -> Vec<String> {
+///
+/// Each type comes with its offset in `params`.
+fn extract_media_types(params: &str) -> Vec<(&str, usize)> {
   let mut types = Vec::new();
-  // Split on commas to handle media query lists, then process each query.
-  for query in params.split(',') {
-    let tokens: Vec<&str> = query.split_whitespace().collect();
-    for token in &tokens {
-      let t = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
-      if t.is_empty() || t.starts_with('(') {
-        continue;
-      }
-      let lower = t.to_ascii_lowercase();
-      // Skip logical keywords
-      if matches!(lower.as_str(), "and" | "or" | "not" | "only") {
-        continue;
-      }
-      // If it looks like a media type (no parens), check it
-      if is_deprecated_media_type(&lower) {
-        types.push(t.to_string());
-      }
+  let is_trimmed = |c: char| !c.is_alphanumeric() && c != '-';
+  // The whitespace-separated tokens of each comma-separated query.
+  let tokens = params
+    .split(',')
+    .scan(0, |start, query| {
+      let offset = *start;
+      *start += query.len() + 1;
+      Some((query, offset))
+    })
+    .flat_map(|(query, offset)| {
+      query
+        .split(|c: char| c.is_ascii_whitespace())
+        .scan(offset, |start, token| {
+          let at = *start;
+          *start += token.len() + 1;
+          Some((token, at))
+        })
+    });
+  for (token, offset) in tokens {
+    let t = token.trim_matches(is_trimmed);
+    if t.is_empty() {
+      continue;
+    }
+    let lower = t.to_ascii_lowercase();
+    // Skip logical keywords
+    if matches!(lower.as_str(), "and" | "or" | "not" | "only") {
+      continue;
+    }
+    // If it looks like a media type (no parens), check it
+    if is_deprecated_media_type(&lower) {
+      let lead = token.len() - token.trim_start_matches(is_trimmed).len();
+      types.push((t, offset + lead));
     }
   }
   types
@@ -84,97 +101,81 @@ impl MediaTypeNoDeprecatedCheck {
 }
 
 impl Check for MediaTypeNoDeprecatedCheck {
-  /// Flags media types that have been deprecated, such as `tv`.
-  fn check(&self, node: &CssNode, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let CssNode::AtRule(at) = node else {
-      return vec![];
-    };
-
-    if !at.name.eq_ignore_ascii_case("media") {
-      return vec![];
+  /// Flags media types that have been deprecated, such as `tv`, at the type,
+  /// in every `@media` Stylelint's `isStandardSyntaxAtRule` accepts.
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for at in tree.walk_at_rules() {
+      if !at.name().eq_ignore_ascii_case("media") || !at.is_standard_syntax() {
+        continue;
+      }
+      let params = at.raw_params();
+      for (media_type, offset) in extract_media_types(&params) {
+        if self.ignore_media_types.matches(media_type) {
+          continue;
+        }
+        diags.push(
+          Diagnostic::new(
+            NAME,
+            format!("Unexpected deprecated media type \"{media_type}\""),
+          )
+          .span(Span::new(at.params_start() + offset, media_type.len())),
+        );
+      }
     }
-
-    let deprecated_types = extract_media_types(&at.params);
-    deprecated_types
-      .into_iter()
-      .filter(|media_type| !self.ignore_media_types.matches(media_type))
-      .map(|media_type| {
-        Diagnostic::new(
-          NAME,
-          format!("Unexpected deprecated media type \"{}\"", media_type),
-        )
-        .span(at.span)
-      })
-      .collect()
+    diags
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use gale_css_parser::{AtRule, CssNode};
-  use gale_diagnostics::Span;
+  use gale_css_parser::Syntax;
+  use serde_json::{Value, json};
 
-  use crate::testing::{configured, ctx};
+  use crate::testing::lint;
 
-  fn media(params: &str) -> CssNode {
-    CssNode::AtRule(AtRule {
-      name: "media".to_string(),
-      params: params.to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    })
+  /// The reports for `@media <params> {}` in CSS.
+  fn media(params: &str) -> Vec<Diagnostic> {
+    media_with(json!(true), params)
+  }
+
+  fn media_with(options: Value, params: &str) -> Vec<Diagnostic> {
+    lint(NAME, options, &format!("@media {params} {{}}"), Syntax::Css)
   }
 
   #[test]
-  fn reports_deprecated_tty() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    let d = rule.check(&media("tty"), &ctx());
+  fn reports_deprecated_tty_at_the_type() {
+    let d = media("tty");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("tty"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (7, 3));
   }
 
   #[test]
   fn reports_deprecated_handheld() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    let d = rule.check(&media("handheld and (min-width: 768px)"), &ctx());
+    let d = media("not handheld and (min-width: 768px)");
     assert_eq!(d.len(), 1);
     assert!(d[0].message.contains("handheld"));
+    assert_eq!((d[0].span.offset, d[0].span.length), (11, 8));
   }
 
   #[test]
   fn reports_multiple_deprecated() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    let d = rule.check(&media("tty, projection"), &ctx());
+    let d = media("tty,  projection");
     assert_eq!(d.len(), 2);
+    assert_eq!((d[1].span.offset, d[1].span.length), (13, 10));
   }
 
   #[test]
-  fn allows_screen() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    assert!(
-      rule
-        .check(&media("screen and (min-width: 768px)"), &ctx())
-        .is_empty()
-    );
-  }
-
-  #[test]
-  fn allows_all() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    assert!(rule.check(&media("all"), &ctx()).is_empty());
+  fn allows_screen_and_all() {
+    assert!(media("screen and (min-width: 768px)").is_empty());
+    assert!(media("all").is_empty());
   }
 
   #[test]
   fn ignores_non_media_at_rule() {
-    let rule = configured(&MediaTypeNoDeprecated, None);
-    let node = CssNode::AtRule(AtRule {
-      name: "keyframes".to_string(),
-      params: "tty".to_string(),
-      span: Span::new(0, 0),
-      children: vec![],
-    });
-    assert!(rule.check(&node, &ctx()).is_empty());
+    assert!(lint(NAME, json!(true), "@supports tty {}", Syntax::Css).is_empty());
   }
 
   #[test]
@@ -195,9 +196,8 @@ mod tests {
 
   #[test]
   fn ignore_media_types_skips_listed_types() {
-    let options = serde_json::json!([true, { "ignoreMediaTypes": ["tty", "/^proj/"] }]);
-    let rule = configured(&MediaTypeNoDeprecated, options);
-    assert!(rule.check(&media("tty, projection"), &ctx()).is_empty());
-    assert_eq!(rule.check(&media("handheld, tty"), &ctx()).len(), 1);
+    let options = json!([true, { "ignoreMediaTypes": ["tty", "/^proj/"] }]);
+    assert!(media_with(options.clone(), "tty, projection").is_empty());
+    assert_eq!(media_with(options, "handheld, tty").len(), 1);
   }
 }
