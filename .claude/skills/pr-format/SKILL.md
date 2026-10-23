@@ -1,9 +1,9 @@
 ---
-name: gale-pr-format
+name: pr-format
 description: Use when opening, retitling, or editing the description of any pull request in the gale repo (path contains `git/gale`) — including `gh pr create`, `gh pr edit`, `gh pr create --fill`, and PR bodies drafted for a human to paste. Covers the mandatory `GL: ` title prefix, the bullet-point body, and the ban on agent attribution.
 ---
 
-# Gale Pull Request Format
+# Pull Request Format
 
 ## Overview
 
