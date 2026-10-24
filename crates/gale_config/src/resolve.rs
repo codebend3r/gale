@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::discovery::{find_config, find_config_for_file, load_config};
-use crate::extends::collect_rules_from_extends;
+use crate::extends::{ExtendedOverride, collect_rules_from_extends};
 use crate::plugins::extract_plugin_names;
 use crate::raw::has_explicit_severity_in_value;
 use crate::{
@@ -20,7 +20,7 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
   // 1. Start with rules from extended presets / npm configs (in order).
   //    Also collect any overrides defined in extended configs.
   let mut rules: HashMap<String, RuleConfig> = HashMap::new();
-  let mut extended_overrides: Vec<ConfigOverride> = Vec::new();
+  let mut extended_overrides = Vec::new();
   if let Some(ref extends) = raw.extends {
     let mut visited = HashSet::new();
     let (ext_rules, ext_overrides) = collect_rules_from_extends(extends, base_dir, &mut visited);
@@ -89,12 +89,15 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
   // Combine: extended overrides first, then user overrides.
   let mut all_raw_overrides = extended_overrides;
   if let Some(user_overrides) = raw.overrides {
-    all_raw_overrides.extend(user_overrides);
+    all_raw_overrides.extend(user_overrides.into_iter().map(|entry| ExtendedOverride {
+      entry,
+      directory: base_dir.to_path_buf(),
+    }));
   }
 
   let overrides: Vec<ResolvedOverride> = all_raw_overrides
     .into_iter()
-    .flat_map(|ov| resolve_override(ov, base_dir, 0))
+    .flat_map(|ov| resolve_override(ov.entry, &ov.directory, 0))
     .collect();
 
   // 4. Extract plugin names from the config.
@@ -210,7 +213,7 @@ fn resolve_override(ov: ConfigOverride, base_dir: &Path, depth: usize) -> Vec<Re
   let mut resolved = vec![outer.clone()];
   for inner in nested {
     resolved.extend(
-      resolve_override(inner, base_dir, depth + 1)
+      resolve_override(inner.entry, &inner.directory, depth + 1)
         .into_iter()
         .map(|r| r.within(&outer)),
     );
