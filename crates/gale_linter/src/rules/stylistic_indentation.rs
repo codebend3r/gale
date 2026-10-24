@@ -79,11 +79,14 @@ impl Check for StylisticIndentationCheck {
     // In a style sheet embedded in HTML, everything sits at the root's base
     // indent level, which the plugin infers from the markup around it.
     let base_indent_level = self.base_indent_level;
-    let embedded = crate::embedded::indentation_context(
-      source,
-      (!use_tab).then_some(indent_size),
-      base_indent_level,
-    );
+    let embedded = context.embedded.map(|root| {
+      crate::embedded::indentation_context(
+        root,
+        source,
+        (!use_tab).then_some(indent_size),
+        base_indent_level,
+      )
+    });
     let base_indent = embedded.map_or(0, |e| e.base_level * indent_size);
     if embedded.is_some_and(|e| e.check_first_line) {
       // The first line follows the line holding the `<style>` tag, so it is

@@ -105,6 +105,7 @@ pub fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
     source,
     syntax,
     cache: None,
+    embedded: None,
   }
 }
 
