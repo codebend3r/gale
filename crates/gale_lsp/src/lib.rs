@@ -124,6 +124,20 @@ impl GaleLspServer {
       code: Some(NumberOrString::String(d.rule_name.clone())),
       source: Some("gale".to_string()),
       message: d.message.clone(),
+      related_information: (!d.related.is_empty()).then(|| {
+        d.related
+          .iter()
+          .filter_map(|related| {
+            Some(DiagnosticRelatedInformation {
+              location: Location::new(
+                Url::from_file_path(&d.file_path).ok()?,
+                span_to_range(line_index, related.span),
+              ),
+              message: related.message.clone(),
+            })
+          })
+          .collect()
+      }),
       ..Default::default()
     }
   }

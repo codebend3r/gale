@@ -47,10 +47,10 @@ impl Check for NoDuplicateSelectorsCheck {
   /// (the root or the nearest at-rule), once both are resolved against
   /// their ancestors as CSS nesting does, reporting the first occurrence's
   /// line and skipping anything in `ignoreSelectors`.
-  fn check(&self, tree: &PostcssTree, _context: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
     let mut resolver = SelectorResolver::default();
     // The selector lists seen in each scope, with their first lines.
-    let mut seen: HashMap<(Option<usize>, String), usize> = HashMap::new();
+    let mut seen: HashMap<(Option<usize>, String), (usize, Span)> = HashMap::new();
     let mut diagnostics = Vec::new();
     for rule in tree.walk_rules() {
       // Unlike Stylelint's `isKeyframeRule`, vendor-prefixed `@keyframes`
@@ -81,7 +81,8 @@ impl Check for NoDuplicateSelectorsCheck {
         .find(|node| node.as_at_rule().is_some())
         .map(NodeRef::id);
       match seen.get(&(scope, key.join(","))) {
-        Some(&first_line) => {
+        Some(&(first_line, first_span)) => {
+          let first_line = first_line + context.embedded.map_or(0, |root| root.lines_before());
           let written = rule.raw_selector();
           diagnostics.push(
             Diagnostic::new(
@@ -91,11 +92,18 @@ impl Check for NoDuplicateSelectorsCheck {
                 written.trim(),
               ),
             )
-            .span(Span::from_range(rule.selector_start(), rule.name_span.end)),
+            .span(Span::from_range(rule.selector_start(), rule.name_span.end))
+            .related(first_span, "First occurrence of this selector"),
           );
         }
         None => {
-          seen.insert((scope, key.join(",")), rule.start_line());
+          seen.insert(
+            (scope, key.join(",")),
+            (
+              rule.start_line(),
+              Span::from_range(rule.selector_start(), rule.name_span.end),
+            ),
+          );
         }
       }
     }
