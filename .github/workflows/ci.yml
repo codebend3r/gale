@@ -1,14 +1,12 @@
 name: 🧪 CI
 
 # Pull requests and pushes to main run the same checks. Docs-only changes skip
-# CI entirely; nothing they touch is built or tested.
+# the build and test jobs; nothing they touch is built or tested. Pull requests
+# still start the workflow so the required `CI result` check always reports: a
+# workflow skipped by `paths-ignore` never reports, and the PR waits forever.
+# Pushes to main have no required check, so they skip the whole workflow.
 on:
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".claude/**"
-      - "LICENSE"
   push:
     branches: [main]
     paths-ignore:
@@ -35,8 +33,40 @@ jobs:
   # rather than by job id, and only runs on main save it. Pull requests can read
   # main's caches, so they start warm instead of compiling every dependency cold.
 
+  changes:
+    # Decides whether the build and test jobs have anything to check. Keep the
+    # docs-only list in step with `paths-ignore` on the push trigger above.
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A pull request checks out its merge commit; the first parent is the
+          # base branch, so two commits are enough to diff against it.
+          fetch-depth: 2
+
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          code=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # A failed diff fails the step rather than reading as "docs only".
+            files=$(git diff --name-only HEAD^1 HEAD)
+            other=$(grep -Ev '(\.md|^docs/.*|^\.claude/.*|^LICENSE)$' <<<"$files" || true)
+            if [ -z "$other" ]; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   checks:
     name: Format, clippy, and Rust tests
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -83,6 +113,8 @@ jobs:
     # The one release build in CI. The jobs that need the binary download it
     # rather than compiling it again.
     name: Release build
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -179,9 +211,11 @@ jobs:
 
   result:
     # One stable check to require in branch protection, and a verdict in the
-    # run summary. Skipped only when the whole run is cancelled.
+    # run summary. Skipped only when the whole run is cancelled. Jobs skipped
+    # because the change is docs-only count as passing; a skipped job is never
+    # the first failure, since `changes` or the job it depended on failed first.
     name: CI result
-    needs: [checks, build, feature-tests, npm-package]
+    needs: [changes, checks, build, feature-tests, npm-package]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -189,10 +223,15 @@ jobs:
       - name: Summarize
         env:
           NEEDS: ${{ toJSON(needs) }}
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
-          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key) (\(.value.result))"] | join(", ")' <<<"$NEEDS")
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"] | join(", ")' <<<"$NEEDS")
           if [ -n "$failed" ]; then
             echo "💥 ${GITHUB_SHA:0:7} did not pass: $failed." >> "$GITHUB_STEP_SUMMARY"
             exit 1
+          fi
+          if [ "$CODE" != true ]; then
+            echo "✅ ${GITHUB_SHA:0:7} only changes docs, so nothing was built or tested." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           echo "✅ ${GITHUB_SHA:0:7} is clean: fmt, clippy, every test suite, and the npm package all green." >> "$GITHUB_STEP_SUMMARY"
