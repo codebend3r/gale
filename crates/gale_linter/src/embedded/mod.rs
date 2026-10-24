@@ -23,8 +23,6 @@
 //! - `no-duplicate-selectors` names the host-file line a selector was first
 //!   used on.
 
-use std::cell::RefCell;
-
 use gale_css_parser::Syntax;
 use gale_diagnostics::{Diagnostic, LintResult, SourceLineIndex};
 
@@ -99,7 +97,7 @@ pub fn lint_host(
   file_path: &str,
   host: HostLanguage,
   options: HostOptions,
-  mut lint_css: impl FnMut(&str, Syntax) -> LintResult,
+  mut lint_css: impl FnMut(&str, Syntax, &EmbeddedRoot) -> LintResult,
 ) -> LintResult {
   let roots: Vec<(StyleBlock, Syntax)> = extract_style_blocks(source, host)
     .into_iter()
@@ -129,17 +127,13 @@ pub fn lint_host(
       next_code_before,
       doc_indent,
     );
-    let result = {
-      let _context = RootContext::enter(root);
-      lint_css(&text, *syntax)
-    };
+    let result = lint_css(&text, *syntax, &root);
 
     let lines_before = source[..range.start].matches('\n').count();
     diagnostics.extend(
       result
         .diagnostics
         .into_iter()
-        .filter(|d| applies_to_root(&d.rule_name, block.inline))
         .map(|d| to_host(d, block, lines_before)),
     );
     for warning in result.invalid_option_warnings {
@@ -309,7 +303,7 @@ fn apply_document_disables(
 /// What `@stylistic/indentation` needs to know about the embedded root it
 /// is checking, taken from the markup around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EmbeddedRoot {
+pub struct EmbeddedRoot {
   /// A `style` attribute rather than a `<style>` element.
   inline: bool,
   /// The sheet starts on a fresh line (postcss-html's `codeBefore` ends
@@ -327,6 +321,11 @@ struct EmbeddedRoot {
 }
 
 impl EmbeddedRoot {
+  /// Whether Stylelint runs this rule on this kind of embedded root.
+  pub(crate) fn allows(&self, name: &str) -> bool {
+    applies_to_root(name, self.inline)
+  }
+
   /// Describe the root whose text is `text`, between `code_before` and the
   /// next root's `next_code_before` (or the end of the file).
   fn new(
@@ -366,36 +365,6 @@ impl EmbeddedRoot {
   }
 }
 
-thread_local! {
-  /// The embedded root being linted on this thread, if any.
-  static CURRENT_ROOT: RefCell<Option<EmbeddedRoot>> = const { RefCell::new(None) };
-}
-
-/// Whether a style sheet embedded in an HTML-like file is being linted on
-/// this thread.  The runner then leaves suppressing what configuration
-/// comments disable to [`lint_host`], which reads them for the whole file.
-pub(crate) fn in_embedded_root() -> bool {
-  CURRENT_ROOT.with(|current| current.borrow().is_some())
-}
-
-/// Marks a root as the one being linted for as long as it lives.
-struct RootContext;
-
-impl RootContext {
-  /// Make `root` current until the returned guard is dropped.
-  fn enter(root: EmbeddedRoot) -> Self {
-    CURRENT_ROOT.with(|current| *current.borrow_mut() = Some(root));
-    RootContext
-  }
-}
-
-impl Drop for RootContext {
-  /// Clear the current root, even when linting panicked.
-  fn drop(&mut self) {
-    CURRENT_ROOT.with(|current| *current.borrow_mut() = None);
-  }
-}
-
 /// How `@stylistic/indentation` indents an embedded root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedIndentation {
@@ -415,53 +384,50 @@ pub struct EmbeddedIndentation {
 /// the sheet; with one it counts from the `<style>` tag's indentation.  This
 /// is the plugin's own inference, quirks included.
 pub fn indentation_context(
+  root: &EmbeddedRoot,
   text: &str,
   space: Option<usize>,
   base_indent_level: Option<i64>,
-) -> Option<EmbeddedIndentation> {
-  CURRENT_ROOT.with(|current| {
-    let current = current.borrow();
-    let root = current.as_ref()?;
-    let indent_size = root
-      .doc_indent
-      .unwrap_or_else(|| space.filter(|&n| n > 0).unwrap_or(2));
-    let level = |indent: &str| {
-      let tabs = indent.bytes().filter(|&b| b == b'\t').count();
-      let spaces = indent.bytes().filter(|&b| b == b' ').count();
-      tabs + js_round(spaces as f64 / indent_size as f64)
-    };
+) -> EmbeddedIndentation {
+  let indent_size = root
+    .doc_indent
+    .unwrap_or_else(|| space.filter(|&n| n > 0).unwrap_or(2));
+  let level = |indent: &str| {
+    let tabs = indent.bytes().filter(|&b| b == b'\t').count();
+    let spaces = indent.bytes().filter(|&b| b == b' ').count();
+    tabs + js_round(spaces as f64 / indent_size as f64)
+  };
 
-    let base_level = match base_indent_level {
-      Some(n) => {
-        let mut indents = Vec::new();
-        if let Some(tag) = &root.tag_indent {
-          indents.push(level(&"  ".repeat(level(tag))));
-        }
-        if let Some(after) = &root.after_indent {
-          indents.push(level(after));
-        }
-        let n = usize::try_from(n).unwrap_or(0);
-        indents.into_iter().max().map_or(n, |max| max + n)
+  let base_level = match base_indent_level {
+    Some(n) => {
+      let mut indents = Vec::new();
+      if let Some(tag) = &root.tag_indent {
+        indents.push(level(&"  ".repeat(level(tag))));
       }
-      None => {
-        // The first line counts only when the sheet starts on a line of
-        // its own.
-        let lines = text.split('\n').skip(usize::from(!root.starts_on_new_line));
-        lines
-          .filter_map(|line| {
-            let rest = line.trim_start_matches([' ', '\t']);
-            let has_content = rest.chars().next().is_some_and(|c| !c.is_whitespace());
-            has_content.then(|| level(&line[..line.len() - rest.len()]))
-          })
-          .min()
-          .unwrap_or(1)
+      if let Some(after) = &root.after_indent {
+        indents.push(level(after));
       }
-    };
-    Some(EmbeddedIndentation {
-      base_level,
-      check_first_line: root.starts_on_new_line && !root.inline,
-    })
-  })
+      let n = usize::try_from(n).unwrap_or(0);
+      indents.into_iter().max().map_or(n, |max| max + n)
+    }
+    None => {
+      // The first line counts only when the sheet starts on a line of
+      // its own.
+      let lines = text.split('\n').skip(usize::from(!root.starts_on_new_line));
+      lines
+        .filter_map(|line| {
+          let rest = line.trim_start_matches([' ', '\t']);
+          let has_content = rest.chars().next().is_some_and(|c| !c.is_whitespace());
+          has_content.then(|| level(&line[..line.len() - rest.len()]))
+        })
+        .min()
+        .unwrap_or(1)
+    }
+  };
+  EmbeddedIndentation {
+    base_level,
+    check_first_line: root.starts_on_new_line && !root.inline,
+  }
 }
 
 /// JavaScript's `Math.round` for a non-negative number.
@@ -525,7 +491,7 @@ mod tests {
 
   /// A stand-in linter: one `fake` problem at every `!`, with a fix
   /// replacing it by `?`, plus whatever `extra` adds.
-  fn fake_lint(text: &str, _syntax: Syntax) -> LintResult {
+  fn fake_lint(text: &str, _syntax: Syntax, _root: &EmbeddedRoot) -> LintResult {
     let diagnostics = text
       .match_indices('!')
       .map(|(at, _)| {
@@ -585,7 +551,7 @@ mod tests {
       "x.html",
       HostLanguage::Html,
       HostOptions::default(),
-      |text, _| {
+      |text, _, _| {
         let reach = Diagnostic::new("reach", "too far")
           .span(Span::new(0, 1))
           .fix(Fix::new(
@@ -608,7 +574,7 @@ mod tests {
       "x.vue",
       HostLanguage::Vue,
       HostOptions::default(),
-      |text, syntax| {
+      |text, syntax, _| {
         seen.push((text.to_string(), syntax));
         LintResult::new("x.vue", text, Vec::new())
       },
@@ -637,7 +603,7 @@ mod tests {
       "x.svelte",
       HostLanguage::Svelte,
       HostOptions::default(),
-      |text, _| {
+      |text, _, _| {
         seen = text.to_string();
         LintResult::new("x.svelte", text, Vec::new())
       },
@@ -663,8 +629,12 @@ mod tests {
       "x.vue",
       HostLanguage::Vue,
       HostOptions::default(),
-      |text, _| {
-        let diagnostics = rules.iter().map(|r| Diagnostic::new(*r, "x")).collect();
+      |text, _, root| {
+        let diagnostics = rules
+          .iter()
+          .filter(|r| root.allows(r))
+          .map(|r| Diagnostic::new(*r, "x"))
+          .collect();
         LintResult::new("x.vue", text, diagnostics)
       },
     );
@@ -694,7 +664,7 @@ mod tests {
       "x.vue",
       HostLanguage::Vue,
       HostOptions::default(),
-      |text, _| {
+      |text, _, _| {
         let dup = Diagnostic::new(
           "no-duplicate-selectors",
           "Unexpected duplicate selector \".a\", first used at line 1",
@@ -786,7 +756,7 @@ mod tests {
       "x.vue",
       HostLanguage::Vue,
       HostOptions::default(),
-      |text, _| {
+      |text, _, _| {
         let mut r = LintResult::new("x.vue", text, Vec::new());
         r.invalid_option_warnings.push("bad option".to_string());
         r
@@ -819,8 +789,8 @@ mod tests {
       "x.html",
       HostLanguage::Html,
       HostOptions::default(),
-      |text, _| {
-        seen.push(indentation_context(text, space, base));
+      |text, _, root| {
+        seen.push(Some(indentation_context(root, text, space, base)));
         LintResult::new("x.html", text, Vec::new())
       },
     );
@@ -869,8 +839,7 @@ mod tests {
       })]
     );
 
-    // Outside an embedded root there is no context.
-    assert_eq!(indentation_context("a {}", Some(2), None), None);
+    // Context is supplied per invocation, not installed as ambient state.
   }
 
   #[test]

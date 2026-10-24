@@ -218,6 +218,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       cache: None,
+      embedded: None,
     };
     rule.check_source(&context)
   }
