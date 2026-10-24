@@ -162,13 +162,13 @@ pub(crate) fn lint_files(
     // Without caching: lint each file in parallel (lock-free).
     planned
       .into_par_iter()
-      .filter_map(|plan| {
-        let source = std::fs::read_to_string(&plan.path).ok()?;
+      .map(|plan| {
+        let source = read_source(&plan.path)?;
         let file_path = plan.path.display().to_string();
-        Some(Linted::lint(&source, &file_path, plan.syntax, plan.rules))
+        Ok(Linted::lint(&source, &file_path, plan.syntax, plan.rules))
       })
-      .collect()
-  };
+      .collect::<Result<Vec<_>, Exit>>()
+  }?;
   Ok(Some(linted))
 }
 
@@ -225,11 +225,11 @@ fn lint_with_cache(
   planned: Vec<Planned>,
   settings: &Settings,
   cache: &mut LintCache,
-) -> Vec<Linted> {
+) -> Result<Vec<Linted>, Exit> {
   let cache = Mutex::new(cache);
   planned
     .into_par_iter()
-    .filter_map(|plan| {
+    .map(|plan| {
       let file_path = plan.path.display().to_string();
 
       // Skip only files that were clean (0 diagnostics).  The metadata
@@ -242,16 +242,16 @@ fn lint_with_cache(
       let early = metadata_fingerprint(&plan.path, settings.cache_strategy, plan.cache_key);
       if early.is_some_and(is_clean) {
         debug!("Cache hit (clean): {file_path}");
-        return None;
+        return Ok(None);
       }
-      let source = std::fs::read_to_string(&plan.path).ok()?;
+      let source = read_source(&plan.path)?;
       let content_hash = match early {
         Some(fingerprint) => fingerprint,
         None => {
           let fingerprint = compute_hash(&source, plan.cache_key);
           if is_clean(fingerprint) {
             debug!("Cache hit (clean): {file_path}");
-            return None;
+            return Ok(None);
           }
           fingerprint
         }
@@ -268,7 +268,17 @@ fn lint_with_cache(
         .unwrap_or_else(|e| e.into_inner())
         .record(file_path, content_hash, problems);
 
-      Some(linted)
+      Ok(Some(linted))
     })
-    .collect()
+    .collect::<Result<Vec<_>, Exit>>()
+    .map(|results| results.into_iter().flatten().collect())
+}
+
+fn read_source(path: &Path) -> Result<String, Exit> {
+  std::fs::read_to_string(path).map_err(|err| {
+    Exit::new(
+      EXIT_FATAL,
+      format!("Error reading {}: {err}", path.display()),
+    )
+  })
 }

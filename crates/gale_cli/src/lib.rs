@@ -138,7 +138,7 @@ fn lint_and_report(cli: &Cli, root: &RootConfig, settings: &Settings) -> Result<
   };
 
   if settings.fix.is_some() {
-    fix::fix(&mut linted, cli.stdin);
+    fix::fix(&mut linted, cli.stdin)?;
   }
 
   if settings.use_cache {
