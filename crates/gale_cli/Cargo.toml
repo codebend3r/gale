@@ -25,5 +25,4 @@ serde_json = { workspace = true }
 gale_lsp = { workspace = true }
 tokio = { version = "1.53.2", features = ["full"] }
 
-[dev-dependencies]
 tempfile = "3.27.0"
