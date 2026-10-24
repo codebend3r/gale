@@ -778,6 +778,9 @@ fn string_end(bytes: &[u8], start: usize) -> usize {
 // Applying the ranges
 // ---------------------------------------------------------------------------
 
+mod policy;
+pub use policy::DisablePolicy;
+
 /// Which reports about disable comments to emit, and at what severity.
 ///
 /// Stylelint's `reportNeedlessDisables`, `reportInvalidScopeDisables`,
@@ -825,6 +828,13 @@ pub(crate) fn apply(
   // `ignoreDisables`; only dropping them is switched off.
   let mut disabled_warnings: Vec<(String, usize)> = Vec::new();
   diagnostics.retain(|d| {
+    if d.is_comment_problem()
+      || d.is_unknown_rule()
+      || d.is_invalid_option()
+      || d.message.starts_with("Internal error")
+    {
+      return true;
+    }
     let line = line_of(d.span.offset);
     if !ranges.covers(&d.rule_name, line) {
       return true;
