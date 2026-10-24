@@ -13,8 +13,8 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_css_parser::{SourceMap, Syntax, lintable_source};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
-use crate::disables::{self, DisableReports};
-use crate::embedded::{EmbeddedRoot, HostLanguage, HostOptions, lint_host};
+use crate::disables::{self, DisablePolicy};
+use crate::embedded::{EmbeddedRoot, HostLanguage, lint_host};
 use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::lint_env::LintEnv;
@@ -204,16 +204,6 @@ impl DisableOptions {
       report_unscoped: self.report_unscoped || other.report_unscoped,
     }
   }
-
-  /// Whether the comments' disabled ranges are needed at all: to suppress
-  /// problems, or for one of the reports.
-  fn needs_ranges(&self) -> bool {
-    !self.ignore
-      || self.report_needless
-      || self.report_invalid_scope
-      || self.report_descriptionless
-      || self.report_unscoped
-  }
 }
 
 /// What a [`RuleSet`] is built from.
@@ -264,17 +254,12 @@ pub struct RuleSet {
   by_name: HashMap<&'static str, usize>,
   /// Enabled names that are no rule at all, reported as `Unknown rule`.
   unknown: Vec<String>,
-  /// The rule names, by their canonical spelling, that count as configured
-  /// for `reportInvalidScopeDisables`.
-  configured: HashSet<String>,
-  /// The rule names configured with `reportDisables: true`.
-  forbids_disable: HashSet<String>,
+  /// The configuration-comment policy for sheets and embedded documents.
+  disable_policy: DisablePolicy,
   /// The problems with the rules' options, as invalid-option texts, each
   /// once: those that keep a rule from running, and regex literals that do
   /// not compile.  Found when the set is built and reported on every file.
   invalid_options: Vec<String>,
-  disables: DisableOptions,
-  default_severity: Option<Severity>,
   env: LintEnv,
 }
 
@@ -397,11 +382,13 @@ impl RuleSet {
       rules,
       by_name,
       unknown,
-      configured,
-      forbids_disable,
+      disable_policy: DisablePolicy {
+        options: disables,
+        default_severity,
+        configured,
+        forbids_disable,
+      },
       invalid_options,
-      disables,
-      default_severity,
       env,
     }
   }
@@ -417,7 +404,7 @@ impl RuleSet {
 
   /// How configuration comments are treated in files linted with this set.
   pub fn disables(&self) -> DisableOptions {
-    self.disables
+    self.disable_policy.options
   }
 
   /// The environment rules see.
@@ -442,12 +429,13 @@ impl RuleSet {
   pub fn lint(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
     match HostLanguage::from_path(file_path) {
       Some(host) => {
-        let options = HostOptions {
-          ignore_disables: self.disables.ignore,
-        };
-        let mut result = lint_host(source, file_path, host, options, |text, syntax, root| {
-          self.lint_sheet(text, file_path, syntax, Some(root))
-        });
+        let mut result = lint_host(
+          source,
+          file_path,
+          host,
+          &self.disable_policy,
+          |text, syntax, root| self.lint_sheet(text, file_path, syntax, Some(root)),
+        );
         // A file with no style sheet in it still has the set's options.
         if result.invalid_option_warnings.is_empty() {
           result.invalid_option_warnings = self.invalid_options.clone();
@@ -550,7 +538,7 @@ impl RuleSet {
     }
     let severity = match active {
       Some(active) => Some(active.severity),
-      None => self.default_severity,
+      None => self.disable_policy.default_severity,
     };
     if let Some(severity) = severity {
       diag.severity = severity;
@@ -585,7 +573,7 @@ impl RuleSet {
     embedded: bool,
   ) -> Option<Diagnostic> {
     let text = cache.source();
-    if !disables::may_have_directives(text) {
+    if embedded || !disables::may_have_directives(text) {
       return None;
     }
     let lines = SourceLineIndex::build(source);
@@ -596,30 +584,12 @@ impl RuleSet {
     let mut collector = disables::Collector::new(&line_of);
     collector.scan_tree(&cache.postcss_tree(), cache.syntax(), 0);
     let (ranges, rejected) = collector.finish();
-    if let Some(rejected) = rejected.filter(|_| !embedded) {
+    if let Some(rejected) = rejected {
       return Some(rejected.to_diagnostic(file_path));
     }
-    if !self.disables.needs_ranges() {
-      return None;
-    }
-    let settings = disables::DisableSettings {
-      suppress: !self.disables.ignore && !embedded,
-      reports: DisableReports {
-        needless: self.disables.report_needless,
-        invalid_scope: self.disables.report_invalid_scope,
-        descriptionless: self.disables.report_descriptionless,
-        unscoped: self.disables.report_unscoped,
-        // Stylelint reports the comments at `defaultSeverity`, else as
-        // errors.
-        severity: self.default_severity.unwrap_or(Severity::Error),
-      },
-      is_configured: &|name| self.configured.contains(canonical(name)),
-      forbids_disable: &|name| {
-        self.forbids_disable.contains(name) || self.forbids_disable.contains(canonical(name))
-      },
-      file_path,
-    };
-    disables::apply(diagnostics, &ranges, &line_of, &settings);
+    self
+      .disable_policy
+      .apply(diagnostics, &ranges, &line_of, file_path);
     None
   }
 
@@ -665,9 +635,13 @@ fn finish(
 ) -> LintResult {
   if let Some(map) = source_map {
     for diag in &mut diagnostics {
-      let start = clamp_to_char_boundary(source, map.to_original(diag.span.offset));
-      let end = clamp_to_char_boundary(source, map.to_original(diag.span.end()));
-      diag.span = Span::new(start, end.saturating_sub(start));
+      for span in std::iter::once(&mut diag.span)
+        .chain(diag.related.iter_mut().map(|related| &mut related.span))
+      {
+        let start = clamp_to_char_boundary(source, map.to_original(span.offset));
+        let end = clamp_to_char_boundary(source, map.to_original(span.end()));
+        *span = Span::new(start, end.saturating_sub(start));
+      }
       diag.fix = None;
     }
   }
@@ -1495,6 +1469,61 @@ b {}
   }
 
   // -- Inline disable comment tests --
+
+  #[test]
+  fn embedded_disable_reports_share_document_scope() {
+    let set = RuleSet::new(RuleSetSpec {
+      rules: vec![
+        RuleSetting::new("block-no-empty")
+          .with_options(serde_json::json!([true, {"reportDisables":true}])),
+      ],
+      disables: DisableOptions {
+        report_descriptionless: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    });
+    let source = "<style>/* stylelint-disable block-no-empty */</style>\n<style>a{} /* stylelint-enable block-no-empty */</style>";
+    let result = set.lint(source, "x.vue", Syntax::Css);
+    assert_eq!(
+      result
+        .diagnostics
+        .iter()
+        .filter(|d| d.rule_name == "reportDisables")
+        .count(),
+      1
+    );
+    assert_eq!(
+      result
+        .diagnostics
+        .iter()
+        .filter(|d| d.rule_name == "--report-descriptionless-disables")
+        .count(),
+      1
+    );
+    assert!(
+      !result
+        .diagnostics
+        .iter()
+        .any(|d| d.rule_name == "CssSyntaxError" || d.rule_name == "block-no-empty")
+    );
+  }
+
+  #[test]
+  fn embedded_custom_messages_are_not_parsed_as_source_locations() {
+    let message = "first used at line 123";
+    let set = set_with_options(
+      "no-duplicate-selectors",
+      serde_json::json!([true, {"message":message}]),
+    );
+    let result = set.lint(
+      "<template/>\n<style>\n.a{}\n.a{}\n</style>",
+      "x.vue",
+      Syntax::Css,
+    );
+    assert_eq!(result.diagnostics[0].message, message);
+    assert_eq!(result.diagnostics[0].related.len(), 1);
+  }
 
   #[test]
   fn gale_disable_all() {
