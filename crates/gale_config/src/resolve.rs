@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use crate::discovery::{find_config, find_config_for_file, load_config};
 use crate::extends::{ExtendedOverride, collect_rules_from_extends};
 use crate::plugins::extract_plugin_names;
-use crate::raw::has_explicit_severity_in_value;
 use crate::{
   ConfigFile, ConfigOverride, FixMode, GaleConfig, ResolvedOverride, RuleConfig, Severity,
 };
@@ -47,35 +46,6 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     }
   }
 
-  // 2b. Apply `defaultSeverity` if set.
-  // In Stylelint, `defaultSeverity` replaces the implicit "error" default
-  // for rules that don't specify their own severity.  We apply it to all
-  // rules whose resolved severity is Error and whose raw config value did
-  // not explicitly contain "error"/"warning"/"off" as a severity keyword.
-  let default_sev_str = raw.default_severity.as_deref();
-  if let Some(ds) = default_sev_str {
-    let default_sev = match ds {
-      "warning" => Some(Severity::Warning),
-      "error" => Some(Severity::Error),
-      _ => None,
-    };
-    if let Some(sev) = default_sev {
-      // Apply to ALL rules (both extended and user-defined).
-      // Skip rules whose raw config explicitly sets a severity keyword.
-      for (name, rc) in rules.iter_mut() {
-        if rc.severity == Some(Severity::Error) {
-          // Check if this rule's raw value explicitly specifies severity.
-          let has_explicit_severity = raw_rules
-            .get(name)
-            .is_some_and(has_explicit_severity_in_value);
-          if !has_explicit_severity {
-            rc.severity = Some(sev);
-          }
-        }
-      }
-    }
-  }
-
   // Merge both `ignorePatterns` and `ignoreFiles` (Stylelint's field name).
   let mut ignore_patterns = raw.ignore_patterns.unwrap_or_default();
   if let Some(ignore_files) = raw.ignore_files {
@@ -95,7 +65,7 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     }));
   }
 
-  let overrides: Vec<ResolvedOverride> = all_raw_overrides
+  let mut overrides: Vec<ResolvedOverride> = all_raw_overrides
     .into_iter()
     .flat_map(|ov| resolve_override(ov.entry, &ov.directory, 0))
     .collect();
@@ -123,6 +93,17 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     "error" => Some(Severity::Error),
     _ => None,
   });
+
+  // Materialize the default once, after every inherited rule has retained
+  // whether its severity was explicit. Overrides follow the same policy.
+  for rule in rules
+    .values_mut()
+    .chain(overrides.iter_mut().flat_map(|ov| ov.rules.values_mut()))
+  {
+    rule
+      .severity
+      .get_or_insert(default_severity.unwrap_or(Severity::Error));
+  }
 
   // 7. Extract top-level customSyntax as a string (if present).
   let custom_syntax = raw
@@ -293,6 +274,38 @@ pub fn resolve_config_for_file(file_path: &Path) -> Option<GaleConfig> {
 mod tests {
   use super::*;
   use crate::presets::recommended_rule_names;
+
+  #[test]
+  fn defaults_preserve_inherited_explicit_severities_and_cover_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("base.json"),
+      r#"{
+      "rules": {"block-no-empty": [true, {"severity":"error"}], "color-no-invalid-hex": true},
+      "overrides": [{"files":"*.scss", "rules":{"color-named":"never", "block-no-empty":"error"}}]
+    }"#,
+    )
+    .unwrap();
+    let raw =
+      serde_json::from_str(r#"{"extends":"./base.json","defaultSeverity":"warning"}"#).unwrap();
+    let config = resolve_raw(raw, dir.path());
+    assert_eq!(
+      config.rules["block-no-empty"].severity,
+      Some(Severity::Error)
+    );
+    assert_eq!(
+      config.rules["color-no-invalid-hex"].severity,
+      Some(Severity::Warning)
+    );
+    assert_eq!(
+      config.overrides[0].rules["block-no-empty"].severity,
+      Some(Severity::Error)
+    );
+    assert_eq!(
+      config.overrides[0].rules["color-named"].severity,
+      Some(Severity::Warning)
+    );
+  }
 
   #[test]
   fn parse_json_config() {
