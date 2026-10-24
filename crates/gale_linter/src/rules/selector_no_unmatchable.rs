@@ -504,6 +504,7 @@ mod tests {
       source: css,
       syntax,
       cache: None,
+      embedded: None,
     };
     let index = SourceLineIndex::build(css);
     configured(&SelectorNoUnmatchable, options.clone())

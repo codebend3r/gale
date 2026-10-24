@@ -14,7 +14,7 @@ use gale_css_parser::{SourceMap, Syntax, lintable_source};
 use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisableReports};
-use crate::embedded::{HostLanguage, HostOptions, lint_host};
+use crate::embedded::{EmbeddedRoot, HostLanguage, HostOptions, lint_host};
 use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::lint_env::LintEnv;
@@ -445,8 +445,8 @@ impl RuleSet {
         let options = HostOptions {
           ignore_disables: self.disables.ignore,
         };
-        let mut result = lint_host(source, file_path, host, options, |text, syntax| {
-          self.lint_sheet(text, file_path, syntax)
+        let mut result = lint_host(source, file_path, host, options, |text, syntax, root| {
+          self.lint_sheet(text, file_path, syntax, Some(root))
         });
         // A file with no style sheet in it still has the set's options.
         if result.invalid_option_warnings.is_empty() {
@@ -454,20 +454,32 @@ impl RuleSet {
         }
         result
       }
-      None => self.lint_sheet(source, file_path, syntax),
+      None => self.lint_sheet(source, file_path, syntax, None),
     }
   }
 
   /// Lint one style sheet, reporting a panic outside any one rule as a
   /// single internal-error problem on the file.
-  fn lint_sheet(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+  fn lint_sheet(
+    &self,
+    source: &str,
+    file_path: &str,
+    syntax: Syntax,
+    embedded: Option<&EmbeddedRoot>,
+  ) -> LintResult {
     guard_file(source, file_path, || {
-      self.lint_sheet_unguarded(source, file_path, syntax)
+      self.lint_sheet_unguarded(source, file_path, syntax, embedded)
     })
   }
 
   /// [`Self::lint_sheet`] without the file-level panic guard.
-  fn lint_sheet_unguarded(&self, source: &str, file_path: &str, syntax: Syntax) -> LintResult {
+  fn lint_sheet_unguarded(
+    &self,
+    source: &str,
+    file_path: &str,
+    syntax: Syntax,
+    embedded: Option<&EmbeddedRoot>,
+  ) -> LintResult {
     let mut timer = PhaseTimer::start(file_path);
     // Rules read the text the tree is parsed from, which for Sass is the
     // converted SCSS.  `finish` maps their spans back.
@@ -479,7 +491,7 @@ impl RuleSet {
     let tree = cache.postcss_tree();
     timer.lap("parse");
 
-    let mut run = RuleRun::new(self, file_path, &cache);
+    let mut run = RuleRun::new(self, file_path, &cache, embedded);
     run.check(&tree, timer.on());
     timer.lap("rules");
     let RuleRun {
@@ -501,6 +513,7 @@ impl RuleSet {
       source_map.as_ref(),
       &cache,
       file_path,
+      embedded.is_some(),
     ) {
       return finish(
         file_path,
@@ -569,6 +582,7 @@ impl RuleSet {
     source_map: Option<&SourceMap>,
     cache: &FileCache,
     file_path: &str,
+    embedded: bool,
   ) -> Option<Diagnostic> {
     let text = cache.source();
     if !disables::may_have_directives(text) {
@@ -582,7 +596,6 @@ impl RuleSet {
     let mut collector = disables::Collector::new(&line_of);
     collector.scan_tree(&cache.postcss_tree(), cache.syntax(), 0);
     let (ranges, rejected) = collector.finish();
-    let embedded = crate::embedded::in_embedded_root();
     if let Some(rejected) = rejected.filter(|_| !embedded) {
       return Some(rejected.to_diagnostic(file_path));
     }
@@ -728,6 +741,7 @@ struct RuleRun<'a> {
   syntax: Syntax,
   /// What the rules share for this file, built from `source`.
   cache: &'a FileCache<'a>,
+  embedded: Option<&'a EmbeddedRoot>,
   /// What the rules reported.
   diagnostics: Vec<Diagnostic>,
   /// One internal-error problem per rule that panicked.  Kept apart from
@@ -737,13 +751,19 @@ struct RuleRun<'a> {
 
 impl<'a> RuleRun<'a> {
   /// Prepare a pass of `set` over one file, the text `cache` was built for.
-  fn new(set: &'a RuleSet, file_path: &'a str, cache: &'a FileCache<'a>) -> Self {
+  fn new(
+    set: &'a RuleSet,
+    file_path: &'a str,
+    cache: &'a FileCache<'a>,
+    embedded: Option<&'a EmbeddedRoot>,
+  ) -> Self {
     Self {
       set,
       file_path,
       source: cache.source(),
       syntax: cache.syntax(),
       cache,
+      embedded,
       diagnostics: Vec::new(),
       failures: Vec::new(),
     }
@@ -757,6 +777,7 @@ impl<'a> RuleRun<'a> {
       syntax: self.syntax,
       cache: Some(self.cache),
       env: self.set.env,
+      embedded: self.embedded,
     }
   }
 
@@ -778,6 +799,9 @@ impl<'a> RuleRun<'a> {
     for index in 0..self.set.rules.len() {
       let set: &'a RuleSet = self.set;
       let rule = set.rules[index].rule;
+      if self.embedded.is_some_and(|root| !root.allows(rule.name())) {
+        continue;
+      }
       let Some(check) = set.rules[index].check.as_deref() else {
         continue;
       };
@@ -1385,6 +1409,33 @@ mod tests {
     fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
       panic!("crashed holding {} statements", tree.nodes.len());
     }
+  }
+
+  struct MustNotRunEmbedded;
+  test_rule!(
+    MustNotRunEmbedded,
+    "@stylistic/unicode-bom",
+    "Must not execute in embedded roots"
+  );
+
+  impl Check for MustNotRunEmbedded {
+    fn check(&self, _tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
+      panic!("excluded rule executed");
+    }
+  }
+
+  #[test]
+  fn embedded_exclusions_are_applied_before_rule_execution() {
+    let mut registry = RuleRegistry::new();
+    registry.register(Box::new(MustNotRunEmbedded));
+    let set = set_in(registry, spec_for(&["@stylistic/unicode-bom"]));
+    assert!(
+      set
+        .lint("<style>a{}</style>", "x.vue", Syntax::Css)
+        .diagnostics
+        .is_empty()
+    );
+    assert_eq!(set.lint("a{}", "x.css", Syntax::Css).diagnostics.len(), 1);
   }
 
   /// A set running `rules`, in that order, with the test rules above

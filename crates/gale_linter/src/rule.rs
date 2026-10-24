@@ -23,6 +23,8 @@ pub struct RuleContext<'a> {
   /// What the run knows about the project beyond its config, such as the
   /// installed Stylelint version.
   pub env: LintEnv,
+  /// The host metadata for an embedded sheet; absent for standalone sources.
+  pub embedded: Option<&'a crate::embedded::EmbeddedRoot>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -205,6 +207,7 @@ mod tests {
       source,
       syntax,
       cache: None,
+      embedded: None,
     }
   }
 

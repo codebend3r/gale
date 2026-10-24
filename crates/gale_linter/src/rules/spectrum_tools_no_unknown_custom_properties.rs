@@ -272,6 +272,7 @@ mod tests {
       source: ".a { color: var(--unknown); }",
       syntax: gale_css_parser::Syntax::Css,
       cache: None,
+      embedded: None,
     };
     let diags = rule.check_source(&ctx);
     assert!(diags.is_empty());

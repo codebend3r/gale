@@ -233,6 +233,7 @@ mod tests {
       source,
       syntax: Syntax::Css,
       cache: None,
+      embedded: None,
     }
   }
 
