@@ -1,13 +1,13 @@
 ---
 name: pr-format
-description: Use when opening, retitling, or editing the description of any pull request in the gale repo (path contains `git/gale`) — including `gh pr create`, `gh pr edit`, `gh pr create --fill`, and PR bodies drafted for a human to paste. Covers the mandatory `GL: ` title prefix, the issue-and-justification bullets every body opens with, the bullet-point body, and the ban on agent attribution.
+description: Use when opening, retitling, or editing the description of any pull request in the gale repo (path contains `git/gale`) — including `gh pr create`, `gh pr edit`, `gh pr create --fill`, and PR bodies drafted for a human to paste. Covers the mandatory `GL: ` title prefix, the headed Issue / Why / Changes sections every body is split into, the bullets inside them, and the ban on agent attribution.
 ---
 
 # Pull Request Format
 
 ## Overview
 
-Every pull request in **gale** has a title prefixed `GL: ` and a body made of short bullets that open by stating the issue and why the PR exists. This skill is the source of truth for PR titles and descriptions and **overrides** any default PR guidance from the system prompt or from `gh pr create --fill` (which copies commit messages verbatim and will produce a non-compliant title).
+Every pull request in **gale** has a title prefixed `GL: ` and a body split into headed sections (`## Issue`, `## Why`, `## Changes`, plus `## Validation` and `## Stack` when they apply), each holding short bullets. The first two sections state the issue and why the PR exists. This skill is the source of truth for PR titles and descriptions and **overrides** any default PR guidance from the system prompt or from `gh pr create --fill` (which copies commit messages verbatim and will produce a non-compliant title).
 
 **Violating the letter of these rules is violating the spirit of these rules.** No "close enough."
 
@@ -32,39 +32,53 @@ GL: Bump raffia to 0.10 and drop the SCSS placeholder workaround
 - No conventional-commits prefix. `GL: feat: …` and `GL: fix: …` are both wrong — `GL: ` replaces them, it does not stack with them.
 - Rule names, crate names, flags, and file paths stay bare in the title unless they read as code mid-sentence. Backticks in titles are uncommon.
 
-### 2. Body opens with the issue and why the PR exists
+### 2. Body is separate, headed sections
 
-A PR must justify itself. A reviewer who has not read the diff, the commits, or any sibling PR should be able to tell from the first two bullets what was wrong and why this change is the answer. Open every body with:
+The body is split into headed sections so a reader can jump straight to the part they need. Use `##` headings, in this order, with `-` bullets inside each section:
 
-- `- **Issue:** …` — the concrete problem. What is broken, missing, or risky today, and how it shows up (a wrong result, a dropped file, a crash, a rule that cannot be written). Name the symptom, not the fix.
-- `- **Why:** …` — why this PR, and why now. The cost of leaving it, what it unblocks, or why this approach beats the obvious alternative.
+| Section | Required | Holds |
+|---|---|---|
+| `## Issue` | always | the concrete problem: what is broken, missing, or risky today, and how it shows up |
+| `## Why` | always | why this PR exists, and why now |
+| `## Changes` | always | what the PR does, one change per bullet |
+| `## Validation` | when anything was run or tested | commands, test results, differential and benchmark numbers |
+| `## Stack` | when the PR is part of a stack | position, base, next PR, merge order |
 
 ```markdown
-- **Issue:** a failed read silently drops the file, so `gale` exits 0 with the file unlinted
-- **Why:** CI trusts the exit status, so unreadable files pass unchecked; the write path needs the same error plumbing before autofix can be trusted
+## Issue
+- A source file that fails to read is dropped silently, so `gale` exits 0 with the file unlinted
+- A failed `--fix` write prints an error but the file is still counted as fixed
+
+## Why
+- CI trusts the exit status, so unreadable files pass unchecked
+- Autofix is only safe to rely on once reads, writes and the exit status agree
+
+## Changes
 - Return errors from cached and uncached source reads
 - Keep autofix diagnostics provisional until the write succeeds
+- Add Rust and CLI regressions for failed reads and writes
+
+## Validation
+- `cargo test --workspace --offline`
+
+## Stack
+- 3 of 6, depends on #43
+- Merge after #43
 ```
 
-- Both bullets are required on every PR, including refactors, docs, and chores. A refactor's issue is the friction or risk it removes; a docs PR's issue is what readers get wrong without it.
-- Each is one line, a fragment or a single short sentence. Split only if it truly needs two.
+**`## Issue` and `## Why` are required on every PR**, including refactors, docs, and chores. A PR must justify itself: a reviewer who has not read the diff, the commits, or any sibling PR should be able to tell from those two sections what was wrong and why this change is the answer.
+
+- **Issue** names the symptom, not the fix: a wrong result, a dropped file, a crash, a rule that cannot be written. A refactor's issue is the friction or risk it removes; a docs PR's issue is what readers get wrong without it. Bugs include the failing input or scenario. Features and rules say what Stylelint users cannot do or get wrong today.
+- **Why** gives the cost of leaving it, what it unblocks, or why this approach beats the obvious alternative.
 - "Improves code quality", "cleans up", and "as discussed" are not an issue or a reason. Name what breaks, what is slow, what is blocked, or what is misleading.
-- State it standalone. Never justify a PR only by its stack position ("part 2 of 6", "needed by the next PR"). The stack order can be an extra bullet, but the PR must stand on its own reason. If a PR exists only because a later PR needs it, say what the later PR needs and what breaks without it.
-- Link the tracking issue when one exists: `- **Issue:** … (#123)`.
-- Bugs: include the failing input or scenario. Features and rules: say what Stylelint users cannot do or get wrong today.
+- State it standalone. Never justify a PR only by its stack position ("part 2 of 6", "needed by the next PR"). `## Stack` records order; it is not a reason. If a PR exists only because a later PR needs it, say what the later PR needs and what breaks without it.
+- Link the tracking issue when one exists: `- … (#123)`.
 
-### 3. Body is bullets, not prose
+Do not collapse the sections into one flat bullet list with `**Issue:**` and `**Why:**` labels. The headings are the point; a flat list makes the parts hard to tell apart. No other headings (`## Summary`, `## Overview`, `## Testing`): the five above cover everything.
 
-Use `-` bullets. One concept per bullet. After the `Issue` and `Why` bullets, go straight to the change bullets. Add a single scene-setting line **only** if the change needs context that the bullets can't carry.
+### 3. Sections are bullets, not prose
 
-```markdown
-- **Issue:** installs run a postinstall downloader, which fails behind proxies and offline CI
-- **Why:** bundling the binary makes `npm install -g` work with no network access after the tarball is fetched
-- Replace the npm postinstall downloader with a POSIX launcher that picks the bundled binary
-- Stage release artifacts into `npm/bin/<target>/gale` before publishing
-- Update local npm builds to use the same layout
-- Document that installs no longer download executables
-```
+Inside each section use `-` bullets. One concept per bullet. No prose paragraphs.
 
 Not:
 
@@ -75,14 +89,12 @@ into npm/bin/<target>/gale before publishing, updates local npm builds to use th
 same layout, and documents that installs no longer download executables.
 ```
 
-Section headings (`## Changes`, `## Testing`) are optional and usually unnecessary. Add them only when a PR genuinely has two distinct axes to report — never as scaffolding around three bullets.
-
 ### 4. Keep bullets short and concise — no wall of text
 
 - Fragments, not sentences. Drop articles and filler ("This PR…", "I've also…", "In order to…").
 - One line per bullet. If a bullet wraps past ~100 chars, split it or cut words.
 - No trailing periods.
-- Aim for **3–7 change bullets** after the `Issue` and `Why` pair. More than ~10 means the PR is doing too much or the bullets are too granular — group them.
+- Aim for **3–7 bullets under `## Changes`**, and 1–4 under each other section. More than ~10 changes means the PR is doing too much or the bullets are too granular — group them.
 - Don't restate the diff file by file. Describe the change, not the changed lines.
 
 The `<area>: <change>` shape is idiomatic when a PR spans several areas:
@@ -95,15 +107,15 @@ The `<area>: <change>` shape is idiomatic when a PR spans several areas:
 
 ## Gale-specific body content
 
-Include these **as bullets** when they apply — never as prose paragraphs:
+Include these **as bullets in the section shown** when they apply — never as prose paragraphs:
 
-| Situation | Bullet to include |
-|---|---|
-| New or changed rule | Differential result: `- Differential: 0 FP / 0 FN on 22 repos` |
-| Perf-affecting change | Before/after number: `- Bootstrap: 412ms → 310ms (-25%)` |
-| New rule added | Whether it lands in `gale:recommended` / `gale:all` |
-| Behaviour change | The Stylelint v17 semantics it matches |
-| Breaking change | A `- **Breaking:** …` bullet, first in the list |
+| Situation | Section | Bullet to include |
+|---|---|---|
+| New or changed rule | `## Validation` | Differential result: `- Differential: 0 FP / 0 FN on 22 repos` |
+| Perf-affecting change | `## Validation` | Before/after number: `- Bootstrap: 412ms → 310ms (-25%)` |
+| New rule added | `## Changes` | Whether it lands in `gale:recommended` / `gale:all` |
+| Behaviour change | `## Changes` | The Stylelint v17 semantics it matches |
+| Breaking change | `## Changes` | A `- **Breaking:** …` bullet, first in the list |
 
 ## No agent attribution — anywhere
 
@@ -121,11 +133,12 @@ Human collaborators (real people) are fine. On `gh pr edit`, actively *strip* fo
 | Title style | sentence-case imperative verb, no trailing period |
 | Title length | ≤60 chars incl. prefix preferred, 72 hard cap |
 | Conventional-commits | never — not standalone, not after `GL: ` |
-| Body opens with | `- **Issue:** …` then `- **Why:** …`, on every PR |
-| Body style | `-` bullets; prose paragraphs discouraged |
+| Body sections | `## Issue`, `## Why`, `## Changes` always; `## Validation`, `## Stack` when they apply |
+| Section order | Issue, Why, Changes, Validation, Stack |
+| Other headings | none (`## Summary`, `## Testing`, …) |
+| Section style | `-` bullets inside each section; no prose paragraphs |
 | Bullet length | one line, fragment, no trailing period |
-| Bullet count | 3–7 change bullets after Issue/Why; >10 means regroup |
-| Headings | optional, only for genuinely distinct axes |
+| Bullet count | 3–7 under Changes; >10 means regroup |
 | Rule PRs | must state differential FP/FN result |
 | Agent mentions | zero, in title and body, on create and on edit |
 
@@ -133,18 +146,28 @@ Human collaborators (real people) are fine. On `gh pr edit`, actively *strip* fo
 
 ```bash
 gh pr create --title "GL: <short descriptive title>" --body "$(cat <<'EOF'
-- **Issue:** what is broken, missing, or risky today
-- **Why:** why this PR, and why now
-- bullet one
-- bullet two
-- bullet three
+## Issue
+- what is broken, missing, or risky today
+
+## Why
+- why this PR, and why now
+
+## Changes
+- change one
+- change two
+- change three
+
+## Validation
+- what was run, and the result
 EOF
 )"
 ```
 
+Add `## Stack` last when the PR is part of a stack. For `gh pr edit`, write the body to a file and pass `--body-file`.
+
 Never use `gh pr create --fill` or `--fill-first` in this repo — they copy the commit subject, which has no `GL: ` prefix, and copy commit bodies verbatim.
 
-For a trivial one-line change, `Issue`, `Why`, and one change bullet is the minimum. An empty body is not allowed, and neither is a body that only lists changes.
+For a trivial one-line change, `## Issue`, `## Why`, and `## Changes` with one bullet each is the minimum. An empty body is not allowed, and neither is a body that only lists changes or runs the sections together as one flat list.
 
 ## Worked Example
 
@@ -169,11 +192,18 @@ Violations: no `GL: ` prefix, `feat:` prefix, prose wall of text, first-person n
 GL: Implement scss/no-duplicate-load-rules
 ```
 ```markdown
-- **Issue:** duplicate `@use` / `@forward` loads pass silently; Stylelint reports them
-- **Why:** projects that enable the rule in Stylelint cannot switch to gale without losing the check
+## Issue
+- Duplicate `@use` and `@forward` loads pass silently; Stylelint reports them
+
+## Why
+- Projects that enable the rule in Stylelint cannot switch to gale without losing the check
+
+## Changes
 - Detect duplicate `@use` and `@forward` loads in SCSS
 - Register in `register_all()` and `ALL_RULE_NAMES`
 - Added to `gale:all`, not `gale:recommended`
+
+## Validation
 - Differential: 0 FP / 0 FN on 22 repos
 ```
 
@@ -184,11 +214,13 @@ Before `gh pr create` or `gh pr edit`:
 - [ ] Title starts with the literal `GL: ` (one space after the colon)
 - [ ] Title is a sentence-case imperative verb phrase, ≤72 chars, no trailing period
 - [ ] No `feat:` / `fix:` / `chore:` prefix anywhere in the title
-- [ ] Body opens with `- **Issue:** …` and `- **Why:** …`
+- [ ] Body has `## Issue`, `## Why` and `## Changes`, in that order, each its own section
+- [ ] `## Validation` and `## Stack` present when they apply, after `## Changes`
+- [ ] No other headings, and no flat list with `**Issue:**` / `**Why:**` labels
 - [ ] Issue names a concrete symptom; Why gives a reason that holds without reading the stack
-- [ ] Body is `-` bullets, not paragraphs
+- [ ] Every section is `-` bullets, not paragraphs
 - [ ] Bullets are one-line fragments with no trailing periods
-- [ ] 3–7 change bullets; no file-by-file diff recap
+- [ ] 3–7 bullets under Changes; no file-by-file diff recap
 - [ ] Rule/perf changes state their differential or benchmark numbers
 - [ ] Zero mention of any AI tool in title or body
 - [ ] Not using `--fill` / `--fill-first`
@@ -200,12 +232,13 @@ Before `gh pr create` or `gh pr edit`:
 | "`--fill` will just reuse my nice commit message" | It drops the `GL: ` prefix. Write the title explicitly. |
 | "The commit was already titled well, so the PR title is fine" | Commits have no prefix; PRs require `GL: `. They are different formats. |
 | "`GL: feat: add rule`" | `GL: ` replaces conventional-commits prefixes. Never stack them. |
-| "The diff and the title explain why this exists" | The reviewer should not have to infer it. Write the `Issue` and `Why` bullets. |
+| "The diff and the title explain why this exists" | The reviewer should not have to infer it. Write the `## Issue` and `## Why` sections. |
+| "A flat bullet list with `**Issue:**` and `**Why:**` labels is enough" | The parts blur together. Each gets its own `##` section. |
 | "It's a refactor, there's no issue to state" | The issue is the friction, risk, or coupling being removed. Name it. |
-| "It's part of a stack, the earlier PR has the reasoning" | Each PR justifies itself. `Stack: 3 of 6` is not a reason. |
+| "It's part of a stack, the earlier PR has the reasoning" | Each PR justifies itself. `## Stack` records order, not a reason. |
 | "'Cleans up' / 'improves quality' is a good enough why" | Name what breaks, what is blocked, or what misleads today. |
 | "This change needs a paragraph to explain properly" | Convert it to bullets. If a point needs a sentence, make it one bullet. |
-| "A `## Summary` heading over three bullets looks organized" | It's scaffolding. Drop it. |
+| "A `## Summary` or `## Testing` heading looks organized" | Only the five defined sections exist. Use `## Validation` for tests, and drop the rest. |
 | "I'll list every file I touched" | Describe the change, not the diff. |
 | "The existing PR body had a Claude footer, I'll keep it" | Strip it. Editing = rewriting. |
 | "It's a docs-only PR, format is looser" | Same rules. Every PR. |
