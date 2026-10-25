@@ -179,7 +179,8 @@ pub enum RuleConfigValue {
 }
 
 impl RuleConfigValue {
-  /// Convert the raw config value into a resolved [`RuleConfig`].
+  /// Read options and explicit severity, leaving an unspecified severity
+  /// unset until inheritance and overrides have been resolved.
   pub fn resolve(&self) -> RuleConfig {
     match self {
       RuleConfigValue::Null(_) => RuleConfig {
@@ -187,7 +188,7 @@ impl RuleConfigValue {
         options: None,
       },
       RuleConfigValue::Bool(b) => RuleConfig {
-        severity: Some(if *b { Severity::Error } else { Severity::Off }),
+        severity: (!b).then_some(Severity::Off),
         options: None,
       },
       RuleConfigValue::Number(n) => {
@@ -196,7 +197,7 @@ impl RuleConfigValue {
         // means the rule is enabled with that numeric value as the max.
         // 0 is a valid max (meaning "disallow entirely").
         RuleConfig {
-          severity: Some(Severity::Error),
+          severity: None,
           options: Some(serde_json::Value::Number(n.clone())),
         }
       }
@@ -212,7 +213,7 @@ impl RuleConfigValue {
           // means the rule is enabled at error severity with that
           // string as its primary option.
           RuleConfig {
-            severity: Some(Severity::Error),
+            severity: None,
             options: Some(serde_json::Value::String(s.clone())),
           }
         }
@@ -249,7 +250,7 @@ impl RuleConfigValue {
           // its default primary option.
           let enabled = first.and_then(|v| v.as_bool()).unwrap_or(true);
           let severity = if enabled {
-            secondary_severity.or(Some(Severity::Error))
+            secondary_severity
           } else {
             // An explicit `false` disables the rule outright; a
             // secondary severity cannot resurrect it.
@@ -266,7 +267,7 @@ impl RuleConfigValue {
           // primary option and options[1] for secondary options.
           let options = Some(serde_json::Value::Array(items.clone()));
           RuleConfig {
-            severity: secondary_severity.or(Some(Severity::Error)),
+            severity: secondary_severity,
             options,
           }
         }
@@ -274,7 +275,7 @@ impl RuleConfigValue {
       RuleConfigValue::Object(map) => {
         // A bare object is treated as error severity with the object as options.
         RuleConfig {
-          severity: Some(Severity::Error),
+          severity: None,
           options: Some(serde_json::Value::Object(map.clone())),
         }
       }
@@ -313,40 +314,6 @@ fn parse_severity(s: &str) -> Severity {
   }
 }
 
-/// Check whether a raw `RuleConfigValue` explicitly sets a severity level.
-///
-/// Returns `true` for values like `"error"`, `"warning"`, `["error", { ... }]`,
-/// or `[true, { severity: "warning" }]`.  Returns `false` for `true`, `"without-alpha"`,
-/// `["always", { ... }]` (no explicit severity in secondary), etc.
-pub(crate) fn has_explicit_severity_in_value(v: &RuleConfigValue) -> bool {
-  match v {
-    RuleConfigValue::Null(_) => true,
-    RuleConfigValue::Bool(false) => true,
-    RuleConfigValue::Bool(true) => false,
-    RuleConfigValue::Number(_) => false,
-    RuleConfigValue::Severity(s) => is_severity_string(s),
-    RuleConfigValue::Array(items) => {
-      // Check if first element is a severity string.
-      let first_is_severity = items
-        .first()
-        .and_then(|v| v.as_str())
-        .map(is_severity_string)
-        .unwrap_or(false);
-      if first_is_severity {
-        return true;
-      }
-      // Check secondary options for { severity: "..." }.
-      if let Some(serde_json::Value::Object(obj)) = items.get(1)
-        && let Some(serde_json::Value::String(s)) = obj.get("severity")
-      {
-        return is_severity_string(s);
-      }
-      false
-    }
-    RuleConfigValue::Object(_) => false,
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -355,7 +322,7 @@ mod tests {
   fn parse_rule_bool() {
     let v = RuleConfigValue::Bool(true);
     let r = v.resolve();
-    assert_eq!(r.severity, Some(Severity::Error));
+    assert_eq!(r.severity, None);
     assert!(r.options.is_none());
 
     let v = RuleConfigValue::Bool(false);
