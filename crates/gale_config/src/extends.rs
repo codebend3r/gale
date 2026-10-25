@@ -12,18 +12,22 @@ use crate::{
   ConfigError, ConfigFile, ConfigOverride, RuleConfig, RuleConfigValue, Severity, resolve_preset,
 };
 
-/// Walk upward from `start_dir` looking for a `node_modules` directory.
-fn find_node_modules(start_dir: &Path) -> Option<PathBuf> {
-  let mut dir = start_dir.to_path_buf();
-  loop {
-    let nm = dir.join("node_modules");
-    if nm.is_dir() {
-      return Some(nm);
-    }
-    if !dir.pop() {
-      return None;
-    }
+/// A loaded config retains its identity and the directory its imports use.
+struct LoadedConfig {
+  config: ConfigFile,
+  path: PathBuf,
+}
+
+impl LoadedConfig {
+  fn directory(&self) -> &Path {
+    self.path.parent().expect("a config file has a parent")
   }
+}
+
+/// An inherited override resolves imports relative to the config declaring it.
+pub(crate) struct ExtendedOverride {
+  pub entry: ConfigOverride,
+  pub directory: PathBuf,
 }
 
 /// Resolve a subpath from a package.json `exports` field.
@@ -78,7 +82,7 @@ pub(crate) fn resolve_package_exports(pkg: &serde_json::Value, subpath: &str) ->
 ///
 /// Supports subpath imports like `@scope/package/subpath` which resolves to
 /// `node_modules/@scope/package/subpath.js` (or `.json`).
-fn resolve_npm_config(package_name: &str, base_dir: &Path) -> Option<ConfigFile> {
+fn resolve_npm_config(package_name: &str, base_dir: &Path) -> Option<LoadedConfig> {
   let (pkg_name, subpath) = split_npm_package_subpath(package_name);
 
   // Walk up directory tree trying each `node_modules` found, so that nested
@@ -103,7 +107,7 @@ fn resolve_npm_config(package_name: &str, base_dir: &Path) -> Option<ConfigFile>
 }
 
 /// Attempt to load a config from an already-located package directory.
-fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<ConfigFile> {
+fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<LoadedConfig> {
   // If there's a subpath, first try the `exports` field in package.json,
   // then fall back to direct file resolution with common extensions.
   if let Some(sub) = subpath {
@@ -209,7 +213,7 @@ pub(crate) fn split_npm_package_subpath(name: &str) -> (&str, Option<&str>) {
 /// If the exact path doesn't exist, tries adding common config file extensions
 /// (`.js`, `.json`, `.cjs`, `.mjs`). Also checks for `index.js` if the path
 /// resolves to a directory.
-fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile> {
+fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<LoadedConfig> {
   let path = base_dir.join(rel_path);
 
   // Try exact path first.
@@ -245,9 +249,12 @@ fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<ConfigFile
 /// Most candidates simply do not exist, so failing to load one is not worth
 /// mentioning; a JavaScript config that exists but throws is, since its
 /// rules are about to be skipped for a reason the user can fix.
-fn load_candidate(path: &Path) -> Option<ConfigFile> {
+fn load_candidate(path: &Path) -> Option<LoadedConfig> {
   match load_config_file(path) {
-    Ok(config) => Some(config),
+    Ok(config) => Some(LoadedConfig {
+      config,
+      path: path.canonicalize().ok()?,
+    }),
     Err(ConfigError::JavaScript(message)) => {
       warn_once(format!(
         "warning: could not load {}: {message}",
@@ -292,17 +299,12 @@ fn unresolved_extends_warning(entry: &str, base_dir: &Path) -> String {
 pub(crate) fn collect_rules_from_extends(
   extends: &[String],
   base_dir: &Path,
-  visited: &mut HashSet<String>,
-) -> (HashMap<String, RuleConfig>, Vec<ConfigOverride>) {
+  active: &mut HashSet<PathBuf>,
+) -> (HashMap<String, RuleConfig>, Vec<ExtendedOverride>) {
   let mut rules = HashMap::new();
-  let mut overrides: Vec<ConfigOverride> = Vec::new();
+  let mut overrides = Vec::new();
 
   for preset_name in extends {
-    if visited.contains(preset_name) {
-      continue; // cycle detection
-    }
-    visited.insert(preset_name.clone());
-
     if preset_name == UNEVALUATED_EXTENDS {
       warn_once(unresolved_extends_warning(preset_name, base_dir));
       continue;
@@ -330,30 +332,17 @@ pub(crate) fn collect_rules_from_extends(
         resolve_npm_config(preset_name, base_dir)
       };
 
-      if let Some(config) = config {
-        let sub_base = if is_path {
-          // If the path is a directory (resolved via index.js), use
-          // the directory itself as the base so that relative extends
-          // inside it resolve correctly.
-          let joined = base_dir.join(preset_name);
-          if joined.is_dir() {
-            joined
-          } else {
-            joined.parent().unwrap_or(base_dir).to_path_buf()
-          }
-        } else {
-          // For npm packages, use the package root directory as the
-          // base for resolving relative extends within the package.
-          let (pkg_name, _) = split_npm_package_subpath(preset_name);
-          find_node_modules(base_dir)
-            .map(|nm| nm.join(pkg_name))
-            .unwrap_or_else(|| base_dir.to_path_buf())
-        };
+      if let Some(loaded) = config {
+        if !active.insert(loaded.path.clone()) {
+          continue;
+        }
+        let sub_base = loaded.directory().to_path_buf();
+        let config = loaded.config;
 
         // Recursively resolve this config's extends first
         if let Some(ref sub_extends) = config.extends {
           let (sub_rules, sub_overrides) =
-            collect_rules_from_extends(sub_extends, &sub_base, visited);
+            collect_rules_from_extends(sub_extends, &sub_base, active);
           rules.extend(sub_rules);
           overrides.extend(sub_overrides);
         }
@@ -398,8 +387,12 @@ pub(crate) fn collect_rules_from_extends(
               }
             }
           }
-          overrides.extend(config_overrides);
+          overrides.extend(config_overrides.into_iter().map(|entry| ExtendedOverride {
+            entry,
+            directory: sub_base.clone(),
+          }));
         }
+        active.remove(&loaded.path);
       } else {
         // npm/file not found — warn and skip (treat as empty config).
         // Do NOT fall back to built-in presets: approximate presets may
@@ -416,6 +409,111 @@ pub(crate) fn collect_rules_from_extends(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn write(root: &Path, name: &str, json: &str) {
+    let path = root.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, json).unwrap();
+  }
+
+  fn collect(root: &Path, entries: &[&str]) -> HashMap<String, RuleConfig> {
+    collect_rules_from_extends(
+      &entries
+        .iter()
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>(),
+      root,
+      &mut HashSet::new(),
+    )
+    .0
+  }
+
+  #[test]
+  fn relative_entries_are_identified_by_the_resolved_file() {
+    let dir = tempfile::tempdir().unwrap();
+    for (folder, rule) in [("one", "block-no-empty"), ("two", "color-no-invalid-hex")] {
+      write(
+        dir.path(),
+        &format!("{folder}/config.json"),
+        r#"{"extends":"./base.json"}"#,
+      );
+      write(
+        dir.path(),
+        &format!("{folder}/base.json"),
+        &format!(r#"{{"rules":{{"{rule}":true}}}}"#),
+      );
+    }
+    let rules = collect(dir.path(), &["./one/config.json", "./two/config.json"]);
+    assert!(rules.contains_key("block-no-empty"));
+    assert!(rules.contains_key("color-no-invalid-hex"));
+  }
+
+  #[test]
+  fn cycles_stop_but_shared_ancestors_apply_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+      dir.path(),
+      "a.json",
+      r#"{"extends":"./b.json","rules":{"block-no-empty":true}}"#,
+    );
+    write(
+      dir.path(),
+      "b.json",
+      r#"{"extends":"./a.json","rules":{"color-no-invalid-hex":true}}"#,
+    );
+    assert_eq!(collect(dir.path(), &["./a.json"]).len(), 2);
+    write(
+      dir.path(),
+      "base.json",
+      r#"{"rules":{"block-no-empty":true}}"#,
+    );
+    write(
+      dir.path(),
+      "left.json",
+      r#"{"extends":"./base.json","rules":{"block-no-empty":false}}"#,
+    );
+    write(dir.path(), "right.json", r#"{"extends":"./base.json"}"#);
+    assert_ne!(
+      collect(dir.path(), &["./left.json", "./right.json"])["block-no-empty"].severity,
+      Some(Severity::Off)
+    );
+  }
+
+  #[test]
+  fn npm_imports_use_the_actual_entry_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    // A closer node_modules exists, but the package is found above it.
+    std::fs::create_dir_all(dir.path().join("project/node_modules")).unwrap();
+    write(
+      dir.path(),
+      "node_modules/shared/package.json",
+      r#"{"main":"configs/index.json"}"#,
+    );
+    write(
+      dir.path(),
+      "node_modules/shared/configs/index.json",
+      r#"{"extends":"./base.json","overrides":[{"files":"*.scss","extends":"./base.json"}]}"#,
+    );
+    write(
+      dir.path(),
+      "node_modules/shared/configs/base.json",
+      r#"{"rules":{"block-no-empty":true}}"#,
+    );
+    let (rules, overrides) = collect_rules_from_extends(
+      &["shared".into()],
+      &dir.path().join("project"),
+      &mut HashSet::new(),
+    );
+    assert!(rules.contains_key("block-no-empty"));
+    assert_eq!(
+      overrides[0].directory,
+      dir
+        .path()
+        .join("node_modules/shared/configs")
+        .canonicalize()
+        .unwrap()
+    );
+  }
 
   #[test]
   fn unresolved_extends_warnings_name_the_entry() {
