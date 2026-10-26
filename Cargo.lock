@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "gale-lint"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "gale_cli",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "gale_cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "gale_config"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gale_css_parser",
  "gale_diagnostics",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "gale_css_parser"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gale_diagnostics",
  "serde",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "gale_diagnostics"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "gale_formatter"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gale_diagnostics",
  "owo-colors",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "gale_linter"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "fancy-regex",
  "gale_css_parser",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "gale_lsp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gale_config",
  "gale_diagnostics",
