@@ -82,6 +82,7 @@ mod tests {
       source,
       syntax,
       cache: None,
+      embedded: None,
     };
     configured(&ScssPartialNoImport, None).check_source(&ctx)
   }
