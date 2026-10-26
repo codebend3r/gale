@@ -46,13 +46,7 @@ const SKIPPED_IN_STYLE_ATTRIBUTES: &[&str] = &[
   "no-invalid-position-declaration",
 ];
 
-/// How [`lint_host`] treats the file.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct HostOptions {
-  /// Stylelint's `ignoreDisables`: a `stylelint-disable` comment left open
-  /// in one block does not carry into the next.
-  pub ignore_disables: bool,
-}
+pub use crate::disables::DisablePolicy as HostOptions;
 
 /// The parser for a style block, or `None` when gale has none for its
 /// language.
@@ -96,7 +90,7 @@ pub fn lint_host(
   source: &str,
   file_path: &str,
   host: HostLanguage,
-  options: HostOptions,
+  options: &HostOptions,
   mut lint_css: impl FnMut(&str, Syntax, &EmbeddedRoot) -> LintResult,
 ) -> LintResult {
   let roots: Vec<(StyleBlock, Syntax)> = extract_style_blocks(source, host)
@@ -120,22 +114,18 @@ pub fn lint_host(
       .map(|(next, _)| &source[range.end..next.range.start.max(range.end)]);
 
     let text = sheet_text(source, block);
+    let lines_before = source[..range.start].matches('\n').count();
     let root = EmbeddedRoot::new(
       block.inline,
       code_before,
       &text,
       next_code_before,
       doc_indent,
+      lines_before,
     );
     let result = lint_css(&text, *syntax, &root);
 
-    let lines_before = source[..range.start].matches('\n').count();
-    diagnostics.extend(
-      result
-        .diagnostics
-        .into_iter()
-        .map(|d| to_host(d, block, lines_before)),
-    );
+    diagnostics.extend(result.diagnostics.into_iter().map(|d| to_host(d, block)));
     for warning in result.invalid_option_warnings {
       if !invalid_options.contains(&warning) {
         invalid_options.push(warning);
@@ -197,11 +187,11 @@ fn applies_to_root(rule_name: &str, inline: bool) -> bool {
 /// `lines_before` lines of the host file, into the host file.  A fix is kept
 /// only when every edit stays inside the block and clear of template
 /// expressions, whose text the linter never saw.
-fn to_host(mut diag: Diagnostic, block: &StyleBlock, lines_before: usize) -> Diagnostic {
+fn to_host(mut diag: Diagnostic, block: &StyleBlock) -> Diagnostic {
   let base = block.range.start;
   diag.span.offset += base;
-  if canonical(&diag.rule_name) == "no-duplicate-selectors" {
-    diag.message = shift_line_reference(&diag.message, lines_before);
+  for related in &mut diag.related {
+    related.span.offset += base;
   }
   if let Some(fix) = diag.fix.as_mut() {
     for edit in &mut fix.edits {
@@ -222,42 +212,9 @@ fn to_host(mut diag: Diagnostic, block: &StyleBlock, lines_before: usize) -> Dia
   diag
 }
 
-/// `message` with the line number after its last "first used at line "
-/// moved down by `lines_before` lines.  A custom message without that
-/// phrase is left alone.
-fn shift_line_reference(message: &str, lines_before: usize) -> String {
-  const PHRASE: &str = "first used at line ";
-  let Some(at) = message.rfind(PHRASE) else {
-    return message.to_string();
-  };
-  let digits_start = at + PHRASE.len();
-  let digits_len = message[digits_start..]
-    .bytes()
-    .take_while(u8::is_ascii_digit)
-    .count();
-  let Ok(line) = message[digits_start..digits_start + digits_len].parse::<usize>() else {
-    return message.to_string();
-  };
-  format!(
-    "{}{}{}",
-    &message[..digits_start],
-    line + lines_before,
-    &message[digits_start + digits_len..]
-  )
-}
-
 // ---------------------------------------------------------------------------
 // `stylelint-disable` across blocks
 // ---------------------------------------------------------------------------
-
-/// Whether the problem is about the file or the config rather than a rule's
-/// finding, which configuration comments never disable.
-fn ignores_disables(d: &Diagnostic) -> bool {
-  d.is_comment_problem()
-    || d.is_unknown_rule()
-    || d.is_invalid_option()
-    || d.message.starts_with("Internal error")
-}
 
 /// Drop the problems the document's configuration comments disable.
 ///
@@ -273,7 +230,7 @@ fn apply_document_disables(
   source: &str,
   file_path: &str,
   roots: &[(StyleBlock, Syntax)],
-  options: HostOptions,
+  options: &HostOptions,
   diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Diagnostic> {
   if !disables::may_have_directives(source) {
@@ -289,10 +246,7 @@ fn apply_document_disables(
   if let Some(rejected) = rejected {
     return Some(rejected.to_diagnostic(file_path));
   }
-  if !options.ignore_disables && !ranges.is_empty() {
-    diagnostics
-      .retain(|d| ignores_disables(d) || !ranges.covers(&d.rule_name, line_of(d.span.offset)));
-  }
+  options.apply(diagnostics, &ranges, &line_of, file_path);
   None
 }
 
@@ -304,6 +258,7 @@ fn apply_document_disables(
 /// is checking, taken from the markup around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedRoot {
+  lines_before: usize,
   /// A `style` attribute rather than a `<style>` element.
   inline: bool,
   /// The sheet starts on a fresh line (postcss-html's `codeBefore` ends
@@ -321,6 +276,11 @@ pub struct EmbeddedRoot {
 }
 
 impl EmbeddedRoot {
+  /// Host lines preceding this sheet, for rule messages naming a line.
+  pub fn lines_before(&self) -> usize {
+    self.lines_before
+  }
+
   /// Whether Stylelint runs this rule on this kind of embedded root.
   pub(crate) fn allows(&self, name: &str) -> bool {
     applies_to_root(name, self.inline)
@@ -334,6 +294,7 @@ impl EmbeddedRoot {
     text: &str,
     next_code_before: Option<&str>,
     doc_indent: Option<usize>,
+    lines_before: usize,
   ) -> Self {
     // The plugin's `/(?:^|\n)([\t ]*)\S/gm`, last match first, until one
     // whose first non-blank character is `<`.
@@ -356,6 +317,7 @@ impl EmbeddedRoot {
       .filter(|s| !s.is_empty())
       .map(|s| s[..s.len() - s.trim_start_matches([' ', '\t']).len()].to_string());
     Self {
+      lines_before,
       inline,
       starts_on_new_line: code_before.ends_with('\n'),
       tag_indent,
@@ -488,6 +450,16 @@ fn infer_doc_indent_size(source: &str) -> Option<usize> {
 mod tests {
   use super::*;
   use gale_diagnostics::{Edit, Fix, Severity, Span, apply_fixes};
+
+  fn lint_host(
+    source: &str,
+    file_path: &str,
+    host: HostLanguage,
+    options: HostOptions,
+    lint_css: impl FnMut(&str, Syntax, &EmbeddedRoot) -> LintResult,
+  ) -> LintResult {
+    super::lint_host(source, file_path, host, &options, lint_css)
+  }
 
   /// A stand-in linter: one `fake` problem at every `!`, with a fix
   /// replacing it by `?`, plus whatever `extra` adds.
@@ -659,25 +631,14 @@ mod tests {
   #[test]
   fn duplicate_selector_messages_name_the_host_line() {
     let source = "<template/>\n<style>\n.a {}\n.a {}\n</style>";
-    let result = lint_host(
-      source,
-      "x.vue",
-      HostLanguage::Vue,
-      HostOptions::default(),
-      |text, _, _| {
-        let dup = Diagnostic::new(
-          "no-duplicate-selectors",
-          "Unexpected duplicate selector \".a\", first used at line 1",
-        )
-        .span(Span::new(6, 2));
-        LintResult::new("x.vue", text, vec![dup])
-      },
-    );
+    let result =
+      crate::RuleSet::of_rules(["no-duplicate-selectors"]).lint(source, "x.vue", Syntax::Css);
     assert_eq!(
       result.diagnostics[0].message,
       "Unexpected duplicate selector \".a\", first used at line 3"
     );
-    assert_eq!(shift_line_reference("custom", 4), "custom");
+    let first = result.diagnostics[0].related[0].span;
+    assert_eq!(&source[first.offset..first.end()], ".a");
   }
 
   #[test]
@@ -703,7 +664,11 @@ mod tests {
       "x.vue",
       HostLanguage::Vue,
       HostOptions {
-        ignore_disables: true,
+        options: crate::DisableOptions {
+          ignore: true,
+          ..Default::default()
+        },
+        ..Default::default()
       },
       fake_lint,
     );
@@ -718,7 +683,13 @@ mod tests {
         source,
         "x.vue",
         HostLanguage::Vue,
-        HostOptions { ignore_disables },
+        HostOptions {
+          options: crate::DisableOptions {
+            ignore: ignore_disables,
+            ..Default::default()
+          },
+          ..Default::default()
+        },
         fake_lint,
       );
       assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);

@@ -236,6 +236,14 @@ impl Fix {
 // Diagnostic
 // ---------------------------------------------------------------------------
 
+/// Another source location explaining a diagnostic (for example, the
+/// first occurrence of a duplicate). Offsets use the diagnostic's source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedLocation {
+  pub span: Span,
+  pub message: String,
+}
+
 /// A single lint diagnostic emitted by a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
@@ -260,6 +268,9 @@ pub struct Diagnostic {
   /// `message` option is filled in from these.
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub message_args: Vec<String>,
+  /// Supporting locations, relocated alongside the primary span.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub related: Vec<RelatedLocation>,
   /// Whether the message is printed as is, without the ` (rule-name)`
   /// suffix: a custom message under a Stylelint older than 16.25.
   #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -346,6 +357,7 @@ impl Diagnostic {
       fix: None,
       url: None,
       message_args: Vec::new(),
+      related: Vec::new(),
       bare_message: false,
     }
   }
@@ -358,6 +370,15 @@ impl Diagnostic {
     S: Into<String>,
   {
     self.message_args = args.into_iter().map(Into::into).collect();
+    self
+  }
+
+  /// Adds a supporting source location. Builder method.
+  pub fn related(mut self, span: Span, message: impl Into<String>) -> Self {
+    self.related.push(RelatedLocation {
+      span,
+      message: message.into(),
+    });
     self
   }
 
