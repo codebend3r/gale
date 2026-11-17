@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -115,7 +116,6 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
         }
 
         // Scan through the media query until { or ;
-        let mut paren_depth: i32 = 0;
         while i < len && bytes[i] != b'{' && bytes[i] != b';' {
           // Skip SCSS interpolation inside media queries
           if bytes[i] == b'#' && i + 1 < len && bytes[i + 1] == b'{' {
@@ -138,7 +138,6 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
           }
 
           if bytes[i] == b'(' {
-            paren_depth += 1;
             i += 1;
 
             // We just entered a media feature parenthesized expression.
@@ -150,9 +149,7 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
 
             // Read the feature name
             let feat_start = i;
-            while i < len
-              && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-            {
+            while i < len && is_word_or_hyphen_byte(bytes[i]) {
               i += 1;
             }
             let feat_end = i;
@@ -215,8 +212,6 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
               );
             }
             continue;
-          } else if bytes[i] == b')' {
-            paren_depth -= 1;
           }
           i += 1;
         }

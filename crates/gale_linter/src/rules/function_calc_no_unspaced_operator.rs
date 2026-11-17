@@ -123,29 +123,30 @@ fn tokenize_declaration_value(value: &str) -> Vec<ComponentValue> {
   let mut i = 0;
   while i < tokens.len() {
     let token = &tokens[i];
-    if token.kind == TokenType::Dimension && !token.unit.starts_with("--") {
-      if let Some(dash) = token.unit.find('-') {
-        let remainder = token.unit[dash..].to_string();
-        if remainder.len() > 1 {
-          let unit = token.unit[..dash].to_string();
-          // Where the remainder starts in the source.  The rewritten token
-          // may print shorter (`1.50px` becomes `1.5px`, as in Stylelint)
-          // but still stands for all the text before it.
-          let base = if token.raw.ends_with(&remainder) {
-            token.end - remainder.len()
-          } else {
-            token.start + token.raw.len().saturating_sub(remainder.len())
-          };
-          let token = &mut tokens[i];
-          token.mutate_unit(&unit);
-          token.end = base;
-          let mut rest = css_tokenizer::tokenize(&remainder);
-          for t in &mut rest {
-            t.start += base;
-            t.end += base;
-          }
-          tokens.splice(i + 1..i + 1, rest);
+    if token.kind == TokenType::Dimension
+      && !token.unit.starts_with("--")
+      && let Some(dash) = token.unit.find('-')
+    {
+      let remainder = token.unit[dash..].to_string();
+      if remainder.len() > 1 {
+        let unit = token.unit[..dash].to_string();
+        // Where the remainder starts in the source.  The rewritten token
+        // may print shorter (`1.50px` becomes `1.5px`, as in Stylelint)
+        // but still stands for all the text before it.
+        let base = if token.raw.ends_with(&remainder) {
+          token.end - remainder.len()
+        } else {
+          token.start + token.raw.len().saturating_sub(remainder.len())
+        };
+        let token = &mut tokens[i];
+        token.mutate_unit(&unit);
+        token.end = base;
+        let mut rest = css_tokenizer::tokenize(&remainder);
+        for t in &mut rest {
+          t.start += base;
+          t.end += base;
         }
+        tokens.splice(i + 1..i + 1, rest);
       }
     }
     i += 1;

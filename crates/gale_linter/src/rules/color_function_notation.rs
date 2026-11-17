@@ -56,7 +56,7 @@ impl Check for ColorFunctionNotationCheck {
   /// Reports color functions in the other notation.  Under `"modern"` the
   /// fix turns the channel commas into spaces, the alpha comma into ` / `,
   /// and drops the `a` of `rgba`/`hsla`.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(modern) = self.modern else {
       return Vec::new();
     };

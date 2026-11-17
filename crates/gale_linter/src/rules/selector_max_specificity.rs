@@ -3,6 +3,7 @@ use gale_css_parser::selector::postcss::{Kind, Node, split_selectors};
 use gale_css_parser::selector::specificity::{self, Specificity, is_pseudo_element};
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_word_or_hyphen;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern;
@@ -241,7 +242,7 @@ fn without_nesting_suffixes(selector: &str) -> String {
 /// What the old scanner skipped after a `&`: ASCII letters, digits, `-` and
 /// `_`, and anything non-ASCII.
 fn is_suffix_char(ch: char) -> bool {
-  ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || !ch.is_ascii()
+  is_word_or_hyphen(ch) || !ch.is_ascii()
 }
 
 /// Strip SCSS/Less interpolation from a selector string.
@@ -252,31 +253,18 @@ fn strip_preprocessor_interpolation(selector: &str, syntax: gale_css_parser::Syn
   let mut i = 0;
 
   while i < len {
-    // SCSS: #{...}
-    if matches!(
+    // SCSS `#{...}` or Less `@{...}` interpolation.
+    let scss_interpolation = matches!(
       syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
     ) && i + 1 < len
       && chars[i] == '#'
-      && chars[i + 1] == '{'
-    {
-      let mut depth = 1;
-      i += 2;
-      while i < len && depth > 0 {
-        if chars[i] == '{' {
-          depth += 1;
-        } else if chars[i] == '}' {
-          depth -= 1;
-        }
-        i += 1;
-      }
-    }
-    // Less: @{...}
-    else if matches!(syntax, gale_css_parser::Syntax::Less)
+      && chars[i + 1] == '{';
+    let less_interpolation = matches!(syntax, gale_css_parser::Syntax::Less)
       && i + 1 < len
       && chars[i] == '@'
-      && chars[i + 1] == '{'
-    {
+      && chars[i + 1] == '{';
+    if scss_interpolation || less_interpolation {
       let mut depth = 1;
       i += 2;
       while i < len && depth > 0 {

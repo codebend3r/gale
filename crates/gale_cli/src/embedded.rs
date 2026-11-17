@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use gale_linter::embedded::{HostLanguage, unsupported_blocks};
+use rayon::prelude::*;
 
 /// Whether `path` is a file gale reads embedded style sheets from.
 pub(crate) fn is_host_file(path: &Path) -> bool {
@@ -37,10 +38,13 @@ pub(crate) fn skipped_blocks(path: &Path, source: &str) -> Vec<SkippedBlock> {
     .collect()
 }
 
-/// The skipped style blocks among `files`, read from disk.
-pub(crate) fn skipped_blocks_in(files: &[PathBuf]) -> Vec<SkippedBlock> {
+/// The skipped style blocks among `files`, read from disk in parallel and
+/// returned in the order of `files`.
+pub(crate) fn skipped_blocks_in<'a>(
+  files: impl IntoParallelIterator<Item = &'a Path>,
+) -> Vec<SkippedBlock> {
   files
-    .iter()
+    .into_par_iter()
     .filter(|file| is_host_file(file))
     .filter_map(|file| {
       let source = std::fs::read_to_string(file).ok()?;

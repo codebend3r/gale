@@ -69,7 +69,7 @@ impl Check for MediaFeatureNameNoVendorPrefixCheck {
       // Stylelint matches against the at-rule's text and reports each match
       // at its first occurrence there.
       let prelude = ctx
-        .source_slice(at.start, at.params_start() + &params.len())
+        .source_slice(at.start, at.params_start() + params.len())
         .unwrap_or("");
       for (index, feature) in find_features(&params) {
         if self.ignore_media_feature_names.matches(feature) {

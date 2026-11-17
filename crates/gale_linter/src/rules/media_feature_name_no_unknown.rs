@@ -2,6 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::data::is_known_media_feature;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -90,7 +91,7 @@ struct MediaFeature {
 /// Where `feature` is written in `params`, which start at `params_start`:
 /// its first whole-word occurrence, in any case.
 fn find_feature_span(params: &str, params_start: usize, feature: &MediaFeature) -> Option<Span> {
-  let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+  let is_word = is_word_or_hyphen_byte;
   let lower = params.to_ascii_lowercase();
   let target = feature.name.to_ascii_lowercase();
   let bytes = params.as_bytes();

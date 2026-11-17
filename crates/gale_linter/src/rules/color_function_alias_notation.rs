@@ -51,7 +51,7 @@ const WITH_ALPHA: &[&str] = &["rgba", "hsla"];
 impl Check for ColorFunctionAliasNotationCheck {
   /// Reports the name of every color function written in the other alias,
   /// with a fix that renames it.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(with_alpha) = self.with_alpha else {
       return Vec::new();
     };

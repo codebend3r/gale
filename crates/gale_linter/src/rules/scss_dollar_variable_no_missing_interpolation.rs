@@ -78,7 +78,7 @@ enum Required {
 impl Check for ScssDollarVariableNoMissingInterpolationCheck {
   /// Reports the first bare variable in each declaration or at-rule that
   /// needs it interpolated.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let variables = Variables::collect(tree);
     if variables.all.is_empty() {
       return Vec::new();

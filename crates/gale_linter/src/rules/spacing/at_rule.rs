@@ -8,6 +8,7 @@ use gale_css_parser::postcss_tree::{AtRuleRef, NodeKind, PostcssTree};
 use gale_diagnostics::Diagnostic;
 
 use super::{from_end, index_in, is_standard_at_rule, node_string};
+use crate::chars::is_word_or_hyphen_byte;
 use crate::options::Options;
 use crate::rule::{RuleContext, declare_rule};
 use crate::whitespace::{
@@ -226,7 +227,7 @@ fn if_head(params: &str) -> Option<usize> {
 fn name_head(params: &str) -> Option<usize> {
   let word = params
     .bytes()
-    .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+    .take_while(|b| is_word_or_hyphen_byte(*b))
     .count();
   if word == 0 {
     return None;

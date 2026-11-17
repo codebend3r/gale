@@ -244,6 +244,9 @@ pub struct RelatedLocation {
   pub message: String,
 }
 
+/// How the message of a problem reporting a caught panic starts.
+pub const INTERNAL_ERROR_PREFIX: &str = "Internal error ";
+
 /// A single lint diagnostic emitted by a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
@@ -306,6 +309,12 @@ impl Diagnostic {
   /// text does not carry the ` (rule-name)` suffix ordinary warnings get.
   pub fn is_comment_problem(&self) -> bool {
     self.rule_name.starts_with("--report-") || self.rule_name == "reportDisables"
+  }
+
+  /// Whether this reports a panic gale caught (in a rule, the parser or the
+  /// disable scanner) rather than a problem in the CSS.
+  pub fn is_internal_error(&self) -> bool {
+    self.message.starts_with(INTERNAL_ERROR_PREFIX)
   }
 
   /// Whether this is Stylelint's `Unknown rule <name>.` report for a

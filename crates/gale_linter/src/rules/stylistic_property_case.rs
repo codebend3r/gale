@@ -55,13 +55,9 @@ impl Check for StylisticPropertyCaseCheck {
         continue;
       }
       // Skip vendor-prefixed properties for the case check
-      let check_part = if prop.starts_with('-') {
-        // e.g. -webkit-transform -> check "transform" part
-        if let Some(idx) = prop[1..].find('-') {
-          &prop[idx + 2..]
-        } else {
-          prop
-        }
+      // e.g. -webkit-transform -> check "transform" part
+      let check_part = if let Some(idx) = prop.strip_prefix('-').and_then(|rest| rest.find('-')) {
+        &prop[idx + 2..]
       } else {
         prop
       };

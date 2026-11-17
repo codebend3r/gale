@@ -130,13 +130,11 @@ impl Check for ScssDoubleSlashCommentInlineCheck {
               );
             }
           }
-          "always" => {
-            if !is_inline {
-              diagnostics.push(
-                Diagnostic::new(NAME, "Expected double-slash comment to be inline")
-                  .span(Span::new(comment_start, comment_len)),
-              );
-            }
+          "always" if !is_inline => {
+            diagnostics.push(
+              Diagnostic::new(NAME, "Expected double-slash comment to be inline")
+                .span(Span::new(comment_start, comment_len)),
+            );
           }
           _ => {}
         }

@@ -69,7 +69,7 @@ impl Check for KeyframeSelectorNotationCheck {
     };
     let mut diags = Vec::new();
 
-    for (index, at_rule) in tree.nodes.iter().enumerate() {
+    for index in 0..tree.nodes.len() {
       let is_keyframes = tree
         .node(index)
         .as_at_rule()

@@ -80,12 +80,10 @@ impl Check for StylisticMaxEmptyLinesCheck {
 
       // Skip comments
       if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-        line_is_empty = false;
         i += 2;
         while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
           if bytes[i] == b'\n' {
             consecutive_empty = 0;
-            line_is_empty = true;
             line_start = i + 1;
           }
           i += 1;

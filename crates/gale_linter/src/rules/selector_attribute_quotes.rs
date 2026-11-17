@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_css_parser::selector::postcss::{self, Escape, Kind};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_or_hyphen;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -157,10 +158,7 @@ fn is_valid_identifier(ident: &str) -> bool {
       rest.push(c);
     }
   }
-  if rest
-    .chars()
-    .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-  {
+  if rest.chars().any(|c| !is_word_or_hyphen(c)) {
     return false;
   }
   let mut chars = rest.chars();

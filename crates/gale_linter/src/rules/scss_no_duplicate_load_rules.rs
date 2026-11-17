@@ -246,7 +246,8 @@ mod tests {
 
   #[test]
   fn rejects_duplicate_imports() {
-    let cases: &[(&str, (usize, usize), Option<(usize, usize)>)] = &[
+    type Case<'a> = (&'a str, (usize, usize), Option<(usize, usize)>);
+    let cases: &[Case] = &[
       ("@import 'a.css'; @import 'a.css';", (1, 18), Some((1, 33))),
       (
         "@import url(\"a.css\"); @import url(\"a.css\");",

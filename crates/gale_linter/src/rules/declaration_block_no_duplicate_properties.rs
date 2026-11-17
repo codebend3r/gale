@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::{NodeKind, PostcssTree};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::autoprefixable::unprefixed;
 use crate::data::is_named_color;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -87,9 +88,9 @@ struct Ignore {
 
 impl Check for DeclarationBlockNoDuplicatePropertiesCheck {
   /// Checks the declarations of every block in the document.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut checker = Checker {
-      tree: tree,
+      tree,
       ignore: self.ignore,
       ignore_properties: &self.ignore_properties,
       diags: Vec::new(),
@@ -234,23 +235,6 @@ impl Checker<'_, '_> {
         .span(Span::new(n.start, n.name.len().min(n.end - n.start)))
         .fix(Fix::new("Remove the duplicate declaration", edits)),
     );
-  }
-}
-
-/// PostCSS's `vendor.unprefixed`: `value` without a leading `-\w+-`.
-fn unprefixed(value: &str) -> &str {
-  let Some(rest) = value.strip_prefix('-') else {
-    return value;
-  };
-  let word = rest
-    .bytes()
-    .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-    .count();
-  // `\w+` backtracks to the last `-` it can end on, but a word never
-  // contains `-`, so the prefix ends at the first one.
-  match rest.as_bytes().get(word) {
-    Some(b'-') if word > 0 => &rest[word + 1..],
-    _ => value,
   }
 }
 

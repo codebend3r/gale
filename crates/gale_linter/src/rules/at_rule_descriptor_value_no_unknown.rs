@@ -136,12 +136,10 @@ fn validate_descriptor_value(at_rule_name: &str, descriptor: &str, value: &str) 
       }
       _ => {}
     },
-    "property" => {
-      if desc_lower == "inherits" && !lookup(PROPERTY_INHERITS_VALUES, val_trimmed) {
-        return Some(format!(
-          "Unexpected value \"{val_trimmed}\" for descriptor \"inherits\" in @property"
-        ));
-      }
+    "property" if desc_lower == "inherits" && !lookup(PROPERTY_INHERITS_VALUES, val_trimmed) => {
+      return Some(format!(
+        "Unexpected value \"{val_trimmed}\" for descriptor \"inherits\" in @property"
+      ));
     }
     _ => {}
   }

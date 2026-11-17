@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_or_hyphen;
 use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -256,10 +257,8 @@ fn quotes_required(family: &str) -> bool {
         && bytes
           .get(1)
           .is_some_and(|b| b.is_ascii_digit() || *b == b'-'));
-    let ident_chars = !word.is_empty()
-      && word
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c >= '\u{a0}');
+    let ident_chars =
+      !word.is_empty() && word.chars().all(|c| is_word_or_hyphen(c) || c >= '\u{a0}');
     starts_badly || !ident_chars
   })
 }

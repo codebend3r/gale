@@ -374,31 +374,18 @@ fn strip_preprocessor_constructs(selector: &str, syntax: gale_css_parser::Syntax
   let mut i = 0;
 
   while i < len {
-    // SCSS: #{...}
-    if matches!(
+    // SCSS `#{...}` or Less `@{...}` interpolation.
+    let scss_interpolation = matches!(
       syntax,
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass
     ) && i + 1 < len
       && chars[i] == '#'
-      && chars[i + 1] == '{'
-    {
-      let mut depth = 1;
-      i += 2;
-      while i < len && depth > 0 {
-        if chars[i] == '{' {
-          depth += 1;
-        } else if chars[i] == '}' {
-          depth -= 1;
-        }
-        i += 1;
-      }
-    }
-    // Less: @{...}
-    else if matches!(syntax, gale_css_parser::Syntax::Less)
+      && chars[i + 1] == '{';
+    let less_interpolation = matches!(syntax, gale_css_parser::Syntax::Less)
       && i + 1 < len
       && chars[i] == '@'
-      && chars[i + 1] == '{'
-    {
+      && chars[i + 1] == '{';
+    if scss_interpolation || less_interpolation {
       let mut depth = 1;
       i += 2;
       while i < len && depth > 0 {

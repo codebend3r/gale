@@ -8,6 +8,7 @@ mod colors;
 mod functions;
 mod properties;
 mod selectors;
+mod shorthands;
 mod values;
 
 pub use at_rules::{
@@ -20,6 +21,7 @@ pub use selectors::{
   is_experimental_html_element, is_known_html_element, is_known_pseudo_class,
   is_known_pseudo_element, is_legacy_pseudo_element,
 };
+pub use shorthands::SHORTHANDS;
 pub use values::{CSS_WIDE_KEYWORDS, is_css_wide_keyword, is_known_unit};
 
 /// Case-insensitive binary search over a sorted, lowercase table.

@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::data::CSS_WIDE_KEYWORDS;
 use crate::lint_env::LintEnv;
 use crate::list_rules::{Entries, KeyedList, keyed_option};
@@ -150,7 +151,7 @@ impl DeclarationPropertyValueNoUnknownCheck {
     }
 
     // Skip CSS-wide keywords (valid for any property)
-    if is_css_wide_keyword(&value) {
+    if is_lowercase_css_wide_keyword(&value) {
       return vec![];
     }
 
@@ -160,7 +161,7 @@ impl DeclarationPropertyValueNoUnknownCheck {
       .map(|v| v.trim())
       .unwrap_or(&value);
 
-    if value_clean.is_empty() || is_css_wide_keyword(value_clean) {
+    if value_clean.is_empty() || is_lowercase_css_wide_keyword(value_clean) {
       return vec![];
     }
 
@@ -248,7 +249,7 @@ fn contains_function_call(value: &str) -> bool {
     if bytes[i] == b'(' && i > 0 {
       // Check that the character before '(' is part of a function name
       let prev = bytes[i - 1];
-      if prev.is_ascii_alphanumeric() || prev == b'-' || prev == b'_' {
+      if is_word_or_hyphen_byte(prev) {
         return true;
       }
     }
@@ -256,8 +257,10 @@ fn contains_function_call(value: &str) -> bool {
   false
 }
 
-/// Whether the value is `inherit`, `initial`, `unset`, `revert` or similar.
-fn is_css_wide_keyword(value: &str) -> bool {
+/// Whether the value is exactly a lowercase CSS-wide keyword (`inherit`,
+/// `initial`, `unset`, `revert` or similar). Case-sensitive, unlike
+/// [`crate::data::is_css_wide_keyword`]: `INHERIT` does not match.
+fn is_lowercase_css_wide_keyword(value: &str) -> bool {
   CSS_WIDE_KEYWORDS.contains(&value)
 }
 

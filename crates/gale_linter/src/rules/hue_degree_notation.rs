@@ -53,7 +53,7 @@ const HUE_THIRD: &[&str] = &["lch", "oklch"];
 impl Check for HueDegreeNotationCheck {
   /// Reports every degree or unitless hue in the wrong notation, with a fix
   /// that adds or drops the `deg` unit.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(want_angle) = self.want_angle else {
       return Vec::new();
     };

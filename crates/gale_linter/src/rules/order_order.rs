@@ -441,7 +441,7 @@ fn node_description(tree: &PostcssTree, node: usize) -> String {
 
 impl Check for OrderOrderCheck {
   /// Checks the order of the nodes in every block of the document.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(config) = &self.config else {
       return vec![];
     };

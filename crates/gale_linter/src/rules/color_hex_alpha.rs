@@ -80,9 +80,9 @@ impl Check for ColorHexAlphaCheck {
                 );
               }
             }
-            "always" => {
+            "always"
               // 3 and 6 digit hex lack alpha — flag them
-              if hex_len == 3 || hex_len == 6 {
+              if (hex_len == 3 || hex_len == 6) => {
                 let hex_str = &value[start..start + 1 + hex_len];
                 diags.push(
                   Diagnostic::new(
@@ -92,7 +92,6 @@ impl Check for ColorHexAlphaCheck {
                   .span(Span::new(value_start + start, 1 + hex_len)),
                 );
               }
-            }
             _ => {}
           }
         } else {

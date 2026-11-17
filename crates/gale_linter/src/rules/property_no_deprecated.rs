@@ -116,7 +116,7 @@ impl PropertyNoDeprecatedCheck {
 impl Check for PropertyNoDeprecatedCheck {
   /// Flags deprecated properties, naming the replacement when one exists,
   /// and skipping `ignoreProperties`.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
       let raw = decl.raw_value();

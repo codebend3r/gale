@@ -45,7 +45,7 @@ impl SelectorPseudoElementColonNotationCheck {
 impl Check for SelectorPseudoElementColonNotationCheck {
   /// Flags the four dual-syntax pseudo-elements written with the colon
   /// notation the option forbids, in every style rule's selector as written.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let single = self.single;
     let (colons, message) = if single {
       (":", "Expected single colon pseudo-element notation")

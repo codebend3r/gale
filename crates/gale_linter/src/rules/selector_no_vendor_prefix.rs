@@ -50,7 +50,7 @@ const PREFIXES: &[&str] = &[
 impl Check for SelectorNoVendorPrefixCheck {
   /// Flags vendor-prefixed pseudos that have a standard equivalent, in every
   /// style rule's selector as written, skipping `ignoreSelectors`.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for rule in tree
       .walk_rules()

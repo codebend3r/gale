@@ -1,51 +1,25 @@
-//! Per-file config resolution for runs that span several configs, as in a
-//! monorepo: each file gets its nearest config, with config files and
-//! directory lookups cached.
+//! Nearest-config lookup for runs that span several configs, as in a
+//! monorepo: each directory maps to its nearest config file, with directory
+//! lookups cached.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::GaleConfig;
-use crate::discovery::{config_in_dir, load_config};
+use crate::discovery::config_in_dir;
 
-/// A config resolver that caches resolved configs by the config file path.
+/// A directory-to-config-file lookup that caches every directory it visits.
 ///
 /// In monorepo-style projects (like Carbon), different subdirectories may have
 /// their own stylelint config that overrides the root config.  This resolver
-/// ensures each file is linted with its nearest config (matching Stylelint's
-/// cosmiconfig behaviour) while avoiding redundant config resolution.
-pub struct ConfigResolver {
-  /// Cache: config file path -> resolved config.
-  cache: HashMap<PathBuf, GaleConfig>,
+/// finds each directory's nearest config file (matching Stylelint's
+/// cosmiconfig behaviour) while examining each directory at most once.
+#[derive(Default)]
+pub(crate) struct ConfigResolver {
   /// Cache: directory path -> config file path (or None if no config found).
   dir_cache: HashMap<PathBuf, Option<PathBuf>>,
 }
 
 impl ConfigResolver {
-  /// An empty resolver with cold config and directory caches.
-  pub fn new() -> Self {
-    Self {
-      cache: HashMap::new(),
-      dir_cache: HashMap::new(),
-    }
-  }
-
-  /// Seed the resolver with a known config, so that files resolving to this
-  /// config file path get the pre-loaded config without re-loading from disk.
-  pub fn seed(&mut self, config_path: PathBuf, config: GaleConfig) {
-    self.cache.insert(config_path, config);
-  }
-
-  /// Find the config file path for a given file, using the directory cache.
-  fn find_config_path(&mut self, file_path: &Path) -> Option<PathBuf> {
-    let dir = if file_path.is_dir() {
-      file_path.to_path_buf()
-    } else {
-      file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
-    };
-    self.find_config_path_for_dir(dir)
-  }
-
   /// The config file that applies to files in `dir`, as [`find_config`](crate::find_config)
   /// would find it.
   ///
@@ -75,40 +49,6 @@ impl ConfigResolver {
     }
     found
   }
-
-  /// Resolve the effective config for a given file path.
-  ///
-  /// Returns `None` if no config file is found anywhere in the directory
-  /// hierarchy.  Results are cached by config file path.
-  pub fn resolve_for_file(&mut self, file_path: &Path) -> Option<&GaleConfig> {
-    let config_path = self.find_config_path(file_path)?;
-
-    // Load and cache the config if not already cached.
-    if !self.cache.contains_key(&config_path) {
-      let config = load_config(&config_path).unwrap_or_else(|err| {
-        eprintln!(
-          "Warning: failed to load config {}: {err}",
-          config_path.display()
-        );
-        GaleConfig::default()
-      });
-      self.cache.insert(config_path.clone(), config);
-    }
-
-    self.cache.get(&config_path)
-  }
-
-  /// Check whether there are multiple distinct config files in play.
-  pub fn has_multiple_configs(&self) -> bool {
-    self.cache.len() > 1
-  }
-}
-
-impl Default for ConfigResolver {
-  /// Same as [`ConfigResolver::new`].
-  fn default() -> Self {
-    Self::new()
-  }
 }
 
 #[cfg(test)]
@@ -121,44 +61,22 @@ mod tests {
     // Simulate a monorepo where a subdirectory has its own config that
     // overrides the root config.
     let tmp = tempfile::tempdir().unwrap();
-
-    // Root config: enables max-nesting-depth with max 3.
-    let root_cfg = r#"{
-            "rules": {
-                "block-no-empty": true,
-                "max-nesting-depth": 3
-            }
-        }"#;
-    std::fs::write(tmp.path().join(".stylelintrc.json"), root_cfg).unwrap();
-
-    // Sub-package config: extends root but overrides max-nesting-depth
-    // to null for component files.
+    std::fs::write(tmp.path().join(".stylelintrc.json"), "{}").unwrap();
     let sub = tmp.path().join("packages").join("web-components");
     std::fs::create_dir_all(&sub).unwrap();
-    let sub_cfg = r#"{
-            "rules": {
-                "block-no-empty": true,
-                "max-nesting-depth": null
-            }
-        }"#;
-    std::fs::write(sub.join(".stylelintrc.json"), sub_cfg).unwrap();
+    std::fs::write(sub.join(".stylelintrc.json"), "{}").unwrap();
 
-    // A file under the sub-package should use the sub-package config.
-    let file = sub.join("src/components/test.scss");
-    let mut resolver = ConfigResolver::new();
-    let resolved = resolver.resolve_for_file(&file).unwrap();
-    assert!(
-      !resolved.rules.contains_key("max-nesting-depth"),
-      "max-nesting-depth should be disabled by the sub-package config"
+    // A directory under the sub-package should use the sub-package config.
+    let mut resolver = ConfigResolver::default();
+    assert_eq!(
+      resolver.find_config_path_for_dir(sub.join("src/components")),
+      Some(sub.join(".stylelintrc.json"))
     );
-    assert!(resolved.rules.contains_key("block-no-empty"));
 
-    // A file at the root should use the root config (max-nesting-depth enabled).
-    let root_file = tmp.path().join("src/main.css");
-    let root_resolved = resolver.resolve_for_file(&root_file).unwrap();
-    assert!(
-      root_resolved.rules.contains_key("max-nesting-depth"),
-      "max-nesting-depth should be enabled in the root config"
+    // A directory at the root should use the root config.
+    assert_eq!(
+      resolver.find_config_path_for_dir(tmp.path().join("src")),
+      Some(tmp.path().join(".stylelintrc.json"))
     );
   }
 
@@ -197,7 +115,7 @@ mod tests {
 
     // Deepest first fills the cache from below; shallowest first from above.
     for order in [all.iter().rev().collect::<Vec<_>>(), all.iter().collect()] {
-      let mut resolver = ConfigResolver::new();
+      let mut resolver = ConfigResolver::default();
       for dir in order {
         let i = all.iter().position(|d| d == dir).unwrap();
         assert_eq!(

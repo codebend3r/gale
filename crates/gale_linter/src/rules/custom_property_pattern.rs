@@ -197,24 +197,22 @@ impl Check for CustomPropertyPatternCheck {
         // the source.
         let value_start = decl.value_start();
         let value = decl.written_value();
-        if value.contains("var(") || value.contains("VAR(") {
-          if let Some((prop_name, token_offset_in_value)) = extract_var_first_token(value) {
-            if let Some(name) = prop_name.strip_prefix("--") {
-              // Same SCSS interpolation skip as above
-              let skip = is_scss && has_complete_scss_interpolation(name);
-              if !skip && !self.pattern.is_match(name) {
-                let message =
-                  build_message(prop_name, custom_message, pattern_str, stylelint_major);
-                diags.push(
-                  Diagnostic::new(NAME, message)
-                    .span(Span::new(
-                      value_start + token_offset_in_value,
-                      prop_name.len(),
-                    ))
-                    .message_args([prop_name, pattern_str]),
-                );
-              }
-            }
+        if (value.contains("var(") || value.contains("VAR("))
+          && let Some((prop_name, token_offset_in_value)) = extract_var_first_token(value)
+          && let Some(name) = prop_name.strip_prefix("--")
+        {
+          // Same SCSS interpolation skip as above
+          let skip = is_scss && has_complete_scss_interpolation(name);
+          if !skip && !self.pattern.is_match(name) {
+            let message = build_message(prop_name, custom_message, pattern_str, stylelint_major);
+            diags.push(
+              Diagnostic::new(NAME, message)
+                .span(Span::new(
+                  value_start + token_offset_in_value,
+                  prop_name.len(),
+                ))
+                .message_args([prop_name, pattern_str]),
+            );
           }
         }
       }

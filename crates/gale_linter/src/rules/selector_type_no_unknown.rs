@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_word_or_hyphen;
 use crate::data::is_known_html_element;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -140,7 +141,7 @@ fn extract_type_selectors(selector: &str) -> Vec<String> {
       // Skip class selectors (.name)
       '.' => {
         i += 1;
-        while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+        while i < len && is_word_or_hyphen(chars[i]) {
           i += 1;
         }
         expect_type = false;
@@ -149,7 +150,7 @@ fn extract_type_selectors(selector: &str) -> Vec<String> {
       // Skip ID selectors (#name)
       '#' => {
         i += 1;
-        while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+        while i < len && is_word_or_hyphen(chars[i]) {
           i += 1;
         }
         expect_type = false;
@@ -197,7 +198,7 @@ fn extract_type_selectors(selector: &str) -> Vec<String> {
       // Identifier character — could be a type selector
       c if c.is_ascii_alphabetic() && expect_type => {
         let start = i;
-        while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+        while i < len && is_word_or_hyphen(chars[i]) {
           i += 1;
         }
         let name: String = chars[start..i].iter().collect();
@@ -206,10 +207,9 @@ fn extract_type_selectors(selector: &str) -> Vec<String> {
         continue;
       }
       _ => {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+        if is_word_or_hyphen(ch) {
           // Skip over identifiers we don't care about
-          while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_')
-          {
+          while i < len && is_word_or_hyphen(chars[i]) {
             i += 1;
           }
         } else {

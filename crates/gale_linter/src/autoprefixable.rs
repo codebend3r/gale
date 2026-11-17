@@ -54,6 +54,17 @@ pub fn vendor_prefix_len(prop: &str) -> usize {
   prefix_end(prop.as_bytes(), 0).unwrap_or(0)
 }
 
+/// PostCSS's `vendor.prefix`: the `-\w+-` a property starts with, or `""`.
+pub fn vendor_prefix(prop: &str) -> &str {
+  &prop[..vendor_prefix_len(prop)]
+}
+
+/// PostCSS's `vendor.unprefixed`: the property without its leading
+/// `-\w+-` vendor prefix.
+pub fn unprefixed(prop: &str) -> &str {
+  &prop[vendor_prefix_len(prop)..]
+}
+
 /// The exclusive end of a `-\w+-` match starting at `start`, if one does.
 /// `\w+` stops at the first non-word byte, which has to be the closing `-`;
 /// backtracking could only end it before a word byte, so it never helps.
@@ -370,5 +381,16 @@ mod tests {
     assert_eq!(unprefix("plain"), "plain");
     assert_eq!(vendor_prefix_len("-o-columns"), 3);
     assert_eq!(vendor_prefix_len("--custom"), 0);
+  }
+
+  #[test]
+  fn vendor_prefix_and_unprefixed_split_a_leading_prefix() {
+    assert_eq!(vendor_prefix("-webkit-transform"), "-webkit-");
+    assert_eq!(vendor_prefix("--x"), "");
+    assert_eq!(unprefixed("-moz-osx-font-smoothing"), "osx-font-smoothing");
+    assert_eq!(unprefixed("-moz-fit-content"), "fit-content");
+    assert_eq!(unprefixed("--x"), "--x");
+    assert_eq!(unprefixed("-1px"), "-1px");
+    assert_eq!(unprefixed("color"), "color");
   }
 }

@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -141,8 +142,7 @@ fn find_units(value: &str) -> Vec<(usize, String)> {
     {
       // Check that the digit is not part of an identifier (preceded by
       // alphanumeric or `-` which would make it a name, not a number).
-      let preceded_by_ident = i > 0
-        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-' || bytes[i - 1] == b'_');
+      let preceded_by_ident = i > 0 && is_word_or_hyphen_byte(bytes[i - 1]);
       if preceded_by_ident {
         i += 1;
         continue;

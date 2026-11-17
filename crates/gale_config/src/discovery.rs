@@ -173,19 +173,6 @@ pub(crate) fn load_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
   }
 }
 
-/// Find the config file that applies to a specific file path.
-///
-/// Walks up from the file's parent directory looking for the nearest config
-/// file — matching Stylelint's cosmiconfig-based per-file resolution.
-pub fn find_config_for_file(file_path: &Path) -> Option<PathBuf> {
-  let dir = if file_path.is_dir() {
-    file_path.to_path_buf()
-  } else {
-    file_path.parent()?.to_path_buf()
-  };
-  find_config(&dir)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;

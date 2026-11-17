@@ -66,6 +66,12 @@ impl Default for RuleRegistry {
   }
 }
 
+/// The canonical name for `name`: its `@stylistic/` replacement when it is a
+/// deprecated alias, otherwise `name` itself.
+pub(crate) fn canonical_name(name: &str) -> &str {
+  resolve_deprecated_alias(name).unwrap_or(name)
+}
+
 /// Map deprecated Stylelint rule names to their `@stylistic/` equivalents.
 ///
 /// Stylelint 15+ moved stylistic rules to the `@stylistic/stylelint-plugin`

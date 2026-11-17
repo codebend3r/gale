@@ -57,10 +57,8 @@ impl Check for PropertyNoVendorPrefixCheck {
         continue;
       }
       // whatwg/compat#28: the prefixed form treats one length differently.
-      if prop == "-webkit-background-size" {
-        if !is_safe_background_size(&decl.raw_value()) {
-          continue;
-        }
+      if prop == "-webkit-background-size" && !is_safe_background_size(&decl.raw_value()) {
+        continue;
       }
 
       let unprefixed = autoprefixable::unprefix(prop);

@@ -48,7 +48,7 @@ const PREFIXES: &[&str] = &[
 impl Check for ValueNoVendorPrefixCheck {
   /// Flags vendor-prefixed values that have a standard equivalent, skipping any
   /// listed in `ignoreValues`.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
       let raw = decl.raw_value();

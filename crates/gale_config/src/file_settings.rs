@@ -151,7 +151,7 @@ impl RuleSetResolver {
       forced_syntax,
       run,
       cwd,
-      dirs: ConfigResolver::new(),
+      dirs: ConfigResolver::default(),
       configs: Vec::new(),
       by_path: HashMap::new(),
       fallback: None,

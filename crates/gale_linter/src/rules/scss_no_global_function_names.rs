@@ -4,6 +4,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -268,7 +269,7 @@ fn scan_value_for_global_functions(
 
     // Collect function name
     let start = i;
-    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+    while i < len && is_word_or_hyphen_byte(bytes[i]) {
       i += 1;
     }
 
@@ -330,11 +331,11 @@ impl Loads {
         .get(at.start..)
         .and_then(|rest| rest.find(';'))
         .map(|semi| at.start + semi + 1);
-      if let Some(end) = statement_end {
-        if name != "charset" || !after_load {
-          loads.insert_at = end;
-          loads.after_statement = true;
-        }
+      if let Some(end) = statement_end
+        && (name != "charset" || !after_load)
+      {
+        loads.insert_at = end;
+        loads.after_statement = true;
       }
       if name == "charset" {
         continue;
@@ -431,10 +432,11 @@ impl Check for ScssNoGlobalFunctionNamesCheck {
       |module: &str| !loads.modules.contains_key(module) && !loads.namespaces.contains(module);
     let mut missing: Vec<&'static str> = Vec::new();
     for (name, _) in &calls {
-      if let Some((module, _)) = module_replacement(name) {
-        if needs_load(module) && !missing.contains(&module) {
-          missing.push(module);
-        }
+      if let Some((module, _)) = module_replacement(name)
+        && needs_load(module)
+        && !missing.contains(&module)
+      {
+        missing.push(module);
       }
     }
     let mut insertion_pending = !missing.is_empty();
