@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::{AtRuleRef, DeclRef, PostcssTree};
 use gale_css_parser::value_parser::{self, ValueNode};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::data::is_css_wide_keyword;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Pattern, Setting};
@@ -62,7 +63,7 @@ pub(crate) fn is_standard_syntax_value(value: &str) -> bool {
     let after = &value[dot + 1..];
     let ident = after
       .bytes()
-      .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+      .take_while(|b| is_word_or_hyphen_byte(*b))
       .count();
     dot > 0 && (after.starts_with('$') || (ident > 0 && after[ident..].starts_with('(')))
   });

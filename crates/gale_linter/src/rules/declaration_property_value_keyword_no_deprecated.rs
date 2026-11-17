@@ -182,7 +182,7 @@ impl DeclarationPropertyValueKeywordNoDeprecatedCheck {
 impl Check for DeclarationPropertyValueKeywordNoDeprecatedCheck {
   /// Flags deprecated value keywords, skipping values that match
   /// `ignoreKeywords`.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
       let raw = decl.raw_value();

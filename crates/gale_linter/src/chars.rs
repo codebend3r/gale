@@ -37,6 +37,12 @@ pub fn is_word_or_hyphen_byte(b: u8) -> bool {
   is_word_byte(b) || b == b'-'
 }
 
+/// [`is_word_or_hyphen_byte`] for a `char`: ASCII letters, digits, `_` and
+/// `-` only.
+pub fn is_word_or_hyphen(c: char) -> bool {
+  c.is_ascii() && is_word_or_hyphen_byte(c as u8)
+}
+
 /// CSS whitespace (Stylelint's `isWhitespace`, the PostCSS tokenizer's):
 /// space, tab, line feed, carriage return or form feed.
 pub fn is_css_whitespace(c: char) -> bool {

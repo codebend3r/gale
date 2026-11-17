@@ -77,7 +77,7 @@ impl Problem {
 
 impl Check for CommentWhitespaceInsideCheck {
   /// Checks every comment node in the document, in source order.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let never = self.never;
     let mut diags = Vec::new();
     for i in 0..tree.nodes.len() {

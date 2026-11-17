@@ -42,7 +42,7 @@ impl ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
 impl Check for ScssDeclarationNestedPropertiesNoDividedGroupsCheck {
   /// Reports every group of a namespace that has more than one group in
   /// the same block.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     for parent in &tree.nodes {

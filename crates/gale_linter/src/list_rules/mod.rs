@@ -34,7 +34,9 @@ use gale_diagnostics::{Diagnostic, Span};
 use serde_json::{Map, Value};
 
 use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Options, Setting, is_object_of_string_lists};
+use crate::options::{
+  Accept, InvalidOption, Options, Setting, is_map_of_string_lists, is_object_of_string_lists,
+};
 use crate::pattern::{self, Regex};
 use crate::rule::{Check, RuleContext};
 
@@ -313,22 +315,25 @@ impl KeyedList {
   /// option.
   pub fn read(options: &mut Options<'_>, rule: &str, values: Entries) -> Option<Self> {
     let map: &Map<String, Value> = options.primary_object()?;
-    if !is_object_of_string_lists(&Value::Object(map.clone())) {
+    if !is_map_of_string_lists(map) {
       options.report(InvalidOption::value(rule, &Value::Object(map.clone())));
       return None;
     }
-    Some(Self(
+    Some(Self::from_map(map, Entries::Patterns, values))
+  }
+
+  /// One `(key, list)` pair per property of `map`, its keys read as `keys`
+  /// and its lists as `values`.
+  fn from_map(map: &Map<String, Value>, keys: Entries, values: Entries) -> Self {
+    Self(
       map
         .iter()
         .map(|(key, list)| {
           let entries = strings_of(list).unwrap_or_default();
-          (
-            Entry::new(key, Entries::Patterns),
-            List::new(&entries, values),
-          )
+          (Entry::new(key, keys), List::new(&entries, values))
         })
         .collect(),
-    ))
+    )
   }
 
   /// The list of the first key, in the order the config wrote them, that
@@ -450,11 +455,7 @@ impl<R: KeyedListRule> KeyedCheck<R> {
       if applying.peek().is_none() {
         return false;
       }
-      let listed = match R::POLARITY {
-        Polarity::Allowed => applying.any(|list| list.matches(&subject)),
-        Polarity::Disallowed => !applying.all(|list| !list.matches(&subject)),
-      };
-      R::POLARITY.reports(listed)
+      R::POLARITY.reports(applying.any(|list| list.matches(&subject)))
     } else {
       lists
         .first(&found.key)
@@ -487,18 +488,7 @@ pub fn keyed_option(options: &mut Options<'_>, key: &'static str, keys: Entries)
   else {
     return KeyedList::default();
   };
-  KeyedList(
-    map
-      .iter()
-      .map(|(name, list)| {
-        let entries = strings_of(list).unwrap_or_default();
-        (
-          Entry::new(name, keys),
-          List::new(&entries, Entries::Patterns),
-        )
-      })
-      .collect(),
-  )
+  KeyedList::from_map(map, keys, Entries::Patterns)
 }
 
 /// A secondary option listing names and `/regex/` literals.

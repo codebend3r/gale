@@ -2,6 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -131,11 +132,7 @@ impl Check for ScssDollarVariableEmptyLineBeforeCheck {
 
       // Check that the part before `:` is a valid variable name
       let before_colon = trimmed.split(':').next().unwrap_or("");
-      if !before_colon.starts_with('$')
-        || !before_colon[1..]
-          .chars()
-          .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-      {
+      if !before_colon.starts_with('$') || !before_colon[1..].chars().all(is_word_or_hyphen) {
         continue;
       }
 

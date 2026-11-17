@@ -174,12 +174,12 @@ fn count_universal_selectors(selector: &str, config: &Config) -> usize {
         }
         last_combinator = None;
       }
-      _ if !in_single_quote && !in_double_quote && in_attribute == 0 => {
+      _ if !in_single_quote && !in_double_quote && in_attribute == 0
         // Any other non-whitespace resets the combinator tracking
         // (it's a simple selector component like .class, #id, type, :pseudo)
-        if !ch.is_ascii_whitespace() {
-          last_combinator = None;
-        }
+        && !ch.is_ascii_whitespace() =>
+      {
+        last_combinator = None;
       }
       _ => {}
     }

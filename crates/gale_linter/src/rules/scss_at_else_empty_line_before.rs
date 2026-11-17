@@ -110,13 +110,11 @@ impl Check for ScssAtElseEmptyLineBeforeCheck {
               );
             }
           }
-          "always" => {
-            if !has_empty_line {
-              diagnostics.push(
-                Diagnostic::new(NAME, "Expected empty line before @else")
-                  .span(Span::new(at_else_offset, 5)),
-              );
-            }
+          "always" if !has_empty_line => {
+            diagnostics.push(
+              Diagnostic::new(NAME, "Expected empty line before @else")
+                .span(Span::new(at_else_offset, 5)),
+            );
           }
           _ => {}
         }

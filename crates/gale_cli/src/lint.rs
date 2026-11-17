@@ -151,8 +151,8 @@ pub(crate) fn lint_files(
   if let Some(warning) = skipped_files_warning(&skipped) {
     eprintln!("{warning}");
   }
-  let files: Vec<PathBuf> = planned.iter().map(|plan| plan.path.clone()).collect();
-  if let Some(warning) = embedded::skipped_blocks_warning(&embedded::skipped_blocks_in(&files)) {
+  let paths = planned.par_iter().map(|plan| plan.path.as_path());
+  if let Some(warning) = embedded::skipped_blocks_warning(&embedded::skipped_blocks_in(paths)) {
     eprintln!("{warning}");
   }
 

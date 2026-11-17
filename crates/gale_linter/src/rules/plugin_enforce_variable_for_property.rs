@@ -199,20 +199,20 @@ impl Check for PluginEnforceVariableForPropertyCheck {
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
       let prop_lower = decl.prop().to_lowercase();
-      if let Some(patterns) = property_map.get(&prop_lower) {
-        if !value_matches_patterns(decl.value(), patterns) {
-          diags.push(
-            Diagnostic::new(
-              NAME,
-              format!(
-                "Expected variable or allowed value for '{}', got '{}'",
-                decl.prop(),
-                decl.value()
-              ),
-            )
-            .span(decl.span()),
-          );
-        }
+      if let Some(patterns) = property_map.get(&prop_lower)
+        && !value_matches_patterns(decl.value(), patterns)
+      {
+        diags.push(
+          Diagnostic::new(
+            NAME,
+            format!(
+              "Expected variable or allowed value for '{}', got '{}'",
+              decl.prop(),
+              decl.value()
+            ),
+          )
+          .span(decl.span()),
+        );
       }
     }
     diags

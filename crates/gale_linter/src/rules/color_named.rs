@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::data::{is_named_color, named_color_for_rgb};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -168,9 +169,9 @@ fn check_never(
         args,
         offset: fn_offset,
         ..
-      } => {
+      }
         // Check inside functions unless ignore_inside_function is set
-        if !ignore_inside_function {
+        if !ignore_inside_function => {
           let fn_name_lower = fn_name.to_ascii_lowercase();
           // Skip url() contents entirely
           if fn_name_lower == "url" {
@@ -185,7 +186,6 @@ fn check_never(
             diags,
           );
         }
-      }
       _ => {}
     }
   }
@@ -199,14 +199,14 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
     match token {
       ValueToken::Hash { text, offset } => {
         // Check if this hex color has a named equivalent
-        if let Some(rgb) = parse_hex_to_rgb(text) {
-          if let Some(name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2]) {
-            let abs_offset = value_offset + offset;
-            diags.push(
-              Diagnostic::new(NAME, format!("Expected \"{name}\" instead of \"#{text}\""))
-                .span(Span::new(abs_offset, text.len() + 1)), // +1 for #
-            );
-          }
+        if let Some(rgb) = parse_hex_to_rgb(text)
+          && let Some(name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2])
+        {
+          let abs_offset = value_offset + offset;
+          diags.push(
+            Diagnostic::new(NAME, format!("Expected \"{name}\" instead of \"#{text}\""))
+              .span(Span::new(abs_offset, text.len() + 1)), // +1 for #
+          );
         }
       }
       ValueToken::Function {
@@ -218,100 +218,94 @@ fn check_always_where_possible(value: &str, value_offset: usize, diags: &mut Vec
         let fn_lower = name.to_ascii_lowercase();
         match fn_lower.as_str() {
           "rgb" | "rgba" => {
-            if let Some((r, g, b, fully_opaque)) = parse_rgb_args(args) {
-              if fully_opaque {
-                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
-                  let abs_offset = value_offset + fn_offset - name.len() - 1;
-                  // Point to the start of the function name
-                  let func_start = value_offset + fn_offset - name.len() - 1;
-                  diags.push(
-                    Diagnostic::new(
-                      NAME,
-                      format!(
-                        "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
-                        args.trim()
-                      ),
-                    )
-                    .span(Span::new(func_start, *full_len)),
-                  );
-                }
-              }
+            if let Some((r, g, b, fully_opaque)) = parse_rgb_args(args)
+              && fully_opaque
+              && let Some(color_name) = named_color_for_rgb([r, g, b])
+            {
+              // Point to the start of the function name
+              let func_start = value_offset + fn_offset - name.len() - 1;
+              diags.push(
+                Diagnostic::new(
+                  NAME,
+                  format!(
+                    "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
+                    args.trim()
+                  ),
+                )
+                .span(Span::new(func_start, *full_len)),
+              );
             }
           }
           "hsl" | "hsla" => {
-            if let Some((r, g, b, fully_opaque)) = parse_hsl_args(args) {
-              if fully_opaque {
-                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
-                  let func_start = value_offset + fn_offset - name.len() - 1;
-                  diags.push(
-                    Diagnostic::new(
-                      NAME,
-                      format!(
-                        "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
-                        args.trim()
-                      ),
-                    )
-                    .span(Span::new(func_start, *full_len)),
-                  );
-                }
-              }
+            if let Some((r, g, b, fully_opaque)) = parse_hsl_args(args)
+              && fully_opaque
+              && let Some(color_name) = named_color_for_rgb([r, g, b])
+            {
+              let func_start = value_offset + fn_offset - name.len() - 1;
+              diags.push(
+                Diagnostic::new(
+                  NAME,
+                  format!(
+                    "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
+                    args.trim()
+                  ),
+                )
+                .span(Span::new(func_start, *full_len)),
+              );
             }
           }
           "hwb" => {
-            if let Some((r, g, b, fully_opaque)) = parse_hwb_args(args) {
-              if fully_opaque {
-                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
-                  let func_start = value_offset + fn_offset - name.len() - 1;
-                  diags.push(
-                    Diagnostic::new(
-                      NAME,
-                      format!(
-                        "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
-                        args.trim()
-                      ),
-                    )
-                    .span(Span::new(func_start, *full_len)),
-                  );
-                }
-              }
+            if let Some((r, g, b, fully_opaque)) = parse_hwb_args(args)
+              && fully_opaque
+              && let Some(color_name) = named_color_for_rgb([r, g, b])
+            {
+              let func_start = value_offset + fn_offset - name.len() - 1;
+              diags.push(
+                Diagnostic::new(
+                  NAME,
+                  format!(
+                    "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
+                    args.trim()
+                  ),
+                )
+                .span(Span::new(func_start, *full_len)),
+              );
             }
           }
           "gray" => {
-            if let Some((r, g, b, fully_opaque)) = parse_gray_args(args) {
-              if fully_opaque {
-                if let Some(color_name) = named_color_for_rgb([r, g, b]) {
-                  let func_start = value_offset + fn_offset - name.len() - 1;
-                  diags.push(
-                    Diagnostic::new(
-                      NAME,
-                      format!(
-                        "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
-                        args.trim()
-                      ),
-                    )
-                    .span(Span::new(func_start, *full_len)),
-                  );
-                }
-              }
+            if let Some((r, g, b, fully_opaque)) = parse_gray_args(args)
+              && fully_opaque
+              && let Some(color_name) = named_color_for_rgb([r, g, b])
+            {
+              let func_start = value_offset + fn_offset - name.len() - 1;
+              diags.push(
+                Diagnostic::new(
+                  NAME,
+                  format!(
+                    "Expected \"{color_name}\" instead of \"{fn_lower}({})\"|",
+                    args.trim()
+                  ),
+                )
+                .span(Span::new(func_start, *full_len)),
+              );
             }
           }
           "color" => {
             // color(#000 a(50%)) — check the first argument if it's a hex
             let inner_tokens = tokenize_value(args);
             for inner in &inner_tokens {
-              if let ValueToken::Hash { text, offset: _ } = inner {
-                if let Some(rgb) = parse_hex_to_rgb(text) {
-                  if let Some(color_name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2]) {
-                    let func_start = value_offset + fn_offset - name.len() - 1;
-                    diags.push(
-                      Diagnostic::new(
-                        NAME,
-                        format!("Expected \"{color_name}\" instead of \"#{text}\""),
-                      )
-                      .span(Span::new(func_start, *full_len)),
-                    );
-                  }
-                }
+              if let ValueToken::Hash { text, offset: _ } = inner
+                && let Some(rgb) = parse_hex_to_rgb(text)
+                && let Some(color_name) = named_color_for_rgb([rgb.0, rgb.1, rgb.2])
+              {
+                let func_start = value_offset + fn_offset - name.len() - 1;
+                diags.push(
+                  Diagnostic::new(
+                    NAME,
+                    format!("Expected \"{color_name}\" instead of \"#{text}\""),
+                  )
+                  .span(Span::new(func_start, *full_len)),
+                );
               }
             }
           }
@@ -397,7 +391,7 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
     // SCSS variable
     if b == b'$' {
       i += 1;
-      while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+      while i < len && is_word_or_hyphen_byte(bytes[i]) {
         i += 1;
       }
       tokens.push(ValueToken::Other);
@@ -423,7 +417,7 @@ fn tokenize_value(value: &str) -> Vec<ValueToken> {
     // Word or function
     if b.is_ascii_alphabetic() || b == b'-' || b == b'_' {
       let word_start = i;
-      while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+      while i < len && is_word_or_hyphen_byte(bytes[i]) {
         i += 1;
       }
       let word = &value[word_start..i];
@@ -736,10 +730,10 @@ fn parse_percentage(s: &str) -> Option<f64> {
 /// Check if an alpha value represents full opacity.
 fn is_fully_opaque(s: &str) -> bool {
   let s = s.trim();
-  if let Some(pct) = s.strip_suffix('%') {
-    if let Ok(val) = pct.trim().parse::<f64>() {
-      return (val - 100.0).abs() < 0.001;
-    }
+  if let Some(pct) = s.strip_suffix('%')
+    && let Ok(val) = pct.trim().parse::<f64>()
+  {
+    return (val - 100.0).abs() < 0.001;
   }
   if let Ok(val) = s.parse::<f64>() {
     return (val - 1.0).abs() < 0.001;

@@ -117,7 +117,7 @@ const TIMELINE_RANGES: &[&str] = &[
 impl Check for SelectorTypeCaseCheck {
   /// Flags type selectors not in the configured case, reading every style
   /// rule's selector as written.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let upper = self.upper;
 
     let mut diags = Vec::new();

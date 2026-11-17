@@ -1,11 +1,11 @@
 //! Printing the results and deciding the exit code.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use gale_diagnostics::{LintResult, Severity};
-use gale_formatter::{StylelintResult, create_formatter_with_color, strip_ansi};
+use gale_formatter::{StylelintResult, create_formatter_with_color, lexically_normal, strip_ansi};
 use gale_linter::runner::PERF_TARGET;
 
 use crate::args::Cli;
@@ -121,17 +121,7 @@ fn reported_path(cwd: &Path, path: &str, normalize_absolute: bool) -> String {
   } else {
     cwd.join(path)
   };
-  let mut normal = PathBuf::new();
-  for component in joined.components() {
-    match component {
-      std::path::Component::CurDir => {}
-      std::path::Component::ParentDir => {
-        normal.pop();
-      }
-      other => normal.push(other),
-    }
-  }
-  normal.display().to_string()
+  lexically_normal(&joined).display().to_string()
 }
 
 /// How the report is printed.

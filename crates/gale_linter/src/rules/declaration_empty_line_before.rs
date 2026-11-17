@@ -75,7 +75,7 @@ impl DeclarationEmptyLineBeforeCheck {
 
 impl Check for DeclarationEmptyLineBeforeCheck {
   /// Checks every declaration in the document, in source order.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let always = self.always;
     let except = |name: &str| self.except.contains(&name);
     let ignore = |name: &str| self.ignore.contains(&name);

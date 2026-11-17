@@ -73,15 +73,15 @@ impl Check for ScssOperatorNoNewlineAfterCheck {
           // or identifier/digit character (not another operator or space).
           let before_op = &content_trimmed[..content_trimmed.len() - last_char.len_utf8()];
           let before_trimmed = before_op.trim_end();
-          if let Some(prev) = before_trimmed.chars().last() {
-            if is_value_end_char(prev) && !is_css_color_channel_separator(last_char, before_trimmed)
-            {
-              let op_byte_in_line = content_trimmed.len() - 1;
-              diags.push(
-                Diagnostic::new(NAME, format!("Unexpected newline after \"{}\"", last_char))
-                  .span(Span::new(byte_offset + op_byte_in_line, 1)),
-              );
-            }
+          if let Some(prev) = before_trimmed.chars().last()
+            && is_value_end_char(prev)
+            && !is_css_color_channel_separator(last_char, before_trimmed)
+          {
+            let op_byte_in_line = content_trimmed.len() - 1;
+            diags.push(
+              Diagnostic::new(NAME, format!("Unexpected newline after \"{}\"", last_char))
+                .span(Span::new(byte_offset + op_byte_in_line, 1)),
+            );
           }
         }
       }
@@ -177,7 +177,7 @@ fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
     && last_word
       .chars()
       .next()
-      .map_or(false, |c| c.is_ascii_lowercase())
+      .is_some_and(|c| c.is_ascii_lowercase())
 }
 
 #[cfg(test)]

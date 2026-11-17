@@ -66,7 +66,7 @@ impl RuleEmptyLineBeforeCheck {
 
 impl Check for RuleEmptyLineBeforeCheck {
   /// Checks every rule in the document, in source order.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let expectation = self.expectation;
     let multi_line_only = expectation.contains("multi-line");
     let always = expectation.contains("always");

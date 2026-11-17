@@ -101,14 +101,14 @@ impl Check for StylisticNumberLeadingZeroCheck {
             }
           }
         }
-        "never" => {
+        "never"
           // Look for 0.N pattern (unnecessary leading zero)
           if bytes[i] == b'0'
             && i + 1 < len
             && bytes[i + 1] == b'.'
             && i + 2 < len
             && bytes[i + 2].is_ascii_digit()
-          {
+          => {
             // Make sure it's not part of a larger number like 10.5
             let prev_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
             if !prev_is_digit {
@@ -116,7 +116,6 @@ impl Check for StylisticNumberLeadingZeroCheck {
                 .push(Diagnostic::new(NAME, "Unexpected leading zero").span(Span::new(i, 1)));
             }
           }
-        }
         _ => {}
       }
 

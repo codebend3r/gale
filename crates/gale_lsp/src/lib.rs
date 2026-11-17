@@ -209,11 +209,7 @@ impl GaleLspServer {
           gale_linter::runner::INTERNAL_ERROR_RULE.to_string(),
         )),
         source: Some("gale".to_string()),
-        message: format!(
-          "Internal error while linting this file: {}. This is a bug in gale; please report it at {}",
-          caught.describe(),
-          panic_guard::ISSUES_URL
-        ),
+        message: caught.report("while linting this file"),
         ..Default::default()
       };
       (Vec::new(), vec![diag])

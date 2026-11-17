@@ -47,7 +47,20 @@ impl Caught {
       None => self.message.clone(),
     }
   }
+
+  /// The problem text for this panic, which happened `scope` (`while linting
+  /// this file`, say), asking for a bug report.
+  pub fn report(&self, scope: &str) -> String {
+    format!(
+      "{INTERNAL_ERROR_PREFIX}{scope}: {}. This is a bug in gale; please report it at {ISSUES_URL}",
+      self.describe()
+    )
+  }
 }
+
+/// How every internal-error message starts; see
+/// [`gale_diagnostics::Diagnostic::is_internal_error`].
+pub const INTERNAL_ERROR_PREFIX: &str = gale_diagnostics::INTERNAL_ERROR_PREFIX;
 
 /// Run `f`, returning its value, or the panic it raised as a [`Caught`].
 ///

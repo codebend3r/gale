@@ -1,5 +1,3 @@
-#![allow(clippy::all, unreachable_code, unused_variables, unused_assignments)]
-
 pub mod autoprefixable;
 pub mod braces;
 pub mod chars;

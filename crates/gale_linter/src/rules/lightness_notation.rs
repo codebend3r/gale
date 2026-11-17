@@ -53,7 +53,7 @@ const ZERO_TO_HUNDRED: &[&str] = &["lab", "lch"];
 impl Check for LightnessNotationCheck {
   /// Reports every lightness in the wrong notation, with a fix that converts
   /// it the way Stylelint does.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let Some(want_percentage) = self.want_percentage else {
       return Vec::new();
     };

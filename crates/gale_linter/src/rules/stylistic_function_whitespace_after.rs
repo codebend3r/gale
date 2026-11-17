@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -81,10 +82,7 @@ impl Check for StylisticFunctionWhitespaceAfterCheck {
       }
 
       // Detect function call — but skip pseudo-class functions like :not(), :is(), etc.
-      if bytes[i] == b'('
-        && i > 0
-        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-' || bytes[i - 1] == b'_')
-      {
+      if bytes[i] == b'(' && i > 0 && is_word_or_hyphen_byte(bytes[i - 1]) {
         // Walk back to find the function name start
         let mut fname_start = i - 1;
         while fname_start > 0

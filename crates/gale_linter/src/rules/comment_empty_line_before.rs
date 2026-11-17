@@ -68,7 +68,7 @@ impl CommentEmptyLineBeforeCheck {
 
 impl Check for CommentEmptyLineBeforeCheck {
   /// Checks every comment node in the document, in source order.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let always = self.always;
     let ignore = |name: &str| self.ignore.contains(&name);
 

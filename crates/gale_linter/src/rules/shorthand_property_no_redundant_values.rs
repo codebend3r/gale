@@ -3,6 +3,7 @@ use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::autoprefixable::vendor_prefix_len;
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -64,7 +65,7 @@ fn is_standard_syntax_value(value: &str) -> bool {
   let bytes = value.as_bytes();
   for i in 1..bytes.len().saturating_sub(1) {
     if bytes[i] == b'.'
-      && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-' || bytes[i - 1] == b'_')
+      && is_word_or_hyphen_byte(bytes[i - 1])
       && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'-' || bytes[i + 1] == b'_')
     {
       return false;
@@ -272,7 +273,6 @@ fn shortest_border_radius(value: &str, radius: &BorderRadius) -> Option<String> 
   .trim()
   .to_string();
   let normalized = value
-    .trim()
     .split_whitespace()
     .collect::<Vec<_>>()
     .join(" ")

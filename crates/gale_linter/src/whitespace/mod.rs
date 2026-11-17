@@ -659,14 +659,10 @@ pub fn fix_space_after(
   index: usize,
 ) -> Vec<Edit> {
   let run = space_run_after(text, index + 1);
-  let with = if expectation.is_always() {
-    " "
-  } else if expectation.is_never() {
-    ""
-  } else {
-    return vec![];
-  };
-  vec![replace(base, run, with)]
+  space_fix_text(expectation)
+    .map(|with| replace(base, run, with))
+    .into_iter()
+    .collect()
 }
 
 /// The fix of the "space before" rules: the whitespace before the character
@@ -679,14 +675,22 @@ pub fn fix_space_before(
   index: usize,
 ) -> Vec<Edit> {
   let run = space_run_before(text, index);
-  let with = if expectation.is_always() {
-    " "
+  space_fix_text(expectation)
+    .map(|with| replace(base, run, with))
+    .into_iter()
+    .collect()
+}
+
+/// What a fix puts in place of the whitespace: one space for an `always`
+/// expectation, nothing for a `never` one, and no fix for any other.
+fn space_fix_text(expectation: Expectation) -> Option<&'static str> {
+  if expectation.is_always() {
+    Some(" ")
   } else if expectation.is_never() {
-    ""
+    Some("")
   } else {
-    return vec![];
-  };
-  vec![replace(base, run, with)]
+    None
+  }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -91,9 +92,7 @@ impl Check for StylisticSelectorPseudoClassCaseCheck {
         if i + 1 < len && bytes[i + 1] == b':' {
           i += 2;
           // Skip past pseudo-element name
-          while i < len
-            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-          {
+          while i < len && is_word_or_hyphen_byte(bytes[i]) {
             i += 1;
           }
           continue;
@@ -104,8 +103,7 @@ impl Check for StylisticSelectorPseudoClassCaseCheck {
 
         // Read the pseudo-class name
         let name_start = i;
-        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-        {
+        while i < len && is_word_or_hyphen_byte(bytes[i]) {
           i += 1;
         }
         let name_end = i;

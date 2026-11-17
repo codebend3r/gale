@@ -99,7 +99,7 @@ impl MediaFeatureRangeNotationCheck {
     &self,
     params: &str,
     params_start: usize,
-    ctx: &RuleContext,
+    _ctx: &RuleContext,
     diags: &mut Vec<Diagnostic>,
   ) {
     let (prefix, except_exact_value) = (self.prefix, self.except_exact_value);

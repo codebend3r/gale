@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -98,13 +99,11 @@ fn expected_name(name: &str, mode: &str) -> String {
 /// whole name; gale cases the two parts apart, so the camelCase names apply
 /// after a prefix too.
 fn split_vendor_prefix(name: &str) -> (&str, &str) {
-  if name.starts_with('-') {
-    // Vendor prefixes: -webkit-, -moz-, -ms-, -o-
-    // Find the second hyphen which ends the prefix
-    if let Some(pos) = name[1..].find('-') {
-      let prefix_end = pos + 2; // +1 for the skipped first char, +1 to include the hyphen
-      return (&name[..prefix_end], &name[prefix_end..]);
-    }
+  // Vendor prefixes: -webkit-, -moz-, -ms-, -o-
+  // Find the second hyphen which ends the prefix
+  if let Some(pos) = name.strip_prefix('-').and_then(|rest| rest.find('-')) {
+    let prefix_end = pos + 2; // +1 for the skipped first char, +1 to include the hyphen
+    return (&name[..prefix_end], &name[prefix_end..]);
   }
   ("", name)
 }
@@ -205,7 +204,7 @@ fn extract_function_names_with_offsets(value: &str) -> Vec<(String, usize)> {
     // Look for the start of an identifier (letter, hyphen for vendor prefix, or underscore)
     if bytes[i].is_ascii_alphabetic() || bytes[i] == b'-' || bytes[i] == b'_' {
       let start = i;
-      while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+      while i < len && is_word_or_hyphen_byte(bytes[i]) {
         i += 1;
       }
       if i < len && bytes[i] == b'(' {

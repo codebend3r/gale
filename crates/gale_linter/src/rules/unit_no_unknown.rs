@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen;
 use crate::data::is_known_unit;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -146,7 +147,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 
     if i + 1 < len && chars[i] == '-' && chars[i + 1] == '-' {
       i += 2;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+      while i < len && is_word_or_hyphen(chars[i]) {
         i += 1;
       }
       continue;
@@ -154,7 +155,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
 
     if chars[i] == '$' {
       i += 1;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+      while i < len && is_word_or_hyphen(chars[i]) {
         i += 1;
       }
       continue;
@@ -163,7 +164,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
     if chars[i] == '@' && i + 1 < len && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
     {
       i += 1;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+      while i < len && is_word_or_hyphen(chars[i]) {
         i += 1;
       }
       continue;
@@ -188,11 +189,8 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
     if chars[i].is_ascii_digit()
       || (chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit())
     {
-      if i > 1
-        && chars[i - 1] == '-'
-        && (chars[i - 2].is_ascii_alphanumeric() || chars[i - 2] == '-' || chars[i - 2] == '_')
-      {
-        while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+      if i > 1 && chars[i - 1] == '-' && is_word_or_hyphen(chars[i - 2]) {
+        while i < len && is_word_or_hyphen(chars[i]) {
           i += 1;
         }
         continue;
@@ -232,8 +230,7 @@ fn extract_units_with_context(value: &str) -> Vec<UnitOccurrence> {
             || chars[i] == '('
             || chars[i].is_ascii_alphanumeric())
         {
-          while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_')
-          {
+          while i < len && is_word_or_hyphen(chars[i]) {
             i += 1;
           }
           continue;
@@ -453,7 +450,7 @@ fn media_feature_values(params: &str) -> Vec<(String, String, usize)> {
         }
       }
       let name_start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+      while i < len && is_word_or_hyphen(chars[i]) {
         i += 1;
       }
       let name: String = chars[name_start..i].iter().collect();

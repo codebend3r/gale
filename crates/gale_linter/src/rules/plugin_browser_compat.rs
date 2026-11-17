@@ -6,6 +6,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::{LintEnv, find_node_modules};
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -493,84 +494,7 @@ fn resolve_browserslist(queries: &[String], file_path: &Path) -> Option<Vec<Brow
     .map(|p| p.display().to_string())
     .unwrap_or_else(|| "npx".to_string());
   let cache_key = format!("{}|{}", bin_key, query);
-
-  // Held across the subprocess call so parallel workers don't all spawn it.
-  let mut cache = browserslist_cache().lock().unwrap();
-  if let Some(cached) = cache.get(&cache_key) {
-    return Some(cached.clone());
-  }
-
-  let output = run_browserslist(Some(&query), &work_dir)?;
-
-  if !output.status.success() {
-    return None;
-  }
-
-  let stdout = String::from_utf8_lossy(&output.stdout);
-  let mapping = browserslist_to_mdn();
-
-  let mut targets: Vec<BrowserTarget> = stdout
-    .lines()
-    .filter_map(|line| {
-      let line = line.trim();
-      let (name, version_str) = line.split_once(' ')?;
-
-      // Skip Safari TP
-      if name == "safari" && version_str == "TP" {
-        return None;
-      }
-
-      let info = mapping.iter().find(|(bl, _, _)| *bl == name)?;
-
-      // Handle version ranges like "18.5-18.6"
-      let min_version_str = version_str.split('-').next()?;
-
-      // Handle "all" version
-      let version = if min_version_str == "all" {
-        0.0
-      } else {
-        // Special case: op_mob 10 → 10.1
-        if name == "op_mob" && min_version_str == "10" {
-          10.1
-        } else {
-          min_version_str.parse::<f64>().ok()?
-        }
-      };
-
-      Some(BrowserTarget {
-        browserslist_id: name.to_string(),
-        mdn_id: info.1.to_string(),
-        display_name: info.2.to_string(),
-        version,
-        version_string: version_str.to_string(),
-      })
-    })
-    .collect();
-
-  // Sort descending by (browserslist_id desc, version desc)
-  targets.sort_by(|a, b| {
-    let name_cmp = b.browserslist_id.cmp(&a.browserslist_id);
-    if name_cmp != std::cmp::Ordering::Equal {
-      return name_cmp;
-    }
-    b.version
-      .partial_cmp(&a.version)
-      .unwrap_or(std::cmp::Ordering::Equal)
-  });
-
-  // Keep only the LAST (oldest) version per browser group.
-  // This matches the JS plugin's deduplication behavior.
-  let mut deduped: Vec<BrowserTarget> = Vec::new();
-  for (i, target) in targets.iter().enumerate() {
-    let is_last_of_group =
-      i + 1 == targets.len() || targets[i + 1].browserslist_id != target.browserslist_id;
-    if is_last_of_group {
-      deduped.push(target.clone());
-    }
-  }
-
-  cache.insert(cache_key, deduped.clone());
-  Some(deduped)
+  resolve_targets(cache_key, Some(&query), &work_dir)
 }
 
 /// Resolve the browserslist using the project's own config (no explicit query).
@@ -602,14 +526,23 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
   }
 
   let cache_key = format!("{}|__default__", project_root.display());
+  resolve_targets(cache_key, None, &project_root)
+}
 
+/// Runs `browserslist [query]` in `work_dir` and turns its output into one
+/// target per browser (its oldest version), memoised under `cache_key`.
+fn resolve_targets(
+  cache_key: String,
+  query: Option<&str>,
+  work_dir: &Path,
+) -> Option<Vec<BrowserTarget>> {
   // Held across the subprocess call so parallel workers don't all spawn it.
   let mut cache = browserslist_cache().lock().unwrap();
   if let Some(cached) = cache.get(&cache_key) {
     return Some(cached.clone());
   }
 
-  let output = run_browserslist(None, &project_root)?;
+  let output = run_browserslist(query, work_dir)?;
 
   if !output.status.success() {
     return None;
@@ -622,20 +555,22 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
     .lines()
     .filter_map(|line| {
       let line = line.trim();
-      if line.is_empty() {
-        return None;
-      }
       let (name, version_str) = line.split_once(' ')?;
 
+      // Skip Safari TP
       if name == "safari" && version_str == "TP" {
         return None;
       }
 
       let info = mapping.iter().find(|(bl, _, _)| *bl == name)?;
+
+      // Handle version ranges like "18.5-18.6"
       let min_version_str = version_str.split('-').next()?;
+
       let version = if min_version_str == "all" {
         0.0
       } else if name == "op_mob" && min_version_str == "10" {
+        // Special case: op_mob 10 → 10.1
         10.1
       } else {
         min_version_str.parse::<f64>().ok()?
@@ -651,6 +586,7 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
     })
     .collect();
 
+  // Sort descending by (browserslist_id desc, version desc)
   targets.sort_by(|a, b| {
     let name_cmp = b.browserslist_id.cmp(&a.browserslist_id);
     if name_cmp != std::cmp::Ordering::Equal {
@@ -661,6 +597,8 @@ fn resolve_browserslist_default(file_path: &Path) -> Option<Vec<BrowserTarget>> 
       .unwrap_or(std::cmp::Ordering::Equal)
   });
 
+  // Keep only the LAST (oldest) version per browser group.
+  // This matches the JS plugin's deduplication behavior.
   let mut deduped: Vec<BrowserTarget> = Vec::new();
   for (i, target) in targets.iter().enumerate() {
     let is_last_of_group =
@@ -843,7 +781,7 @@ fn check_selectors(
 
       // Read the pseudo name
       let name_start = i;
-      while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+      while i < len && is_word_or_hyphen_byte(bytes[i]) {
         i += 1;
       }
 
@@ -967,54 +905,4 @@ fn strip_vendor_prefix(prop: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn strips_vendor_prefix_from_properties() {
-    assert_eq!(
-      strip_vendor_prefix("-webkit-tap-highlight-color"),
-      Some("tap-highlight-color")
-    );
-    assert_eq!(strip_vendor_prefix("-moz-appearance"), Some("appearance"));
-    assert_eq!(strip_vendor_prefix("color"), None);
-  }
-
-  #[test]
-  fn strips_vendor_prefix_from_pseudos() {
-    assert_eq!(
-      strip_vendor_prefix("-webkit-inner-spin-button"),
-      Some("inner-spin-button")
-    );
-    assert_eq!(strip_vendor_prefix("hover"), None);
-  }
-
-  #[test]
-  fn test_parse_version_f64() {
-    assert!((parse_version_f64("138") - 138.0).abs() < f64::EPSILON);
-    assert!((parse_version_f64("17.0") - 17.0).abs() < f64::EPSILON);
-    assert!((parse_version_f64("\u{2264}79") - 79.0).abs() < f64::EPSILON);
-  }
-
-  #[test]
-  fn options_are_validated_like_the_plugin() {
-    use crate::testing::invalid_options;
-    let valid = serde_json::json!([true, {
-      "browserslist": "> 1%",
-      "allow": { "features": ["properties.gap"], "flagged": false, "prefix": true }
-    }]);
-    assert!(invalid_options(NAME, valid).is_empty());
-    assert!(invalid_options(NAME, serde_json::json!(true)).is_empty());
-    assert_eq!(
-      invalid_options(NAME, serde_json::json!([true, { "browserslist": 5 }])),
-      ["Invalid option \"{\"browserslist\":5}\" for rule \"plugin/browser-compat\""]
-    );
-    assert_eq!(
-      invalid_options(
-        NAME,
-        serde_json::json!([true, { "allow": { "prefix": "yes" } }])
-      ),
-      ["Invalid option \"{\"allow\":{\"prefix\":\"yes\"}}\" for rule \"plugin/browser-compat\""]
-    );
-  }
-}
+mod tests;

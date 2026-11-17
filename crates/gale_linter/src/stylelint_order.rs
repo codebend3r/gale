@@ -10,27 +10,9 @@
 
 use gale_diagnostics::{Edit, Span};
 
+use crate::autoprefixable::unprefixed;
+
 use gale_css_parser::postcss_tree::{NodeKind, PostcssTree, has_delimited};
-
-/// `vendor.prefix`: the `-\w+-` a property starts with, or `""`.
-pub fn vendor_prefix(prop: &str) -> &str {
-  let Some(rest) = prop.strip_prefix('-') else {
-    return "";
-  };
-  let word = rest
-    .bytes()
-    .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
-    .count();
-  match rest.as_bytes().get(word) {
-    Some(b'-') if word > 0 => &prop[..word + 2],
-    _ => "",
-  }
-}
-
-/// `vendor.unprefixed`: the property without its vendor prefix.
-pub fn unprefixed(prop: &str) -> &str {
-  &prop[vendor_prefix(prop).len()..]
-}
 
 /// The name the order rules look properties up by: unprefixed, lowercased,
 /// and with `-moz-osx-font-smoothing` read as `font-smoothing`.
@@ -157,31 +139,37 @@ pub fn reorder_edit(
   let span = tree.children_span(children)?;
   let original = tree.source().get(span.clone())?;
   let printed = tree.print_children(order, semicolon);
-  if printed == original {
+  minimal_edit(span.start, span.end, original, &printed)
+}
+
+/// The smallest edit turning `old`, which covers `start..end` of the
+/// source, into `new`: only the bytes between their common prefix and
+/// common suffix (kept on char boundaries) are replaced. `None` when they
+/// are equal.
+pub(crate) fn minimal_edit(start: usize, end: usize, old: &str, new: &str) -> Option<Edit> {
+  if new == old {
     return None;
   }
-  let mut prefix = original
+  let mut prefix = old
     .bytes()
-    .zip(printed.bytes())
+    .zip(new.bytes())
     .take_while(|(a, b)| a == b)
     .count();
-  while !original.is_char_boundary(prefix) || !printed.is_char_boundary(prefix) {
+  while !old.is_char_boundary(prefix) || !new.is_char_boundary(prefix) {
     prefix -= 1;
   }
-  let mut suffix = original[prefix..]
+  let mut suffix = old[prefix..]
     .bytes()
     .rev()
-    .zip(printed[prefix..].bytes().rev())
+    .zip(new[prefix..].bytes().rev())
     .take_while(|(a, b)| a == b)
     .count();
-  while !original.is_char_boundary(original.len() - suffix)
-    || !printed.is_char_boundary(printed.len() - suffix)
-  {
+  while !old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix) {
     suffix -= 1;
   }
   Some(Edit::new(
-    Span::from_range(span.start + prefix, span.end - suffix),
-    printed[prefix..printed.len() - suffix].to_string(),
+    Span::from_range(start + prefix, end - suffix),
+    &new[prefix..new.len() - suffix],
   ))
 }
 
@@ -578,15 +566,11 @@ mod tests {
   use gale_css_parser::Syntax;
 
   #[test]
-  fn vendor_prefixes() {
-    assert_eq!(vendor_prefix("-webkit-transform"), "-webkit-");
-    assert_eq!(unprefixed("-moz-osx-font-smoothing"), "osx-font-smoothing");
+  fn normalized_property_drops_prefix_and_osx() {
     assert_eq!(
       normalized_property("-MOZ-OSX-Font-Smoothing"),
       "font-smoothing"
     );
-    assert_eq!(vendor_prefix("--x"), "");
-    assert_eq!(unprefixed("color"), "color");
   }
 
   #[test]

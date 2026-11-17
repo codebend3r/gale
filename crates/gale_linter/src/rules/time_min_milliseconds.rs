@@ -56,21 +56,19 @@ fn is_delay_property(prop: &str) -> bool {
   lower.ends_with("-delay")
 }
 
+/// `prop` without a leading `-webkit-`, `-moz-`, `-ms-` or `-o-`.
+fn strip_vendor_prefix(prop: &str) -> &str {
+  ["-webkit-", "-moz-", "-ms-", "-o-"]
+    .iter()
+    .find_map(|prefix| prop.strip_prefix(prefix))
+    .unwrap_or(prop)
+}
+
 /// Check if a property is animation/transition related.
 fn is_time_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
   // Strip vendor prefix
-  let stripped = if lower.starts_with("-webkit-") {
-    &lower[8..]
-  } else if lower.starts_with("-moz-") {
-    &lower[5..]
-  } else if lower.starts_with("-ms-") {
-    &lower[4..]
-  } else if lower.starts_with("-o-") {
-    &lower[3..]
-  } else {
-    &lower
-  };
+  let stripped = strip_vendor_prefix(&lower);
 
   matches!(
     stripped,
@@ -86,17 +84,7 @@ fn is_time_property(prop: &str) -> bool {
 /// Check if a property is a shorthand (transition or animation).
 fn is_shorthand_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
-  let stripped = if lower.starts_with("-webkit-") {
-    &lower[8..]
-  } else if lower.starts_with("-moz-") {
-    &lower[5..]
-  } else if lower.starts_with("-ms-") {
-    &lower[4..]
-  } else if lower.starts_with("-o-") {
-    &lower[3..]
-  } else {
-    &lower
-  };
+  let stripped = strip_vendor_prefix(&lower);
   matches!(stripped, "transition" | "animation")
 }
 

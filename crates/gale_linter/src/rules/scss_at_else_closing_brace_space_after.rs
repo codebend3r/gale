@@ -95,16 +95,14 @@ impl Check for ScssAtElseClosingBraceSpaceAfterCheck {
                     );
                   }
                 }
-                "never-intermediate" => {
-                  if space_count > 0 {
-                    diagnostics.push(
-                      Diagnostic::new(
-                        NAME,
-                        "Unexpected space after closing brace of @else if before @else".to_string(),
-                      )
-                      .span(Span::new(close_brace, 1)),
-                    );
-                  }
+                "never-intermediate" if space_count > 0 => {
+                  diagnostics.push(
+                    Diagnostic::new(
+                      NAME,
+                      "Unexpected space after closing brace of @else if before @else".to_string(),
+                    )
+                    .span(Span::new(close_brace, 1)),
+                  );
                 }
                 _ => {}
               }

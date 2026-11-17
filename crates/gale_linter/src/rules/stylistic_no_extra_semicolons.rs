@@ -133,9 +133,8 @@ impl Check for StylisticNoExtraSemicolonsCheck {
       if bytes[i] == b';' {
         // Check backwards to see if there's another ; before this one
         // with only whitespace in between
-        let mut k = i.wrapping_sub(1);
         if i > 0 {
-          k = i - 1;
+          let mut k = i - 1;
           while k > 0
             && (bytes[k] == b' ' || bytes[k] == b'\t' || bytes[k] == b'\n' || bytes[k] == b'\r')
           {

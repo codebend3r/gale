@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -105,7 +106,6 @@ impl Check for StylisticIndentationCheck {
     let mut i = 0;
     let mut brace_depth: i32 = 0;
     let mut paren_depth: i32 = 0;
-    let mut line_start = 0;
     // Track the last meaningful (non-whitespace, non-comment) character
     // to detect multi-line value continuation lines.
     let mut last_meaningful_char: u8 = b';'; // start as if after a statement
@@ -132,9 +132,6 @@ impl Check for StylisticIndentationCheck {
           if bytes[i] == b'\\' {
             i += 1;
           }
-          if i < len && bytes[i] == b'\n' {
-            line_start = i + 1;
-          }
           i += 1;
         }
         if i < len {
@@ -148,9 +145,6 @@ impl Check for StylisticIndentationCheck {
       if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
         i += 2;
         while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-          if bytes[i] == b'\n' {
-            line_start = i + 1;
-          }
           i += 1;
         }
         if i + 1 < len {
@@ -222,9 +216,7 @@ impl Check for StylisticIndentationCheck {
           let mut is_pseudo = false;
           if i > 0 {
             let mut p = i - 1;
-            while p > 0
-              && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'-' || bytes[p] == b'_')
-            {
+            while p > 0 && is_word_or_hyphen_byte(bytes[p]) {
               p -= 1;
             }
             if bytes[p] == b':' {
@@ -261,7 +253,7 @@ impl Check for StylisticIndentationCheck {
       }
 
       if bytes[i] == b'\n' {
-        line_start = i + 1;
+        let line_start = i + 1;
         colon_seen_this_line = false;
         at_include_seen_this_line = false;
 

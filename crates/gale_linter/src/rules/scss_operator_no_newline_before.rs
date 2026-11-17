@@ -68,7 +68,7 @@ static DATA_URI: LazyLock<Regex> =
 impl Check for ScssOperatorNoNewlineBeforeCheck {
   /// Reports each operator in a declaration value or at-rule params that
   /// starts a line.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     for node in &tree.nodes {

@@ -130,15 +130,15 @@ fn extract_path(params: &str) -> &str {
   let trimmed = params.trim();
   // Quoted path: find content between matching quotes, ignoring any trailing
   // ` as <alias>` or other keywords that follow the closing quote.
-  if let Some(s) = trimmed.strip_prefix('"') {
-    if let Some(end) = s.find('"') {
-      return &s[..end];
-    }
+  if let Some(s) = trimmed.strip_prefix('"')
+    && let Some(end) = s.find('"')
+  {
+    return &s[..end];
   }
-  if let Some(s) = trimmed.strip_prefix('\'') {
-    if let Some(end) = s.find('\'') {
-      return &s[..end];
-    }
+  if let Some(s) = trimmed.strip_prefix('\'')
+    && let Some(end) = s.find('\'')
+  {
+    return &s[..end];
   }
   // Unquoted: take first whitespace-separated token.
   trimmed.split_whitespace().next().unwrap_or(trimmed)

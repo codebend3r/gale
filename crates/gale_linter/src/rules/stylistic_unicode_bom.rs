@@ -80,7 +80,7 @@ mod tests {
   #[test]
   fn reports_bom_when_never() {
     let rule = configured(&StylisticUnicodeBom, None);
-    let source = format!("\u{FEFF}a {{ color: red; }}");
+    let source = "\u{FEFF}a { color: red; }".to_string();
     let ctx = ctx_with_source(&source);
     let d = rule.check_source(&ctx);
     assert_eq!(d.len(), 1);
