@@ -10,15 +10,9 @@ use gale_diagnostics::SourceLineIndex;
 /// * Comments (`//` and `/* */`) are preserved as-is
 /// * Blank lines are passed through
 ///
-/// Byte offsets in the resulting SCSS differ from the original Sass; use
-/// [`convert_sass_to_scss_with_map`] to translate them back.
-#[cfg(test)]
-pub fn convert_sass_to_scss(input: &str) -> String {
-  convert_sass_to_scss_with_map(input).0
-}
-
-/// [`convert_sass_to_scss`], plus a [`SourceMap`] from offsets in the SCSS
-/// back to offsets in `input`.
+/// Byte offsets in the resulting SCSS differ from the original Sass, so the
+/// conversion comes with a [`SourceMap`] from offsets in the SCSS back to
+/// offsets in `input`.
 ///
 /// Rules lint the SCSS, so every span they report points into it.  The map
 /// lets the runner report those spans against the file the author wrote.
@@ -378,6 +372,11 @@ fn needs_semicolon(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// The SCSS `input` converts to, without its map.
+  fn convert_sass_to_scss(input: &str) -> String {
+    convert_sass_to_scss_with_map(input).0
+  }
 
   #[test]
   fn basic_rule() {

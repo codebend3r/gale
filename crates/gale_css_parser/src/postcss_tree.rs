@@ -113,6 +113,8 @@ pub struct Node {
 pub struct PostcssTree<'a> {
   /// The text the offsets point into.
   source: &'a str,
+  /// The syntax the tree was parsed as.
+  syntax: Syntax,
   /// Every node, in document (pre-)order: a parent precedes its children.
   pub nodes: Vec<Node>,
   /// The top-level nodes.
@@ -142,6 +144,7 @@ impl<'a> PostcssTree<'a> {
     parser.parse();
     Self {
       source,
+      syntax,
       nodes: parser.nodes,
       root: parser.root,
       root_semicolon: parser.root_semicolon,
@@ -154,6 +157,11 @@ impl<'a> PostcssTree<'a> {
   /// The source text the tree was parsed from.
   pub fn source(&self) -> &'a str {
     self.source
+  }
+
+  /// The syntax the tree was parsed as.
+  pub fn syntax(&self) -> Syntax {
+    self.syntax
   }
 
   /// The 1-based line holding `offset`.
@@ -360,7 +368,7 @@ impl<'a> PostcssTree<'a> {
 
   /// Stylelint's `getNextNonSharedLineCommentNode`, the mirror of
   /// [`Self::previous_non_shared_line_comment`].
-  pub fn next_non_shared_line_comment(&self, i: usize) -> Option<usize> {
+  fn next_non_shared_line_comment(&self, i: usize) -> Option<usize> {
     let next = self.next(i)?;
     if self.nodes[next].kind != NodeKind::Comment {
       return Some(next);
@@ -634,11 +642,13 @@ fn is_less_mixin_with_suffix(selector: &str) -> bool {
 
 /// Stylelint's `hasInterpolation`: SCSS `#{}`, Less `@{}`, template `{}` or
 /// PostCSS simple vars `$()` with something inside.
+///
+/// Stylelint tests `#{`, `@{` and `{` separately, but the dot-all `{...}`
+/// test alone covers the first two: it starts from the `{` of each, sees the
+/// same text after it, and accepts any characters where `@{` stops at a line
+/// break.
 pub fn has_interpolation(text: &str) -> bool {
-  has_delimited(text, "#{", '}', true)
-    || has_delimited(text, "@{", '}', false)
-    || has_delimited(text, "{", '}', true)
-    || has_delimited(text, "$(", ')', false)
+  has_delimited(text, "{", '}', true) || has_delimited(text, "$(", ')', false)
 }
 
 /// Whether `open`, then at least one character, then `close` appear in

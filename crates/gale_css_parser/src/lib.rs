@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod css_tokenizer;
 pub mod postcss_tree;
 mod sass_to_scss;
+mod scan;
 pub mod selector;
 pub mod value_parser;
 

@@ -7,6 +7,8 @@
 //! `postcss-value-parser` 4.2's `parse.js` step by step, quirks included,
 //! with byte offsets in place of UTF-16 ones.
 
+use crate::scan::find_unescaped;
+
 /// What a [`ValueNode`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -196,48 +198,16 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
       }
       pos = next;
     } else if code == b'\'' || code == b'"' {
-      // A string, up to the first unescaped matching quote.
-      let mut next = pos;
-      let close = loop {
-        match input[next + 1..].find(code as char) {
-          Some(offset) => {
-            next = next + 1 + offset;
-            let backslashes = bytes[pos + 1..next]
-              .iter()
-              .rev()
-              .take_while(|&&b| b == b'\\')
-              .count();
-            if backslashes % 2 == 0 {
-              break Some(next);
-            }
-          }
-          None => break None,
-        }
-      };
-      let end = close.unwrap_or(max);
-      if close.is_none() {
+      let string = read_string(input, pos);
+      if string.unclosed {
         value_len += 1;
       }
-      let mut string = leaf(
-        NodeKind::String,
-        &input[pos + 1..end],
-        pos,
-        close.map_or(max, |c| c + 1),
-      );
-      string.quote = Some(code as char);
-      string.unclosed = close.is_none();
+      pos = string.source_end_index;
       push(&mut stack, string);
-      pos = close.map_or(max, |c| c + 1);
     } else if code == b'/' && at(pos + 1) == Some(b'*') {
-      // A comment.  The search for `*/` starts at the `*`, so `/*/`
-      // closes at once, as in `postcss-value-parser`.
-      let close = input[pos + 1..].find("*/").map(|offset| pos + 1 + offset);
-      let end = close.unwrap_or(max);
-      let text = input.get(pos + 2..end).unwrap_or("");
-      let mut comment = leaf(NodeKind::Comment, text, pos, close.map_or(max, |c| c + 2));
-      comment.unclosed = close.is_none();
+      let comment = read_comment(input, pos);
+      pos = comment.source_end_index;
       push(&mut stack, comment);
-      pos = close.map_or(max, |c| c + 2);
     } else if (code == b'/' || code == b'*') && parent.is_calc() {
       // An operator inside `calc()`.
       push(
@@ -271,63 +241,12 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
       let function_start = open - name.len();
       pos = next;
       if name == "url" && at(next) != Some(b'\'') && at(next) != Some(b'"') {
-        // `url(` with an unquoted argument: everything up to the first
-        // unescaped `)` is one word.
-        let mut close = None;
-        let mut search = next.saturating_sub(1);
-        while let Some(offset) = input.get(search + 1..).and_then(|rest| rest.find(')')) {
-          let found = search + 1 + offset;
-          let backslashes = bytes[..found]
-            .iter()
-            .rev()
-            .take_while(|&&b| b == b'\\')
-            .count();
-          if backslashes % 2 == 0 {
-            close = Some(found);
-            break;
-          }
-          search = found;
-        }
-        let end = close.unwrap_or(max);
-        let mut content_end = end;
-        while content_end > open + 1 && bytes[content_end - 1] <= b' ' {
-          content_end -= 1;
-        }
-        let mut function = leaf(
-          NodeKind::Function,
-          name,
-          function_start,
-          close.map_or(max, |c| c + 1),
-        );
-        function.before = &input[open + 1..next];
-        function.unclosed = close.is_none();
-        if close.is_none() {
+        let function = read_unquoted_url(input, name, open, next);
+        if function.unclosed {
           value_len += 1;
         }
-        // Upstream only looks inside when something other than whitespace
-        // follows the `(`.
-        if content_end > open + 1 {
-          if content_end > pos {
-            function.nodes.push(leaf(
-              NodeKind::Word,
-              &input[pos..content_end],
-              pos,
-              content_end,
-            ));
-          }
-          if close.is_none() && content_end < end {
-            function.nodes.push(leaf(
-              NodeKind::Space,
-              &input[content_end..end],
-              content_end,
-              end,
-            ));
-          } else {
-            function.after = &input[content_end..end];
-          }
-        }
+        pos = function.source_end_index;
         push(&mut stack, function);
-        pos = close.map_or(max, |c| c + 1);
       } else {
         let mut function = leaf(NodeKind::Function, name, function_start, open + 1);
         function.before = &input[open + 1..next];
@@ -346,31 +265,7 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
         _ => Parent::Root,
       };
     } else {
-      // A word: up to whitespace, a quote, a divider, `(`, or a `)` that
-      // closes a function.
-      let mut next = pos;
-      loop {
-        if bytes[next] == b'\\' {
-          next += 1;
-        }
-        next += 1;
-        if next >= max {
-          break;
-        }
-        let c = bytes[next];
-        let ends = c <= b' '
-          || c == b'\''
-          || c == b'"'
-          || c == b','
-          || c == b':'
-          || c == b'/'
-          || c == b'('
-          || (c == b'*' && parent.is_calc())
-          || (c == b')' && balanced);
-        if ends {
-          break;
-        }
-      }
+      let next = word_end(bytes, pos, parent, balanced);
       // Upstream's `sourceEndIndex` is this unclamped `next`, one past the
       // end when the text ends in a backslash.
       let token_end = next.max(pos + 1);
@@ -399,6 +294,112 @@ pub fn parse(input: &str) -> Vec<ValueNode<'_>> {
     stack.last_mut().expect("root frame").nodes.push(done);
   }
   stack.pop().map(|root| root.nodes).unwrap_or_default()
+}
+
+/// The string node whose quote is at `pos`, up to the first unescaped
+/// matching quote, or running to the end of `input` when there is none.
+fn read_string(input: &str, pos: usize) -> ValueNode<'_> {
+  let bytes = input.as_bytes();
+  let max = bytes.len();
+  let quote = bytes[pos];
+  let close = find_unescaped(bytes, pos + 1, quote);
+  let end = close.unwrap_or(max);
+  let mut string = leaf(
+    NodeKind::String,
+    &input[pos + 1..end],
+    pos,
+    close.map_or(max, |c| c + 1),
+  );
+  string.quote = Some(quote as char);
+  string.unclosed = close.is_none();
+  string
+}
+
+/// The comment node whose `/*` is at `pos`.  The search for `*/` starts at
+/// the `*`, so `/*/` closes at once, as in `postcss-value-parser`.
+fn read_comment(input: &str, pos: usize) -> ValueNode<'_> {
+  let max = input.len();
+  let close = input[pos + 1..].find("*/").map(|offset| pos + 1 + offset);
+  let end = close.unwrap_or(max);
+  let text = input.get(pos + 2..end).unwrap_or("");
+  let mut comment = leaf(NodeKind::Comment, text, pos, close.map_or(max, |c| c + 2));
+  comment.unclosed = close.is_none();
+  comment
+}
+
+/// The `url(` function named `name`, whose `(` is at `open`, with an
+/// unquoted argument starting at `next` (past the whitespace after the
+/// `(`): everything up to the first unescaped `)` is one word.
+fn read_unquoted_url<'a>(input: &'a str, name: &'a str, open: usize, next: usize) -> ValueNode<'a> {
+  let bytes = input.as_bytes();
+  let max = bytes.len();
+  let close = find_unescaped(bytes, next, b')');
+  let end = close.unwrap_or(max);
+  let mut content_end = end;
+  while content_end > open + 1 && bytes[content_end - 1] <= b' ' {
+    content_end -= 1;
+  }
+  let mut function = leaf(
+    NodeKind::Function,
+    name,
+    open - name.len(),
+    close.map_or(max, |c| c + 1),
+  );
+  function.before = &input[open + 1..next];
+  function.unclosed = close.is_none();
+  // Upstream only looks inside when something other than whitespace
+  // follows the `(`.
+  if content_end > open + 1 {
+    if content_end > next {
+      function.nodes.push(leaf(
+        NodeKind::Word,
+        &input[next..content_end],
+        next,
+        content_end,
+      ));
+    }
+    if close.is_none() && content_end < end {
+      function.nodes.push(leaf(
+        NodeKind::Space,
+        &input[content_end..end],
+        content_end,
+        end,
+      ));
+    } else {
+      function.after = &input[content_end..end];
+    }
+  }
+  function
+}
+
+/// Where the word starting at `pos` ends: at whitespace, a quote, a
+/// divider, `(`, `*` inside `calc()`, or a `)` that closes a function.
+/// Unclamped, so one past the end when the text ends in a backslash.
+fn word_end(bytes: &[u8], pos: usize, parent: Parent<'_>, balanced: bool) -> usize {
+  let max = bytes.len();
+  let mut next = pos;
+  loop {
+    if bytes[next] == b'\\' {
+      next += 1;
+    }
+    next += 1;
+    if next >= max {
+      return next;
+    }
+    let c = bytes[next];
+    let ends = c <= b' '
+      || c == b'\''
+      || c == b'"'
+      || c == b','
+      || c == b':'
+      || c == b'/'
+      || c == b'('
+      || (c == b'*' && parent.is_calc())
+      || (c == b')' && balanced);
+    if ends {
+      return next;
+    }
+  }
 }
 
 /// `postcss-value-parser`'s `unit`: split a word that starts like a number

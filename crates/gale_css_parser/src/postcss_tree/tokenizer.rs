@@ -1,6 +1,8 @@
 //! The tokenizer: a port of `postcss/lib/tokenize.js` and
 //! `postcss-scss/lib/scss-tokenize.js`.
 
+use crate::scan::{find_unescaped, is_css_space as is_space};
+
 /// Which PostCSS parser to imitate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flavor {
@@ -50,11 +52,6 @@ impl Token {
   pub(super) fn is_space_or_comment(&self) -> bool {
     self.kind == Tok::Space || self.is_comment()
   }
-}
-
-/// Whether `b` is whitespace to the PostCSS tokenizer.
-fn is_space(b: u8) -> bool {
-  matches!(b, b' ' | b'\n' | b'\t' | b'\r' | 0x0c)
 }
 
 /// Splits the source into PostCSS tokens, with `back` to push tokens back.
@@ -262,21 +259,10 @@ impl<'a> Tokenizer<'a> {
         return (Tok::Brackets, next + 1);
       }
     } else if prev == "url" && !matches!(n, b'\'' | b'"') && !is_space(n) {
-      let mut next = pos;
-      loop {
-        let Some(close) = self.find(next + 1, |b, _| b == b')') else {
-          return (Tok::Brackets, pos + 1);
-        };
-        next = close;
-        let backslashes = self.bytes[..close]
-          .iter()
-          .rev()
-          .take_while(|&&b| b == b'\\')
-          .count();
-        if backslashes % 2 == 0 {
-          return (Tok::Brackets, close + 1);
-        }
-      }
+      return match find_unescaped(self.bytes, pos + 1, b')') {
+        Some(close) => (Tok::Brackets, close + 1),
+        None => (Tok::Brackets, pos + 1),
+      };
     } else if self.last_bad_paren.is_some_and(|bad| pos <= bad) {
       return (Tok::OpenParen, pos + 1);
     }
