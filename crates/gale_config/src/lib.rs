@@ -14,22 +14,23 @@ mod extends;
 mod file_settings;
 mod js;
 mod model;
+mod module_resolution;
 mod plugins;
 mod presets;
 mod raw;
 mod resolve;
 mod resolver;
+mod root_config;
 mod rule_set;
 mod skipped;
 
 pub use discovery::{find_config, load_config};
-pub use file_settings::{
-  ConfigSource, FileSettings, Ignored, ResolverOptions, RuleSetResolver, syntax_for_custom_syntax,
-  syntax_for_file,
+pub use file_settings::{ConfigSource, FileSettings, Ignored, ResolverOptions, RuleSetResolver};
+pub use model::{
+  CacheStrategy, ConfigError, FixMode, GaleConfig, ResolvedOverride, RuleConfig, Severity,
 };
-pub use model::{ConfigError, FixMode, GaleConfig, ResolvedOverride, RuleConfig, Severity};
-pub use plugins::is_known_plugin;
-pub use presets::{recommended_rule_names, resolve_preset};
-pub use raw::{ConfigFile, ConfigOverride, RuleConfigValue};
+pub(crate) use presets::{recommended_rule_names, resolve_preset};
+pub(crate) use raw::{ConfigFile, ConfigOverride, RuleConfigValue};
+pub use root_config::{RootConfig, RootConfigError};
 pub use rule_set::{RunSettings, WithoutConfig};
-pub use skipped::{SkippedRules, unsupported_plugin_warnings};
+pub use skipped::{ConfigWarning, SkippedRuleWarnings, unsupported_plugin_warnings};

@@ -8,8 +8,8 @@ use anyhow::{Result, bail};
 use tracing::debug;
 
 use gale_config::{
-  ConfigSource, FixMode, GaleConfig, ResolverOptions, RuleSetResolver, RunSettings, SkippedRules,
-  WithoutConfig, unsupported_plugin_warnings,
+  FixMode, GaleConfig, ResolverOptions, RootConfig, RuleSetResolver, RunSettings,
+  SkippedRuleWarnings, WithoutConfig, unsupported_plugin_warnings,
 };
 use gale_linter::{DisableOptions, LintEnv};
 
@@ -18,83 +18,53 @@ use crate::cache::{CacheStrategy, resolve_cache_path};
 use crate::exit::{EXIT_FATAL, EXIT_INVALID_CONFIG, Exit};
 use crate::report::choose_formatter;
 
-/// The config for the working directory: the `--config` file, else the
-/// closest config file.
-pub(crate) struct RootConfig {
-  pub(crate) config: GaleConfig,
-  /// Where the closest config was found, which files without a closer
-  /// config fall back on; `None` with `--config`, or with no config file.
-  pub(crate) path: Option<PathBuf>,
+/// Load the root config: the `--config` file, else the closest config to
+/// the working directory.  One that exists but cannot be loaded is a
+/// configuration error (exit 78), not something to paper over with
+/// defaults.
+pub(crate) fn load_root_config(cli: &Cli) -> Result<RootConfig, Exit> {
+  if let Some(path) = &cli.config {
+    debug!("Using config file: {}", path.display());
+  }
+  let cwd = std::env::current_dir().unwrap_or_default();
+  RootConfig::load(cli.config.as_deref(), &cwd).map_err(|err| {
+    Exit::new(
+      EXIT_INVALID_CONFIG,
+      format!(
+        "Error: failed to load config {}: {}",
+        err.path.display(),
+        err.error
+      ),
+    )
+  })
 }
 
-impl RootConfig {
-  /// Load the root config.  One that exists but cannot be loaded is a
-  /// configuration error (exit 78), not something to paper over with
-  /// defaults.
-  pub(crate) fn load(cli: &Cli) -> Result<Self, Exit> {
-    let load = |path: &Path| {
-      gale_config::load_config(path).map_err(|err| {
-        Exit::new(
-          EXIT_INVALID_CONFIG,
-          format!("Error: failed to load config {}: {err}", path.display()),
-        )
-      })
-    };
-    if let Some(path) = &cli.config {
-      debug!("Using config file: {}", path.display());
-      return Ok(Self {
-        config: load(path)?,
-        path: None,
-      });
-    }
-    let cwd = std::env::current_dir().unwrap_or_default();
-    Ok(match gale_config::find_config(&cwd) {
-      Some(path) => Self {
-        config: load(&path)?,
-        path: Some(path),
-      },
-      None => Self {
-        config: GaleConfig::default(),
-        path: None,
-      },
-    })
+/// Warn about the plugins the root config loads that gale does not know.
+pub(crate) fn warn_unsupported_plugins(root: &RootConfig) {
+  for warning in unsupported_plugin_warnings(&root.config) {
+    eprintln!("warning: {warning}");
   }
+}
 
-  /// Warn about the plugins the config loads that gale does not know.
-  pub(crate) fn warn_unsupported_plugins(&self) {
-    for warning in unsupported_plugin_warnings(&self.config) {
-      eprintln!("{warning}");
-    }
-  }
-
-  /// The resolver each file's settings come from: its closest config (or
-  /// the `--config` file) with the overrides that match it, `forced_syntax`
-  /// for every file, and `run` added to every config.
-  ///
-  /// `without_config` is what a file gets when there is no config file at
-  /// all.
-  pub(crate) fn resolver(
-    &self,
-    cli: &Cli,
-    without_config: WithoutConfig,
-    forced_syntax: Option<String>,
-    run: RunSettings,
-  ) -> RuleSetResolver {
-    let source = if cli.config.is_some() {
-      ConfigSource::Explicit(self.config.clone())
-    } else {
-      ConfigSource::Closest {
-        root: self.path.clone().map(|path| (path, self.config.clone())),
-      }
-    };
-    RuleSetResolver::new(ResolverOptions {
-      source,
-      without_config,
-      forced_syntax,
-      run,
-      cwd: std::env::current_dir().unwrap_or_default(),
-    })
-  }
+/// The resolver each file's settings come from: its closest config (or
+/// the `--config` file) with the overrides that match it, `forced_syntax`
+/// for every file, and `run` added to every config.
+///
+/// `without_config` is what a file gets when there is no config file at
+/// all.
+pub(crate) fn resolver(
+  root: &RootConfig,
+  without_config: WithoutConfig,
+  forced_syntax: Option<String>,
+  run: RunSettings,
+) -> RuleSetResolver {
+  RuleSetResolver::new(ResolverOptions {
+    source: root.clone().into_source(),
+    without_config,
+    forced_syntax,
+    run,
+    cwd: std::env::current_dir().unwrap_or_default(),
+  })
 }
 
 /// The switches that can come from the command line or the config file.
@@ -126,20 +96,19 @@ impl Settings {
       debug!("--quiet-deprecation-warnings has nothing to silence in Gale");
     }
 
-    let cache_strategy = match cli
-      .cache_strategy
-      .as_deref()
-      .or(config.cache_strategy.as_deref())
-    {
-      None => CacheStrategy::default(),
-      Some(name) => CacheStrategy::parse(name).ok_or_else(|| {
-        Exit::new(
-          EXIT_FATAL,
-          format!(
-            "\"{name}\" cache strategy is unsupported. Specify either \"metadata\" or \"content\""
-          ),
-        )
-      })?,
+    let unsupported = |name: &str| {
+      Exit::new(
+        EXIT_FATAL,
+        format!(
+          "\"{name}\" cache strategy is unsupported. Specify either \"metadata\" or \"content\""
+        ),
+      )
+    };
+    let cache_strategy = match (cli.cache_strategy.as_deref(), &config.cache_strategy) {
+      (Some(name), _) => CacheStrategy::parse(name).ok_or_else(|| unsupported(name))?,
+      (None, Some(Ok(strategy))) => *strategy,
+      (None, Some(Err(name))) => return Err(unsupported(name)),
+      (None, None) => CacheStrategy::default(),
     };
     let cache_location = cli
       .cache_location
@@ -186,20 +155,16 @@ pub(crate) fn run_settings(cli: &Cli) -> RunSettings {
 /// implemented, and rules Stylelint has removed.  Names that are no rule at
 /// all are reported in each file as `Unknown rule`, as Stylelint does.
 pub(crate) fn warn_skipped_rules(resolver: &RuleSetResolver) {
-  let mut skipped = SkippedRules::default();
-  for config in resolver.configs() {
-    skipped.extend(SkippedRules::in_config(config));
-  }
-  for warning in skipped.warnings() {
-    eprintln!("{warning}");
+  for warning in SkippedRuleWarnings::default().new_warnings(resolver) {
+    eprintln!("warning: {warning}");
   }
 }
 
 /// `--print-config`: print the rules that apply to `file` and the ignore
 /// patterns of its config, as JSON.
-pub(crate) fn print_config(cli: &Cli, root: &RootConfig, file: &Path) -> Result<()> {
+pub(crate) fn print_config(root: &RootConfig, file: &Path) -> Result<()> {
   let file_str = file.display().to_string();
-  let mut resolver = root.resolver(cli, WithoutConfig::NoRules, None, RunSettings::default());
+  let mut resolver = resolver(root, WithoutConfig::NoRules, None, RunSettings::default());
   let config = resolver.resolve(&file_str).config;
   // Rules by name, as a sorted map printed them before objects kept their
   // keys in insertion order.

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use crate::discovery::load_config_file;
+use crate::module_resolution::{
+  CandidateKind, PackageCandidates, PathCandidates, package_candidates, path_candidates,
+};
 
 use crate::raw::UNEVALUATED_EXTENDS;
 use crate::{
@@ -30,138 +33,22 @@ pub(crate) struct ExtendedOverride {
   pub directory: PathBuf,
 }
 
-/// Resolve a subpath from a package.json `exports` field.
-///
-/// Handles these `exports` shapes:
-/// - `"exports": { "./sub": "./sub.mjs" }` (subpath → string)
-/// - `"exports": { "./sub": { "default": "./sub.mjs" } }` (subpath → condition map)
-/// - `"exports": { ".": "./index.mjs" }` (main entry point)
-/// - `"exports": "./index.mjs"` (sugar for `{ ".": "./index.mjs" }`)
-///
-/// `subpath` should be the bare subpath (e.g. `"stylelint"` not `"./stylelint"`).
-/// The special value `"."` resolves the package main entry point.
-pub(crate) fn resolve_package_exports(pkg: &serde_json::Value, subpath: &str) -> Option<String> {
-  let exports = pkg.get("exports")?;
+/// What a relative `extends` entry is tried as: the path as written, with
+/// a config extension, or a directory's index file.
+const RELATIVE_CANDIDATES: PathCandidates = PathCandidates {
+  extensions: &[".js", ".json", ".cjs", ".mjs"],
+  index_files: &["index.js", "index.json"],
+};
 
-  // Normalise the lookup key: `"."` stays as-is, otherwise prepend `"./"`
-  let key = if subpath == "." {
-    ".".to_string()
-  } else {
-    format!("./{subpath}")
-  };
-
-  // `exports` can be a string (sugar for `{ ".": "<string>" }`)
-  if let Some(s) = exports.as_str() {
-    if key == "." {
-      return Some(s.to_string());
-    }
-    return None;
-  }
-
-  let exports_obj = exports.as_object()?;
-  let entry = exports_obj.get(&key)?;
-
-  // The entry can be a string or a condition map
-  if let Some(s) = entry.as_str() {
-    return Some(s.to_string());
-  }
-
-  // Condition map: try "default", "require", "import" in that order
-  if let Some(obj) = entry.as_object() {
-    for condition in &["default", "require", "import"] {
-      if let Some(val) = obj.get(*condition).and_then(|v| v.as_str()) {
-        return Some(val.to_string());
-      }
-    }
-  }
-
-  None
-}
-
-/// Try to load a [`ConfigFile`] from an npm package installed in `node_modules`.
-///
-/// Supports subpath imports like `@scope/package/subpath` which resolves to
-/// `node_modules/@scope/package/subpath.js` (or `.json`).
-fn resolve_npm_config(package_name: &str, base_dir: &Path) -> Option<LoadedConfig> {
-  let (pkg_name, subpath) = split_npm_package_subpath(package_name);
-
-  // Walk up directory tree trying each `node_modules` found, so that nested
-  // packages (e.g. `stylelint-config-recommended-scss` inside
-  // `stylelint-config-standard-scss/node_modules/`) are resolved correctly.
-  let mut dir = base_dir.to_path_buf();
-  loop {
-    let nm = dir.join("node_modules");
-    if nm.is_dir() {
-      let pkg_dir = nm.join(pkg_name);
-      if pkg_dir.is_dir()
-        && let Some(config) = try_load_npm_pkg(&pkg_dir, subpath)
-      {
-        return Some(config);
-      }
-    }
-    if !dir.pop() {
-      break;
-    }
-  }
-  None
-}
-
-/// Attempt to load a config from an already-located package directory.
-fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<LoadedConfig> {
-  // If there's a subpath, first try the `exports` field in package.json,
-  // then fall back to direct file resolution with common extensions.
-  if let Some(sub) = subpath {
-    // Try `exports` field in package.json first (e.g. `"./stylelint": "./stylelint.mjs"`)
-    let pkg_json_path = pkg_dir.join("package.json");
-    if let Ok(pkg_json) = std::fs::read_to_string(&pkg_json_path)
-      && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&pkg_json)
-      && let Some(resolved) = resolve_package_exports(&pkg, sub)
-    {
-      let export_path = pkg_dir.join(&resolved);
-      if export_path.is_file()
-        && let Some(config) = load_candidate(&export_path)
-      {
-        return Some(config);
-      }
-    }
-    // Fall back: try with common extensions
-    for ext in &["", ".js", ".json", ".cjs", ".mjs"] {
-      let path = pkg_dir.join(format!("{sub}{ext}"));
-      if path.is_file()
-        && let Some(config) = load_candidate(&path)
-      {
-        return Some(config);
-      }
-    }
-    return None;
-  }
-
-  // 1. Try package.json "exports" field for the main entry point (".")
-  // 2. Then try "main" field
-  let pkg_json_path = pkg_dir.join("package.json");
-  if let Ok(pkg_json) = std::fs::read_to_string(&pkg_json_path)
-    && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&pkg_json)
-  {
-    // Try `exports["."]` first
-    if let Some(resolved) = resolve_package_exports(&pkg, ".") {
-      let export_path = pkg_dir.join(&resolved);
-      if export_path.is_file()
-        && let Some(config) = load_candidate(&export_path)
-      {
-        return Some(config);
-      }
-    }
-    // Try `main` field
-    if let Some(main) = pkg.get("main").and_then(|m| m.as_str()) {
-      let main_path = pkg_dir.join(main);
-      if let Some(config) = load_candidate(&main_path) {
-        return Some(config);
-      }
-    }
-  }
-
-  // 2. Try common config file names
-  for name in &[
+/// What an npm `extends` entry is tried as after its manifest's `exports`
+/// and `main`: a subpath with a config extension (no index file), or for
+/// the package itself an index or a config file at its root.
+const PACKAGE_CANDIDATES: PackageCandidates = PackageCandidates {
+  subpath: PathCandidates {
+    extensions: &[".js", ".json", ".cjs", ".mjs"],
+    index_files: &[],
+  },
+  index_files: &[
     "index.json",
     "index.js",
     "stylelint.config.js",
@@ -169,79 +56,43 @@ fn try_load_npm_pkg(pkg_dir: &Path, subpath: Option<&str>) -> Option<LoadedConfi
     "stylelint.config.mjs",
     ".stylelintrc.json",
     ".stylelintrc",
-  ] {
-    let path = pkg_dir.join(name);
-    if let Some(config) = load_candidate(&path) {
-      return Some(config);
-    }
-  }
+  ],
+};
 
-  None
-}
-
-/// Split an npm package name into the package name and optional subpath.
+/// Resolve a relative path (starting with `./` or `../`) to a [`ConfigFile`]:
+/// the first of [`RELATIVE_CANDIDATES`] that loads.
 ///
-/// Examples:
-/// - `"@scope/pkg/sub/path"` → `("@scope/pkg", Some("sub/path"))`
-/// - `"@scope/pkg"` → `("@scope/pkg", None)`
-/// - `"pkg/sub"` → `("pkg", Some("sub"))`
-/// - `"pkg"` → `("pkg", None)`
-pub(crate) fn split_npm_package_subpath(name: &str) -> (&str, Option<&str>) {
-  if let Some(rest) = name.strip_prefix('@') {
-    // Scoped package: @scope/pkg[/subpath]
-    // Find the second `/` (after the scope)
-    if let Some(slash1) = rest.find('/') {
-      let after_scope = &rest[slash1 + 1..];
-      if let Some(slash2) = after_scope.find('/') {
-        let pkg_end = 1 + slash1 + 1 + slash2; // "@" + "scope/" + "pkg"
-        return (&name[..pkg_end], Some(&name[pkg_end + 1..]));
-      }
-    }
-    (name, None)
-  } else {
-    // Unscoped package: pkg[/subpath]
-    if let Some(slash) = name.find('/') {
-      (&name[..slash], Some(&name[slash + 1..]))
-    } else {
-      (name, None)
-    }
-  }
-}
-
-/// Resolve a relative path (starting with `./` or `../`) to a [`ConfigFile`].
-///
-/// If the exact path doesn't exist, tries adding common config file extensions
-/// (`.js`, `.json`, `.cjs`, `.mjs`). Also checks for `index.js` if the path
-/// resolves to a directory.
+/// The path as written and the index files are loaded without first
+/// checking that they are files, as they always have been; a missing
+/// JavaScript candidate then warns that it could not be loaded.
 fn resolve_relative_config(rel_path: &str, base_dir: &Path) -> Option<LoadedConfig> {
-  let path = base_dir.join(rel_path);
+  path_candidates(base_dir, rel_path, &RELATIVE_CANDIDATES).find_map(|candidate| {
+    let must_be_file = candidate.kind == CandidateKind::WithExtension;
+    load_if(&candidate.path, must_be_file)
+  })
+}
 
-  // Try exact path first.
-  if let Some(config) = load_candidate(&path) {
-    return Some(config);
+/// Try to load a [`ConfigFile`] from an npm package installed in
+/// `node_modules`: the first of its [`PACKAGE_CANDIDATES`] that loads.
+///
+/// Supports subpath imports like `@scope/package/subpath` which resolves to
+/// `node_modules/@scope/package/subpath.js` (or `.json`).  `main` and the
+/// package's index files are loaded without first checking that they are
+/// files, as they always have been.
+fn resolve_npm_config(package_name: &str, base_dir: &Path) -> Option<LoadedConfig> {
+  package_candidates(base_dir, package_name, &PACKAGE_CANDIDATES).find_map(|candidate| {
+    let must_be_file = !matches!(candidate.kind, CandidateKind::Main | CandidateKind::Index);
+    load_if(&candidate.path, must_be_file)
+  })
+}
+
+/// [`load_candidate`], skipping a path that is not a file when
+/// `must_be_file`.
+fn load_if(path: &Path, must_be_file: bool) -> Option<LoadedConfig> {
+  if must_be_file && !path.is_file() {
+    return None;
   }
-
-  // Try with common extensions.
-  for ext in &[".js", ".json", ".cjs", ".mjs"] {
-    let with_ext = base_dir.join(format!("{rel_path}{ext}"));
-    if with_ext.is_file()
-      && let Some(config) = load_candidate(&with_ext)
-    {
-      return Some(config);
-    }
-  }
-
-  // If the path is a directory, try index files.
-  if path.is_dir() {
-    for name in &["index.js", "index.json"] {
-      let index_path = path.join(name);
-      if let Some(config) = load_candidate(&index_path) {
-        return Some(config);
-      }
-    }
-  }
-
-  None
+  load_candidate(path)
 }
 
 /// Load the config at `path`, one of the files an `extends` entry may name.

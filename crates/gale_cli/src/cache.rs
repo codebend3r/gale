@@ -5,37 +5,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+pub(crate) use gale_config::CacheStrategy;
+
+use crate::atomic_write::atomic_write;
+
 /// Bumped whenever the on-disk shape or the hashing scheme changes.
 ///
 /// `DefaultHasher`'s algorithm is explicitly unspecified across Rust releases,
 /// so hashes are only meaningful to the binary that wrote them. A mismatch
 /// here discards the cache rather than trusting stale hashes.
 const CACHE_FORMAT_VERSION: u32 = 4;
-
-/// How the cache decides that a file is unchanged: Stylelint's
-/// `--cache-strategy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CacheStrategy {
-  /// The file's modification time and size are unchanged (the default, as
-  /// in Stylelint).  Cheap, but a touch re-lints the file.
-  #[default]
-  Metadata,
-  /// The file's content hash is unchanged.  Survives a touch or a fresh
-  /// checkout with identical contents.
-  Content,
-}
-
-impl CacheStrategy {
-  /// Parse a `--cache-strategy` value.
-  pub fn parse(name: &str) -> Option<Self> {
-    match name {
-      "metadata" => Some(Self::Metadata),
-      "content" => Some(Self::Content),
-      _ => None,
-    }
-  }
-}
 
 /// On-disk representation of the lint cache.
 #[derive(Debug, Serialize, Deserialize)]
@@ -128,7 +107,14 @@ impl LintCache {
         {
           debug!("Failed to create cache directory: {err}");
         }
-        if let Err(err) = std::fs::write(path, data) {
+        // A run killed mid-write must not leave a truncated cache behind.
+        // Like `std::fs::write`, write through a symlink and keep the
+        // existing file's permissions.
+        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let permissions = std::fs::metadata(&target)
+          .ok()
+          .map(|metadata| metadata.permissions());
+        if let Err(err) = atomic_write(&target, data.as_bytes(), permissions) {
           debug!("Failed to write cache file: {err}");
         }
       }

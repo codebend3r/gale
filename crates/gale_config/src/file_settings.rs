@@ -240,16 +240,17 @@ impl RuleSetResolver {
     let loaded = &self.configs[config_id];
     let config = Arc::clone(&loaded.config);
 
+    let overrides = config.overrides_for_file(path);
     let ignored = if loaded.ignores(&abs) {
       Some(Ignored::IgnoreFiles)
-    } else if config.is_file_ignored_by_override(path) {
+    } else if overrides.ignored {
       Some(Ignored::Override)
     } else {
       None
     };
-    let syntax = syntax_for_file(self.forced_syntax.as_deref(), &config, path);
+    let syntax = syntax_for_file(self.forced_syntax.as_deref(), overrides.custom_syntax, path);
+    let overrides = overrides.indices;
 
-    let overrides = config.matching_overrides(path);
     let run = &self.run;
     let rules = Arc::clone(
       self
@@ -273,7 +274,7 @@ impl RuleSetResolver {
 /// Returns `None` for syntaxes gale cannot parse (`postcss-markdown`, ...),
 /// and for `postcss-html`, which [`syntax_for_file`] accepts on its own: an
 /// HTML-like file's style blocks each pick their parser from their `lang`.
-pub fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
+fn syntax_for_custom_syntax(name: &str) -> Option<Syntax> {
   match name.to_ascii_lowercase().as_str() {
     "postcss" => Some(Syntax::Css),
     "postcss-scss" => Some(Syntax::Scss),
@@ -297,9 +298,9 @@ fn is_postcss_html(custom_syntax: &str) -> bool {
 /// file is skipped: supported values still parse by file extension.
 /// `postcss-html` parses by extension too: an HTML-like file is read for its
 /// style blocks whatever the syntax says, and other files are style sheets.
-pub fn syntax_for_file(
+fn syntax_for_file(
   forced: Option<&str>,
-  config: &GaleConfig,
+  custom_syntax: Option<&str>,
   file_path: &str,
 ) -> Result<Syntax, String> {
   if let Some(name) = forced {
@@ -309,7 +310,7 @@ pub fn syntax_for_file(
     return syntax_for_custom_syntax(name).ok_or_else(|| name.to_string());
   }
 
-  if let Some(name) = config.custom_syntax_for_file(file_path)
+  if let Some(name) = custom_syntax
     && !is_postcss_html(name)
     && syntax_for_custom_syntax(name).is_none()
   {
@@ -519,30 +520,28 @@ mod tests {
 
   #[test]
   fn syntax_is_detected_from_the_extension_by_default() {
-    let config = GaleConfig::default();
-    assert_eq!(syntax_for_file(None, &config, "a.css"), Ok(Syntax::Css));
-    assert_eq!(syntax_for_file(None, &config, "a.scss"), Ok(Syntax::Scss));
+    assert_eq!(syntax_for_file(None, None, "a.css"), Ok(Syntax::Css));
+    assert_eq!(syntax_for_file(None, None, "a.scss"), Ok(Syntax::Scss));
   }
 
   #[test]
   fn a_forced_syntax_picks_the_parser() {
-    let config = GaleConfig::default();
     assert_eq!(
-      syntax_for_file(Some("postcss-scss"), &config, "a.css"),
+      syntax_for_file(Some("postcss-scss"), None, "a.css"),
       Ok(Syntax::Scss)
     );
     // An unsupported syntax skips the file rather than parsing it.
     assert_eq!(
-      syntax_for_file(Some("postcss-markdown"), &config, "a.css"),
+      syntax_for_file(Some("postcss-markdown"), None, "a.css"),
       Err("postcss-markdown".to_string())
     );
     // postcss-html parses by extension: style blocks pick their own parser.
     assert_eq!(
-      syntax_for_file(Some("postcss-html"), &config, "a.vue"),
+      syntax_for_file(Some("postcss-html"), None, "a.vue"),
       Ok(Syntax::Css)
     );
     assert_eq!(
-      syntax_for_file(Some("postcss-html"), &config, "a.scss"),
+      syntax_for_file(Some("postcss-html"), None, "a.scss"),
       Ok(Syntax::Scss)
     );
   }
@@ -553,8 +552,14 @@ mod tests {
       custom_syntax: Some("postcss-html".to_string()),
       ..Default::default()
     };
-    assert_eq!(syntax_for_file(None, &config, "a.vue"), Ok(Syntax::Css));
-    assert_eq!(syntax_for_file(None, &config, "a.svelte"), Ok(Syntax::Css));
+    assert_eq!(
+      syntax_for_file(None, config.custom_syntax.as_deref(), "a.vue"),
+      Ok(Syntax::Css)
+    );
+    assert_eq!(
+      syntax_for_file(None, config.custom_syntax.as_deref(), "a.svelte"),
+      Ok(Syntax::Css)
+    );
   }
 
   #[test]
@@ -564,12 +569,16 @@ mod tests {
       ..Default::default()
     };
     assert_eq!(
-      syntax_for_file(None, &config, "a.css"),
+      syntax_for_file(None, config.custom_syntax.as_deref(), "a.css"),
       Err("postcss-markdown".to_string())
     );
     // A forced syntax overrides the config's customSyntax entirely.
     assert_eq!(
-      syntax_for_file(Some("postcss-less"), &config, "a.css"),
+      syntax_for_file(
+        Some("postcss-less"),
+        config.custom_syntax.as_deref(),
+        "a.css"
+      ),
       Ok(Syntax::Less)
     );
   }
@@ -582,6 +591,9 @@ mod tests {
       custom_syntax: Some("postcss-scss".to_string()),
       ..Default::default()
     };
-    assert_eq!(syntax_for_file(None, &config, "a.css"), Ok(Syntax::Css));
+    assert_eq!(
+      syntax_for_file(None, config.custom_syntax.as_deref(), "a.css"),
+      Ok(Syntax::Css)
+    );
   }
 }

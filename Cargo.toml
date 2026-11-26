@@ -31,13 +31,11 @@ toml = "1.1.7"
 owo-colors = "4.4.0"
 
 # File discovery
-glob = "0.3.4"
 globset = "0.4.20"
 ignore = "0.4.33"
 
 # Performance
 rayon = "1.12.0"
-dashmap = "6.2.1"
 
 # General
 thiserror = "2.0.21"
@@ -61,6 +59,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description.workspace = true
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]

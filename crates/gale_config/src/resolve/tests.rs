@@ -454,21 +454,6 @@ fn override_empty_files_skipped() {
 }
 
 #[test]
-fn override_has_overrides_flag() {
-  let json_with = r#"{
-            "overrides": [{ "files": "**/*.scss", "rules": {} }]
-        }"#;
-  let raw: ConfigFile = serde_json::from_str(json_with).unwrap();
-  let cfg = resolve_raw(raw, Path::new("."));
-  assert!(cfg.has_overrides());
-
-  let json_without = r#"{ "rules": {} }"#;
-  let raw: ConfigFile = serde_json::from_str(json_without).unwrap();
-  let cfg = resolve_raw(raw, Path::new("."));
-  assert!(!cfg.has_overrides());
-}
-
-#[test]
 fn yaml_config_with_overrides() {
   let yaml = r#"
 extends: gale:recommended
@@ -572,7 +557,9 @@ fn cli_equivalent_boolean_keys_are_read() {
   assert!(cfg.quiet);
   assert!(cfg.cache);
   assert_eq!(cfg.cache_location, Some(PathBuf::from("tmp/lint.cache")));
-  assert_eq!(cfg.cache_strategy.as_deref(), Some("content"));
+  assert_eq!(cfg.cache_strategy, Some(Ok(CacheStrategy::Content)));
+  let cfg = resolve_json(r#"{ "cacheStrategy": "Content" }"#);
+  assert_eq!(cfg.cache_strategy, Some(Err("Content".to_string())));
 }
 
 #[test]

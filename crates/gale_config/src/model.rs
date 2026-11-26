@@ -160,6 +160,31 @@ impl ResolvedOverride {
   }
 }
 
+/// How the cache decides that a file is unchanged: Stylelint's
+/// `--cache-strategy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheStrategy {
+  /// The file's modification time and size are unchanged (the default, as
+  /// in Stylelint).  Cheap, but a touch re-lints the file.
+  #[default]
+  Metadata,
+  /// The file's content hash is unchanged.  Survives a touch or a fresh
+  /// checkout with identical contents.
+  Content,
+}
+
+impl CacheStrategy {
+  /// Parse a `--cache-strategy` or `cacheStrategy` value.
+  pub fn parse(name: &str) -> Option<Self> {
+    match name {
+      "metadata" => Some(Self::Metadata),
+      "content" => Some(Self::Content),
+      _ => None,
+    }
+  }
+}
+
 /// How autofix behaves when it is switched on from the config file.
 ///
 /// Mirrors the `--fix` flag.  Stylelint's `strict` skips files with a syntax
@@ -219,9 +244,10 @@ pub struct GaleConfig {
   pub cache: bool,
   /// Stylelint's `cacheLocation`, relative to the working directory.
   pub cache_location: Option<PathBuf>,
-  /// Stylelint's `cacheStrategy`: `"metadata"` or `"content"`.  Validated
-  /// by the CLI, which owns the cache.
-  pub cache_strategy: Option<String>,
+  /// Stylelint's `cacheStrategy`, parsed; `Err` holds a name that is
+  /// neither `"metadata"` nor `"content"`.  The CLI, which owns the cache,
+  /// reports that only when no `--cache-strategy` overrides it.
+  pub cache_strategy: Option<Result<CacheStrategy, String>>,
 }
 
 impl GaleConfig {
@@ -243,23 +269,41 @@ impl GaleConfig {
     }
   }
 
-  /// The positions in [`Self::overrides`] of the overrides that apply to
-  /// `file_path`, in order.
+  /// What the overrides say about `file_path`, from one pass over them with
+  /// its relative path worked out once.
   ///
   /// Each override's globs are tried against the path relative to the
   /// config's directory and against the path as given.
-  pub fn matching_overrides(&self, file_path: &str) -> Vec<usize> {
-    if self.overrides.is_empty() {
-      return Vec::new();
+  pub(crate) fn overrides_for_file(&self, file_path: &str) -> OverrideMatches<'_> {
+    let mut found = OverrideMatches {
+      indices: Vec::new(),
+      ignored: false,
+      custom_syntax: None,
+    };
+    if !self.overrides.is_empty() {
+      let relative_path = self.relative_path(file_path);
+      for (index, ov) in self.overrides.iter().enumerate() {
+        let [relative, given] = [relative_path.as_ref(), file_path]
+          .map(|path| (ov.matches_files(path), ov.is_excluded(path)));
+        // `matches` is `matches_files` and not `is_excluded`, per path.
+        let matches = (relative.0 && !relative.1) || (given.0 && !given.1);
+        found.ignored |= (relative.0 || given.0) && (relative.1 || given.1);
+        if matches {
+          found.indices.push(index);
+          if found.custom_syntax.is_none() {
+            found.custom_syntax = ov.custom_syntax.as_deref();
+          }
+        }
+      }
     }
-    let relative_path = self.relative_path(file_path);
-    self
-      .overrides
-      .iter()
-      .enumerate()
-      .filter(|(_, ov)| ov.matches(&relative_path) || ov.matches(file_path))
-      .map(|(index, _)| index)
-      .collect()
+    found.custom_syntax = found.custom_syntax.or(self.custom_syntax.as_deref());
+    found
+  }
+
+  /// The positions in [`Self::overrides`] of the overrides that apply to
+  /// `file_path`, in order.
+  pub fn matching_overrides(&self, file_path: &str) -> Vec<usize> {
+    self.overrides_for_file(file_path).indices
   }
 
   /// The base rules with the overrides at `indices` (from
@@ -285,48 +329,29 @@ impl GaleConfig {
     self.rules_with_overrides(&self.matching_overrides(file_path))
   }
 
-  /// Returns `true` if any overrides are configured.
-  pub fn has_overrides(&self) -> bool {
-    !self.overrides.is_empty()
-  }
-
-  /// Returns `true` when a file matches an override's `files` patterns AND
-  /// that same override's `ignoreFiles` patterns.  Stylelint treats such
-  /// files as fully ignored (`"ignored": true`) — no linting at all.
-  ///
-  /// The check is performed against both the relative path (relative to the
-  /// config directory) and the raw file path, as override matching is.
-  pub fn is_file_ignored_by_override(&self, file_path: &str) -> bool {
-    if self.overrides.is_empty() {
-      return false;
-    }
-    let relative_path = self.relative_path(file_path);
-    self.overrides.iter().any(|ov| {
-      let matches_files = ov.matches_files(&relative_path) || ov.matches_files(file_path);
-      let excluded = ov.is_excluded(&relative_path) || ov.is_excluded(file_path);
-      matches_files && excluded
-    })
-  }
-
   /// The `customSyntax` that applies to `file_path`, if the config names one.
   ///
   /// The first override whose globs match the file wins; otherwise the
   /// top-level `customSyntax` applies.  Whether Gale can actually parse the
   /// named syntax is the caller's decision.
   pub fn custom_syntax_for_file(&self, file_path: &str) -> Option<&str> {
-    // Check overrides first — they take precedence over top-level.
-    if !self.overrides.is_empty() {
-      let relative_path = self.relative_path(file_path);
-      for ov in &self.overrides {
-        let matches = ov.matches(&relative_path) || ov.matches(file_path);
-        if matches && let Some(ref syntax_name) = ov.custom_syntax {
-          return Some(syntax_name);
-        }
-      }
-    }
-
-    self.custom_syntax.as_deref()
+    self.overrides_for_file(file_path).custom_syntax
   }
+}
+
+/// What a config's overrides say about one file
+/// (see [`GaleConfig::overrides_for_file`]).
+pub(crate) struct OverrideMatches<'c> {
+  /// The positions in [`GaleConfig::overrides`] of the overrides that
+  /// apply, in order.
+  pub indices: Vec<usize>,
+  /// Whether an override whose `files` match the file lists it in that
+  /// same override's `ignoreFiles`.  Stylelint treats such files as fully
+  /// ignored (`"ignored": true`): no linting at all.
+  pub ignored: bool,
+  /// The `customSyntax` of the first applying override that names one,
+  /// else the config's top-level one.
+  pub custom_syntax: Option<&'c str>,
 }
 
 impl Default for GaleConfig {

@@ -8,7 +8,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracing::debug;
 
 use gale_config::{
-  ConfigSource, GaleConfig, ResolverOptions, RuleSetResolver, RunSettings, SkippedRules,
+  ConfigWarning, ResolverOptions, RootConfig, RuleSetResolver, RunSettings, SkippedRuleWarnings,
   WithoutConfig, unsupported_plugin_warnings,
 };
 use gale_diagnostics::{Diagnostic as GaleDiagnostic, Severity, SourceLineIndex, Span};
@@ -50,11 +50,25 @@ struct Document {
   diagnostics: Vec<GaleDiagnostic>,
 }
 
+/// Each document's settings, and the skipped rules already logged for the
+/// configs they came from.
+struct Workspace {
+  resolver: RuleSetResolver,
+  skipped: SkippedRuleWarnings,
+}
+
+/// What linting a document found, and the warnings about configs it was
+/// the first to load.
+struct Linted {
+  diagnostics: Vec<GaleDiagnostic>,
+  warnings: Vec<ConfigWarning>,
+}
+
 pub struct GaleLspServer {
   client: Client,
   /// Each document's settings, from the same layer the CLI uses, once
   /// `initialize` has found the workspace's config.
-  resolver: Mutex<Option<RuleSetResolver>>,
+  workspace: Mutex<Option<Workspace>>,
   /// Explicit config path from `gale --lsp --config <path>`, if any.
   config_path: Option<PathBuf>,
   documents: RwLock<HashMap<Url, Document>>,
@@ -65,7 +79,7 @@ impl GaleLspServer {
   fn new(client: Client, config_path: Option<PathBuf>) -> Self {
     Self {
       client,
-      resolver: Mutex::new(None),
+      workspace: Mutex::new(None),
       config_path,
       documents: RwLock::new(HashMap::new()),
     }
@@ -77,9 +91,9 @@ impl GaleLspServer {
   /// named.  A document no config covers gets the recommended preset:
   /// enabling every rule (including the whole @stylistic namespace) would
   /// bury a config-less project in formatting warnings it never asked for.
-  fn build_resolver(source: ConfigSource, root: &Path) -> RuleSetResolver {
+  fn build_resolver(config: RootConfig, root: &Path) -> RuleSetResolver {
     RuleSetResolver::new(ResolverOptions {
-      source,
+      source: config.into_source(),
       without_config: WithoutConfig::Recommended,
       forced_syntax: None,
       run: RunSettings {
@@ -90,21 +104,13 @@ impl GaleLspServer {
     })
   }
 
-  /// The config at `path`, or an empty one after telling the client why it
-  /// could not be loaded.
-  async fn load_or_log(&self, path: &Path) -> GaleConfig {
-    match gale_config::load_config(path) {
-      Ok(config) => config,
-      Err(err) => {
-        self
-          .client
-          .log_message(
-            MessageType::ERROR,
-            format!("Failed to load config {}: {err}", path.display()),
-          )
-          .await;
-        GaleConfig::default()
-      }
+  /// Log each warning about the configs to the client.
+  async fn log_warnings(&self, warnings: impl IntoIterator<Item = ConfigWarning>) {
+    for warning in warnings {
+      self
+        .client
+        .log_message(MessageType::WARNING, warning.to_string())
+        .await;
     }
   }
 
@@ -142,33 +148,42 @@ impl GaleLspServer {
     }
   }
 
-  /// Lint source text (sync part), returning Gale's own diagnostics.
+  /// Lint source text (sync part), returning Gale's own diagnostics and
+  /// the skipped rules of any config the document was the first to load.
   ///
   /// The document's own config decides its rules (see
   /// [`Self::build_resolver`]).  A Vue, Svelte, Astro or HTML document is
   /// linted one style block at a time, with every diagnostic (and fix)
   /// placed in the document.
-  fn lint(&self, uri: &Url, source: &str) -> Vec<GaleDiagnostic> {
+  fn lint(&self, uri: &Url, source: &str) -> Linted {
     let file_path = uri
       .to_file_path()
       .map(|p| p.display().to_string())
       .unwrap_or_else(|_| uri.to_string());
 
     // Settle the document's rules under the lock, then lint without it.
-    let settings = {
-      let mut resolver = self.resolver.lock().unwrap_or_else(|e| e.into_inner());
-      let Some(resolver) = resolver.as_mut() else {
-        return Vec::new();
+    let (settings, warnings) = {
+      let mut workspace = self.workspace.lock().unwrap_or_else(|e| e.into_inner());
+      let Some(Workspace { resolver, skipped }) = workspace.as_mut() else {
+        return Linted {
+          diagnostics: Vec::new(),
+          warnings: Vec::new(),
+        };
       };
-      resolver.resolve(&file_path)
+      let settings = resolver.resolve(&file_path);
+      (settings, skipped.new_warnings(resolver))
     };
     // A document the config ignores, or written in a `customSyntax` gale
     // cannot parse, gets no diagnostics, as the CLI reports nothing for it.
+    let skipped = |warnings| Linted {
+      diagnostics: Vec::new(),
+      warnings,
+    };
     if settings.ignored.is_some() {
-      return Vec::new();
+      return skipped(warnings);
     }
     let Ok(syntax) = settings.syntax else {
-      return Vec::new();
+      return skipped(warnings);
     };
 
     let result = settings.rules.lint(source, &file_path, syntax);
@@ -181,7 +196,10 @@ impl GaleLspServer {
       .map(GaleDiagnostic::invalid_option)
       .collect();
     diagnostics.extend(result.diagnostics);
-    diagnostics
+    Linted {
+      diagnostics,
+      warnings,
+    }
   }
 
   /// Lint source text, remember it for code actions, and publish
@@ -193,15 +211,18 @@ impl GaleLspServer {
   /// taking the server down.
   async fn lint_and_publish(&self, uri: Url, source: &str) {
     let linted = panic_guard::catch(|| {
-      let diagnostics = self.lint(&uri, source);
+      let Linted {
+        diagnostics,
+        warnings,
+      } = self.lint(&uri, source);
       let line_index = SourceLineIndex::build(source);
       let lsp_diagnostics: Vec<tower_lsp::lsp_types::Diagnostic> = diagnostics
         .iter()
         .map(|d| Self::to_lsp_diagnostic(d, &line_index))
         .collect();
-      (diagnostics, lsp_diagnostics)
+      (diagnostics, lsp_diagnostics, warnings)
     });
-    let (diagnostics, lsp_diagnostics) = linted.unwrap_or_else(|caught| {
+    let (diagnostics, lsp_diagnostics, warnings) = linted.unwrap_or_else(|caught| {
       let diag = tower_lsp::lsp_types::Diagnostic {
         range: Range::default(),
         severity: Some(DiagnosticSeverity::ERROR),
@@ -212,8 +233,9 @@ impl GaleLspServer {
         message: caught.report("while linting this file"),
         ..Default::default()
       };
-      (Vec::new(), vec![diag])
+      (Vec::new(), vec![diag], Vec::new())
     });
+    self.log_warnings(warnings).await;
 
     self
       .documents
@@ -298,39 +320,38 @@ impl LanguageServer for GaleLspServer {
       .and_then(|uri| uri.to_file_path().ok())
       .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     debug!("LSP workspace root: {}", root_dir.display());
-    let (source, root_config) = match &self.config_path {
-      Some(path) => {
-        let config = self.load_or_log(path).await;
-        (ConfigSource::Explicit(config.clone()), Some(config))
-      }
-      None => match gale_config::find_config(&root_dir) {
-        Some(path) => {
-          let config = self.load_or_log(&path).await;
-          let root = Some((path, config.clone()));
-          (ConfigSource::Closest { root }, Some(config))
-        }
-        None => (ConfigSource::Closest { root: None }, None),
-      },
-    };
-    *self.resolver.lock().unwrap_or_else(|e| e.into_inner()) =
-      Some(Self::build_resolver(source, &root_dir));
-
-    // Plugins gale does not know, rules it has not implemented, and rules
-    // Stylelint has removed are skipped; say so once, as the CLI does.
-    // Names that are no rule at all show up as `Unknown rule` diagnostics
-    // in each document instead.
-    if let Some(config) = &root_config {
-      let warnings = unsupported_plugin_warnings(config)
-        .into_iter()
-        .chain(SkippedRules::in_config(config).warnings());
-      for warning in warnings {
-        let message = warning.strip_prefix("warning: ").unwrap_or(&warning);
+    let root = match RootConfig::load(self.config_path.as_deref(), &root_dir) {
+      Ok(root) => root,
+      Err(err) => {
         self
           .client
-          .log_message(MessageType::WARNING, message.to_string())
+          .log_message(
+            MessageType::ERROR,
+            format!(
+              "Failed to load config {}: {}",
+              err.path.display(),
+              err.error
+            ),
+          )
           .await;
+        err.into_empty()
       }
-    }
+    };
+    // Plugins gale does not know, rules it has not implemented, and rules
+    // Stylelint has removed are skipped; say so once, as the CLI does: the
+    // plugins of the root config, and the skipped rules of every config
+    // loaded, now and as documents load nested ones.  Names that are no
+    // rule at all show up as `Unknown rule` diagnostics in each document
+    // instead.
+    let plugin_warnings = unsupported_plugin_warnings(&root.config);
+    let resolver = Self::build_resolver(root, &root_dir);
+    let mut skipped = SkippedRuleWarnings::default();
+    let skipped_warnings = skipped.new_warnings(&resolver);
+    *self.workspace.lock().unwrap_or_else(|e| e.into_inner()) =
+      Some(Workspace { resolver, skipped });
+    self
+      .log_warnings(plugin_warnings.into_iter().chain(skipped_warnings))
+      .await;
 
     Ok(InitializeResult {
       capabilities: ServerCapabilities {

@@ -30,7 +30,7 @@ fn rules_in(preset: Preset) -> impl Iterator<Item = &'static str> {
 ///
 /// Exposed so other crates (the LSP) can fall back to the same default set
 /// instead of inventing their own.
-pub fn recommended_rule_names() -> Vec<&'static str> {
+pub(crate) fn recommended_rule_names() -> Vec<&'static str> {
   rules_in(Preset::GaleError)
     .chain(rules_in(Preset::GaleWarning))
     .collect()
@@ -155,7 +155,7 @@ const SASS3_RULES: &[&str] = &[
 /// Resolve a built-in preset name into a map of rule configurations.
 ///
 /// Returns `None` if the preset name is not recognised.
-pub fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
+pub(crate) fn resolve_preset(name: &str) -> Option<HashMap<String, RuleConfig>> {
   match name {
     "gale:sass3" => Some(
       SASS3_RULES

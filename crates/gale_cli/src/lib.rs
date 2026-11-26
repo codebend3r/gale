@@ -8,6 +8,7 @@
 //! becomes the process's exit code.
 
 mod args;
+mod atomic_write;
 mod cache;
 mod config;
 mod discover;
@@ -21,12 +22,12 @@ mod report;
 use anyhow::Result;
 use tracing::debug;
 
-use gale_config::WithoutConfig;
+use gale_config::{RootConfig, WithoutConfig};
 use gale_linter::runner::PERF_TARGET;
 
 use crate::args::Cli;
 use crate::cache::{LintCache, compute_run_hash};
-use crate::config::{RootConfig, Settings};
+use crate::config::Settings;
 use crate::exit::Exit;
 use crate::report::ReportOptions;
 
@@ -94,10 +95,10 @@ fn execute() -> Result<i32> {
     return Ok(0);
   }
 
-  let root = RootConfig::load(&cli)?;
-  root.warn_unsupported_plugins();
+  let root = config::load_root_config(&cli)?;
+  config::warn_unsupported_plugins(&root);
   if let Some(file) = &cli.print_config {
-    config::print_config(&cli, &root, file)?;
+    config::print_config(&root, file)?;
     return Ok(0);
   }
   let settings = Settings::new(&cli, &root.config)?;
@@ -125,7 +126,7 @@ fn lint_and_report(cli: &Cli, root: &RootConfig, settings: &Settings) -> Result<
   } else {
     WithoutConfig::NoRules
   };
-  let mut resolver = root.resolver(cli, without_config, cli.custom_syntax.clone(), run);
+  let mut resolver = config::resolver(root, without_config, cli.custom_syntax.clone(), run);
 
   let mut linted = if cli.stdin {
     lint::lint_stdin(cli, &mut resolver)?

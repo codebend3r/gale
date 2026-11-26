@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::extends::{ExtendedOverride, collect_rules_from_extends};
 use crate::plugins::extract_plugin_names;
 use crate::{
-  ConfigFile, ConfigOverride, FixMode, GaleConfig, ResolvedOverride, RuleConfig, Severity,
+  CacheStrategy, ConfigFile, ConfigOverride, FixMode, GaleConfig, ResolvedOverride, RuleConfig,
+  Severity,
 };
 
 /// Convert a raw [`ConfigFile`] into the resolved [`GaleConfig`].
@@ -133,7 +134,9 @@ pub(crate) fn resolve_raw(raw: ConfigFile, base_dir: &Path) -> GaleConfig {
     fix,
     cache: raw.cache.unwrap_or(false),
     cache_location,
-    cache_strategy: raw.cache_strategy,
+    cache_strategy: raw
+      .cache_strategy
+      .map(|name| CacheStrategy::parse(&name).ok_or(name)),
   }
 }
 
