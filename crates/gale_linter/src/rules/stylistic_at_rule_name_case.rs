@@ -1,8 +1,9 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_alnum_or_hyphen;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "@stylistic/at-rule-name-case";
@@ -20,8 +21,8 @@ declare_rule! {
 
 /// `@stylistic/at-rule-name-case` as configured.
 pub struct StylisticAtRuleNameCaseCheck {
-  /// The primary option: `"lower"` or `"upper"`.
-  option: &'static str,
+  /// The case at-rule names are written in.
+  case: LetterCase,
 }
 
 impl StylisticAtRuleNameCaseCheck {
@@ -31,18 +32,16 @@ impl StylisticAtRuleNameCaseCheck {
   /// accepts it everywhere.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      option: option.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
 impl Check for StylisticAtRuleNameCaseCheck {
   /// Flags at-rule names not in the configured case.
   fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
-    let option = self.option;
+    let case = self.case;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -88,7 +87,7 @@ impl Check for StylisticAtRuleNameCaseCheck {
 
         // Read the at-rule name
         let name_start = i;
-        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-') {
+        while i < len && is_alnum_or_hyphen(char::from(bytes[i])) {
           i += 1;
         }
         let name_end = i;
@@ -99,22 +98,11 @@ impl Check for StylisticAtRuleNameCaseCheck {
 
         let name = &source[name_start..name_end];
 
-        let is_wrong = match option {
-          "lower" => name.chars().any(|c| c.is_ascii_uppercase()),
-          "upper" => name.chars().any(|c| c.is_ascii_lowercase()),
-          _ => false,
-        };
-
-        if is_wrong {
-          let expected = if option == "lower" {
-            "lowercase"
-          } else {
-            "uppercase"
-          };
+        if case.is_wrong(name) {
           diagnostics.push(
             Diagnostic::new(
               NAME,
-              format!("Expected at-rule name \"@{}\" to be {}", name, expected),
+              format!("Expected at-rule name \"@{}\" to be {}", name, case.word()),
             )
             .span(Span::new(at_pos, name_end - at_pos)),
           );

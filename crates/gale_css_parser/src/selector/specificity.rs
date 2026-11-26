@@ -73,7 +73,7 @@ pub fn of_text_with(text: &str, custom: Option<Custom>) -> Option<Specificity> {
 }
 
 /// The specificity of one selector: the sum of its nodes'.
-pub fn of_selector(selector: &Selector, custom: Option<Custom>) -> Specificity {
+fn of_selector(selector: &Selector, custom: Option<Custom>) -> Specificity {
   of_nodes(&selector.nodes, custom)
 }
 
@@ -85,7 +85,7 @@ fn of_nodes(nodes: &[Node], custom: Option<Custom>) -> Specificity {
 }
 
 /// The highest specificity among `selectors` (`specificityOfMostSpecificListItem`).
-pub fn most_specific(selectors: &[Selector], custom: Option<Custom>) -> Specificity {
+fn most_specific(selectors: &[Selector], custom: Option<Custom>) -> Specificity {
   selectors
     .iter()
     .map(|selector| of_selector(selector, custom))
@@ -94,7 +94,7 @@ pub fn most_specific(selectors: &[Selector], custom: Option<Custom>) -> Specific
 }
 
 /// The specificity of one node (`selectorSpecificity`).
-pub fn of_node(node: &Node, custom: Option<Custom>) -> Specificity {
+fn of_node(node: &Node, custom: Option<Custom>) -> Specificity {
   if let Some(specificity) = custom.and_then(|custom| custom(node)) {
     return specificity;
   }

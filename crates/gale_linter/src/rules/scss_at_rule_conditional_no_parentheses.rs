@@ -2,6 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_word_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -89,10 +90,9 @@ impl Check for ScssAtRuleConditionalNoParenthesesCheck {
 
 /// `params.replace(/\bif\b/, "")`.
 fn remove_first_if(params: &str) -> String {
-  let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
   let bytes = params.as_bytes();
   let found = params.match_indices("if").find(|&(at, _)| {
-    (at == 0 || !is_word(bytes[at - 1])) && bytes.get(at + 2).is_none_or(|&b| !is_word(b))
+    (at == 0 || !is_word_byte(bytes[at - 1])) && bytes.get(at + 2).is_none_or(|&b| !is_word_byte(b))
   });
   match found {
     Some((at, _)) => format!("{}{}", &params[..at], &params[at + 2..]),

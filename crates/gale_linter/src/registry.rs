@@ -72,120 +72,269 @@ pub(crate) fn canonical_name(name: &str) -> &str {
   resolve_deprecated_alias(name).unwrap_or(name)
 }
 
-/// Map deprecated Stylelint rule names to their `@stylistic/` equivalents.
+/// The core rules Stylelint 15 deprecated and moved to
+/// `@stylistic/stylelint-plugin`: each old name resolves to the same name
+/// under `@stylistic/`.
+const STYLISTIC_MOVES: &[(&str, &str)] = &[
+  ("at-rule-name-case", "@stylistic/at-rule-name-case"),
+  (
+    "at-rule-name-space-after",
+    "@stylistic/at-rule-name-space-after",
+  ),
+  (
+    "at-rule-semicolon-newline-after",
+    "@stylistic/at-rule-semicolon-newline-after",
+  ),
+  (
+    "at-rule-semicolon-space-before",
+    "@stylistic/at-rule-semicolon-space-before",
+  ),
+  (
+    "block-closing-brace-empty-line-before",
+    "@stylistic/block-closing-brace-empty-line-before",
+  ),
+  (
+    "block-closing-brace-newline-after",
+    "@stylistic/block-closing-brace-newline-after",
+  ),
+  (
+    "block-closing-brace-newline-before",
+    "@stylistic/block-closing-brace-newline-before",
+  ),
+  (
+    "block-closing-brace-space-before",
+    "@stylistic/block-closing-brace-space-before",
+  ),
+  (
+    "block-opening-brace-newline-after",
+    "@stylistic/block-opening-brace-newline-after",
+  ),
+  (
+    "block-opening-brace-space-before",
+    "@stylistic/block-opening-brace-space-before",
+  ),
+  ("color-hex-case", "@stylistic/color-hex-case"),
+  (
+    "declaration-bang-space-after",
+    "@stylistic/declaration-bang-space-after",
+  ),
+  (
+    "declaration-bang-space-before",
+    "@stylistic/declaration-bang-space-before",
+  ),
+  (
+    "declaration-block-semicolon-newline-after",
+    "@stylistic/declaration-block-semicolon-newline-after",
+  ),
+  (
+    "declaration-block-semicolon-newline-before",
+    "@stylistic/declaration-block-semicolon-newline-before",
+  ),
+  (
+    "declaration-block-semicolon-space-before",
+    "@stylistic/declaration-block-semicolon-space-before",
+  ),
+  (
+    "declaration-block-trailing-semicolon",
+    "@stylistic/declaration-block-trailing-semicolon",
+  ),
+  (
+    "declaration-colon-newline-after",
+    "@stylistic/declaration-colon-newline-after",
+  ),
+  (
+    "declaration-colon-space-after",
+    "@stylistic/declaration-colon-space-after",
+  ),
+  (
+    "declaration-colon-space-before",
+    "@stylistic/declaration-colon-space-before",
+  ),
+  (
+    "function-comma-newline-after",
+    "@stylistic/function-comma-newline-after",
+  ),
+  (
+    "function-comma-space-after",
+    "@stylistic/function-comma-space-after",
+  ),
+  (
+    "function-comma-space-before",
+    "@stylistic/function-comma-space-before",
+  ),
+  (
+    "function-max-empty-lines",
+    "@stylistic/function-max-empty-lines",
+  ),
+  (
+    "function-parentheses-space-inside",
+    "@stylistic/function-parentheses-space-inside",
+  ),
+  (
+    "function-whitespace-after",
+    "@stylistic/function-whitespace-after",
+  ),
+  ("indentation", "@stylistic/indentation"),
+  ("max-empty-lines", "@stylistic/max-empty-lines"),
+  (
+    "media-feature-colon-space-after",
+    "@stylistic/media-feature-colon-space-after",
+  ),
+  (
+    "media-feature-colon-space-before",
+    "@stylistic/media-feature-colon-space-before",
+  ),
+  (
+    "media-feature-name-case",
+    "@stylistic/media-feature-name-case",
+  ),
+  (
+    "media-feature-parentheses-space-inside",
+    "@stylistic/media-feature-parentheses-space-inside",
+  ),
+  (
+    "media-feature-range-operator-space-after",
+    "@stylistic/media-feature-range-operator-space-after",
+  ),
+  (
+    "media-feature-range-operator-space-before",
+    "@stylistic/media-feature-range-operator-space-before",
+  ),
+  (
+    "media-query-list-comma-newline-after",
+    "@stylistic/media-query-list-comma-newline-after",
+  ),
+  (
+    "media-query-list-comma-space-after",
+    "@stylistic/media-query-list-comma-space-after",
+  ),
+  (
+    "media-query-list-comma-space-before",
+    "@stylistic/media-query-list-comma-space-before",
+  ),
+  ("no-empty-first-line", "@stylistic/no-empty-first-line"),
+  ("no-eol-whitespace", "@stylistic/no-eol-whitespace"),
+  ("no-extra-semicolons", "@stylistic/no-extra-semicolons"),
+  (
+    "no-missing-end-of-source-newline",
+    "@stylistic/no-missing-end-of-source-newline",
+  ),
+  ("number-leading-zero", "@stylistic/number-leading-zero"),
+  (
+    "number-no-trailing-zeros",
+    "@stylistic/number-no-trailing-zeros",
+  ),
+  ("property-case", "@stylistic/property-case"),
+  (
+    "selector-attribute-brackets-space-inside",
+    "@stylistic/selector-attribute-brackets-space-inside",
+  ),
+  (
+    "selector-attribute-operator-space-after",
+    "@stylistic/selector-attribute-operator-space-after",
+  ),
+  (
+    "selector-attribute-operator-space-before",
+    "@stylistic/selector-attribute-operator-space-before",
+  ),
+  (
+    "selector-combinator-space-after",
+    "@stylistic/selector-combinator-space-after",
+  ),
+  (
+    "selector-combinator-space-before",
+    "@stylistic/selector-combinator-space-before",
+  ),
+  (
+    "selector-descendant-combinator-no-non-space",
+    "@stylistic/selector-descendant-combinator-no-non-space",
+  ),
+  (
+    "selector-list-comma-newline-after",
+    "@stylistic/selector-list-comma-newline-after",
+  ),
+  (
+    "selector-list-comma-newline-before",
+    "@stylistic/selector-list-comma-newline-before",
+  ),
+  (
+    "selector-list-comma-space-after",
+    "@stylistic/selector-list-comma-space-after",
+  ),
+  (
+    "selector-list-comma-space-before",
+    "@stylistic/selector-list-comma-space-before",
+  ),
+  (
+    "selector-max-empty-lines",
+    "@stylistic/selector-max-empty-lines",
+  ),
+  (
+    "selector-pseudo-class-case",
+    "@stylistic/selector-pseudo-class-case",
+  ),
+  (
+    "selector-pseudo-class-parentheses-space-inside",
+    "@stylistic/selector-pseudo-class-parentheses-space-inside",
+  ),
+  (
+    "selector-pseudo-element-case",
+    "@stylistic/selector-pseudo-element-case",
+  ),
+  ("string-quotes", "@stylistic/string-quotes"),
+  ("unicode-bom", "@stylistic/unicode-bom"),
+  ("unit-case", "@stylistic/unit-case"),
+  (
+    "value-list-comma-newline-after",
+    "@stylistic/value-list-comma-newline-after",
+  ),
+  (
+    "value-list-comma-newline-before",
+    "@stylistic/value-list-comma-newline-before",
+  ),
+  (
+    "value-list-comma-space-after",
+    "@stylistic/value-list-comma-space-after",
+  ),
+  (
+    "value-list-comma-space-before",
+    "@stylistic/value-list-comma-space-before",
+  ),
+  (
+    "value-list-max-empty-lines",
+    "@stylistic/value-list-max-empty-lines",
+  ),
+];
+
+/// Other deprecated names, as `(old, new)`.
+const RENAMES: &[(&str, &str)] = &[
+  // Spectrum Tools alias, functionally identical to the csstools rule.
+  (
+    "spectrum-tools/no-unknown-custom-properties",
+    "csstools/value-no-unknown-custom-properties",
+  ),
+  // SCSS deprecated aliases.
+  (
+    "scss/at-import-partial-extension-blacklist",
+    "scss/at-import-partial-extension-disallowed-list",
+  ),
+  (
+    "scss/at-import-no-partial-leading-underscore",
+    "scss/load-no-partial-leading-underscore",
+  ),
+];
+
+/// Map deprecated Stylelint rule names to their `@stylistic/` equivalents
+/// (and the few other renames in [`RENAMES`]).
 ///
 /// Stylelint 15+ moved stylistic rules to the `@stylistic/stylelint-plugin`
 /// package, but old configs still use the unprefixed names.
-pub fn resolve_deprecated_alias(name: &str) -> Option<&'static str> {
-  match name {
-    "at-rule-name-case" => Some("@stylistic/at-rule-name-case"),
-    "at-rule-name-space-after" => Some("@stylistic/at-rule-name-space-after"),
-    "at-rule-semicolon-newline-after" => Some("@stylistic/at-rule-semicolon-newline-after"),
-    "at-rule-semicolon-space-before" => Some("@stylistic/at-rule-semicolon-space-before"),
-    "block-closing-brace-empty-line-before" => {
-      Some("@stylistic/block-closing-brace-empty-line-before")
-    }
-    "block-closing-brace-newline-after" => Some("@stylistic/block-closing-brace-newline-after"),
-    "block-closing-brace-newline-before" => Some("@stylistic/block-closing-brace-newline-before"),
-    "block-closing-brace-space-before" => Some("@stylistic/block-closing-brace-space-before"),
-    "block-opening-brace-newline-after" => Some("@stylistic/block-opening-brace-newline-after"),
-    "block-opening-brace-space-before" => Some("@stylistic/block-opening-brace-space-before"),
-    "color-hex-case" => Some("@stylistic/color-hex-case"),
-    "declaration-bang-space-after" => Some("@stylistic/declaration-bang-space-after"),
-    "declaration-bang-space-before" => Some("@stylistic/declaration-bang-space-before"),
-    "declaration-block-semicolon-newline-after" => {
-      Some("@stylistic/declaration-block-semicolon-newline-after")
-    }
-    "declaration-block-semicolon-newline-before" => {
-      Some("@stylistic/declaration-block-semicolon-newline-before")
-    }
-    "declaration-block-semicolon-space-before" => {
-      Some("@stylistic/declaration-block-semicolon-space-before")
-    }
-    "declaration-block-trailing-semicolon" => {
-      Some("@stylistic/declaration-block-trailing-semicolon")
-    }
-    "declaration-colon-newline-after" => Some("@stylistic/declaration-colon-newline-after"),
-    "declaration-colon-space-after" => Some("@stylistic/declaration-colon-space-after"),
-    "declaration-colon-space-before" => Some("@stylistic/declaration-colon-space-before"),
-    "function-comma-newline-after" => Some("@stylistic/function-comma-newline-after"),
-    "function-comma-space-after" => Some("@stylistic/function-comma-space-after"),
-    "function-comma-space-before" => Some("@stylistic/function-comma-space-before"),
-    "function-max-empty-lines" => Some("@stylistic/function-max-empty-lines"),
-    "function-parentheses-space-inside" => Some("@stylistic/function-parentheses-space-inside"),
-    "function-whitespace-after" => Some("@stylistic/function-whitespace-after"),
-    "indentation" => Some("@stylistic/indentation"),
-    "max-empty-lines" => Some("@stylistic/max-empty-lines"),
-    "max-line-length" => Some("max-line-length"), // Gale has this as its own rule
-    "media-feature-colon-space-after" => Some("@stylistic/media-feature-colon-space-after"),
-    "media-feature-colon-space-before" => Some("@stylistic/media-feature-colon-space-before"),
-    "media-feature-name-case" => Some("@stylistic/media-feature-name-case"),
-    "media-feature-parentheses-space-inside" => {
-      Some("@stylistic/media-feature-parentheses-space-inside")
-    }
-    "media-feature-range-operator-space-after" => {
-      Some("@stylistic/media-feature-range-operator-space-after")
-    }
-    "media-feature-range-operator-space-before" => {
-      Some("@stylistic/media-feature-range-operator-space-before")
-    }
-    "media-query-list-comma-newline-after" => {
-      Some("@stylistic/media-query-list-comma-newline-after")
-    }
-    "media-query-list-comma-space-after" => Some("@stylistic/media-query-list-comma-space-after"),
-    "media-query-list-comma-space-before" => Some("@stylistic/media-query-list-comma-space-before"),
-    "no-empty-first-line" => Some("@stylistic/no-empty-first-line"),
-    "no-eol-whitespace" => Some("@stylistic/no-eol-whitespace"),
-    "no-extra-semicolons" => Some("@stylistic/no-extra-semicolons"),
-    "no-missing-end-of-source-newline" => Some("@stylistic/no-missing-end-of-source-newline"),
-    "number-leading-zero" => Some("@stylistic/number-leading-zero"),
-    "number-no-trailing-zeros" => Some("@stylistic/number-no-trailing-zeros"),
-    "property-case" => Some("@stylistic/property-case"),
-    "selector-attribute-brackets-space-inside" => {
-      Some("@stylistic/selector-attribute-brackets-space-inside")
-    }
-    "selector-attribute-operator-space-after" => {
-      Some("@stylistic/selector-attribute-operator-space-after")
-    }
-    "selector-attribute-operator-space-before" => {
-      Some("@stylistic/selector-attribute-operator-space-before")
-    }
-    "selector-combinator-space-after" => Some("@stylistic/selector-combinator-space-after"),
-    "selector-combinator-space-before" => Some("@stylistic/selector-combinator-space-before"),
-    "selector-descendant-combinator-no-non-space" => {
-      Some("@stylistic/selector-descendant-combinator-no-non-space")
-    }
-    "selector-list-comma-newline-after" => Some("@stylistic/selector-list-comma-newline-after"),
-    "selector-list-comma-newline-before" => Some("@stylistic/selector-list-comma-newline-before"),
-    "selector-list-comma-space-after" => Some("@stylistic/selector-list-comma-space-after"),
-    "selector-list-comma-space-before" => Some("@stylistic/selector-list-comma-space-before"),
-    "selector-max-empty-lines" => Some("@stylistic/selector-max-empty-lines"),
-    "selector-pseudo-class-case" => Some("@stylistic/selector-pseudo-class-case"),
-    "selector-pseudo-class-parentheses-space-inside" => {
-      Some("@stylistic/selector-pseudo-class-parentheses-space-inside")
-    }
-    "selector-pseudo-element-case" => Some("@stylistic/selector-pseudo-element-case"),
-    "string-quotes" => Some("@stylistic/string-quotes"),
-    "unicode-bom" => Some("@stylistic/unicode-bom"),
-    "unit-case" => Some("@stylistic/unit-case"),
-    "value-list-comma-newline-after" => Some("@stylistic/value-list-comma-newline-after"),
-    "value-list-comma-newline-before" => Some("@stylistic/value-list-comma-newline-before"),
-    "value-list-comma-space-after" => Some("@stylistic/value-list-comma-space-after"),
-    "value-list-comma-space-before" => Some("@stylistic/value-list-comma-space-before"),
-    "value-list-max-empty-lines" => Some("@stylistic/value-list-max-empty-lines"),
-    // Spectrum Tools aliases (functionally identical to csstools equivalents)
-    "spectrum-tools/no-unknown-custom-properties" => {
-      Some("csstools/value-no-unknown-custom-properties")
-    }
-    // SCSS deprecated aliases
-    "scss/at-import-partial-extension-blacklist" => {
-      Some("scss/at-import-partial-extension-disallowed-list")
-    }
-    "scss/at-import-no-partial-leading-underscore" => {
-      Some("scss/load-no-partial-leading-underscore")
-    }
-    _ => None,
-  }
+pub(crate) fn resolve_deprecated_alias(name: &str) -> Option<&'static str> {
+  STYLISTIC_MOVES
+    .iter()
+    .chain(RENAMES)
+    .find(|(old, _)| *old == name)
+    .map(|&(_, new)| new)
 }
 
 #[cfg(test)]
@@ -219,6 +368,19 @@ mod tests {
       registry.get("@stylistic/indentation").map(|r| r.name()),
       Some("@stylistic/indentation")
     );
+  }
+
+  #[test]
+  fn each_stylistic_move_keeps_its_name_under_the_plugin() {
+    for (old, new) in STYLISTIC_MOVES {
+      assert_eq!(new.strip_prefix("@stylistic/"), Some(*old));
+    }
+    assert_eq!(
+      resolve_deprecated_alias("scss/at-import-partial-extension-blacklist"),
+      Some("scss/at-import-partial-extension-disallowed-list")
+    );
+    assert_eq!(resolve_deprecated_alias("max-line-length"), None);
+    assert_eq!(canonical_name("max-line-length"), "max-line-length");
   }
 
   #[test]

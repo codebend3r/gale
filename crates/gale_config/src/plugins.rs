@@ -40,6 +40,6 @@ pub(crate) fn extract_plugin_names(value: &serde_json::Value) -> Vec<String> {
 ///
 /// Uses substring matching so that `./node_modules/stylelint-scss` or
 /// `stylelint-scss/lib/index.js` still matches `stylelint-scss`.
-pub fn is_known_plugin(plugin: &str) -> bool {
+pub(crate) fn is_known_plugin(plugin: &str) -> bool {
   KNOWN_PLUGINS.iter().any(|known| plugin.contains(known))
 }

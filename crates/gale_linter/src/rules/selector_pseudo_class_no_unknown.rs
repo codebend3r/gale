@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_css_parser::selector::postcss::blank_comments;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_alnum_or_hyphen;
 use crate::data::{is_known_pseudo_class, is_legacy_pseudo_element};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
@@ -221,7 +222,7 @@ fn extract_pseudo_classes_with_context(selector: &str) -> Vec<PseudoClassEntry> 
 
     if i + 1 < len && chars[i] == ':' && chars[i + 1] == ':' {
       i += 2;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
+      while i < len && is_alnum_or_hyphen(chars[i]) {
         i += 1;
       }
       after_pseudo_element = true;
@@ -232,7 +233,7 @@ fn extract_pseudo_classes_with_context(selector: &str) -> Vec<PseudoClassEntry> 
       let colon_pos = i;
       i += 1;
       let start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
+      while i < len && is_alnum_or_hyphen(chars[i]) {
         i += 1;
       }
       if i > start {

@@ -1,9 +1,9 @@
 use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
+use gale_diagnostics::Diagnostic;
 
-use crate::hex_colors::find_hex_colors;
+use crate::hex_colors::hex_case_diagnostics;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "@stylistic/color-hex-case";
@@ -22,8 +22,8 @@ declare_rule! {
 
 /// `@stylistic/color-hex-case` as configured.
 pub struct StylisticColorHexCaseCheck {
-  /// `"lower"` or `"upper"`.
-  expected_case: &'static str,
+  /// The case hex colors are written in.
+  case: LetterCase,
 }
 
 impl StylisticColorHexCaseCheck {
@@ -31,11 +31,9 @@ impl StylisticColorHexCaseCheck {
   /// `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      expected_case: expected_case.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
@@ -43,57 +41,16 @@ impl Check for StylisticColorHexCaseCheck {
   /// Flags hex colors not in the configured case and offers the converted value
   /// as a fix.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = self.expected_case;
-
-    let mut diags = Vec::new();
-    // The declarations of style rules, read whole: property through `;`.
-    for decl in tree.walk_decls() {
-      if !decl.in_style_rule() {
-        continue;
-      }
-      let decl_start = decl.span().offset;
-      let search_area = decl.source_text();
-
-      for (rel_offset, hex) in find_hex_colors(search_area) {
-        let is_wrong = match expected_case {
-          "lower" => hex[1..].chars().any(|c| c.is_ascii_uppercase()),
-          "upper" => hex[1..].chars().any(|c| c.is_ascii_lowercase()),
-          _ => false,
-        };
-
-        if is_wrong {
-          let fixed = match expected_case {
-            "lower" => hex.to_ascii_lowercase(),
-            "upper" => {
-              // Keep the '#' as-is, uppercase the rest
-              let mut s = String::with_capacity(hex.len());
-              s.push('#');
-              for c in hex[1..].chars() {
-                s.extend(c.to_uppercase());
-              }
-              s
-            }
-            _ => continue,
-          };
-          let abs_offset = decl_start + rel_offset;
-          diags.push(
-            Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{fixed}\""))
-              .span(Span::new(abs_offset, hex.len()))
-              .fix(Fix::new(
-                format!("Convert to {expected_case}case"),
-                vec![Edit::new(Span::new(abs_offset, hex.len()), &fixed)],
-              )),
-          );
-        }
-      }
-    }
-    diags
+    hex_case_diagnostics(tree, NAME, self.case, |case, _| {
+      format!("Convert to {}", case.word())
+    })
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use gale_diagnostics::Span;
 
   use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 

@@ -1,9 +1,5 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::rule::declare_rule;
 
 const NAME: &str = "selector-max-class";
 
@@ -12,69 +8,26 @@ declare_rule! {
   ///
   /// Equivalent to Stylelint's `selector-max-class` rule.
   /// Default maximum: 3. Detection-only.
-  pub struct SelectorMaxClass => SelectorMaxClassCheck {
+  pub struct SelectorMaxClass => MaxCheck<SelectorMaxClass> {
     name: NAME,
     description: "Limit the number of class selectors in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-class` as configured.
-pub struct SelectorMaxClassCheck {
-  /// The most class selectors allowed.
-  max: usize,
-}
+impl MaxRule for SelectorMaxClass {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 3;
+  type Options = ();
 
-impl SelectorMaxClassCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`).
-  /// Gale reads no number as 3.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
-    options.finish()?;
-    Ok(Self {
-      max: max
-        .and_then(serde_json::Value::as_u64)
-        .map_or(MAX_CLASS, |max| max as usize),
-    })
+  fn count(selector: &str, _: &()) -> usize {
+    count_class_selectors(selector)
   }
-}
 
-const MAX_CLASS: usize = 3;
-
-impl Check for SelectorMaxClassCheck {
-  /// Flags a selector holding more class selectors than allowed.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let max = self.max;
-
-    let mut diags = Vec::new();
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      let selector = rule.selector();
-      // Check each comma-separated selector individually
-      for sel in selector.split(',') {
-        let sel = sel.trim();
-        if sel.is_empty() {
-          continue;
-        }
-        let count = count_class_selectors(sel);
-        if count > max {
-          diags.push(
-                    Diagnostic::new(
-                        NAME,
-                        format!(
-                            "Expected selector \"{sel}\" to have no more than {max} class selector(s), found {count}",
-                        ),
-                    )
-                    .span(rule.span()),
-                );
-        }
-      }
-    }
-    diags
+  fn message(selector: &str, max: usize, count: usize) -> String {
+    format!(
+      "Expected selector \"{selector}\" to have no more than {max} class selector(s), found {count}"
+    )
   }
 }
 
@@ -141,6 +94,17 @@ mod tests {
     // Not standard syntax, so not read.
     let less = ".m() when (@a) { .a .b .c .d {} }\n.n(@x) {}";
     assert_eq!(rule.check_source(&context(less, Syntax::Less)).len(), 1);
+  }
+
+  #[test]
+  fn a_whole_float_maximum_is_that_maximum() {
+    // `5.0` is a whole number, so it validates; it used to be read as no
+    // number at all, leaving the default of 3 in force.
+    let rule = configured(&SelectorMaxClass, serde_json::json!(5.0));
+    let four = style_with_selector(".a .b .c .d");
+    assert!(rule.check_source(&ctx_with_source(&four)).is_empty());
+    let six = style_with_selector(".a .b .c .d .e .f");
+    assert_eq!(rule.check_source(&ctx_with_source(&six)).len(), 1);
   }
 
   #[test]

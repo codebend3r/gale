@@ -2,6 +2,8 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::data::extract_functions;
+use crate::data::lookup;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -241,47 +243,6 @@ static KNOWN_SCSS_FUNCTIONS: &[&str] = &[
   "zip",
 ];
 
-/// Whether `name` is a standard CSS function.
-fn is_known_css_function(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  KNOWN_CSS_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
-}
-
-/// Whether `name` is a built-in SCSS function.
-fn is_known_scss_function(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  KNOWN_SCSS_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
-}
-
-/// Extract function call names from a CSS value string.
-fn extract_functions(value: &str) -> Vec<String> {
-  let mut functions = Vec::new();
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut i = 0;
-
-  while i < len {
-    if bytes[i] == b'(' && i > 0 {
-      let end = i;
-      let mut start = i;
-      while start > 0
-        && (bytes[start - 1].is_ascii_alphanumeric()
-          || bytes[start - 1] == b'-'
-          || bytes[start - 1] == b'_')
-      {
-        start -= 1;
-      }
-      if start < end {
-        let name = &value[start..end];
-        functions.push(name.to_string());
-      }
-    }
-    i += 1;
-  }
-
-  functions
-}
-
 impl Check for ScssFunctionNoUnknownCheck {
   /// Flags function calls that are neither standard CSS nor built-in SCSS,
   /// skipping any listed in `ignoreFunctions`.
@@ -322,10 +283,10 @@ impl Check for ScssFunctionNoUnknownCheck {
           continue;
         }
 
-        if is_known_css_function(&func_name) {
+        if lookup(KNOWN_CSS_FUNCTIONS, &func_name) {
           continue;
         }
-        if is_known_scss_function(&func_name) {
+        if lookup(KNOWN_SCSS_FUNCTIONS, &func_name) {
           continue;
         }
 

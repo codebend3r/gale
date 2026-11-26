@@ -1,16 +1,19 @@
 //! Shared helpers for rule tests.
 //!
 //! Tests that call a rule's check directly configure it with [`configured`]
-//! and build their [`RuleContext`] with [`ctx`], [`scss_ctx`] and the other
-//! builders here; [`CheckSource::check_source`]
+//! and build their [`RuleContext`] with [`ctx`], [`scss_ctx_with_source`]
+//! and the other builders here; [`CheckSource::check_source`]
 //! runs its `check` over the context's source.  [`invalid_options`] is
 //! what a rule set reports for a rule's options.
 //! Tests that start from source text use [`lint`] and [`fix`], which lint a
 //! snippet with one rule through the real parser and runner, then apply fixes
-//! and re-lint until the source settles, the way `gale --fix` does.
+//! and re-lint until the source settles, the way `gale --fix` does;
+//! [`located`] and [`ranges`] give each warning's line and column range,
+//! as upstream's tests check them.
 
 use gale_css_parser::Syntax;
-use gale_diagnostics::{Diagnostic, apply_fixes};
+use gale_css_parser::postcss_tree::PostcssTree;
+use gale_diagnostics::{Diagnostic, SourceLineIndex, apply_fixes};
 use serde_json::Value;
 
 use crate::{Check, LintEnv, Rule, RuleContext, RuleSet, RuleSetSpec, RuleSetting, Setting};
@@ -20,6 +23,46 @@ pub fn lint(rule: &str, options: Value, source: &str, syntax: Syntax) -> Vec<Dia
   rule_set(rule, options)
     .lint(source, file_name(syntax), syntax)
     .diagnostics
+}
+
+/// Where a warning sits, as upstream's tests write it: `(line, column,
+/// endLine, endColumn)`, 1-based.
+pub type LineRange = (usize, usize, usize, usize);
+
+/// The message and [`LineRange`] of each warning [`lint`] reports.
+pub fn located(
+  rule: &str,
+  options: Value,
+  source: &str,
+  syntax: Syntax,
+) -> Vec<(String, LineRange)> {
+  let index = SourceLineIndex::build(source);
+  lint(rule, options, source, syntax)
+    .into_iter()
+    .map(|d| {
+      let (line, column) = index.offset_to_location(d.span.offset);
+      let (end_line, end_column) = index.offset_to_location(d.span.end());
+      (d.message, (line, column, end_line, end_column))
+    })
+    .collect()
+}
+
+/// The [`LineRange`] of each warning [`lint`] reports, asserting that
+/// every one of them says `message`.
+pub fn ranges(
+  rule: &str,
+  options: Value,
+  source: &str,
+  syntax: Syntax,
+  message: &str,
+) -> Vec<LineRange> {
+  located(rule, options, source, syntax)
+    .into_iter()
+    .map(|(actual, range)| {
+      assert_eq!(actual, message);
+      range
+    })
+    .collect()
 }
 
 /// `source` after `gale --fix` with only `rule` (configured with `options`)
@@ -67,7 +110,7 @@ pub trait CheckSource {
 
 impl<C: Check + ?Sized> CheckSource for C {
   fn check_source(&self, ctx: &RuleContext) -> Vec<Diagnostic> {
-    self.check(&ctx.postcss_tree(), ctx)
+    self.check(&PostcssTree::parse(ctx.source, ctx.syntax), ctx)
   }
 }
 
@@ -96,15 +139,13 @@ fn file_name(syntax: Syntax) -> &'static str {
 }
 
 /// A context for `source` in `syntax`, for a file whose name matches the
-/// syntax.  It has no per-file cache, so every accessor builds afresh, as it
-/// does for any context outside the runner.
+/// syntax.
 pub fn context(source: &str, syntax: Syntax) -> RuleContext<'_> {
   RuleContext {
     env: Default::default(),
     file_path: file_name(syntax),
     source,
     syntax,
-    cache: None,
     embedded: None,
   }
 }
@@ -120,17 +161,7 @@ pub fn ctx_with_source(source: &str) -> RuleContext<'_> {
   context(source, Syntax::Css)
 }
 
-/// An SCSS context with no source text.
-pub fn scss_ctx<'a>() -> RuleContext<'a> {
-  context("", Syntax::Scss)
-}
-
 /// An SCSS context for `source`.
 pub fn scss_ctx_with_source(source: &str) -> RuleContext<'_> {
   context(source, Syntax::Scss)
-}
-
-/// A Less context with no source text.
-pub fn less_ctx<'a>() -> RuleContext<'a> {
-  context("", Syntax::Less)
 }

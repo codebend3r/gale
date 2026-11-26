@@ -503,7 +503,6 @@ mod tests {
       file_path: "t.css",
       source: css,
       syntax,
-      cache: None,
       embedded: None,
     };
     let index = SourceLineIndex::build(css);

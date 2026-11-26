@@ -60,7 +60,7 @@ where
 /// What is actually stored in a config file on disk.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigFile {
+pub(crate) struct ConfigFile {
   pub rules: Option<HashMap<String, RuleConfigValue>>,
   pub ignore_patterns: Option<Vec<String>>,
   /// Stylelint uses `ignoreFiles` for the same purpose as `ignorePatterns`.
@@ -127,7 +127,7 @@ pub struct ConfigFile {
 /// A single override entry as it appears in the config file.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigOverride {
+pub(crate) struct ConfigOverride {
   /// Glob patterns for files this override applies to.
   /// Accepts a single string or an array of strings.
   #[serde(default, deserialize_with = "string_or_vec")]
@@ -160,7 +160,7 @@ pub struct ConfigOverride {
 /// - `["error", { ...options }]` (tuple of severity + options)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum RuleConfigValue {
+pub(crate) enum RuleConfigValue {
   /// Null: treated as Off (used in JS configs to disable inherited rules).
   Null(Option<()>),
   /// Boolean shorthand: `true` → Error, `false` → Off.

@@ -11,9 +11,12 @@
 //! ones.  JavaScript's `\w` and `\d` are spelled as the ASCII classes they
 //! are.
 
+mod sites;
+
 use std::sync::LazyLock;
 
 use regex::Regex;
+pub use sites::{OperatorSite, is_whitespace, operator_sites};
 
 /// One operator found in a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

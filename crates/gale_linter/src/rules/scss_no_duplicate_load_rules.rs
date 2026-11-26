@@ -186,25 +186,16 @@ fn list_import_conditions(params: &[ValueNode<'_>]) -> Vec<String> {
 mod tests {
   use super::NAME;
   use gale_css_parser::Syntax;
-  use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::{invalid_options, lint};
+  use crate::testing::{LineRange, invalid_options, located};
 
   const RULE: &str = "scss/no-duplicate-load-rules";
 
   /// The message and `(line, column, endLine, endColumn)` of each warning
   /// for `source`.
-  fn warnings(source: &str, syntax: Syntax) -> Vec<(String, (usize, usize, usize, usize))> {
-    let index = SourceLineIndex::build(source);
-    lint(RULE, json!(true), source, syntax)
-      .iter()
-      .map(|d| {
-        let (line, column) = index.offset_to_location(d.span.offset);
-        let (end_line, end_column) = index.offset_to_location(d.span.end());
-        (d.message.clone(), (line, column, end_line, end_column))
-      })
-      .collect()
+  fn warnings(source: &str, syntax: Syntax) -> Vec<(String, LineRange)> {
+    located(RULE, json!(true), source, syntax)
   }
 
   /// Assert that every source in `sources` is accepted.

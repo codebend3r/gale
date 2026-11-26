@@ -14,6 +14,10 @@ pub struct DisablePolicy {
   pub default_severity: Option<Severity>,
   pub configured: HashSet<String>,
   pub forbids_disable: HashSet<String>,
+  /// The registered rules that never report a problem (their meta says
+  /// [`crate::rule::Rule::never_reports`]), whose disables
+  /// `reportNeedlessDisables` can prove needless.
+  pub never_reports: HashSet<&'static str>,
 }
 
 impl DisablePolicy {
@@ -53,6 +57,15 @@ impl DisablePolicy {
   /// Whether the config enables `rule`, for `reportInvalidScopeDisables`.
   pub(crate) fn is_configured(&self, rule: &str) -> bool {
     self.configured.contains(canonical_name(rule))
+  }
+
+  /// Whether `rule` is a registered rule that never reports a problem, so
+  /// a comment disabling it is needless whenever it disabled nothing.
+  ///
+  /// Every other rule might report problems Stylelint does not (or miss
+  /// ones it does), so its disables are never called needless.
+  pub(crate) fn never_reports(&self, rule: &str) -> bool {
+    self.never_reports.contains(rule)
   }
 
   /// Whether `rule` has `reportDisables: true`.

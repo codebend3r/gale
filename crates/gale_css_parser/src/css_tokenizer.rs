@@ -122,7 +122,7 @@ fn js_number_to_string(n: f64) -> String {
 
 /// `@csstools/css-tokenizer`'s `serializeIdent`: escape what an identifier
 /// cannot hold as is.
-pub fn serialize_ident(text: &str) -> String {
+fn serialize_ident(text: &str) -> String {
   let chars: Vec<char> = text.chars().collect();
   let mut out = String::new();
   let escape_code_point = |c: char, out: &mut String| out.push_str(&format!("\\{:x} ", c as u32));
@@ -201,7 +201,7 @@ fn is_ident_char(c: char) -> bool {
 
 /// Whether `c` is whitespace to the tokenizer.
 fn is_whitespace(c: char) -> bool {
-  matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')
+  u8::try_from(c).is_ok_and(crate::scan::is_css_space)
 }
 
 /// Whether `c` is a newline to the tokenizer.

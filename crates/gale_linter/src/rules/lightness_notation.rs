@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_byte;
 use crate::js_number::{parse_float, to_js_string, to_precision};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -128,7 +129,7 @@ fn mentions_lightness_function(value: &str) -> bool {
         let start = paren - name.len();
         start == 0 || {
           let prev = lower.as_bytes()[start - 1];
-          !(prev.is_ascii_alphanumeric() || prev == b'_')
+          !is_word_byte(prev)
         }
       }
     })

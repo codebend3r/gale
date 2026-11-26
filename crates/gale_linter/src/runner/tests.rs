@@ -548,9 +548,12 @@ test_rule!(
 
 impl Check for ReportsTreeRules {
   /// Reports each style rule of the tree it is handed, which must be the
-  /// one every rule shares.
+  /// tree of the context's text.
   fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
-    assert!(std::ptr::eq(tree, &*ctx.postcss_tree()), "the shared tree");
+    assert!(
+      std::ptr::eq(tree.source(), ctx.source),
+      "the tree of the text"
+    );
     tree
       .walk_rules()
       .map(|rule| Diagnostic::new("test/tree-rules", "rule").span(Span::new(rule.start, 1)))
@@ -1276,4 +1279,27 @@ fn reports_still_run_under_ignore_disables() {
     rules,
     vec!["--report-descriptionless-disables", "block-no-empty"]
   );
+}
+
+/// Only a rule that says it never reports has needless disables: a comment
+/// disabling `material/no-prefixes` disables nothing, while one disabling a
+/// rule gale runs might be needed for problems gale does not report.
+#[test]
+fn needless_disables_are_reported_for_rules_that_never_report() {
+  let set = RuleSet::new(RuleSetSpec {
+    disables: DisableOptions {
+      report_needless: true,
+      ..DisableOptions::default()
+    },
+    ..spec_for(&["block-no-empty"])
+  });
+  let src = "/* stylelint-disable material/no-prefixes */\n/* stylelint-disable color-named */\na { color: red; }\n";
+  let result = set.lint(src, "test.css", Syntax::Css);
+  let needless: Vec<&str> = result
+    .diagnostics
+    .iter()
+    .filter(|d| d.rule_name == gale_diagnostics::NEEDLESS_DISABLES)
+    .map(|d| d.message.as_str())
+    .collect();
+  assert_eq!(needless, ["Needless disable for \"material/no-prefixes\""]);
 }

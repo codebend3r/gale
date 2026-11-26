@@ -217,7 +217,6 @@ mod tests {
       file_path: "test.css",
       source,
       syntax: Syntax::Css,
-      cache: None,
       embedded: None,
     };
     rule.check_source(&context)

@@ -1,9 +1,6 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::options::Options;
+use crate::rule::declare_rule;
 
 const NAME: &str = "selector-max-compound-selectors";
 
@@ -12,67 +9,32 @@ declare_rule! {
   ///
   /// Equivalent to Stylelint's `selector-max-compound-selectors` rule.
   /// Default maximum: 3. Counts parts separated by combinators (space, `>`, `+`, `~`).
-  pub struct SelectorMaxCompoundSelectors => SelectorMaxCompoundSelectorsCheck {
+  pub struct SelectorMaxCompoundSelectors => MaxCheck<SelectorMaxCompoundSelectors> {
     name: NAME,
     description: "Limit the number of compound selectors in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-compound-selectors` as configured.
-pub struct SelectorMaxCompoundSelectorsCheck {
-  /// The most compound selectors allowed.
-  max: usize,
-}
+impl MaxRule for SelectorMaxCompoundSelectors {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 3;
+  type Options = ();
 
-impl SelectorMaxCompoundSelectorsCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`), then `ignoreSelectors`,
-  /// which gale accepts but does not yet apply.  Gale reads no number as 3.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
+  /// Stylelint's `ignoreSelectors`, which gale accepts but does not yet
+  /// apply.
+  fn options(options: &mut Options<'_>) {
     options.strings("ignoreSelectors");
-    options.finish()?;
-    Ok(Self {
-      max: max
-        .and_then(serde_json::Value::as_u64)
-        .map_or(MAX_COMPOUND, |max| max as usize),
-    })
   }
-}
 
-const MAX_COMPOUND: usize = 3;
+  fn count(selector: &str, _: &()) -> usize {
+    count_compound_selectors(selector)
+  }
 
-impl Check for SelectorMaxCompoundSelectorsCheck {
-  /// Flags a selector holding more compound selectors than allowed.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let max = self.max;
-
-    let mut diags = Vec::new();
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      let selector = rule.selector();
-      // Check each comma-separated selector
-      for sel in selector.split(',') {
-        let sel = sel.trim();
-        let count = count_compound_selectors(sel);
-        if count > max {
-          diags.push(
-                    Diagnostic::new(
-                        NAME,
-                        format!(
-                            "Expected selector \"{sel}\" to have no more than {max} compound selector(s), found {count}"
-                        ),
-                    )
-                    .span(rule.span()),
-                );
-        }
-      }
-    }
-    diags
+  fn message(selector: &str, max: usize, count: usize) -> String {
+    format!(
+      "Expected selector \"{selector}\" to have no more than {max} compound selector(s), found {count}"
+    )
   }
 }
 

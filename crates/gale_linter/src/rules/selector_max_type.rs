@@ -1,10 +1,11 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
+use std::borrow::Cow;
+
+use gale_css_parser::postcss_tree::RuleRef;
 
 use crate::chars::is_ident_char;
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Matchers, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::options::{Matchers, Options};
+use crate::rule::{RuleContext, declare_rule};
 
 const NAME: &str = "selector-max-type";
 
@@ -22,58 +23,16 @@ declare_rule! {
   /// - `ignore: ["descendant", "child", "compounded", "next-sibling", "custom-elements"]`
   /// - `ignoreTypes: ["fieldset", "/^my-/"]` — type selectors matching these strings
   ///   or regex patterns are ignored.
-  pub struct SelectorMaxType => SelectorMaxTypeCheck {
+  pub struct SelectorMaxType => MaxCheck<SelectorMaxType> {
     name: NAME,
     description: "Limit the number of type selectors in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-type` as configured.
-pub struct SelectorMaxTypeCheck {
-  config: Config,
-}
-
-impl SelectorMaxTypeCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`), then `ignore` and
-  /// `ignoreTypes`.  Gale reads no number as 3.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
-    let ignore = options.keywords(
-      "ignore",
-      &[
-        "descendant",
-        "child",
-        "compounded",
-        "next-sibling",
-        "custom-elements",
-      ],
-    );
-    let ignore_types = options.strings("ignoreTypes");
-    options.finish()?;
-    Ok(Self {
-      config: Config {
-        max: max
-          .and_then(serde_json::Value::as_u64)
-          .map_or(MAX_TYPE, |max| max as usize),
-        ignore_descendant: ignore.contains(&"descendant"),
-        ignore_child: ignore.contains(&"child"),
-        ignore_compounded: ignore.contains(&"compounded"),
-        ignore_next_sibling: ignore.contains(&"next-sibling"),
-        ignore_custom_elements: ignore.contains(&"custom-elements"),
-        ignore_types: Matchers::ignoring_case(&ignore_types),
-      },
-    })
-  }
-}
-
-const MAX_TYPE: usize = 3;
-
 /// Configuration parsed from rule options.
-struct Config {
-  max: usize,
+#[derive(Default)]
+pub struct Config {
   ignore_descendant: bool,
   ignore_child: bool,
   ignore_compounded: bool,
@@ -89,49 +48,53 @@ impl Config {
   }
 }
 
-impl Check for SelectorMaxTypeCheck {
-  /// Flags selectors holding more type selectors than allowed, stripping
-  /// preprocessor constructs first.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
-    let config = &self.config;
+impl MaxRule for SelectorMaxType {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 3;
+  type Options = Config;
 
-    let mut diags = Vec::new();
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      let selector = if matches!(
-        ctx.syntax,
-        gale_css_parser::Syntax::Scss
-          | gale_css_parser::Syntax::Sass
-          | gale_css_parser::Syntax::Less
-      ) {
-        strip_preprocessor_constructs(rule.selector(), ctx.syntax)
-      } else {
-        rule.selector().to_string()
-      };
-      // Check each comma-separated selector individually
-      for sel in selector.split(',') {
-        let sel = sel.trim();
-        if sel.is_empty() {
-          continue;
-        }
-        let count = count_type_selectors(sel, config);
-        if count > config.max {
-          diags.push(
-            Diagnostic::new(
-              NAME,
-              format!(
-                "Expected \"{sel}\" to have no more than {max} type selector",
-                max = config.max,
-              ),
-            )
-            .span(rule.span()),
-          );
-        }
-      }
+  /// Stylelint's `ignore` and `ignoreTypes`.
+  fn options(options: &mut Options<'_>) -> Config {
+    let ignore = options.keywords(
+      "ignore",
+      &[
+        "descendant",
+        "child",
+        "compounded",
+        "next-sibling",
+        "custom-elements",
+      ],
+    );
+    let ignore_types = options.strings("ignoreTypes");
+    Config {
+      ignore_descendant: ignore.contains(&"descendant"),
+      ignore_child: ignore.contains(&"child"),
+      ignore_compounded: ignore.contains(&"compounded"),
+      ignore_next_sibling: ignore.contains(&"next-sibling"),
+      ignore_custom_elements: ignore.contains(&"custom-elements"),
+      ignore_types: Matchers::ignoring_case(&ignore_types),
     }
-    diags
+  }
+
+  /// The selector without its preprocessor constructs, for SCSS, Sass and
+  /// Less.
+  fn selector<'t>(rule: RuleRef<'t>, ctx: &RuleContext) -> Cow<'t, str> {
+    if matches!(
+      ctx.syntax,
+      gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
+    ) {
+      Cow::Owned(strip_preprocessor_constructs(rule.selector(), ctx.syntax))
+    } else {
+      Cow::Borrowed(rule.selector())
+    }
+  }
+
+  fn count(selector: &str, config: &Config) -> usize {
+    count_type_selectors(selector, config)
+  }
+
+  fn message(selector: &str, max: usize, _count: usize) -> String {
+    format!("Expected \"{selector}\" to have no more than {max} type selector")
   }
 }
 

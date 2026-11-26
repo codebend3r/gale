@@ -2,7 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
-use crate::data::is_css_wide_keyword;
+use crate::data::{is_css_wide_keyword, is_generic_font_family};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -39,22 +39,6 @@ impl FontFamilyNoMissingGenericFamilyKeywordCheck {
     })
   }
 }
-
-const GENERIC_FAMILIES: &[&str] = &[
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui",
-  "ui-serif",
-  "ui-sans-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "emoji",
-  "math",
-  "fangsong",
-];
 
 impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
   /// Flags a `font-family` whose last entry is not a generic family keyword.
@@ -121,9 +105,7 @@ impl Check for FontFamilyNoMissingGenericFamilyKeywordCheck {
       };
       let has_generic = value.split(',').any(|family| {
         let unquoted = unquoted(family);
-        GENERIC_FAMILIES
-          .iter()
-          .any(|&g| g.eq_ignore_ascii_case(&unquoted))
+        is_generic_font_family(&unquoted)
       });
       let ignored = !self.ignore_font_families.is_empty()
         && value

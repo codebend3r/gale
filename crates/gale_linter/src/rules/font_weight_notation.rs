@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::{Node, PostcssTree};
 use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_byte;
 use crate::js_number::parse_number;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -216,11 +217,7 @@ fn mentions_word(value: &str, words: &[&str], ignore_case: bool) -> bool {
     value.to_string()
   };
   let bytes = haystack.as_bytes();
-  let is_word = |i: usize| {
-    bytes
-      .get(i)
-      .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-  };
+  let is_word = |i: usize| bytes.get(i).is_some_and(|&b| is_word_byte(b));
   words.iter().any(|word| {
     haystack.match_indices(word).any(|(start, _)| {
       let end = start + word.len();

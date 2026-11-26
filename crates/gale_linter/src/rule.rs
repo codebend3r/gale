@@ -1,10 +1,7 @@
-use std::rc::Rc;
-
 use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Severity};
 
-use crate::file_cache::FileCache;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 
@@ -16,10 +13,6 @@ pub struct RuleContext<'a> {
   pub source: &'a str,
   /// The CSS syntax variant.
   pub syntax: Syntax,
-  /// What the rules linting this file share, built once per file.  The
-  /// runner always sets it; without one (a rule's own tests, say) every
-  /// accessor such as [`Self::postcss_tree`] builds afresh.
-  pub cache: Option<&'a FileCache<'a>>,
   /// What the run knows about the project beyond its config, such as the
   /// installed Stylelint version.
   pub env: LintEnv,
@@ -43,23 +36,6 @@ impl<'a> RuleContext<'a> {
   /// multibyte character.  See [`Self::source_slice`].
   pub fn source_from(&self, start: usize) -> Option<&'a str> {
     self.source.get(start..)
-  }
-
-  /// The file's [`FileCache`], when it was built for this context's source
-  /// and syntax.
-  fn cache(&self) -> Option<&'a FileCache<'a>> {
-    self
-      .cache
-      .filter(|cache| cache.is_for(self.source, self.syntax))
-  }
-
-  /// The source's statements as PostCSS sees them, parsed once per file and
-  /// shared with every other rule that asks.
-  pub fn postcss_tree(&self) -> Rc<PostcssTree<'a>> {
-    match self.cache() {
-      Some(cache) => cache.postcss_tree(),
-      None => Rc::new(PostcssTree::parse(self.source, self.syntax)),
-    }
   }
 }
 
@@ -132,6 +108,17 @@ pub trait Rule: Send + Sync {
   fn default_severity(&self) -> Severity {
     self.meta().default_severity
   }
+
+  /// Whether the rule never reports a problem: a stub for a plugin rule
+  /// that, like gale's, stays silent in practice, so
+  /// `reportNeedlessDisables` can call a comment disabling it needless.
+  ///
+  /// Only a rule that both gale and Stylelint (with the plugin) leave
+  /// silent may say so: a stub for a plugin rule Stylelint does fire must
+  /// not, because its disables suppress real Stylelint warnings.
+  fn never_reports(&self) -> bool {
+    false
+  }
 }
 
 /// Declare a rule whose options are parsed once: a unit struct the registry
@@ -152,6 +139,8 @@ pub trait Rule: Send + Sync {
 /// `primary_option_array: true` after the severity marks a rule whose
 /// primary option can be an array (Stylelint's `rule.primaryOptionArray`),
 /// and `primary_option_object: true` one whose primary option is an object.
+/// `never_reports: true`, last, marks a rule that never reports a problem
+/// (see [`Rule::never_reports`]).
 macro_rules! declare_rule {
   (
     $(#[$attr:meta])*
@@ -161,6 +150,7 @@ macro_rules! declare_rule {
       default_severity: $severity:ident
       $(, primary_option_array: $array:expr)?
       $(, primary_option_object: $object:expr)?
+      $(, never_reports: $never:expr)?
       $(,)?
     }
   ) => {
@@ -190,6 +180,10 @@ macro_rules! declare_rule {
       ) -> Result<Box<dyn $crate::rule::Check + '_>, Vec<$crate::options::InvalidOption>> {
         Ok(Box::new(<$check>::from_setting(setting, env)?))
       }
+
+      fn never_reports(&self) -> bool {
+        false $(|| $never)?
+      }
     }
   };
 }
@@ -206,7 +200,6 @@ mod tests {
       file_path: "test.css",
       source,
       syntax,
-      cache: None,
       embedded: None,
     }
   }
@@ -221,36 +214,6 @@ mod tests {
     assert_eq!(ctx.source_slice(5, 4), None, "reversed");
     assert_eq!(ctx.source_from(6), Some("}"));
     assert_eq!(ctx.source_from(5), None);
-  }
-
-  /// A context with the runner's per-file cache shares its artifacts
-  /// between rules; one over other text, or without a cache, builds its own.
-  #[test]
-  fn artifacts_come_from_the_cache_built_for_the_source() {
-    let source = String::from("a { color: red; }");
-    let cache = FileCache::new(&source, Syntax::Css);
-    let ctx = RuleContext {
-      env: Default::default(),
-      cache: Some(&cache),
-      ..context(&source, Syntax::Css)
-    };
-    assert!(Rc::ptr_eq(&ctx.postcss_tree(), &cache.postcss_tree()));
-
-    let other = source.clone();
-    let elsewhere = RuleContext {
-      env: Default::default(),
-      cache: Some(&cache),
-      ..context(&other, Syntax::Css)
-    };
-    let tree = elsewhere.postcss_tree();
-    assert!(!Rc::ptr_eq(&tree, &cache.postcss_tree()));
-    assert!(std::ptr::eq(tree.source(), other.as_str()));
-
-    let uncached = context(&source, Syntax::Css);
-    assert!(!Rc::ptr_eq(
-      &uncached.postcss_tree(),
-      &uncached.postcss_tree()
-    ));
   }
 
   /// A rule declared the way rule files declare theirs: it reports its
@@ -308,7 +271,10 @@ mod tests {
     );
     let ctx = context("", Syntax::Css);
     let check = configure(&WordRule, serde_json::json!("b")).ok().unwrap();
-    assert_eq!(check.check(&ctx.postcss_tree(), &ctx)[0].message, "b");
+    assert_eq!(
+      check.check(&PostcssTree::parse(ctx.source, ctx.syntax), &ctx)[0].message,
+      "b"
+    );
     assert_eq!(
       configure(&WordRule, serde_json::json!("c")).err().unwrap(),
       ["Invalid option value \"c\" for rule \"test/word\""]

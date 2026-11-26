@@ -2,7 +2,7 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_property;
 
@@ -21,8 +21,8 @@ declare_rule! {
 
 /// `@stylistic/property-case` as configured.
 pub struct StylisticPropertyCaseCheck {
-  /// The primary option: `"lower"` or `"upper"`.
-  expected_case: &'static str,
+  /// The case property names are written in.
+  case: LetterCase,
 }
 
 impl StylisticPropertyCaseCheck {
@@ -31,19 +31,17 @@ impl StylisticPropertyCaseCheck {
   /// does not yet apply the secondary options.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.strings("ignoreSelectors");
     options.finish()?;
-    Ok(Self {
-      expected_case: expected_case.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
 impl Check for StylisticPropertyCaseCheck {
   /// Flags property names not in the configured case.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = self.expected_case;
+    let case = self.case;
 
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
@@ -62,23 +60,13 @@ impl Check for StylisticPropertyCaseCheck {
         prop
       };
 
-      let is_wrong = match expected_case {
-        "lower" => check_part.chars().any(|c| c.is_ascii_uppercase()),
-        "upper" => check_part.chars().any(|c| c.is_ascii_lowercase()),
-        _ => false,
-      };
-
-      if is_wrong {
-        let fixed = match expected_case {
-          "lower" => prop.to_ascii_lowercase(),
-          "upper" => prop.to_ascii_uppercase(),
-          _ => continue,
-        };
+      if case.is_wrong(check_part) {
+        let fixed = case.apply(prop);
         diags.push(
           Diagnostic::new(NAME, format!("Expected \"{prop}\" to be \"{fixed}\""))
             .span(Span::new(prop_start, prop.len()))
             .fix(Fix::new(
-              format!("Convert to {expected_case}case"),
+              format!("Convert to {}", case.word()),
               vec![Edit::new(Span::new(prop_start, prop.len()), &fixed)],
             )),
         );

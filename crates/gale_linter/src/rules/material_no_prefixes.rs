@@ -16,14 +16,16 @@ declare_rule! {
   /// Material repos disable it via inline comments.  Stylelint then reports
   /// those disables as "needless" when `reportNeedlessDisables` is enabled.
   ///
-  /// Gale implements this as a no-op so that the needless-disable logic
-  /// correctly identifies `/* stylelint-disable material/no-prefixes */`
-  /// comments as needless (since the rule never generates warnings, exactly
-  /// like the real plugin in practice).
+  /// Gale implements this as a no-op that says it never reports, so that
+  /// the needless-disable logic identifies
+  /// `/* stylelint-disable material/no-prefixes */` comments as needless
+  /// (the rule never generates warnings, exactly like the real plugin in
+  /// practice).
   pub struct MaterialNoPrefixes => MaterialNoPrefixesCheck {
     name: NAME,
     description: "Disallow vendor prefixes in Angular Material components (stub — always passes)",
     default_severity: Warning,
+    never_reports: true,
   }
 }
 

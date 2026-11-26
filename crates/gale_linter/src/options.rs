@@ -35,7 +35,25 @@ use crate::rule::RuleMeta;
 /// The runner applies them (`severity`, `message`, `url`, `disableFix`) or
 /// the disable-comment reports read them (`reportDisables`), so a rule never
 /// reads them and they are never unknown: Stylelint's `IGNORED_OPTIONS`.
-pub const FRAMEWORK_KEYS: &[&str] = &["severity", "message", "url", "reportDisables", "disableFix"];
+pub const FRAMEWORK_KEYS: &[&str] = &[
+  SEVERITY_KEY,
+  MESSAGE_KEY,
+  URL_KEY,
+  REPORT_DISABLES_KEY,
+  DISABLE_FIX_KEY,
+];
+
+/// `severity`, the secondary option that overrides a rule's severity.
+pub const SEVERITY_KEY: &str = "severity";
+/// `message`, the secondary option that replaces a rule's warning text.
+pub const MESSAGE_KEY: &str = "message";
+/// `url`, the secondary option that attaches a documentation link.
+pub const URL_KEY: &str = "url";
+/// `reportDisables`, the secondary option that reports every comment
+/// disabling the rule.
+pub const REPORT_DISABLES_KEY: &str = "reportDisables";
+/// `disableFix`, the secondary option that drops a rule's autofix.
+pub const DISABLE_FIX_KEY: &str = "disableFix";
 
 /// One problem with a rule's options, as Stylelint words it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,14 +503,6 @@ impl<'s> Options<'s> {
     Some(strings_of(primary))
   }
 
-  /// A primary list of names and `/regex/` literals, compiled to match
-  /// with (see [`Matchers`]).
-  pub fn primary_matchers(&mut self) -> Option<Matchers> {
-    self
-      .primary_strings()
-      .map(|entries| Matchers::new(&entries))
-  }
-
   /// A primary option that is a regular expression (Stylelint's
   /// `[isRegExp, isString]`), compiled.  One that does not compile is
   /// reported with the reason, as [`pattern::invalid_option_text`] words it.
@@ -771,6 +781,78 @@ impl Matchers {
   /// Whether the list has no entries.
   pub fn is_empty(&self) -> bool {
     self.entries.is_empty()
+  }
+}
+
+/// The letter case a `*-case` rule expects: its primary option, `"lower"`
+/// or `"upper"`, read with [`Options::primary_case`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LetterCase {
+  /// `"lower"`, the default.
+  Lower,
+  /// `"upper"`.
+  Upper,
+}
+
+impl LetterCase {
+  /// Whether `text` holds an ASCII letter in the other case.
+  pub fn is_wrong(self, text: &str) -> bool {
+    match self {
+      LetterCase::Lower => text.bytes().any(|b| b.is_ascii_uppercase()),
+      LetterCase::Upper => text.bytes().any(|b| b.is_ascii_lowercase()),
+    }
+  }
+
+  /// `text` with its ASCII letters in this case.
+  pub fn apply(self, text: &str) -> String {
+    match self {
+      LetterCase::Lower => text.to_ascii_lowercase(),
+      LetterCase::Upper => text.to_ascii_uppercase(),
+    }
+  }
+
+  /// The case as messages name it: `lowercase` or `uppercase`.
+  pub fn word(self) -> &'static str {
+    match self {
+      LetterCase::Lower => "lowercase",
+      LetterCase::Upper => "uppercase",
+    }
+  }
+}
+
+/// Readers shared by families of rules: the `*-case`, `*-pattern` and
+/// `selector-max-*` rules.
+impl Options<'_> {
+  /// A `*-case` rule's primary option, `"lower"` or `"upper"`.  Gale reads
+  /// no option (or one that is not allowed, which is reported) as
+  /// `"lower"`.
+  pub fn primary_case(&mut self) -> LetterCase {
+    match self.primary_one_of(&["lower", "upper"]) {
+      Some("upper") => LetterCase::Upper,
+      _ => LetterCase::Lower,
+    }
+  }
+
+  /// A `*-pattern` rule's primary option, compiled (see
+  /// [`Options::primary_pattern`]), or `default` when the config gives
+  /// none.  A pattern that does not compile is reported, so the rule does
+  /// not run and the default only stands in until [`Options::finish`].
+  pub fn primary_pattern_or(&mut self, default: &str) -> Pattern {
+    self
+      .primary_pattern()
+      .unwrap_or_else(|| Pattern::compile(default).expect("the default pattern compiles"))
+  }
+
+  /// A `selector-max-*` rule's primary option: a whole number of zero or
+  /// more, tested by a function as Stylelint tests it, so a problem reads
+  /// `Invalid option`.  It is read as a float, so that `5.0`, which a
+  /// config may write for 5, counts as 5 rather than falling back to
+  /// `default`, which stands for no option.
+  pub fn primary_max(&mut self, default: usize) -> usize {
+    self
+      .primary_test(|value| Accept::NonNegativeInteger.accepts(value))
+      .and_then(Value::as_f64)
+      .map_or(default, |max| max as usize)
   }
 }
 

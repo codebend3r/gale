@@ -30,19 +30,10 @@ fn has_complete_scss_interpolation(s: &str) -> bool {
 ///
 /// Stylelint 16+ uses `Expected "${name}" to match pattern "${pattern}"`.
 /// Stylelint <=15 uses `Expected custom property name to match pattern "${pattern}"`.
-/// Custom message templates (from JS arrow function conversion) override both.
-fn build_message(
-  prop_name: &str,
-  custom_message: Option<&str>,
-  pattern_str: &str,
-  stylelint_major: u32,
-) -> String {
-  if let Some(template) = custom_message {
-    // Replace `${name}` placeholder with the actual property name.
-    // This handles messages converted from JS arrow functions:
-    // `(name) => `...${name}...`` → `"...${name}..."`
-    template.replace("${name}", prop_name)
-  } else if stylelint_major >= 14 {
+/// A custom `message` replaces both; the runner fills it in from the
+/// diagnostic's message arguments, as it does for every rule.
+fn build_message(prop_name: &str, pattern_str: &str, stylelint_major: u32) -> String {
+  if stylelint_major >= 14 {
     format!("Expected \"{prop_name}\" to match pattern \"{pattern_str}\"")
   } else {
     format!("Expected custom property name to match pattern \"{pattern_str}\"")
@@ -126,9 +117,6 @@ declare_rule! {
 pub struct CustomPropertyPatternCheck {
   /// The pattern every custom property name must match.
   pattern: Pattern,
-  /// The `message` every rule accepts, which this rule fills in with the
-  /// property's name itself.
-  custom_message: Option<String>,
 }
 
 impl CustomPropertyPatternCheck {
@@ -137,30 +125,18 @@ impl CustomPropertyPatternCheck {
   /// compile is an invalid option.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let pattern = options.primary_pattern();
+    let pattern = options.primary_pattern_or(DEFAULT_PATTERN);
     options.finish()?;
-    let pattern = match pattern {
-      Some(pattern) => pattern,
-      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
-    };
-    let custom_message = setting
-      .secondary()
-      .and_then(|secondary| secondary.get("message"))
-      .and_then(|message| message.as_str())
-      .map(String::from);
-    Ok(Self {
-      pattern,
-      custom_message,
-    })
+    Ok(Self { pattern })
   }
 }
 
 impl Check for CustomPropertyPatternCheck {
   /// Flags custom property names that do not match the configured regex,
-  /// defaulting to kebab-case and honouring a custom `message`.
+  /// defaulting to kebab-case.  A custom `message` is filled in with the
+  /// property's name by the runner.
   fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
-    let custom_message = self.custom_message.as_deref();
 
     let is_scss = matches!(
       ctx.syntax,
@@ -179,7 +155,7 @@ impl Check for CustomPropertyPatternCheck {
           // skip — non-standard syntax
         } else if !self.pattern.is_match(name) {
           let full_name = decl.prop();
-          let message = build_message(full_name, custom_message, pattern_str, stylelint_major);
+          let message = build_message(full_name, pattern_str, stylelint_major);
           // Stylelint reports the property, not the whole declaration.
           diags.push(
             Diagnostic::new(NAME, message)
@@ -204,7 +180,7 @@ impl Check for CustomPropertyPatternCheck {
           // Same SCSS interpolation skip as above
           let skip = is_scss && has_complete_scss_interpolation(name);
           if !skip && !self.pattern.is_match(name) {
-            let message = build_message(prop_name, custom_message, pattern_str, stylelint_major);
+            let message = build_message(prop_name, pattern_str, stylelint_major);
             diags.push(
               Diagnostic::new(NAME, message)
                 .span(Span::new(
@@ -224,8 +200,9 @@ impl Check for CustomPropertyPatternCheck {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use gale_css_parser::Syntax;
 
-  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
+  use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options, lint};
 
   /// What `rule` reports for `:root { <prop>: #fff; }`.
   fn check_property(rule: &dyn Check, prop: &str) -> Vec<Diagnostic> {
@@ -277,17 +254,25 @@ mod tests {
   #[test]
   fn array_format_options_with_secondary() {
     // Config like: ["^sds|slds-c|kx-...", { "message": "..." }]
+    // The runner applies the `message`, as it does for every rule.
     let opts = serde_json::json!(["^sds|slds-c|kx-([a-z][a-z0-9]*)(-[a-z0-9]+)*$", { "message": "Custom msg" }]);
-    let rule = configured(&CustomPropertyPattern, opts.clone());
+    let lint_property = |prop: &str| {
+      let source = format!(":root {{ {prop}: #fff; }}");
+      lint(NAME, opts.clone(), &source, Syntax::Css)
+    };
     // _slds-c-... should match via the `slds-c` alternative
     assert!(
-      check_property(rule.as_ref(), "--_slds-c-accordion-spacing").is_empty(),
+      lint_property("--_slds-c-accordion-spacing").is_empty(),
       "Should not flag --_slds-c-... with the SLDS pattern"
     );
     // my-color should be flagged (doesn't match the pattern)
-    let d = check_property(rule.as_ref(), "--my-color");
+    let d = lint_property("--my-color");
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].message, "Custom msg");
+    // A `${name}` placeholder is filled in with the property.
+    let opts = serde_json::json!(["^[a-z]+$", { "message": "Bad ${name}" }]);
+    let d = lint(NAME, opts, ":root { --my-color: #fff; }", Syntax::Css);
+    assert_eq!(d[0].message, "Bad --my-color");
   }
 
   #[test]

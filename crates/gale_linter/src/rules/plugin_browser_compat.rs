@@ -6,6 +6,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::{DeclRef, PostcssTree};
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::autoprefixable::strip_known_prefix;
 use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::{LintEnv, find_node_modules};
 use crate::options::{InvalidOption, Setting};
@@ -707,7 +708,7 @@ fn check_property(
   }
 
   // Try stripping vendor prefix
-  if let Some(stripped) = strip_vendor_prefix(prop) {
+  if let Some(stripped) = strip_known_prefix(prop) {
     let feature_id = format!("properties.{}", stripped);
     if let Some(entry) = compat_data.get(&feature_id) {
       if opts.allow_features.contains(&feature_id) {
@@ -817,7 +818,7 @@ fn check_selectors(
         }
 
         // Try stripping vendor prefix from pseudo name
-        if let Some(stripped) = strip_vendor_prefix(pseudo_name) {
+        if let Some(stripped) = strip_known_prefix(pseudo_name) {
           let feature_id = format!("selectors.{}", stripped);
           if let Some(entry) = compat_data.get(&feature_id)
             && !opts.allow_features.contains(&feature_id)
@@ -888,20 +889,6 @@ fn check_support_and_report(
       .span(Span::new(offset, 0))
       .file_path(ctx.file_path),
   );
-}
-
-// ── Utility functions ───────────────────────────────────────────────────
-
-/// The name after a `-webkit-`, `-moz-`, `-ms-` or `-o-` prefix, or `None`
-/// without one.
-fn strip_vendor_prefix(prop: &str) -> Option<&str> {
-  let prefixes = ["-webkit-", "-moz-", "-ms-", "-o-"];
-  for prefix in &prefixes {
-    if let Some(stripped) = prop.strip_prefix(prefix) {
-      return Some(stripped);
-    }
-  }
-  None
 }
 
 #[cfg(test)]

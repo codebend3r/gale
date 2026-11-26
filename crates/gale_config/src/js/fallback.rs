@@ -18,7 +18,9 @@ use serde_json::{Map, Number, Value};
 
 use super::scan::{Kind, Token, tokenize};
 use crate::ConfigError;
-use crate::extends::{resolve_package_exports, split_npm_package_subpath};
+use crate::module_resolution::{
+  PackageCandidates, PathCandidates, package_candidates, path_candidates,
+};
 
 /// How deep imports are followed, so a cycle of files cannot recurse
 /// forever.
@@ -579,56 +581,36 @@ fn number(text: &str) -> Result<Value, Unsupported> {
   }
 }
 
-/// The file a relative import names: the path as written, with a
+/// What a relative import is tried as: the path as written, with a
 /// JavaScript or JSON extension added, or a directory's `index.js`.
+const IMPORT_CANDIDATES: PathCandidates = PathCandidates {
+  extensions: &[".js", ".mjs", ".cjs", ".json"],
+  index_files: &["index.js"],
+};
+
+/// What an npm import is tried as after its manifest's `exports` and
+/// `main`: a subpath as a relative import inside the package, or for the
+/// package itself an index file.
+const PACKAGE_IMPORT_CANDIDATES: PackageCandidates = PackageCandidates {
+  subpath: IMPORT_CANDIDATES,
+  index_files: &["index.js", "index.cjs", "index.mjs"],
+};
+
+/// The file a relative import names: the first of [`IMPORT_CANDIDATES`]
+/// that is a file.
 fn resolve_import_path(dir: &Path, spec: &str) -> Option<PathBuf> {
-  let base = dir.join(spec);
-  std::iter::once(base.clone())
-    .chain(
-      [".js", ".mjs", ".cjs", ".json"].map(|ext| PathBuf::from(format!("{}{ext}", base.display()))),
-    )
-    .chain(std::iter::once(base.join("index.js")))
+  path_candidates(dir, spec, &IMPORT_CANDIDATES)
+    .map(|candidate| candidate.path)
     .find(|path| path.is_file())
 }
 
 /// The entry file of the npm package `spec` names, found in the nearest
-/// `node_modules` that has it: its `exports`, then `main`, then an index
-/// file, or for a subpath the file itself.
+/// `node_modules` that has it: the first of [`PACKAGE_IMPORT_CANDIDATES`]
+/// that is a file.
 fn resolve_npm_package_path(dir: &Path, spec: &str) -> Option<PathBuf> {
-  let (name, subpath) = split_npm_package_subpath(spec);
-  dir.ancestors().find_map(|dir| {
-    let package = dir.join("node_modules").join(name);
-    if !package.is_dir() {
-      return None;
-    }
-    let manifest = std::fs::read_to_string(package.join("package.json"))
-      .ok()
-      .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let from_manifest = manifest.as_ref().and_then(|manifest| {
-      let exported = resolve_package_exports(manifest, subpath.unwrap_or("."));
-      let main = subpath
-        .is_none()
-        .then(|| {
-          manifest
-            .get("main")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        })
-        .flatten();
-      exported
-        .into_iter()
-        .chain(main)
-        .map(|entry| package.join(entry))
-        .find(|path| path.is_file())
-    });
-    from_manifest.or_else(|| match subpath {
-      Some(subpath) => resolve_import_path(&package, &format!("./{subpath}")),
-      None => ["index.js", "index.cjs", "index.mjs"]
-        .iter()
-        .map(|index| package.join(index))
-        .find(|path| path.is_file()),
-    })
-  })
+  package_candidates(dir, spec, &PACKAGE_IMPORT_CANDIDATES)
+    .map(|candidate| candidate.path)
+    .find(|path| path.is_file())
 }
 
 #[cfg(test)]

@@ -24,6 +24,35 @@ pub fn has_empty_line(text: &str) -> bool {
   })
 }
 
+/// Whether the line above the one holding `offset` is empty, for the
+/// source-scanning stylelint-scss rules: only spaces and tabs may sit
+/// between `offset` and the line break before it, and only spaces and tabs
+/// between that line break and the one (or the start of the source) before
+/// it.  Unlike [`has_empty_line`], a `\r` anywhere on the empty line but
+/// right before its line break makes it not blank.
+pub fn has_empty_line_before(source: &str, offset: usize) -> bool {
+  let bytes = &source.as_bytes()[..offset];
+  let skip_blanks = |mut pos: usize| {
+    while pos > 0 && matches!(bytes[pos - 1], b' ' | b'\t') {
+      pos -= 1;
+    }
+    pos
+  };
+
+  let pos = skip_blanks(bytes.len());
+  if pos == 0 || bytes[pos - 1] != b'\n' {
+    return false;
+  }
+  let pos = pos - 1;
+  let pos = if pos > 0 && bytes[pos - 1] == b'\r' {
+    pos - 1
+  } else {
+    pos
+  };
+  let pos = skip_blanks(pos);
+  pos == 0 || bytes[pos - 1] == b'\n'
+}
+
 /// The line break Stylelint writes in fixes (its `context.newline`): the
 /// first one in the file, or `\n` when there is none.
 pub fn newline_of(source: &str) -> &'static str {
@@ -153,6 +182,16 @@ mod tests {
     assert!(!has_empty_line("\n  "));
     assert!(!has_empty_line("\n;\n"));
     assert!(!has_empty_line(""));
+  }
+
+  #[test]
+  fn empty_line_before_needs_a_blank_line_above_the_offset() {
+    assert!(has_empty_line_before("a\n\n  @else", 5));
+    assert!(has_empty_line_before("a\n \t\r\n@else", 6));
+    assert!(has_empty_line_before("\n@else", 1));
+    assert!(!has_empty_line_before("a\n@else", 2));
+    assert!(!has_empty_line_before("a @else", 2));
+    assert!(!has_empty_line_before("@else", 0));
   }
 
   #[test]

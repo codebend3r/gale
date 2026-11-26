@@ -1,12 +1,5 @@
-use gale_css_parser::Syntax;
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
-use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Pattern, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
-
-const DEFAULT_PATTERN: &str = "^[a-z][a-z0-9]*(-[a-z0-9]+)*$";
+use crate::at_name_pattern::{AtNamePattern, AtNamePatternCheck};
+use crate::rule::declare_rule;
 
 const NAME: &str = "scss/at-function-pattern";
 
@@ -16,69 +9,23 @@ declare_rule! {
   /// Accepts a regex string as the primary option. Defaults to kebab-case.
   ///
   /// Equivalent to `scss/at-function-pattern`.
-  pub struct ScssAtFunctionPattern => ScssAtFunctionPatternCheck {
+  pub struct ScssAtFunctionPattern => AtNamePatternCheck<ScssAtFunctionPattern> {
     name: NAME,
     description: "Specify a pattern for SCSS function names",
     default_severity: Warning,
   }
 }
 
-/// `scss/at-function-pattern` as configured.
-pub struct ScssAtFunctionPatternCheck {
-  /// The pattern every name must match.
-  pattern: Pattern,
-}
-
-impl ScssAtFunctionPatternCheck {
-  /// Stylelint's options: a regular expression, as a string or `/regex/`.
-  /// Gale reads no option as kebab-case, and a pattern that does not
-  /// compile is an invalid option, as Stylelint reports it.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let pattern = options.primary_pattern();
-    options.finish()?;
-    let pattern = match pattern {
-      Some(pattern) => pattern,
-      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
-    };
-    Ok(Self { pattern })
-  }
-}
-
-impl Check for ScssAtFunctionPatternCheck {
-  /// Flags an `@function` name that does not match the configured regex,
-  /// defaulting to kebab-case, at the name as stylelint-scss finds it.
-  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
-    if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
-      return vec![];
-    }
-    let pattern_str = self.pattern.source.as_str();
-    let mut diags = Vec::new();
-    for at in tree.walk_at_rules() {
-      if at.name() != "function" {
-        continue;
-      }
-      // The function name is the first word in params (before `(`)
-      let first_token = at.params().split_whitespace().next().unwrap_or("");
-      let func_name = first_token.split('(').next().unwrap_or("");
-      if func_name.is_empty() || self.pattern.is_match(func_name) {
-        continue;
-      }
-      diags.push(
-        Diagnostic::new(
-          NAME,
-          format!("Expected @function name \"{func_name}\" to match pattern \"{pattern_str}\""),
-        )
-        .span(at.word_span(func_name)),
-      );
-    }
-    diags
-  }
+impl AtNamePattern for ScssAtFunctionPattern {
+  const NAME: &'static str = NAME;
+  const AT_RULE: &'static str = "function";
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use gale_css_parser::Syntax;
+  use gale_diagnostics::Diagnostic;
 
   use crate::testing::{CheckSource, configured, context, invalid_options};
 

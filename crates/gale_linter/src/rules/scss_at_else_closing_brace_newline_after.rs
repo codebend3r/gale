@@ -2,7 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::braces::counted_block_close;
+use crate::braces::{ChainHead, ChainReading, scss_chain_closes};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -52,55 +52,21 @@ impl Check for ScssAtElseClosingBraceNewlineAfterCheck {
       return vec![];
     }
 
-    let option = self.option;
-    let source = ctx.source;
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut diagnostics = Vec::new();
-
-    let mut i = 0;
-    while i < len {
-      // Look for `@else` (but not `@else if`)
-      if bytes[i] == b'@' && source[i..].starts_with("@else") {
-        let after_else = i + 5;
-        // Skip whitespace
-        let mut j = after_else;
-        while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
-          j += 1;
-        }
-
-        // If followed by `if`, this is `@else if` — skip
-        let is_else_if = j < len && source[j..].starts_with("if ");
-
-        if !is_else_if {
-          // This is a plain `@else` — find closing brace
-          if let Some(close_brace) = counted_block_close(source, i) {
-            let after = close_brace + 1;
-            let mut k = after;
-            while k < len && (bytes[k] == b' ' || bytes[k] == b'\t') {
-              k += 1;
-            }
-
-            if option == "always-last-in-chain" && k < len && bytes[k] != b'\n' && bytes[k] != b'\r'
-            {
-              diagnostics.push(
-                Diagnostic::new(
-                  NAME,
-                  "Expected newline after closing brace of @else".to_string(),
-                )
-                .span(Span::new(close_brace, 1)),
-              );
-            }
-
-            i = after;
-            continue;
-          }
-        }
-      }
-      i += 1;
+    if self.option != "always-last-in-chain" {
+      return vec![];
     }
 
-    diagnostics
+    scss_chain_closes(ctx.source, ChainReading::ElseRules, &[ChainHead::Else])
+      .into_iter()
+      .filter(|c| !c.line_ends_after)
+      .map(|c| {
+        Diagnostic::new(
+          NAME,
+          "Expected newline after closing brace of @else".to_string(),
+        )
+        .span(Span::new(c.close, 1))
+      })
+      .collect()
   }
 }
 

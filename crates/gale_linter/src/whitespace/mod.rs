@@ -177,6 +177,17 @@ pub fn is_single_line(text: &str) -> bool {
   !text.contains(['\n', '\r'])
 }
 
+/// Whether anything but spaces and tabs precedes byte `pos` of `source` on
+/// its line, as the stylelint-scss `//` comment rules tell an inline comment
+/// from one on its own line.
+pub fn has_non_whitespace_before_on_line(source: &str, pos: usize) -> bool {
+  source.as_bytes()[..pos]
+    .iter()
+    .rev()
+    .find(|&&b| !matches!(b, b' ' | b'\t'))
+    .is_some_and(|&b| !matches!(b, b'\n' | b'\r'))
+}
+
 /// Whether `c` matches JavaScript's `\s`, which the rules' fixes trim with.
 pub fn is_js_space(c: char) -> bool {
   matches!(

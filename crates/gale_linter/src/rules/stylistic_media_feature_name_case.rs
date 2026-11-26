@@ -1,9 +1,10 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::chars::is_alnum_or_hyphen;
 use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "@stylistic/media-feature-name-case";
@@ -21,8 +22,8 @@ declare_rule! {
 
 /// `@stylistic/media-feature-name-case` as configured.
 pub struct StylisticMediaFeatureNameCaseCheck {
-  /// The primary option: `"lower"` or `"upper"`.
-  option: &'static str,
+  /// The case media feature names are written in.
+  case: LetterCase,
 }
 
 impl StylisticMediaFeatureNameCaseCheck {
@@ -30,18 +31,16 @@ impl StylisticMediaFeatureNameCaseCheck {
   /// `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      option: option.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
 impl Check for StylisticMediaFeatureNameCaseCheck {
   /// Flags media feature names not in the configured case.
   fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
-    let option = self.option;
+    let case = self.case;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -107,7 +106,7 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
       if bytes[i] == b'@' {
         i += 1;
         let name_start = i;
-        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-') {
+        while i < len && is_alnum_or_hyphen(char::from(bytes[i])) {
           i += 1;
         }
         let name = &source[name_start..i];
@@ -159,50 +158,10 @@ impl Check for StylisticMediaFeatureNameCaseCheck {
 
             let feat_name = &source[feat_start..feat_end];
 
-            // Only flag if followed by ':' or ')' (i.e., it's a feature name,
-            // not just a value like `screen`).
-            // Skip whitespace
-            let mut peek = i;
-            while peek < len && (bytes[peek] == b' ' || bytes[peek] == b'\t') {
-              peek += 1;
-            }
-            if peek >= len || (bytes[peek] != b':' && bytes[peek] != b')') {
-              // Could be a range expression like (width > 100px).
-              // Check if the name has uppercase chars anyway.
-              let has_violation = match option {
-                "lower" => feat_name.chars().any(|c| c.is_ascii_uppercase()),
-                "upper" => feat_name.chars().any(|c| c.is_ascii_lowercase()),
-                _ => false,
-              };
-              if has_violation {
-                let expected = match option {
-                  "lower" => feat_name.to_ascii_lowercase(),
-                  "upper" => feat_name.to_ascii_uppercase(),
-                  _ => feat_name.to_string(),
-                };
-                diagnostics.push(
-                  Diagnostic::new(
-                    NAME,
-                    format!("Expected \"{}\" to be \"{}\"", feat_name, expected),
-                  )
-                  .span(Span::new(feat_start, feat_end - feat_start)),
-                );
-              }
-              continue;
-            }
-
-            let has_violation = match option {
-              "lower" => feat_name.chars().any(|c| c.is_ascii_uppercase()),
-              "upper" => feat_name.chars().any(|c| c.is_ascii_lowercase()),
-              _ => false,
-            };
-
-            if has_violation {
-              let expected = match option {
-                "lower" => feat_name.to_ascii_lowercase(),
-                "upper" => feat_name.to_ascii_uppercase(),
-                _ => feat_name.to_string(),
-              };
+            // The name is checked whatever follows it, `:` or `)` for a
+            // feature, or a range operator as in `(width > 100px)`.
+            if case.is_wrong(feat_name) {
+              let expected = case.apply(feat_name);
               diagnostics.push(
                 Diagnostic::new(
                   NAME,

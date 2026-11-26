@@ -38,6 +38,7 @@ use gale_diagnostics::{Diagnostic, Edit};
 
 use gale_css_parser::selector::postcss::{Kind, Visit};
 
+use crate::chars::is_word_byte;
 use crate::whitespace::{At, Spacing, SpacingRule, fix_space_after, fix_space_before, is_js_space};
 
 /// A text a finder hands its rules: a selector, a declaration or an
@@ -129,9 +130,7 @@ pub fn escape_html_in_css(text: Cow<'_, str>) -> Cow<'_, str> {
     let tag = rest.strip_prefix(b"/").unwrap_or(rest);
     tag.len() >= 5
       && tag[..5].eq_ignore_ascii_case(b"style")
-      && !tag
-        .get(5)
-        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+      && !tag.get(5).is_some_and(|&b| is_word_byte(b))
   };
   let opens: Vec<usize> = text
     .match_indices('<')

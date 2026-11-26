@@ -1,25 +1,6 @@
 use super::*;
 
 #[test]
-fn strips_vendor_prefix_from_properties() {
-  assert_eq!(
-    strip_vendor_prefix("-webkit-tap-highlight-color"),
-    Some("tap-highlight-color")
-  );
-  assert_eq!(strip_vendor_prefix("-moz-appearance"), Some("appearance"));
-  assert_eq!(strip_vendor_prefix("color"), None);
-}
-
-#[test]
-fn strips_vendor_prefix_from_pseudos() {
-  assert_eq!(
-    strip_vendor_prefix("-webkit-inner-spin-button"),
-    Some("inner-spin-button")
-  );
-  assert_eq!(strip_vendor_prefix("hover"), None);
-}
-
-#[test]
 fn test_parse_version_f64() {
   assert!((parse_version_f64("138") - 138.0).abs() < f64::EPSILON);
   assert!((parse_version_f64("17.0") - 17.0).abs() < f64::EPSILON);

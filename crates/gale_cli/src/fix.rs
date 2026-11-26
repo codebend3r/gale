@@ -4,8 +4,10 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gale_diagnostics::apply_fixes;
+use gale_diagnostics::{LintResult, apply_fixes};
+use rayon::prelude::*;
 
+use crate::atomic_write::atomic_write;
 use crate::lint::Linted;
 
 /// `apply_fixes` drops overlapping edits, so when two rules want to rewrite
@@ -16,58 +18,86 @@ use crate::lint::Linted;
 /// forever.
 const MAX_FIX_PASSES: usize = 10;
 
+/// A file's source once the fix passes settle, and what linting it found.
+struct Converged {
+  source: String,
+  result: LintResult,
+  /// How many problems the passes fixed; more than zero.
+  fixed: usize,
+}
+
 /// Fix every file in `linted` and leave each result describing what is
 /// left.  Fixed files are written back, or printed to stdout when the
 /// source came from stdin.
 ///
+/// The fixing runs in parallel, as linting does; the writing then goes in
+/// input order, so stdout and the first failing write are what they would
+/// be one file at a time.  A failed write stops the run there: that file
+/// and every later one keep the results they were linted with.
+///
 /// `--fix` and `--fix=lax` behave alike: Stylelint's strict mode skips files
 /// with a syntax error, and gale's parser recovers from every one.
 pub(crate) fn fix(linted: &mut [Linted], from_stdin: bool) -> Result<()> {
+  let converged: Vec<Option<Converged>> = linted.par_iter().map(converge).collect();
   let mut total_fixed = 0usize;
-  for Linted {
-    result,
-    rules,
-    syntax,
-  } in linted
-  {
-    // An ignored file has nothing to fix.
-    let Some(rules) = rules else {
+  for (linted, converged) in linted.iter_mut().zip(converged) {
+    let Some(Converged {
+      source,
+      result,
+      fixed,
+    }) = converged
+    else {
       continue;
     };
-
-    let mut current = result.source.clone();
-    let mut updated = None;
-    let mut file_fixed = 0usize;
-    for _ in 0..MAX_FIX_PASSES {
-      let diagnostics = &updated.as_ref().unwrap_or(result).diagnostics;
-      let (fixed_source, count) = apply_fixes(&current, diagnostics);
-      if count == 0 || fixed_source == current {
-        break;
-      }
-      current = fixed_source;
-      file_fixed += count;
-      // Re-lint the fixed source with the file's own rules to get the
-      // remaining diagnostics, which also feed the next pass.
-      updated = Some(rules.lint(&current, &result.file_path, *syntax));
-    }
-
-    if file_fixed == 0 {
-      continue;
-    }
     if from_stdin {
-      std::io::stdout().lock().write_all(current.as_bytes())?;
+      std::io::stdout().lock().write_all(source.as_bytes())?;
     } else {
-      write_fixed(Path::new(&result.file_path), &current)
-        .with_context(|| format!("Error writing {}", result.file_path))?;
+      write_fixed(Path::new(&linted.result.file_path), &source)
+        .with_context(|| format!("Error writing {}", linted.result.file_path))?;
     }
     // Publish the new diagnostics only after persistence succeeds.
-    *result = updated.expect("a changed source was linted");
-    total_fixed += file_fixed;
+    linted.result = result;
+    total_fixed += fixed;
   }
   if total_fixed > 0 {
     eprintln!("Fixed {total_fixed} problem(s).");
   }
   Ok(())
+}
+
+/// Apply the file's fixes pass after pass until its source stops
+/// changing, without touching the file; `None` when there was nothing to
+/// fix (or the file is ignored).
+fn converge(linted: &Linted) -> Option<Converged> {
+  let Linted {
+    result,
+    rules,
+    syntax,
+  } = linted;
+  // An ignored file has nothing to fix.
+  let rules = rules.as_ref()?;
+
+  let mut current = result.source.clone();
+  let mut updated = None;
+  let mut file_fixed = 0usize;
+  for _ in 0..MAX_FIX_PASSES {
+    let diagnostics = &updated.as_ref().unwrap_or(result).diagnostics;
+    let (fixed_source, count) = apply_fixes(&current, diagnostics);
+    if count == 0 || fixed_source == current {
+      break;
+    }
+    current = fixed_source;
+    file_fixed += count;
+    // Re-lint the fixed source with the file's own rules to get the
+    // remaining diagnostics, which also feed the next pass.
+    updated = Some(rules.lint(&current, &result.file_path, *syntax));
+  }
+
+  (file_fixed > 0).then(|| Converged {
+    source: current,
+    result: updated.expect("a changed source was linted"),
+    fixed: file_fixed,
+  })
 }
 
 /// Replace a regular file atomically, retaining permissions and following
@@ -88,14 +118,7 @@ fn write_fixed(path: &Path, source: &str) -> std::io::Result<()> {
       return std::fs::write(target, source);
     }
   }
-  let mut temporary = tempfile::NamedTempFile::new_in(target.parent().expect("file has a parent"))?;
-  temporary.write_all(source.as_bytes())?;
-  temporary
-    .as_file()
-    .set_permissions(metadata.permissions())?;
-  temporary.as_file().sync_all()?;
-  temporary.persist(target).map_err(|err| err.error)?;
-  Ok(())
+  atomic_write(&target, source.as_bytes(), Some(metadata.permissions()))
 }
 
 #[cfg(test)]

@@ -26,6 +26,32 @@ static KNOWN_UNITS: &[&str] = &[
   "svw", "turn", "vb", "vh", "vi", "vmax", "vmin", "vw", "x",
 ];
 
+/// The generic font family keywords (Stylelint's `fontFamilyKeywords`
+/// without the CSS-wide ones), lowercase.
+const GENERIC_FONT_FAMILIES: &[&str] = &[
+  "serif",
+  "sans-serif",
+  "cursive",
+  "fantasy",
+  "monospace",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "ui-rounded",
+  "emoji",
+  "math",
+  "fangsong",
+];
+
+/// Whether `name` is a generic font family keyword such as `serif`, in any
+/// case.
+pub fn is_generic_font_family(name: &str) -> bool {
+  GENERIC_FONT_FAMILIES
+    .iter()
+    .any(|family| family.eq_ignore_ascii_case(name))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

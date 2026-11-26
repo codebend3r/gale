@@ -318,23 +318,19 @@ fn sass_function_to_interpolate<'v>(functions: &[&'v ValueNode<'v>]) -> Option<&
 mod tests {
   use super::NAME;
   use gale_css_parser::Syntax;
-  use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::{fix, invalid_options, lint};
+  use crate::testing::{fix, invalid_options, located};
 
   const RULE: &str = "scss/dollar-variable-no-missing-interpolation";
 
   /// `(line, column, endLine, endColumn, message)` of each warning for
   /// `source`.
   fn warnings(source: &str) -> Vec<(usize, usize, usize, usize, String)> {
-    let index = SourceLineIndex::build(source);
-    lint(RULE, json!(true), source, Syntax::Scss)
+    located(RULE, json!(true), source, Syntax::Scss)
       .into_iter()
-      .map(|d| {
-        let (line, column) = index.offset_to_location(d.span.offset);
-        let (end_line, end_column) = index.offset_to_location(d.span.end());
-        (line, column, end_line, end_column, d.message)
+      .map(|(message, (line, column, end_line, end_column))| {
+        (line, column, end_line, end_column, message)
       })
       .collect()
   }

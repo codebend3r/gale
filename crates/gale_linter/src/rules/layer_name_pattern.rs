@@ -39,12 +39,8 @@ impl LayerNamePatternCheck {
   /// compile is an invalid option.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let pattern = options.primary_pattern();
+    let pattern = options.primary_pattern_or(DEFAULT_PATTERN);
     options.finish()?;
-    let pattern = match pattern {
-      Some(pattern) => pattern,
-      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
-    };
     Ok(Self { pattern })
   }
 }

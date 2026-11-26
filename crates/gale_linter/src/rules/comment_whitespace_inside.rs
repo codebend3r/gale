@@ -6,6 +6,7 @@ use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::stylelint_version::installed_at_least;
+use crate::whitespace::is_js_space;
 
 const NAME: &str = "comment-whitespace-inside";
 
@@ -207,15 +208,6 @@ fn fixed_comment(raw: &str, never: bool) -> String {
     }
   }
   format!("/*{left}{text}{right}*/")
-}
-
-/// JavaScript's `\s`.
-fn is_js_space(c: char) -> bool {
-  matches!(
-    c,
-    '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-      ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-  )
 }
 
 /// Byte length of the JavaScript whitespace at the start of `text`.

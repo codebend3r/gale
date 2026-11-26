@@ -157,26 +157,22 @@ fn fix(ctx: &RuleContext, at_rule: &Node) -> Option<Edit> {
 mod tests {
   use super::NAME;
   use gale_css_parser::Syntax;
-  use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
   use super::default_namespace;
-  use crate::testing::{fix, invalid_options, lint};
+  use crate::testing::{self, LineRange, fix, invalid_options};
 
   const RULE: &str = "scss/at-use-no-redundant-alias";
 
   /// The `(line, column, endLine, endColumn)` of each warning for `source`.
-  fn ranges(source: &str, syntax: Syntax) -> Vec<(usize, usize, usize, usize)> {
-    let index = SourceLineIndex::build(source);
-    lint(RULE, json!(true), source, syntax)
-      .iter()
-      .map(|d| {
-        assert_eq!(d.message, "Unexpected redundant namespace.");
-        let (line, column) = index.offset_to_location(d.span.offset);
-        let (end_line, end_column) = index.offset_to_location(d.span.end());
-        (line, column, end_line, end_column)
-      })
-      .collect()
+  fn ranges(source: &str, syntax: Syntax) -> Vec<LineRange> {
+    testing::ranges(
+      RULE,
+      json!(true),
+      source,
+      syntax,
+      "Unexpected redundant namespace.",
+    )
   }
 
   #[test]
