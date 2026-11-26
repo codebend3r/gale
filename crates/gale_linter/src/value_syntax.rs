@@ -2,6 +2,8 @@
 //! 'value' })`, reduced to what `declaration-block-no-duplicate-properties`
 //! compares when it decides whether two values are the same.
 
+use crate::chars::is_ident_char;
+
 /// One node of a parsed value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
@@ -297,7 +299,7 @@ impl Parser {
       let c = self.peek(0);
       if c == '\\' {
         self.pos = (self.pos + 2).min(self.chars.len());
-      } else if c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii() {
+      } else if is_ident_char(c) {
         self.pos += 1;
       } else {
         break;

@@ -2,9 +2,11 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::empty_lines::has_empty_line_before;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::whitespace::has_non_whitespace_before_on_line;
 
 const NAME: &str = "scss/double-slash-comment-empty-line-before";
 
@@ -134,7 +136,7 @@ impl Check for ScssDoubleSlashCommentEmptyLineBeforeCheck {
 
         // Check if this is inline (non-whitespace before // on same line)
         // Inline comments are not subject to this rule.
-        if has_non_whitespace_before_on_line(bytes, comment_start) {
+        if has_non_whitespace_before_on_line(source, comment_start) {
           // Skip to end of line
           while i < len && bytes[i] != b'\n' {
             i += 1;
@@ -230,50 +232,6 @@ fn is_first_content_in_source(source: &str, offset: usize) -> bool {
     }
   }
   true
-}
-
-/// Whether anything other than whitespace precedes `pos` on its line.
-fn has_non_whitespace_before_on_line(bytes: &[u8], pos: usize) -> bool {
-  let mut j = pos;
-  while j > 0 {
-    j -= 1;
-    match bytes[j] {
-      b'\n' | b'\r' => return false,
-      b' ' | b'\t' => continue,
-      _ => return true,
-    }
-  }
-  false
-}
-
-/// Whether the line before `offset` contains only whitespace.
-fn has_empty_line_before(source: &str, offset: usize) -> bool {
-  let before = &source[..offset];
-  let bytes = before.as_bytes();
-  let mut pos = before.len();
-
-  // Skip whitespace immediately before the comment
-  while pos > 0 && matches!(bytes[pos - 1], b' ' | b'\t') {
-    pos -= 1;
-  }
-
-  // Skip the newline
-  if pos > 0 && bytes[pos - 1] == b'\n' {
-    pos -= 1;
-    if pos > 0 && bytes[pos - 1] == b'\r' {
-      pos -= 1;
-    }
-  } else {
-    return false;
-  }
-
-  // Skip whitespace
-  while pos > 0 && matches!(bytes[pos - 1], b' ' | b'\t') {
-    pos -= 1;
-  }
-
-  // Empty line if we hit another newline or start of file
-  pos == 0 || bytes[pos - 1] == b'\n'
 }
 
 /// Check if this comment is the first non-whitespace content after an opening brace `{`.

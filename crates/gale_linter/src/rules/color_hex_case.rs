@@ -1,9 +1,9 @@
 use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
+use gale_diagnostics::Diagnostic;
 
-use crate::hex_colors::find_hex_colors;
+use crate::hex_colors::hex_case_diagnostics;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "color-hex-case";
@@ -22,8 +22,8 @@ declare_rule! {
 
 /// `color-hex-case` as configured.
 pub struct ColorHexCaseCheck {
-  /// `"upper"` rather than `"lower"`.
-  upper: bool,
+  /// The case hex colors are written in.
+  case: LetterCase,
 }
 
 impl ColorHexCaseCheck {
@@ -31,55 +31,25 @@ impl ColorHexCaseCheck {
   /// `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let case = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      upper: case == Some("upper"),
-    })
+    Ok(Self { case })
   }
 }
 
 impl Check for ColorHexCaseCheck {
   /// Flags hex colors not in the configured case and fixes them.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    // The declarations of style rules, read whole: property through `;`.
-    for decl in tree.walk_decls() {
-      if !decl.in_style_rule() {
-        continue;
-      }
-      let decl_start = decl.span().offset;
-      let search_area = decl.source_text();
-
-      for (rel_offset, hex) in find_hex_colors(search_area) {
-        let expected = if self.upper {
-          hex.to_ascii_uppercase()
-        } else {
-          hex.to_ascii_lowercase()
-        };
-        if expected != hex {
-          let abs_offset = decl_start + rel_offset;
-          diags.push(
-            Diagnostic::new(NAME, format!("Expected \"{hex}\" to be \"{expected}\""))
-              .span(Span::new(abs_offset, hex.len()))
-              .fix(Fix::new(
-                format!(
-                  "Convert to {} \"{expected}\"",
-                  if self.upper { "uppercase" } else { "lowercase" }
-                ),
-                vec![Edit::new(Span::new(abs_offset, hex.len()), &expected)],
-              )),
-          );
-        }
-      }
-    }
-    diags
+    hex_case_diagnostics(tree, NAME, self.case, |case, expected| {
+      format!("Convert to {} \"{expected}\"", case.word())
+    })
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use gale_diagnostics::Span;
 
   use crate::testing::{CheckSource, configured, ctx_with_source, invalid_options};
 

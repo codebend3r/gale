@@ -30,7 +30,7 @@
 use std::ops::Range;
 use std::path::Path;
 
-use crate::chars::is_word_byte;
+use crate::chars::{is_css_whitespace_byte, is_word_byte};
 
 /// The flavour of HTML a host file is written in, which decides how its
 /// attribute values and text-level expressions are tokenized.
@@ -133,8 +133,10 @@ pub fn extract_style_blocks(source: &str, host: HostLanguage) -> Vec<StyleBlock>
 }
 
 /// Whether `b` is whitespace to htmlparser2.
+///
+/// Its set is CSS's: space, tab, line feed, carriage return and form feed.
 fn is_html_space(b: u8) -> bool {
-  matches!(b, b' ' | b'\n' | b'\t' | b'\x0c' | b'\r')
+  is_css_whitespace_byte(b)
 }
 
 /// Whether `b` ends a tag or attribute name.

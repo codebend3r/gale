@@ -7,6 +7,8 @@ pub use gale_css_parser::postcss_tree::{has_interpolation, is_standard_syntax_se
 use gale_css_parser::postcss_tree::has_delimited;
 use gale_css_parser::value_parser::{NodeKind, ValueNode};
 
+use crate::chars::is_word_or_hyphen_byte;
+
 /// Stylelint's `isStandardSyntaxProperty`: not a Sass variable (`$a`, or
 /// `ns.$a` in a module) or Less variable, not a Less `+`/`+_` merge, and
 /// free of interpolation.
@@ -115,12 +117,7 @@ pub fn is_standard_syntax_url(url: &str) -> bool {
   let less_variable = url
     .strip_prefix("@@")
     .or_else(|| url.strip_prefix('@'))
-    .is_some_and(|name| {
-      !name.is_empty()
-        && name
-          .bytes()
-          .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    });
+    .is_some_and(|name| !name.is_empty() && name.bytes().all(is_word_or_hyphen_byte));
   if less_variable {
     return false;
   }

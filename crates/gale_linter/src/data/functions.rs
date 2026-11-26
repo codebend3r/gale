@@ -1,4 +1,6 @@
-//! Function names CSS defines.
+//! Function names CSS defines, and the function names a value calls.
+
+use crate::chars::is_word_or_hyphen_byte;
 
 /// Whether `name` is a function CSS itself defines (stylelint-scss's
 /// `isNativeCssFunction`), matched exactly: Sass treats a call to one as
@@ -167,6 +169,27 @@ pub const MATH_FUNCTIONS: &[&str] = &[
   "rem",
   "round",
 ];
+
+/// The function names called in `value`: the run of ASCII letters, digits,
+/// `-` and `_` right before each `(`.  A module call such as
+/// `color.adjust(` yields `adjust`.  `function-no-unknown` and
+/// `scss/function-no-unknown` both read values this way.
+pub fn extract_functions(value: &str) -> Vec<String> {
+  let bytes = value.as_bytes();
+  bytes
+    .iter()
+    .enumerate()
+    .filter(|&(_, &b)| b == b'(')
+    .filter_map(|(end, _)| {
+      let name_len = bytes[..end]
+        .iter()
+        .rev()
+        .take_while(|&&b| is_word_or_hyphen_byte(b))
+        .count();
+      (name_len > 0).then(|| value[end - name_len..end].to_string())
+    })
+    .collect()
+}
 
 #[cfg(test)]
 mod tests {

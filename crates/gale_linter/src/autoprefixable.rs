@@ -4,12 +4,6 @@
 
 use crate::chars::is_word_byte;
 
-/// Whether `name` (without the `@`) is a prefixed at-rule Autoprefixer
-/// handles, such as `-webkit-keyframes`.
-pub fn at_rule_name(name: &str) -> bool {
-  lookup(AT_RULES, &format!("@{}", name.to_ascii_lowercase()))
-}
-
 /// Whether `pseudo` (with its colons, e.g. `::-moz-placeholder`) is a
 /// prefixed pseudo-class or pseudo-element Autoprefixer handles.
 pub fn selector(pseudo: &str) -> bool {
@@ -54,6 +48,15 @@ pub fn vendor_prefix_len(prop: &str) -> usize {
   prefix_end(prop.as_bytes(), 0).unwrap_or(0)
 }
 
+/// `name` without a leading `-webkit-`, `-moz-`, `-ms-` or `-o-`, matched
+/// case-sensitively, or `None` without one.  Narrower than
+/// [`unprefixed`], which strips any `-\w+-`.
+pub fn strip_known_prefix(name: &str) -> Option<&str> {
+  ["-webkit-", "-moz-", "-ms-", "-o-"]
+    .iter()
+    .find_map(|prefix| name.strip_prefix(prefix))
+}
+
 /// PostCSS's `vendor.prefix`: the `-\w+-` a property starts with, or `""`.
 pub fn vendor_prefix(prop: &str) -> &str {
   &prop[..vendor_prefix_len(prop)]
@@ -85,18 +88,6 @@ fn lookup(table: &[&str], name: &str) -> bool {
     .binary_search(&name.to_ascii_lowercase().as_str())
     .is_ok()
 }
-
-/// Prefixed at-rules, with their `@`.
-static AT_RULES: &[&str] = &[
-  "@-moz-document",
-  "@-moz-keyframes",
-  "@-ms-keyframes",
-  "@-ms-viewport",
-  "@-o-keyframes",
-  "@-o-viewport",
-  "@-webkit-keyframes",
-  "@-webkit-viewport",
-];
 
 /// Prefixed pseudo-classes and pseudo-elements, with their colons.
 static SELECTORS: &[&str] = &[
@@ -354,7 +345,7 @@ mod tests {
 
   #[test]
   fn tables_are_sorted_for_binary_search() {
-    for table in [AT_RULES, SELECTORS, PROPERTIES, PROPERTY_VALUES] {
+    for table in [SELECTORS, PROPERTIES, PROPERTY_VALUES] {
       assert!(table.windows(2).all(|w| w[0] < w[1]));
     }
   }
@@ -366,7 +357,6 @@ mod tests {
     assert!(!property("transform"));
     assert!(property_value("-Webkit-Linear-Gradient"));
     assert!(selector("::-MOZ-placeholder"));
-    assert!(at_rule_name("-webkit-keyframes"));
     assert!(media_feature_name("-webkit-min-device-pixel-ratio"));
   }
 
@@ -381,6 +371,15 @@ mod tests {
     assert_eq!(unprefix("plain"), "plain");
     assert_eq!(vendor_prefix_len("-o-columns"), 3);
     assert_eq!(vendor_prefix_len("--custom"), 0);
+  }
+
+  #[test]
+  fn strip_known_prefix_takes_only_the_four_vendors() {
+    assert_eq!(strip_known_prefix("-webkit-transform"), Some("transform"));
+    assert_eq!(strip_known_prefix("-o-columns"), Some("columns"));
+    assert_eq!(strip_known_prefix("-xv-digits"), None);
+    assert_eq!(strip_known_prefix("-WEBKIT-transform"), None);
+    assert_eq!(strip_known_prefix("transform"), None);
   }
 
   #[test]

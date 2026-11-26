@@ -3,7 +3,7 @@ use gale_css_parser::selector::postcss::{Kind, Node, split_selectors};
 use gale_css_parser::selector::specificity::{self, Specificity, is_pseudo_element};
 use gale_diagnostics::Diagnostic;
 
-use crate::chars::is_word_or_hyphen;
+use crate::chars::is_ident_char;
 use crate::lint_env::LintEnv;
 use crate::options::{Accept, InvalidOption, Setting};
 use crate::pattern;
@@ -233,16 +233,10 @@ fn without_nesting_suffixes(selector: &str) -> String {
   while let Some(ch) = chars.next() {
     out.push(ch);
     if ch == '&' {
-      while chars.next_if(|&next| is_suffix_char(next)).is_some() {}
+      while chars.next_if(|&next| is_ident_char(next)).is_some() {}
     }
   }
   out
-}
-
-/// What the old scanner skipped after a `&`: ASCII letters, digits, `-` and
-/// `_`, and anything non-ASCII.
-fn is_suffix_char(ch: char) -> bool {
-  is_word_or_hyphen(ch) || !ch.is_ascii()
 }
 
 /// Strip SCSS/Less interpolation from a selector string.

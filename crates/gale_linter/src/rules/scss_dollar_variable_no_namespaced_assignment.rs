@@ -66,28 +66,21 @@ impl Check for ScssDollarVariableNoNamespacedAssignmentCheck {
 mod tests {
   use super::NAME;
   use gale_css_parser::Syntax;
-  use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
-  use crate::testing::{invalid_options, lint};
+  use crate::testing::{self, LineRange, invalid_options};
 
   const RULE: &str = "scss/dollar-variable-no-namespaced-assignment";
 
   /// The `(line, column, endLine, endColumn)` of each warning for `source`.
-  fn ranges(source: &str, syntax: Syntax) -> Vec<(usize, usize, usize, usize)> {
-    let index = SourceLineIndex::build(source);
-    lint(RULE, json!(true), source, syntax)
-      .iter()
-      .map(|d| {
-        assert_eq!(
-          d.message,
-          "Unexpected assignment to a namespaced $ variable"
-        );
-        let (line, column) = index.offset_to_location(d.span.offset);
-        let (end_line, end_column) = index.offset_to_location(d.span.end());
-        (line, column, end_line, end_column)
-      })
-      .collect()
+  fn ranges(source: &str, syntax: Syntax) -> Vec<LineRange> {
+    testing::ranges(
+      RULE,
+      json!(true),
+      source,
+      syntax,
+      "Unexpected assignment to a namespaced $ variable",
+    )
   }
 
   #[test]

@@ -28,9 +28,6 @@ declare_rule! {
 pub struct KeyframesNamePatternCheck {
   /// The pattern every keyframes name must match.
   pattern: Pattern,
-  /// The `message` every rule accepts, which this rule fills in with the
-  /// name itself.
-  custom_message: Option<String>,
 }
 
 impl KeyframesNamePatternCheck {
@@ -39,30 +36,18 @@ impl KeyframesNamePatternCheck {
   /// compile is an invalid option.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let pattern = options.primary_pattern();
+    let pattern = options.primary_pattern_or(DEFAULT_PATTERN);
     options.finish()?;
-    let pattern = match pattern {
-      Some(pattern) => pattern,
-      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
-    };
-    let custom_message = setting
-      .secondary()
-      .and_then(|secondary| secondary.get("message"))
-      .and_then(|message| message.as_str())
-      .map(String::from);
-    Ok(Self {
-      pattern,
-      custom_message,
-    })
+    Ok(Self { pattern })
   }
 }
 
 impl Check for KeyframesNamePatternCheck {
   /// Flags a `@keyframes` name that does not match the configured regex,
-  /// defaulting to kebab-case, at the name.
+  /// defaulting to kebab-case, at the name.  A custom `message` is filled
+  /// in with the name by the runner.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
     let pattern_str = self.pattern.source.as_str();
-    let custom_message = self.custom_message.as_deref();
     let mut diags = Vec::new();
     for at in tree.walk_at_rules() {
       if !at.is_keyframes() {
@@ -87,11 +72,8 @@ impl Check for KeyframesNamePatternCheck {
       if self.pattern.is_match(name) {
         continue;
       }
-      let message = if let Some(tmpl) = custom_message {
-        tmpl.replace("${name}", name)
-      } else {
-        format!("Expected keyframes name \"{name}\" to match pattern \"{pattern_str}\"")
-      };
+      let message =
+        format!("Expected keyframes name \"{name}\" to match pattern \"{pattern_str}\"");
       diags.push(
         Diagnostic::new(NAME, message)
           .span(Span::new(name_offset, name.len()))

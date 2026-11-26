@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Matchers, Setting};
+use crate::options::{InvalidOption, LetterCase, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "function-name-case";
@@ -26,8 +26,8 @@ declare_rule! {
 
 /// `function-name-case` as configured.
 pub struct FunctionNameCaseCheck {
-  /// `"lower"` or `"upper"`.
-  mode: &'static str,
+  /// The case function names are written in.
+  case: LetterCase,
   /// `ignoreFunctions`: names (any case) and `/regex/` entries.
   ignore_functions: Matchers,
 }
@@ -37,11 +37,11 @@ impl FunctionNameCaseCheck {
   /// Gale reads no option as `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let mode = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     let ignore_functions = options.strings("ignoreFunctions");
     options.finish()?;
     Ok(Self {
-      mode: mode.unwrap_or("lower"),
+      case,
       ignore_functions: Matchers::new(&ignore_functions),
     })
   }
@@ -80,18 +80,13 @@ fn camel_case_canonical(name: &str) -> Option<&'static str> {
 /// Returns the expected function name given the case mode.
 /// For camelCase CSS functions, lowercase mode uses the canonical form,
 /// and uppercase mode uses the fully uppercased form.
-fn expected_name(name: &str, mode: &str) -> String {
-  if let Some(canonical) = camel_case_canonical(name) {
-    match mode {
-      "upper" => canonical.to_ascii_uppercase(),
-      _ => canonical.to_string(),
-    }
-  } else {
-    match mode {
-      "upper" => name.to_ascii_uppercase(),
-      _ => name.to_ascii_lowercase(),
-    }
+fn expected_name(name: &str, case: LetterCase) -> String {
+  if case == LetterCase::Lower
+    && let Some(canonical) = camel_case_canonical(name)
+  {
+    return canonical.to_string();
   }
+  case.apply(name)
 }
 
 /// A function name split after its first `-...-` piece, as
@@ -117,8 +112,7 @@ impl Check for FunctionNameCaseCheck {
       gale_css_parser::Syntax::Scss | gale_css_parser::Syntax::Sass | gale_css_parser::Syntax::Less
     );
 
-    // Primary option: "lower" (default) or "upper"
-    let mode = self.mode;
+    let case = self.case;
     let ignore_fns = &self.ignore_functions;
 
     let mut diags = Vec::new();
@@ -150,11 +144,8 @@ impl Check for FunctionNameCaseCheck {
         let (vendor_prefix, base_name) = split_vendor_prefix(&func_name);
 
         // Compute the expected form
-        let expected_base = expected_name(base_name, mode);
-        let expected_vendor = match mode {
-          "upper" => vendor_prefix.to_ascii_uppercase(),
-          _ => vendor_prefix.to_ascii_lowercase(),
-        };
+        let expected_base = expected_name(base_name, case);
+        let expected_vendor = case.apply(vendor_prefix);
         let expected_full = format!("{expected_vendor}{expected_base}");
 
         if func_name == expected_full {
@@ -231,7 +222,6 @@ mod tests {
       file_path: "t.css",
       source,
       syntax: Syntax::Css,
-      cache: None,
       embedded: None,
     }
   }

@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::data::{extract_functions, lookup};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -217,51 +218,6 @@ static KNOWN_SCSS_FUNCTIONS: &[&str] = &[
   "zip",
 ];
 
-/// Whether `name` is a standard CSS function.
-fn is_known_function(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  KNOWN_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
-}
-
-/// Whether `name` is a built-in SCSS function.
-fn is_known_scss_function(name: &str) -> bool {
-  let lower = name.to_ascii_lowercase();
-  KNOWN_SCSS_FUNCTIONS.binary_search(&lower.as_str()).is_ok()
-}
-
-/// Extract function names from a CSS value string.
-///
-/// Looks for patterns like `name(` and returns the function names found.
-fn extract_functions(value: &str) -> Vec<String> {
-  let mut functions = Vec::new();
-  let chars: Vec<char> = value.chars().collect();
-  let len = chars.len();
-  let mut i = 0;
-
-  while i < len {
-    // Look for `(` and collect the preceding identifier
-    if chars[i] == '(' {
-      // Walk back to find the function name
-      let end = i;
-      let mut start = i;
-      while start > 0
-        && (chars[start - 1].is_ascii_alphanumeric()
-          || chars[start - 1] == '-'
-          || chars[start - 1] == '_')
-      {
-        start -= 1;
-      }
-      if start < end {
-        let name: String = chars[start..end].iter().collect();
-        functions.push(name);
-      }
-    }
-    i += 1;
-  }
-
-  functions
-}
-
 impl Check for FunctionNoUnknownCheck {
   /// Flags function names that are neither standard CSS nor, in SCSS files, a
   /// built-in SCSS function. Vendor-prefixed names are skipped.
@@ -289,11 +245,11 @@ impl Check for FunctionNoUnknownCheck {
         if func_name.starts_with('-') || self.ignore_functions.matches(&func_name) {
           continue;
         }
-        if is_known_function(&func_name) {
+        if lookup(KNOWN_FUNCTIONS, &func_name) {
           continue;
         }
         // In SCSS mode, also allow SCSS built-in functions
-        if is_scss && is_known_scss_function(&func_name) {
+        if is_scss && lookup(KNOWN_SCSS_FUNCTIONS, &func_name) {
           continue;
         }
         diags.push(

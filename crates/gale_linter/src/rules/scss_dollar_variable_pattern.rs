@@ -46,9 +46,6 @@ pub struct ScssDollarVariablePatternCheck {
   ignore_local: bool,
   /// `ignore: ["global"]`: top-level variables are skipped.
   ignore_global: bool,
-  /// The `message` every rule accepts, which this rule words its problems
-  /// with itself.
-  custom_message: Option<String>,
 }
 
 impl ScssDollarVariablePatternCheck {
@@ -58,25 +55,15 @@ impl ScssDollarVariablePatternCheck {
   /// reports it.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let pattern = options.primary_pattern();
+    let pattern = options.primary_pattern_or(DEFAULT_PATTERN);
     let ignore = options.keywords("ignore", &["local", "global"]);
     let ignore_inside = options.keywords("ignoreInside", &["at-rule", "inside-at-rule"]);
     options.finish()?;
-    let pattern = match pattern {
-      Some(pattern) => pattern,
-      None => Pattern::compile(DEFAULT_PATTERN).expect("the default pattern compiles"),
-    };
-    let custom_message = setting
-      .secondary()
-      .and_then(|secondary| secondary.get("message"))
-      .and_then(|message| message.as_str())
-      .map(str::to_string);
     Ok(Self {
       pattern,
       ignore_inside_at_rule: !ignore_inside.is_empty(),
       ignore_local: ignore.contains(&"local"),
       ignore_global: ignore.contains(&"global"),
-      custom_message,
     })
   }
 }
@@ -84,6 +71,7 @@ impl ScssDollarVariablePatternCheck {
 impl Check for ScssDollarVariablePatternCheck {
   /// Flags `$variable` names that do not match the configured regex. Loop
   /// iterators in `@each`/`@for` are never checked, being bindings, not declarations.
+  /// A custom `message` replaces the problem's text in the runner.
   fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
@@ -94,12 +82,9 @@ impl Check for ScssDollarVariablePatternCheck {
       .walk_decls()
       .filter(|&decl| self.is_problem(decl))
       .map(|decl| {
-        let message = self
-          .custom_message
-          .clone()
-          .unwrap_or_else(|| "Expected $ variable name to match specified pattern".to_string());
         // stylelint-scss reports the variable (`word: prop`).
-        Diagnostic::new(NAME, message).span(Span::new(decl.prop_start(), decl.prop().len()))
+        Diagnostic::new(NAME, "Expected $ variable name to match specified pattern")
+          .span(Span::new(decl.prop_start(), decl.prop().len()))
       })
       .collect()
   }

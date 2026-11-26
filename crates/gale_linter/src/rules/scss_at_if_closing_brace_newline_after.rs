@@ -2,7 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::braces::scss_block_close;
+use crate::braces::{ChainHead, ChainReading, scss_chain_closes};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -55,56 +55,25 @@ impl Check for ScssAtIfClosingBraceNewlineAfterCheck {
       return vec![];
     }
 
-    let option = self.expectation;
-    let source = ctx.source;
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut diagnostics = Vec::new();
-
-    // Find `@if` occurrences and check what follows their closing `}`
-    let mut i = 0;
-    while i < len {
-      // Look for `@if` or `@else if`
-      if bytes[i] == b'@' && i + 2 < len {
-        let rest = &source[i..];
-        let is_if = rest.starts_with("@if ") || rest.starts_with("@if(");
-        let is_else_if = rest.starts_with("@else if ") || rest.starts_with("@else if(");
-
-        if is_if || is_else_if {
-          // Find the matching closing `}`
-          if let Some(close_brace) = scss_block_close(source, i) {
-            let after = close_brace + 1;
-            // Skip whitespace/spaces (not newlines) after `}`
-            let mut j = after;
-            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
-              j += 1;
-            }
-
-            // Check what follows
-            let followed_by_else = j < len && source[j..].starts_with("@else");
-
-            if option == "always-last-in-chain" && !followed_by_else {
-              // Must be followed by newline
-              if j < len && bytes[j] != b'\n' && bytes[j] != b'\r' {
-                diagnostics.push(
-                  Diagnostic::new(
-                    NAME,
-                    "Expected newline after closing brace of @if".to_string(),
-                  )
-                  .span(Span::new(close_brace, 1)),
-                );
-              }
-            }
-
-            i = after;
-            continue;
-          }
-        }
-      }
-      i += 1;
+    if self.expectation != "always-last-in-chain" {
+      return vec![];
     }
 
-    diagnostics
+    scss_chain_closes(
+      ctx.source,
+      ChainReading::IfRules,
+      &[ChainHead::If, ChainHead::ElseIf],
+    )
+    .into_iter()
+    .filter(|c| !c.else_after_blanks && !c.line_ends_after)
+    .map(|c| {
+      Diagnostic::new(
+        NAME,
+        "Expected newline after closing brace of @if".to_string(),
+      )
+      .span(Span::new(c.close, 1))
+    })
+    .collect()
   }
 }
 

@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::Diagnostic;
 
+use crate::chars::is_alnum_or_hyphen;
 use crate::lint_env::LintEnv;
 use crate::list_rules::{Entries, KeyedList, keyed_option};
 use crate::options::{InvalidOption, Setting};
@@ -100,7 +101,7 @@ fn extract_media_feature_values(params: &str) -> Vec<(String, String)> {
       }
       let name_start = i;
       // Collect feature name
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
+      while i < len && is_alnum_or_hyphen(chars[i]) {
         i += 1;
       }
       if i > name_start {

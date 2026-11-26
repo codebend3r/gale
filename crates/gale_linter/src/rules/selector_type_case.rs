@@ -3,7 +3,7 @@ use gale_css_parser::selector::postcss::{self, Kind, Visit};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Matchers, Setting};
+use crate::options::{InvalidOption, LetterCase, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_selector;
 
@@ -27,8 +27,8 @@ declare_rule! {
 
 /// `selector-type-case` as configured.
 pub struct SelectorTypeCaseCheck {
-  /// Whether type selectors must be upper case.
-  upper: bool,
+  /// The case type selectors are written in.
+  case: LetterCase,
   /// The `ignoreTypes` option.
   ignore_types: Matchers,
 }
@@ -38,13 +38,10 @@ impl SelectorTypeCaseCheck {
   /// or `/regex/` entries).  Gale reads no option as `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     let ignore_types = options.matchers("ignoreTypes");
     options.finish()?;
-    Ok(Self {
-      upper: option.unwrap_or("lower") == "upper",
-      ignore_types,
-    })
+    Ok(Self { case, ignore_types })
   }
 }
 
@@ -118,7 +115,7 @@ impl Check for SelectorTypeCaseCheck {
   /// Flags type selectors not in the configured case, reading every style
   /// rule's selector as written.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let upper = self.upper;
+    let case = self.case;
 
     let mut diags = Vec::new();
     for rule in tree
@@ -131,12 +128,7 @@ impl Check for SelectorTypeCaseCheck {
       if !starts_a_tag_name(&clean) {
         continue;
       }
-      let has_wrong_case = if upper {
-        clean.bytes().any(|b| b.is_ascii_lowercase())
-      } else {
-        clean.bytes().any(|b| b.is_ascii_uppercase())
-      };
-      if !has_wrong_case || !is_standard_syntax_selector(&clean) {
+      if !case.is_wrong(&clean) || !is_standard_syntax_selector(&clean) {
         continue;
       }
       if postcss::rule_selectors(&clean)
@@ -157,14 +149,10 @@ impl Check for SelectorTypeCaseCheck {
         {
           return;
         }
-        let expected = if upper {
-          tag.value.to_ascii_uppercase()
-        } else {
-          tag.value.to_ascii_lowercase()
-        };
-        if expected == tag.value {
+        if !case.is_wrong(&tag.value) {
           return;
         }
+        let expected = case.apply(&tag.value);
         let span = Span::new(tag.start, tag.value.len());
         diags.push(
           Diagnostic::new(

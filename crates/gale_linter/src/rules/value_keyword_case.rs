@@ -4,10 +4,21 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 use crate::chars::is_word_or_hyphen_byte;
 use crate::data::is_css_wide_keyword;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Matchers, Setting};
+use crate::options::{InvalidOption, LetterCase, Matchers, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 use crate::standard_syntax::is_standard_syntax_value;
-use crate::stylelint_version::{installed_at_least, stylelint_major_version};
+use crate::stylelint_version::stylelint_major_version;
+
+mod keywords;
+mod tokenize;
+
+use keywords::{
+  SVG_CAMEL_CASE_KEYWORDS, is_custom_ident_property, is_list_style_type_keyword,
+  is_mixed_ident_property, is_svg_camel_case_keyword, is_system_color,
+};
+use tokenize::{TokenKind, ValueToken, tokenize_value};
+
+use crate::data::is_generic_font_family;
 
 const NAME: &str = "value-keyword-case";
 
@@ -31,8 +42,8 @@ declare_rule! {
 
 /// `value-keyword-case` as configured.
 pub struct ValueKeywordCaseCheck {
-  /// Whether keywords are expected in upper case (`"upper"`).
-  expect_upper: bool,
+  /// The case keywords are written in.
+  case: LetterCase,
   /// `ignoreKeywords`: names and `/regex/` literals.
   ignore_keywords: Matchers,
   /// `ignoreProperties`, whose names match in any case.
@@ -49,636 +60,20 @@ impl ValueKeywordCaseCheck {
   /// reads no option as `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let case = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     let ignore_properties = options.strings("ignoreProperties");
     let ignore_keywords = options.strings("ignoreKeywords");
     let ignore_functions = options.strings("ignoreFunctions");
     let camel_case_svg_keywords = options.flag("camelCaseSvgKeywords");
     options.finish()?;
     Ok(Self {
-      expect_upper: case == Some("upper"),
+      case,
       ignore_keywords: Matchers::new(&ignore_keywords),
       ignore_properties: Matchers::ignoring_case(&ignore_properties),
       ignore_functions: Matchers::new(&ignore_functions),
       camel_case_svg_keywords,
     })
   }
-}
-
-// ---------------------------------------------------------------------------
-// Data tables
-// ---------------------------------------------------------------------------
-
-/// CSS2 system colors (deprecated) — used by Stylelint ≤13.
-const SYSTEM_COLORS_CSS2: &[&str] = &[
-  "ActiveBorder",
-  "ActiveCaption",
-  "AppWorkspace",
-  "Background",
-  "ButtonFace",
-  "ButtonHighlight",
-  "ButtonShadow",
-  "ButtonText",
-  "CaptionText",
-  "GrayText",
-  "Highlight",
-  "HighlightText",
-  "InactiveBorder",
-  "InactiveCaption",
-  "InactiveCaptionText",
-  "InfoBackground",
-  "InfoText",
-  "Menu",
-  "MenuText",
-  "Scrollbar",
-  "ThreeDDarkShadow",
-  "ThreeDFace",
-  "ThreeDHighlight",
-  "ThreeDLightShadow",
-  "ThreeDShadow",
-  "Window",
-  "WindowFrame",
-  "WindowText",
-];
-
-/// CSS Color Level 4 system colors — added in Stylelint 14+.
-const SYSTEM_COLORS_CSS4: &[&str] = &[
-  "AccentColor",
-  "AccentColorText",
-  "ActiveText",
-  "ButtonBorder",
-  "Canvas",
-  "CanvasText",
-  "Field",
-  "FieldText",
-  "LinkText",
-  "Mark",
-  "MarkText",
-  "SelectedItem",
-  "SelectedItemText",
-  "VisitedText",
-];
-
-/// Whether `s` is a system color, gated on the installed Stylelint's major
-/// version since CSS4 added more.
-fn is_system_color(s: &str) -> bool {
-  let v = stylelint_major_version();
-  if SYSTEM_COLORS_CSS2.iter().any(|c| c.eq_ignore_ascii_case(s)) {
-    return true;
-  }
-  if v >= 14 && SYSTEM_COLORS_CSS4.iter().any(|c| c.eq_ignore_ascii_case(s)) {
-    return true;
-  }
-  if installed_at_least(16, 12)
-    && PREFIXED_SYSTEM_COLORS
-      .iter()
-      .any(|c| c.eq_ignore_ascii_case(s))
-  {
-    return true;
-  }
-  false
-}
-
-/// Vendor-prefixed system colors, which Stylelint ignores since 16.12.
-const PREFIXED_SYSTEM_COLORS: &[&str] = &[
-  "-moz-buttondefault",
-  "-moz-buttonhoverface",
-  "-moz-buttonhovertext",
-  "-moz-cellhighlight",
-  "-moz-cellhighlighttext",
-  "-moz-combobox",
-  "-moz-comboboxtext",
-  "-moz-dialog",
-  "-moz-dialogtext",
-  "-moz-dragtargetzone",
-  "-moz-eventreerow",
-  "-moz-field",
-  "-moz-fieldtext",
-  "-moz-html-cellhighlight",
-  "-moz-html-cellhighlighttext",
-  "-moz-mac-accentdarkestshadow",
-  "-moz-mac-accentdarkshadow",
-  "-moz-mac-accentface",
-  "-moz-mac-accentlightesthighlight",
-  "-moz-mac-accentlightshadow",
-  "-moz-mac-accentregularhighlight",
-  "-moz-mac-accentregularshadow",
-  "-moz-mac-chrome-active",
-  "-moz-mac-chrome-inactive",
-  "-moz-mac-focusring",
-  "-moz-mac-menuselect",
-  "-moz-mac-menushadow",
-  "-moz-mac-menutextselect",
-  "-moz-menubarhovertext",
-  "-moz-menubartext",
-  "-moz-menuhover",
-  "-moz-menuhovertext",
-  "-moz-nativehyperlinktext",
-  "-moz-oddtreerow",
-  "-moz-win-accentcolor",
-  "-moz-win-accentcolortext",
-  "-moz-win-communicationstext",
-  "-moz-win-mediatext",
-  "-ms-hotlight",
-];
-
-/// SVG keywords that have camelCase canonical forms.
-const SVG_CAMEL_CASE_KEYWORDS: &[&str] = &[
-  "currentColor",
-  "optimizeSpeed",
-  "optimizeLegibility",
-  "optimizeQuality",
-  "crispEdges",
-  "geometricPrecision",
-  "visiblePainted",
-  "visibleFill",
-  "visibleStroke",
-  "sRGB",
-  "linearRGB",
-];
-
-/// Whether `s` is an SVG keyword that is legitimately camelCase.
-fn is_svg_camel_case_keyword(s: &str) -> bool {
-  SVG_CAMEL_CASE_KEYWORDS
-    .iter()
-    .any(|k| k.eq_ignore_ascii_case(s))
-}
-
-/// Properties whose values are entirely custom identifiers.
-const CUSTOM_IDENT_PROPERTIES: &[&str] = &[
-  "animation-name",
-  "counter-increment",
-  "counter-reset",
-  "grid-row",
-  "grid-column",
-  "grid-area",
-  "grid-row-start",
-  "grid-row-end",
-  "grid-column-start",
-  "grid-column-end",
-  "list-style-type",
-];
-
-/// Whether the property takes a `<custom-ident>`, whose case is author-chosen.
-fn is_custom_ident_property(prop: &str) -> bool {
-  CUSTOM_IDENT_PROPERTIES.contains(&prop.to_ascii_lowercase().as_str())
-}
-
-/// Properties where some positions are keywords and some are custom idents.
-const MIXED_IDENT_PROPERTIES: &[&str] = &["animation", "font", "font-family", "list-style"];
-
-/// Whether the property mixes keywords with author-chosen identifiers.
-fn is_mixed_ident_property(prop: &str) -> bool {
-  MIXED_IDENT_PROPERTIES.contains(&prop.to_ascii_lowercase().as_str())
-}
-
-/// Generic font family names (these ARE keywords in font-family/font).
-const GENERIC_FONT_FAMILIES: &[&str] = &[
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui",
-  "ui-serif",
-  "ui-sans-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "emoji",
-  "math",
-  "fangsong",
-];
-
-/// Whether `s` is a generic family keyword such as `serif`.
-fn is_generic_font_family(s: &str) -> bool {
-  let lower = s.to_ascii_lowercase();
-  GENERIC_FONT_FAMILIES.iter().any(|f| *f == lower)
-}
-
-/// Known CSS list-style-type keywords (includes predefined counter styles).
-const LIST_STYLE_TYPE_KEYWORDS: &[&str] = &[
-  "none",
-  "disc",
-  "circle",
-  "square",
-  "decimal",
-  "decimal-leading-zero",
-  "lower-roman",
-  "upper-roman",
-  "lower-greek",
-  "lower-latin",
-  "upper-latin",
-  "lower-alpha",
-  "upper-alpha",
-  "armenian",
-  "georgian",
-  "cjk-ideographic",
-  "hiragana",
-  "katakana",
-  "hiragana-iroha",
-  "katakana-iroha",
-  // CSS Counter Styles Level 3 predefined counter styles
-  "arabic-indic",
-  "bengali",
-  "cambodian",
-  "cjk-decimal",
-  "cjk-earthly-branch",
-  "cjk-heavenly-stem",
-  "devanagari",
-  "ethiopic-numeric",
-  "gujarati",
-  "gurmukhi",
-  "hebrew",
-  "japanese-formal",
-  "japanese-informal",
-  "kannada",
-  "khmer",
-  "korean-hangul-formal",
-  "korean-hanja-formal",
-  "korean-hanja-informal",
-  "lao",
-  "malayalam",
-  "mongolian",
-  "myanmar",
-  "oriya",
-  "persian",
-  "simp-chinese-formal",
-  "simp-chinese-informal",
-  "tamil",
-  "telugu",
-  "thai",
-  "tibetan",
-  "trad-chinese-formal",
-  "trad-chinese-informal",
-  "disclosure-closed",
-  "disclosure-open",
-  "ethiopic-halehame-ti-er",
-  "ethiopic-halehame-ti-et",
-  "ethiopic-halehame",
-  "hangul",
-  "hangul-consonant",
-  "somali",
-  "inherit",
-  "initial",
-  "unset",
-  "revert",
-  "revert-layer",
-];
-
-/// Whether `s` is a `list-style-type` keyword.
-fn is_list_style_type_keyword(s: &str) -> bool {
-  let lower = s.to_ascii_lowercase();
-  LIST_STYLE_TYPE_KEYWORDS.iter().any(|k| *k == lower)
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Value tokenizer
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct ValueToken {
-  text: String,
-  offset: usize,
-  kind: TokenKind,
-}
-
-#[derive(Debug, PartialEq)]
-enum TokenKind {
-  Ident,
-  Function,
-  String,
-  UrlContent,
-  Important,
-  Other,
-}
-
-/// Tokenize a CSS value string, tracking function nesting.
-fn tokenize_value(value: &str) -> Vec<ValueToken> {
-  let bytes = value.as_bytes();
-  let len = bytes.len();
-  let mut tokens = Vec::new();
-  let mut i = 0;
-  let mut func_stack: Vec<String> = Vec::new();
-
-  while i < len {
-    let b = bytes[i];
-
-    // Whitespace
-    if b.is_ascii_whitespace() {
-      i += 1;
-      continue;
-    }
-
-    // Punctuation that isn't meaningful
-    if b == b','
-      || b == b'/' && !(i + 1 < len && (bytes[i + 1] == b'*' || bytes[i + 1] == b'/'))
-      || b == b'+'
-      || b == b'*'
-      || b == b'='
-    {
-      i += 1;
-      continue;
-    }
-
-    // Opening paren without preceding ident
-    if b == b'(' {
-      func_stack.push(String::new());
-      i += 1;
-      continue;
-    }
-
-    // Closing paren
-    if b == b')' {
-      func_stack.pop();
-      i += 1;
-      continue;
-    }
-
-    // Square brackets (grid line names): `[name]` is one word to
-    // postcss-value-parser, brackets included.  With whitespace inside,
-    // the names are words of their own.
-    if b == b'[' {
-      let start = i;
-      let end = value[i..]
-        .find(|c: char| c == ']' || c.is_whitespace() || matches!(c, ',' | '(' | ')' | '/'))
-        .map(|at| i + at);
-      if let Some(end) = end.filter(|&end| bytes[end] == b']' && end > start + 1) {
-        i = end + 1;
-        tokens.push(ValueToken {
-          text: value[start..i].to_string(),
-          offset: start,
-          kind: TokenKind::Ident,
-        });
-      } else {
-        i += 1;
-      }
-      continue;
-    }
-    if b == b']' {
-      i += 1;
-      continue;
-    }
-
-    // String literal
-    if b == b'"' || b == b'\'' {
-      let quote = b;
-      let start = i;
-      i += 1;
-      while i < len && bytes[i] != quote {
-        if bytes[i] == b'\\' {
-          i += 1;
-        }
-        i += 1;
-      }
-      if i < len {
-        i += 1;
-      }
-      tokens.push(ValueToken {
-        text: value[start..i].to_string(),
-        offset: start,
-        kind: TokenKind::String,
-      });
-      continue;
-    }
-
-    // CSS comment /* ... */
-    if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
-      i += 2;
-      while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-        i += 1;
-      }
-      if i + 1 < len {
-        i += 2;
-      }
-      continue;
-    }
-
-    // SCSS/Less single-line comment.
-    // Inside parenthesised expressions (SCSS maps), PostCSS-SCSS treats
-    // `//` (double slash) as a comment, but `///` (triple slash, SassDoc)
-    // is NOT treated as a comment — identifiers after `///` remain visible
-    // to rules like value-keyword-case.
-    if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-      let is_triple = i + 2 < len && bytes[i + 2] == b'/';
-      // At top level: always skip as comment.
-      // Inside parens: skip `//` (double) as comment, but NOT `///` (triple).
-      if func_stack.is_empty() || !is_triple {
-        while i < len && bytes[i] != b'\n' {
-          i += 1;
-        }
-        continue;
-      }
-      // `///` inside parens: skip the three slashes so the remaining
-      // `//` is not re-interpreted as a double-slash comment.
-      i += 3;
-      continue;
-    }
-
-    // Hash (color or ID, or SCSS interpolation)
-    if b == b'#' {
-      i += 1;
-      if i < len && bytes[i] == b'{' {
-        let mut depth = 1;
-        i += 1;
-        while i < len && depth > 0 {
-          if bytes[i] == b'{' {
-            depth += 1;
-          } else if bytes[i] == b'}' {
-            depth -= 1;
-          }
-          i += 1;
-        }
-        continue;
-      }
-      while i < len && bytes[i].is_ascii_alphanumeric() {
-        i += 1;
-      }
-      continue;
-    }
-
-    // `!word` (`!default`, a mistyped `!import`): one word to
-    // postcss-value-parser, `!` included.  `!important` itself never gets
-    // here, since PostCSS keeps it out of the value.
-    if b == b'!' {
-      let start = i;
-      i += 1;
-      while i < len && bytes[i].is_ascii_alphanumeric() {
-        i += 1;
-      }
-      if i > start + 1 {
-        tokens.push(ValueToken {
-          text: value[start..i].to_string(),
-          offset: start,
-          kind: TokenKind::Important,
-        });
-      }
-      continue;
-    }
-
-    // Number (possibly with unit), signed or not: postcss-value-parser's
-    // `unit()` reads `-2px` as a dimension, which the rule skips.
-    let starts_number = |at: usize| {
-      bytes.get(at).is_some_and(u8::is_ascii_digit)
-        || (bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
-    };
-    if b == b'-' && starts_number(i + 1) {
-      i += 1;
-    }
-    if starts_number(i) {
-      while i < len
-        && (bytes[i].is_ascii_digit()
-          || bytes[i] == b'.'
-          || bytes[i] == b'e'
-          || bytes[i] == b'E'
-          || bytes[i] == b'+'
-          || bytes[i] == b'-'
-          || bytes[i] == b'%')
-      {
-        i += 1;
-      }
-      // Skip unit
-      while i < len && bytes[i].is_ascii_alphabetic() {
-        i += 1;
-      }
-      continue;
-    }
-
-    // SCSS variable $...
-    if b == b'$' {
-      i += 1;
-      while i < len && is_word_or_hyphen_byte(bytes[i]) {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Less variable @...
-    if b == b'@' {
-      i += 1;
-      while i < len && is_word_or_hyphen_byte(bytes[i]) {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Semicolons, colons
-    if b == b';' || b == b':' {
-      i += 1;
-      continue;
-    }
-
-    // A unicode range (`U+0400-045F`) is no word to postcss-value-parser.
-    if (b == b'u' || b == b'U')
-      && bytes.get(i + 1) == Some(&b'+')
-      && bytes
-        .get(i + 2)
-        .is_some_and(|c| c.is_ascii_hexdigit() || *c == b'?')
-    {
-      i += 2;
-      while i < len && (bytes[i].is_ascii_hexdigit() || bytes[i] == b'?' || bytes[i] == b'-') {
-        i += 1;
-      }
-      continue;
-    }
-
-    // Identifier or function name
-    if b.is_ascii_alphabetic() || b == b'-' || b == b'_' {
-      let start = i;
-      while i < len && is_word_or_hyphen_byte(bytes[i]) {
-        i += 1;
-      }
-      // A Sass module member (`map.get(`, `theme.$color`) is one word.
-      let mut module_member = false;
-      while i + 1 < len
-        && bytes[i] == b'.'
-        && (bytes[i + 1].is_ascii_alphabetic() || matches!(bytes[i + 1], b'$' | b'_' | b'-'))
-      {
-        module_member = true;
-        i += 1;
-        while i < len
-          && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_' | b'$'))
-        {
-          i += 1;
-        }
-      }
-      let text = &value[start..i];
-      if module_member && !(i < len && bytes[i] == b'(') {
-        // `ns.$var` is not standard syntax, and Stylelint skips it.
-        if !text.contains(".$") {
-          tokens.push(ValueToken {
-            text: text.to_string(),
-            offset: start,
-            kind: TokenKind::Ident,
-          });
-        }
-        continue;
-      }
-
-      // Function call
-      if i < len && bytes[i] == b'(' {
-        let func_lower = text.to_ascii_lowercase();
-        func_stack.push(func_lower.clone());
-        i += 1;
-
-        // For url(), skip content entirely
-        if func_lower == "url" {
-          let content_start = i;
-          let mut depth = 1;
-          while i < len && depth > 0 {
-            if bytes[i] == b'(' {
-              depth += 1;
-            } else if bytes[i] == b')' {
-              depth -= 1;
-            }
-            if depth > 0 {
-              i += 1;
-            }
-          }
-          tokens.push(ValueToken {
-            text: value[content_start..i].to_string(),
-            offset: content_start,
-            kind: TokenKind::UrlContent,
-          });
-          if i < len {
-            i += 1;
-          }
-          func_stack.pop();
-          continue;
-        }
-
-        tokens.push(ValueToken {
-          text: text.to_string(),
-          offset: start,
-          kind: TokenKind::Function,
-        });
-        continue;
-      }
-
-      // Regular identifier -- suppress if inside var()/attr()/counter()/counters()
-      let in_suppressed_fn = func_stack
-        .iter()
-        .any(|f| f == "var" || f == "attr" || f == "counter" || f == "counters");
-
-      tokens.push(ValueToken {
-        text: text.to_string(),
-        offset: start,
-        kind: if in_suppressed_fn {
-          TokenKind::Other
-        } else {
-          TokenKind::Ident
-        },
-      });
-      continue;
-    }
-
-    i += 1;
-  }
-
-  tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -875,7 +270,7 @@ impl Check for ValueKeywordCaseCheck {
   /// directly inside at-rules, SCSS variables and nested properties, and
   /// ones whose value the CSS parser would reject.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expect_upper = self.expect_upper;
+    let case = self.case;
     let ignore_keywords = &self.ignore_keywords;
     let ignore_properties = &self.ignore_properties;
     let ignore_functions = &self.ignore_functions;
@@ -931,7 +326,7 @@ impl Check for ValueKeywordCaseCheck {
         let abs_offset = value_abs_start + token.offset;
 
         // SVG camelCase keywords (currentColor, optimizeSpeed, crispEdges, etc.)
-        if is_svg_camel_case_keyword(text) && camel_case_svg && !expect_upper {
+        if is_svg_camel_case_keyword(text) && camel_case_svg && case == LetterCase::Lower {
           // "lower" + camelCaseSvgKeywords:true: expected = camelCase canonical
           let canonical = SVG_CAMEL_CASE_KEYWORDS
             .iter()
@@ -974,14 +369,8 @@ impl Check for ValueKeywordCaseCheck {
           continue;
         }
 
-        // Check case
-        let expected = if expect_upper {
-          text.to_ascii_uppercase()
-        } else {
-          text.to_ascii_lowercase()
-        };
-
-        if *text != expected {
+        if case.is_wrong(text) {
+          let expected = case.apply(text);
           diags.push(
             Diagnostic::new(
               NAME,

@@ -2,6 +2,7 @@ use gale_css_parser::css_tokenizer::{self, ComponentValue, Token, TokenType};
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_byte;
 use crate::data::MATH_FUNCTIONS;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
@@ -99,9 +100,7 @@ impl Check for FunctionCalcNoUnspacedOperatorCheck {
 /// and building a pattern per name.
 fn mentions_math_function(value: &str) -> bool {
   let bytes = value.as_bytes();
-  let at_word_start = |start: usize| {
-    start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
-  };
+  let at_word_start = |start: usize| start == 0 || !is_word_byte(bytes[start - 1]);
   (0..bytes.len())
     .filter(|&open| bytes[open] == b'(')
     .any(|open| {

@@ -1,9 +1,6 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::options::Options;
+use crate::rule::declare_rule;
 
 const NAME: &str = "selector-max-universal";
 
@@ -20,86 +17,46 @@ declare_rule! {
   /// Secondary options:
   /// - `ignoreAfterCombinators: [">", "+", "~", " "]` — universal selectors after
   ///   these combinators are ignored.
-  pub struct SelectorMaxUniversal => SelectorMaxUniversalCheck {
+  pub struct SelectorMaxUniversal => MaxCheck<SelectorMaxUniversal> {
     name: NAME,
     description: "Limit the number of universal selectors in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-universal` as configured.
-pub struct SelectorMaxUniversalCheck {
-  config: Config,
-}
-
-impl SelectorMaxUniversalCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`), then
-  /// `ignoreAfterCombinators`.  Gale reads no number as 1.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
-    let ignore_list = options.strings("ignoreAfterCombinators");
-    options.finish()?;
-    Ok(Self {
-      config: Config {
-        max: max
-          .and_then(serde_json::Value::as_u64)
-          .map_or(DEFAULT_MAX, |max| max as usize),
-        ignore_after_child: ignore_list.iter().any(|s| s == ">"),
-        ignore_after_next_sibling: ignore_list.iter().any(|s| s == "+"),
-        ignore_after_sibling: ignore_list.iter().any(|s| s == "~"),
-        ignore_after_descendant: ignore_list.iter().any(|s| s == " "),
-      },
-    })
-  }
-}
-
-const DEFAULT_MAX: usize = 1;
-
 /// Configuration parsed from rule options.
-struct Config {
-  max: usize,
+#[derive(Default)]
+pub struct Config {
   ignore_after_child: bool,        // ">"
   ignore_after_next_sibling: bool, // "+"
   ignore_after_sibling: bool,      // "~"
   ignore_after_descendant: bool,   // " "
 }
 
-impl Check for SelectorMaxUniversalCheck {
-  /// Flags selectors holding more `*` than allowed, checking each comma-separated
-  /// selector on its own.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let config = &self.config;
+impl MaxRule for SelectorMaxUniversal {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 1;
+  type Options = Config;
 
-    let mut diags = Vec::new();
-
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      for sel in rule.selector().split(',') {
-        let sel = sel.trim();
-        if sel.is_empty() {
-          continue;
-        }
-        let count = count_universal_selectors(sel, config);
-        if count > config.max {
-          diags.push(
-                    Diagnostic::new(
-                        NAME,
-                        format!(
-                            "Expected selector \"{sel}\" to have no more than {max} universal selector(s), found {count}",
-                            max = config.max,
-                        ),
-                    )
-                    .span(rule.span()),
-                );
-        }
-      }
+  /// Stylelint's `ignoreAfterCombinators`.
+  fn options(options: &mut Options<'_>) -> Config {
+    let ignore_list = options.strings("ignoreAfterCombinators");
+    Config {
+      ignore_after_child: ignore_list.iter().any(|s| s == ">"),
+      ignore_after_next_sibling: ignore_list.iter().any(|s| s == "+"),
+      ignore_after_sibling: ignore_list.iter().any(|s| s == "~"),
+      ignore_after_descendant: ignore_list.iter().any(|s| s == " "),
     }
+  }
 
-    diags
+  fn count(selector: &str, config: &Config) -> usize {
+    count_universal_selectors(selector, config)
+  }
+
+  fn message(selector: &str, max: usize, count: usize) -> String {
+    format!(
+      "Expected selector \"{selector}\" to have no more than {max} universal selector(s), found {count}"
+    )
   }
 }
 

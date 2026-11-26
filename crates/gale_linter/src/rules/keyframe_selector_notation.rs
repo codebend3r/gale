@@ -2,6 +2,7 @@ use gale_css_parser::postcss_tree::{AtRuleRef, NodeKind, PostcssTree};
 use gale_css_parser::selector::postcss::strip_comments;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
+use crate::chars::is_word_byte;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -171,11 +172,7 @@ fn may_need_fix(notation: Notation, selector: &str) -> bool {
     Notation::Percentage => {
       let lower = selector.to_ascii_lowercase();
       let bytes = lower.as_bytes();
-      let is_word = |i: usize| {
-        bytes
-          .get(i)
-          .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-      };
+      let is_word = |i: usize| bytes.get(i).is_some_and(|&b| is_word_byte(b));
       ["from", "to"].iter().any(|w| {
         lower
           .match_indices(w)

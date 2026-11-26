@@ -1,3 +1,4 @@
+pub mod at_name_pattern;
 pub mod autoprefixable;
 pub mod braces;
 pub mod chars;
@@ -7,12 +8,12 @@ pub mod data;
 pub mod disables;
 pub mod embedded;
 pub mod empty_lines;
-pub mod file_cache;
 pub mod hex_colors;
 pub mod js_number;
 pub mod known_rules;
 pub mod lint_env;
 pub mod list_rules;
+pub mod max_rules;
 pub mod nested_selectors;
 pub mod options;
 pub mod panic_guard;

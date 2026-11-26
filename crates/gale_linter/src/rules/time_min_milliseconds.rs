@@ -1,6 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::autoprefixable::strip_known_prefix;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -56,19 +57,10 @@ fn is_delay_property(prop: &str) -> bool {
   lower.ends_with("-delay")
 }
 
-/// `prop` without a leading `-webkit-`, `-moz-`, `-ms-` or `-o-`.
-fn strip_vendor_prefix(prop: &str) -> &str {
-  ["-webkit-", "-moz-", "-ms-", "-o-"]
-    .iter()
-    .find_map(|prefix| prop.strip_prefix(prefix))
-    .unwrap_or(prop)
-}
-
 /// Check if a property is animation/transition related.
 fn is_time_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
-  // Strip vendor prefix
-  let stripped = strip_vendor_prefix(&lower);
+  let stripped = strip_known_prefix(&lower).unwrap_or(&lower);
 
   matches!(
     stripped,
@@ -84,7 +76,7 @@ fn is_time_property(prop: &str) -> bool {
 /// Check if a property is a shorthand (transition or animation).
 fn is_shorthand_property(prop: &str) -> bool {
   let lower = prop.to_ascii_lowercase();
-  let stripped = strip_vendor_prefix(&lower);
+  let stripped = strip_known_prefix(&lower).unwrap_or(&lower);
   matches!(stripped, "transition" | "animation")
 }
 

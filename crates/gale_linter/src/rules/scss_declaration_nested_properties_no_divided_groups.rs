@@ -159,32 +159,25 @@ fn nested_prop_root(text: &str) -> Option<&str> {
 mod tests {
   use super::NAME;
   use gale_css_parser::Syntax;
-  use gale_diagnostics::SourceLineIndex;
   use serde_json::json;
 
   use super::nested_prop_root;
-  use crate::testing::{invalid_options, lint};
+  use crate::testing::{self, LineRange, invalid_options};
 
   const RULE: &str = "scss/declaration-nested-properties-no-divided-groups";
 
   /// The `(line, column, endLine, endColumn)` of each warning for `source`,
   /// all of which must be about `namespace`.
-  fn ranges(source: &str, syntax: Syntax, namespace: &str) -> Vec<(usize, usize, usize, usize)> {
-    let index = SourceLineIndex::build(source);
-    lint(RULE, json!(true), source, syntax)
-      .iter()
-      .map(|d| {
-        assert_eq!(
-          d.message,
-          format!(
-            "Expected all nested properties of \"{namespace}\" namespace to be in one nested group"
-          )
-        );
-        let (line, column) = index.offset_to_location(d.span.offset);
-        let (end_line, end_column) = index.offset_to_location(d.span.end());
-        (line, column, end_line, end_column)
-      })
-      .collect()
+  fn ranges(source: &str, syntax: Syntax, namespace: &str) -> Vec<LineRange> {
+    testing::ranges(
+      RULE,
+      json!(true),
+      source,
+      syntax,
+      &format!(
+        "Expected all nested properties of \"{namespace}\" namespace to be in one nested group"
+      ),
+    )
   }
 
   /// `(line, column)` of each `background` warning for `source`.

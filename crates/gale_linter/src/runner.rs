@@ -15,10 +15,9 @@ use gale_diagnostics::{Diagnostic, LintResult, Severity, SourceLineIndex, Span};
 
 use crate::disables::{self, DisablePolicy};
 use crate::embedded::{EmbeddedRoot, HostLanguage, lint_host};
-use crate::file_cache::FileCache;
 use crate::known_rules::{self, RuleSupport};
 use crate::lint_env::LintEnv;
-use crate::options::Setting;
+use crate::options::{DISABLE_FIX_KEY, MESSAGE_KEY, REPORT_DISABLES_KEY, Setting, URL_KEY};
 use crate::panic_guard::{self, Caught};
 use crate::pattern;
 use crate::registry::{RuleRegistry, canonical_name};
@@ -52,10 +51,10 @@ impl CommonOptions {
     };
     let flag = |key: &str| secondary.get(key).and_then(|v| v.as_bool()) == Some(true);
     Self {
-      message: text("message"),
-      url: text("url"),
-      disable_fix: flag("disableFix"),
-      report_disables: flag("reportDisables"),
+      message: text(MESSAGE_KEY),
+      url: text(URL_KEY),
+      disable_fix: flag(DISABLE_FIX_KEY),
+      report_disables: flag(REPORT_DISABLES_KEY),
     }
   }
 
@@ -382,6 +381,12 @@ impl RuleSet {
         default_severity,
         configured,
         forbids_disable,
+        never_reports: registry
+          .all()
+          .iter()
+          .filter(|rule| rule.never_reports())
+          .map(|rule| rule.name())
+          .collect(),
       },
       invalid_options,
       env,
@@ -470,11 +475,10 @@ impl RuleSet {
     // Parsed here, before any rule runs and outside their panic guards, so
     // a parser bug is one internal error on the file (see `guard_file`)
     // rather than one per rule.
-    let cache = FileCache::new(&text, syntax);
-    let tree = cache.postcss_tree();
+    let tree = PostcssTree::parse(&text, syntax);
     timer.lap("parse");
 
-    let mut run = RuleRun::new(self, file_path, &cache, embedded);
+    let mut run = RuleRun::new(self, file_path, &tree, embedded);
     run.check(&tree, timer.on());
     timer.lap("rules");
     let RuleRun {
@@ -494,7 +498,7 @@ impl RuleSet {
       &mut diagnostics,
       source,
       source_map.as_ref(),
-      &cache,
+      &tree,
       file_path,
       embedded.is_some(),
     ) {
@@ -547,12 +551,12 @@ impl RuleSet {
   /// Apply the file's configuration comments to `diagnostics`: drop the
   /// problems they disable and add the reports about the comments.
   ///
-  /// The rules linted `cache`'s text (the converted SCSS, for Sass), whose
+  /// The rules linted `tree`'s text (the converted SCSS, for Sass), whose
   /// offsets `source_map` takes back to `source` so that lines are those
   /// of the file the author wrote.  In a style sheet embedded in an
   /// HTML-like file the host applies the ranges of the whole document
   /// instead, so only the reports are added here.  The comments are found
-  /// in the statement tree the rules share, `cache`, built for that text.
+  /// in the statement tree the rules share, `tree`, parsed from that text.
   ///
   /// Returns Stylelint's `CssSyntaxError` for a comment it rejects (an
   /// `enable` with nothing disabled, say), which replaces every other
@@ -562,11 +566,11 @@ impl RuleSet {
     diagnostics: &mut Vec<Diagnostic>,
     source: &str,
     source_map: Option<&SourceMap>,
-    cache: &FileCache,
+    tree: &PostcssTree,
     file_path: &str,
     embedded: bool,
   ) -> Option<Diagnostic> {
-    let text = cache.source();
+    let text = tree.source();
     if embedded || !disables::may_have_directives(text) {
       return None;
     }
@@ -578,7 +582,7 @@ impl RuleSet {
     self.disable_policy.run(
       diagnostics,
       &line_of,
-      |collector| collector.scan_tree(&cache.postcss_tree(), cache.syntax(), 0),
+      |collector| collector.scan_tree(tree, tree.syntax(), 0),
       file_path,
     )
   }
@@ -699,8 +703,9 @@ fn guard_file(source: &str, file_path: &str, lint: impl FnOnce() -> LintResult) 
 struct RuleRun<'a> {
   set: &'a RuleSet,
   file_path: &'a str,
-  /// What the rules share for this file: its text, syntax and tree.
-  cache: &'a FileCache<'a>,
+  /// The file's statements, parsed once from its text and shared by every
+  /// rule.
+  tree: &'a PostcssTree<'a>,
   embedded: Option<&'a EmbeddedRoot>,
   /// What the rules reported.
   diagnostics: Vec<Diagnostic>,
@@ -710,17 +715,17 @@ struct RuleRun<'a> {
 }
 
 impl<'a> RuleRun<'a> {
-  /// Prepare a pass of `set` over one file, the text `cache` was built for.
+  /// Prepare a pass of `set` over one file, the text `tree` was parsed from.
   fn new(
     set: &'a RuleSet,
     file_path: &'a str,
-    cache: &'a FileCache<'a>,
+    tree: &'a PostcssTree<'a>,
     embedded: Option<&'a EmbeddedRoot>,
   ) -> Self {
     Self {
       set,
       file_path,
-      cache,
+      tree,
       embedded,
       diagnostics: Vec::new(),
       failures: Vec::new(),
@@ -731,9 +736,8 @@ impl<'a> RuleRun<'a> {
   fn context(&self) -> RuleContext<'a> {
     RuleContext {
       file_path: self.file_path,
-      source: self.cache.source(),
-      syntax: self.cache.syntax(),
-      cache: Some(self.cache),
+      source: self.tree.source(),
+      syntax: self.tree.syntax(),
       env: self.set.env,
       embedded: self.embedded,
     }
@@ -762,7 +766,7 @@ impl<'a> RuleRun<'a> {
         continue;
       };
       let started = timed.then(Instant::now);
-      let source = self.cache.source();
+      let source = self.tree.source();
       let outcome = panic_guard::catch(|| {
         debug_panic(rule.name(), source);
         check.check(tree, &context)

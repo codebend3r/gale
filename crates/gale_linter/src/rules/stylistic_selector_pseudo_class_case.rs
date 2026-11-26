@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Span};
 
 use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "@stylistic/selector-pseudo-class-case";
@@ -21,8 +21,8 @@ declare_rule! {
 
 /// `@stylistic/selector-pseudo-class-case` as configured.
 pub struct StylisticSelectorPseudoClassCaseCheck {
-  /// The primary option: `"lower"` or `"upper"`.
-  option: &'static str,
+  /// The case pseudo-class names are written in.
+  case: LetterCase,
 }
 
 impl StylisticSelectorPseudoClassCaseCheck {
@@ -30,18 +30,16 @@ impl StylisticSelectorPseudoClassCaseCheck {
   /// `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let option = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      option: option.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
 impl Check for StylisticSelectorPseudoClassCaseCheck {
   /// Flags pseudo-class names not in the configured case.
   fn check(&self, _tree: &PostcssTree, context: &RuleContext) -> Vec<Diagnostic> {
-    let option = self.option;
+    let case = self.case;
     let source = context.source;
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -114,22 +112,11 @@ impl Check for StylisticSelectorPseudoClassCaseCheck {
 
         let name = &source[name_start..name_end];
 
-        let is_wrong = match option {
-          "lower" => name.chars().any(|c| c.is_ascii_uppercase()),
-          "upper" => name.chars().any(|c| c.is_ascii_lowercase()),
-          _ => false,
-        };
-
-        if is_wrong {
-          let expected = if option == "lower" {
-            "lowercase"
-          } else {
-            "uppercase"
-          };
+        if case.is_wrong(name) {
           diagnostics.push(
             Diagnostic::new(
               NAME,
-              format!("Expected pseudo-class \":{}\" to be {}", name, expected),
+              format!("Expected pseudo-class \":{}\" to be {}", name, case.word()),
             )
             .span(Span::new(colon_pos, name_end - colon_pos)),
           );

@@ -1,10 +1,7 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
+use crate::chars::is_alnum_or_hyphen;
 use crate::data::is_legacy_pseudo_element;
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::rule::declare_rule;
 
 const NAME: &str = "selector-max-pseudo-class";
 
@@ -13,64 +10,26 @@ declare_rule! {
   ///
   /// Equivalent to Stylelint's `selector-max-pseudo-class` rule.
   /// Default maximum: 1.
-  pub struct SelectorMaxPseudoClass => SelectorMaxPseudoClassCheck {
+  pub struct SelectorMaxPseudoClass => MaxCheck<SelectorMaxPseudoClass> {
     name: NAME,
     description: "Limit the number of pseudo-classes in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-pseudo-class` as configured.
-pub struct SelectorMaxPseudoClassCheck {
-  /// The most pseudo-classes allowed.
-  max: usize,
-}
+impl MaxRule for SelectorMaxPseudoClass {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 1;
+  type Options = ();
 
-impl SelectorMaxPseudoClassCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`).
-  /// Gale reads no number as 1.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
-    options.finish()?;
-    Ok(Self {
-      max: max
-        .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_MAX, |max| max as usize),
-    })
+  fn count(selector: &str, _: &()) -> usize {
+    count_pseudo_classes(selector)
   }
-}
 
-const DEFAULT_MAX: usize = 1;
-
-impl Check for SelectorMaxPseudoClassCheck {
-  /// Flags a selector holding more pseudo-classes than allowed.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let max = self.max;
-
-    let mut diags = Vec::new();
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      for sel in rule.selector().split(',') {
-        let sel = sel.trim();
-        let count = count_pseudo_classes(sel);
-        if count > max {
-          diags.push(
-                    Diagnostic::new(
-                        NAME,
-                        format!(
-                            "Expected selector \"{sel}\" to have no more than {max} pseudo-class(es), found {count}"
-                        ),
-                    )
-                    .span(rule.span()),
-                );
-        }
-      }
-    }
-    diags
+  fn message(selector: &str, max: usize, count: usize) -> String {
+    format!(
+      "Expected selector \"{selector}\" to have no more than {max} pseudo-class(es), found {count}"
+    )
   }
 }
 
@@ -112,7 +71,7 @@ fn count_pseudo_classes(selector: &str) -> usize {
     // Skip pseudo-elements (::name)
     if i + 1 < len && chars[i] == ':' && chars[i + 1] == ':' {
       i += 2;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
+      while i < len && is_alnum_or_hyphen(chars[i]) {
         i += 1;
       }
       // Skip parenthesized argument of pseudo-element (e.g. ::slotted(...))
@@ -134,7 +93,7 @@ fn count_pseudo_classes(selector: &str) -> usize {
     if chars[i] == ':' {
       i += 1;
       let start = i;
-      while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '-') {
+      while i < len && is_alnum_or_hyphen(chars[i]) {
         i += 1;
       }
       // The four pseudo-elements CSS 2 wrote with one colon are elements,

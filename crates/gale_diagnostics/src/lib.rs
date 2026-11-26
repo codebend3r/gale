@@ -289,6 +289,29 @@ pub struct Diagnostic {
 /// `warnings`.  Build them with [`Diagnostic::invalid_option`].
 pub const INVALID_OPTION: &str = "invalidOption";
 
+/// The `rule_name` of Stylelint's `reportNeedlessDisables` reports, named
+/// after its CLI flag as Stylelint names it.
+pub const NEEDLESS_DISABLES: &str = "--report-needless-disables";
+/// The `rule_name` of Stylelint's `reportInvalidScopeDisables` reports.
+pub const INVALID_SCOPE_DISABLES: &str = "--report-invalid-scope-disables";
+/// The `rule_name` of Stylelint's `reportDescriptionlessDisables` reports.
+pub const DESCRIPTIONLESS_DISABLES: &str = "--report-descriptionless-disables";
+/// The `rule_name` of Stylelint's `reportUnscopedDisables` reports.
+pub const UNSCOPED_DISABLES: &str = "--report-unscoped-disables";
+/// The `rule_name` of the reports a rule's `reportDisables: true` secondary
+/// option asks for, named after the option as Stylelint names it.
+pub const REPORT_DISABLES: &str = "reportDisables";
+
+/// Every `rule_name` a report about a configuration comment carries (see
+/// [`Diagnostic::is_comment_problem`]).
+pub const COMMENT_PROBLEMS: [&str; 5] = [
+  NEEDLESS_DISABLES,
+  INVALID_SCOPE_DISABLES,
+  DESCRIPTIONLESS_DISABLES,
+  UNSCOPED_DISABLES,
+  REPORT_DISABLES,
+];
+
 impl Diagnostic {
   /// An invalid-option report carrying Stylelint's wording, e.g.
   /// `Invalid option value "[" for rule "selector-class-pattern"`.
@@ -308,7 +331,7 @@ impl Diagnostic {
   /// the per-rule `reportDisables`) through a separate path whose warning
   /// text does not carry the ` (rule-name)` suffix ordinary warnings get.
   pub fn is_comment_problem(&self) -> bool {
-    self.rule_name.starts_with("--report-") || self.rule_name == "reportDisables"
+    COMMENT_PROBLEMS.contains(&self.rule_name.as_str())
   }
 
   /// Whether this reports a panic gale caught (in a rule, the parser or the

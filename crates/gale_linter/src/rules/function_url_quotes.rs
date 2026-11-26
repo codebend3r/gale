@@ -2,7 +2,7 @@ use gale_css_parser::postcss_tree::PostcssTree;
 use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::chars::is_css_whitespace_byte;
+use crate::chars::{is_css_whitespace_byte, is_word_byte};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -164,7 +164,7 @@ fn contains_url_call(value: &str) -> bool {
   lower.match_indices("url(").any(|(i, _)| {
     i == 0 || {
       let before = lower.as_bytes()[i - 1];
-      !(before.is_ascii_alphanumeric() || before == b'_')
+      !is_word_byte(before)
     }
   })
 }

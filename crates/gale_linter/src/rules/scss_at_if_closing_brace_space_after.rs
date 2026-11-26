@@ -2,7 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
-use crate::braces::scss_block_close;
+use crate::braces::{ChainHead, ChainReading, scss_chain_closes};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -51,67 +51,26 @@ impl Check for ScssAtIfClosingBraceSpaceAfterCheck {
     }
 
     let option = self.expectation;
-    let source = ctx.source;
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut diagnostics = Vec::new();
-
-    let mut i = 0;
-    while i < len {
-      if bytes[i] == b'@' && i + 2 < len {
-        let rest = &source[i..];
-        let is_if = rest.starts_with("@if ") || rest.starts_with("@if(");
-        let is_else_if = rest.starts_with("@else if ") || rest.starts_with("@else if(");
-
-        if (is_if || is_else_if)
-          && let Some(close_brace) = scss_block_close(source, i)
-        {
-          let after = close_brace + 1;
-          // Count spaces after `}`
-          let mut j = after;
-          let mut space_count = 0;
-          while j < len && bytes[j] == b' ' {
-            space_count += 1;
-            j += 1;
-          }
-
-          // Check if followed by @else
-          let followed_by_else = j < len && source[j..].starts_with("@else");
-
-          if followed_by_else {
-            match option {
-              "always-intermediate" => {
-                if space_count != 1 {
-                  diagnostics.push(
-                    Diagnostic::new(
-                      NAME,
-                      "Expected single space after closing brace of @if before @else".to_string(),
-                    )
-                    .span(Span::new(close_brace, 1)),
-                  );
-                }
-              }
-              "never-intermediate" if space_count > 0 => {
-                diagnostics.push(
-                  Diagnostic::new(
-                    NAME,
-                    "Unexpected space after closing brace of @if before @else".to_string(),
-                  )
-                  .span(Span::new(close_brace, 1)),
-                );
-              }
-              _ => {}
-            }
-          }
-
-          i = after;
-          continue;
+    scss_chain_closes(
+      ctx.source,
+      ChainReading::IfRules,
+      &[ChainHead::If, ChainHead::ElseIf],
+    )
+    .into_iter()
+    .filter(|c| c.followed_by_else)
+    .filter_map(|c| {
+      let message = match option {
+        "always-intermediate" if c.spaces != 1 => {
+          "Expected single space after closing brace of @if before @else"
         }
-      }
-      i += 1;
-    }
-
-    diagnostics
+        "never-intermediate" if c.spaces > 0 => {
+          "Unexpected space after closing brace of @if before @else"
+        }
+        _ => return None,
+      };
+      Some(Diagnostic::new(NAME, message.to_string()).span(Span::new(c.close, 1)))
+    })
+    .collect()
   }
 }
 

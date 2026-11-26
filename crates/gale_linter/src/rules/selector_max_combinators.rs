@@ -1,9 +1,5 @@
-use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::Diagnostic;
-
-use crate::lint_env::LintEnv;
-use crate::options::{Accept, InvalidOption, Setting};
-use crate::rule::{Check, RuleContext, declare_rule};
+use crate::max_rules::{MaxCheck, MaxRule};
+use crate::rule::declare_rule;
 
 const NAME: &str = "selector-max-combinators";
 
@@ -12,64 +8,26 @@ declare_rule! {
   ///
   /// Equivalent to Stylelint's `selector-max-combinators` rule.
   /// Default maximum: 2. Counts combinators (>, +, ~, space) between compound selectors.
-  pub struct SelectorMaxCombinators => SelectorMaxCombinatorsCheck {
+  pub struct SelectorMaxCombinators => MaxCheck<SelectorMaxCombinators> {
     name: NAME,
     description: "Limit the number of combinators in a selector",
     default_severity: Warning,
   }
 }
 
-/// `selector-max-combinators` as configured.
-pub struct SelectorMaxCombinatorsCheck {
-  /// The most combinators allowed.
-  max: usize,
-}
+impl MaxRule for SelectorMaxCombinators {
+  const NAME: &'static str = NAME;
+  const DEFAULT: usize = 2;
+  type Options = ();
 
-impl SelectorMaxCombinatorsCheck {
-  /// Stylelint's options: a whole number of zero or more (tested by a
-  /// function, so a problem reads `Invalid option`).
-  /// Gale reads no number as 2.
-  fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
-    let mut options = setting.options();
-    let max = options.primary_test(|value| Accept::NonNegativeInteger.accepts(value));
-    options.finish()?;
-    Ok(Self {
-      max: max
-        .and_then(serde_json::Value::as_u64)
-        .map_or(DEFAULT_MAX, |max| max as usize),
-    })
+  fn count(selector: &str, _: &()) -> usize {
+    count_combinators(selector)
   }
-}
 
-const DEFAULT_MAX: usize = 2;
-
-impl Check for SelectorMaxCombinatorsCheck {
-  /// Flags a selector holding more combinators than allowed.
-  ///
-  /// The selector is read as PostCSS stores it, without its comments, and
-  /// rules that are not standard syntax are skipped, as in Stylelint.
-  fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let max = self.max;
-
-    let mut diags = Vec::new();
-    for rule in tree.walk_rules().filter(|rule| rule.is_standard_syntax()) {
-      for sel in rule.selector().split(',') {
-        let sel = sel.trim();
-        let count = count_combinators(sel);
-        if count > max {
-          diags.push(
-          Diagnostic::new(
-            NAME,
-            format!(
-              "Expected selector \"{sel}\" to have no more than {max} combinator(s), found {count}"
-            ),
-          )
-          .span(rule.span()),
-        );
-        }
-      }
-    }
-    diags
+  fn message(selector: &str, max: usize, count: usize) -> String {
+    format!(
+      "Expected selector \"{selector}\" to have no more than {max} combinator(s), found {count}"
+    )
   }
 }
 

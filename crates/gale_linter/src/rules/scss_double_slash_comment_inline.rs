@@ -5,6 +5,7 @@ use gale_diagnostics::{Diagnostic, Span};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::whitespace::has_non_whitespace_before_on_line;
 
 const NAME: &str = "scss/double-slash-comment-inline";
 
@@ -148,21 +149,6 @@ impl Check for ScssDoubleSlashCommentInlineCheck {
 
     diagnostics
   }
-}
-
-/// Returns `true` if there is non-whitespace content before `pos` on the same line.
-fn has_non_whitespace_before_on_line(source: &str, pos: usize) -> bool {
-  let bytes = source.as_bytes();
-  let mut j = pos;
-  while j > 0 {
-    j -= 1;
-    match bytes[j] {
-      b'\n' | b'\r' => return false,
-      b' ' | b'\t' => continue,
-      _ => return true,
-    }
-  }
-  false
 }
 
 #[cfg(test)]

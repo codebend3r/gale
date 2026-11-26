@@ -3,7 +3,7 @@ use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::chars::is_word_or_hyphen_byte;
 use crate::lint_env::LintEnv;
-use crate::options::{InvalidOption, Setting};
+use crate::options::{InvalidOption, LetterCase, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
 
 const NAME: &str = "@stylistic/unit-case";
@@ -21,8 +21,8 @@ declare_rule! {
 
 /// `@stylistic/unit-case` as configured.
 pub struct StylisticUnitCaseCheck {
-  /// The primary option: `"lower"` or `"upper"`.
-  expected_case: &'static str,
+  /// The case units are written in.
+  case: LetterCase,
 }
 
 impl StylisticUnitCaseCheck {
@@ -30,11 +30,9 @@ impl StylisticUnitCaseCheck {
   /// `"lower"`.
   fn from_setting(setting: &Setting, _env: &LintEnv) -> Result<Self, Vec<InvalidOption>> {
     let mut options = setting.options();
-    let expected_case = options.primary_one_of(&["lower", "upper"]);
+    let case = options.primary_case();
     options.finish()?;
-    Ok(Self {
-      expected_case: expected_case.unwrap_or("lower"),
-    })
+    Ok(Self { case })
   }
 }
 
@@ -42,27 +40,23 @@ impl Check for StylisticUnitCaseCheck {
   /// Flags units in declaration values, as written, whose case does not
   /// match the option, at the unit, with a fix that recases it.
   fn check(&self, tree: &PostcssTree, _ctx: &RuleContext) -> Vec<Diagnostic> {
-    let expected_case = self.expected_case;
+    let case = self.case;
     let mut diags = Vec::new();
     for decl in tree.walk_decls() {
       let value = decl.raw_value();
       let fixable = decl.value_fixable();
       let base = decl.value_start();
       for (unit_offset, unit) in find_units(&value) {
-        let fixed = match expected_case {
-          "lower" => unit.to_ascii_lowercase(),
-          "upper" => unit.to_ascii_uppercase(),
-          _ => continue,
-        };
-        if fixed == unit {
+        if !case.is_wrong(&unit) {
           continue;
         }
+        let fixed = case.apply(&unit);
         let span = Span::new(base + unit_offset, unit.len());
         let mut diag =
           Diagnostic::new(NAME, format!("Expected \"{unit}\" to be \"{fixed}\"")).span(span);
         if fixable {
           diag = diag.fix(Fix::new(
-            format!("Convert to {expected_case}case"),
+            format!("Convert to {}", case.word()),
             vec![Edit::new(span, &fixed)],
           ));
         }

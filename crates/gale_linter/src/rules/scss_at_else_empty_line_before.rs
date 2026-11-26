@@ -2,6 +2,7 @@ use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Span};
 
+use crate::empty_lines::has_empty_line_before;
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -128,43 +129,6 @@ impl Check for ScssAtElseEmptyLineBeforeCheck {
 
     diagnostics
   }
-}
-
-/// Check if there is an empty line (a line containing only whitespace)
-/// between the previous content and the position at `offset`.
-fn has_empty_line_before(source: &str, offset: usize) -> bool {
-  let before = &source[..offset];
-
-  // Walk backwards through newlines. We need to find at least one blank line.
-  // A blank line means two consecutive newlines with only whitespace between them.
-  let mut pos = before.len();
-
-  // Skip whitespace (spaces/tabs) immediately before @else
-  while pos > 0 && matches!(before.as_bytes()[pos - 1], b' ' | b'\t') {
-    pos -= 1;
-  }
-
-  // Skip the first newline (the line break right before @else's line)
-  if pos > 0 && before.as_bytes()[pos - 1] == b'\n' {
-    pos -= 1;
-    if pos > 0 && before.as_bytes()[pos - 1] == b'\r' {
-      pos -= 1;
-    }
-  } else {
-    // @else is on the same line as previous content or at start of file
-    return false;
-  }
-
-  // Now skip whitespace again
-  while pos > 0 && matches!(before.as_bytes()[pos - 1], b' ' | b'\t') {
-    pos -= 1;
-  }
-
-  // If we hit another newline (or start of file), that means there was an empty line
-  if pos == 0 {
-    return true;
-  }
-  before.as_bytes()[pos - 1] == b'\n'
 }
 
 #[cfg(test)]

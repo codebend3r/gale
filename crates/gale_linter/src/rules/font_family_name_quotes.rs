@@ -3,7 +3,7 @@ use gale_css_parser::value_parser::{self, NodeKind, ValueNode};
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
 use crate::chars::is_word_or_hyphen;
-use crate::data::CSS_WIDE_KEYWORDS;
+use crate::data::{CSS_WIDE_KEYWORDS, is_generic_font_family};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -58,23 +58,6 @@ impl FontFamilyNameQuotesCheck {
     })
   }
 }
-
-/// Stylelint's `fontFamilyKeywords`, without the basic keywords.
-const FONT_FAMILY_KEYWORDS: &[&str] = &[
-  "serif",
-  "sans-serif",
-  "cursive",
-  "fantasy",
-  "monospace",
-  "system-ui",
-  "ui-serif",
-  "ui-sans-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "emoji",
-  "math",
-  "fangsong",
-];
 
 /// Stylelint's `fontSizeKeywords`, without the basic keywords.
 const FONT_SIZE_KEYWORDS: &[&str] = &[
@@ -172,7 +155,7 @@ const LENGTH_UNITS: &[&str] = &[
 
 /// Whether `lower` is one of Stylelint's `fontFamilyKeywords`.
 fn is_font_family_keyword(lower: &str) -> bool {
-  CSS_WIDE_KEYWORDS.contains(&lower) || FONT_FAMILY_KEYWORDS.contains(&lower)
+  CSS_WIDE_KEYWORDS.contains(&lower) || is_generic_font_family(lower)
 }
 
 /// Whether `word` is one of Stylelint's `fontSizeKeywords`.

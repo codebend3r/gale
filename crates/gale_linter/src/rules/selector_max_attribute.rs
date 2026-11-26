@@ -52,7 +52,11 @@ impl SelectorMaxAttributeCheck {
     let ignore = options.matchers("ignoreAttributes");
     options.finish()?;
     Ok(Self {
-      max: max.and_then(serde_json::Value::as_u64),
+      // A whole float such as `5.0` passes the test; read it as that number
+      // rather than as no maximum.
+      max: max
+        .and_then(serde_json::Value::as_f64)
+        .map(|max| max as u64),
       ignore,
     })
   }
@@ -373,5 +377,12 @@ mod tests {
       invalid_options(NAME, serde_json::json!([1, { "ignore": ["x"] }])),
       ["Invalid option name \"ignore\" for rule \"selector-max-attribute\""]
     );
+  }
+
+  #[test]
+  fn a_whole_float_maximum_is_that_maximum() {
+    let messages = lint("[a][b][c] {}", serde_json::json!(2.0), true);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(lint("[a][b] {}", serde_json::json!(2.0), true).is_empty());
   }
 }

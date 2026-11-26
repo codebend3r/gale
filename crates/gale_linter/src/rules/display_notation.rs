@@ -1,7 +1,7 @@
 use gale_css_parser::postcss_tree::PostcssTree;
 use gale_diagnostics::{Diagnostic, Edit, Fix, Span};
 
-use crate::chars::{is_css_whitespace_byte, is_ident_char, is_ident_start};
+use crate::chars::{is_css_whitespace_byte, is_ident_char, is_ident_start, is_word_byte};
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
@@ -180,11 +180,7 @@ impl Check for DisplayNotationCheck {
 fn mentions_display_keyword(value: &str) -> bool {
   let lower = value.to_ascii_lowercase();
   let bytes = lower.as_bytes();
-  let is_word = |i: usize| {
-    bytes
-      .get(i)
-      .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-  };
+  let is_word = |i: usize| bytes.get(i).is_some_and(|&b| is_word_byte(b));
   NOTATION_KEYWORDS.iter().any(|word| {
     lower
       .match_indices(word)
