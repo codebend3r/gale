@@ -40,13 +40,10 @@ fn skips_unary_minus() {
   assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
 }
 #[test]
-fn skips_calc_operators() {
+fn reports_calc_operators_like_upstream() {
   let rule = configured(&ScssOperatorNoUnspaced, None);
   let node = make_node("width", "calc(100%+20px)");
-  assert!(
-    rule.check_source(&scss_ctx_with_source(&node)).is_empty(),
-    "calc operators should be skipped"
-  );
+  assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 2);
 }
 #[test]
 fn skips_font_shorthand_slash() {
@@ -169,10 +166,11 @@ fn flags_negative_variable_as_subtraction() {
 #[test]
 fn still_reports_unspaced_subtraction() {
   let rule = configured(&ScssOperatorNoUnspaced, None);
+  // Upstream reads `$a-$b` as one hyphenated word, not a subtraction.
   let node = make_node("width", "$a-$b");
-  assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
+  assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   let node = make_node("width", "$a -$b");
-  assert!(!rule.check_source(&scss_ctx_with_source(&node)).is_empty());
+  assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 1);
 }
 #[test]
 fn still_reports_unspaced_operators_in_shorthand() {
@@ -187,10 +185,10 @@ fn skips_slash_alpha_separator_in_rgb() {
   assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
 }
 #[test]
-fn skips_slash_alpha_separator_in_rgb_unspaced() {
+fn reports_unspaced_slash_alpha_separator_like_upstream() {
   let rule = configured(&ScssOperatorNoUnspaced, None);
   let node = make_node("color", "rgb(255 0 0/0.5)");
-  assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
+  assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 2);
 }
 #[test]
 fn skips_slash_alpha_separator_in_rgba() {
@@ -332,7 +330,7 @@ fn checks_declarations_below_box_drawing_comments() {
 }
 
 #[test]
-fn reports_each_operator_once_where_written() {
+fn reports_each_unspaced_side_where_written() {
   let source = "a {\n  width: 1px+2px;\n  $b: 1+2;\n  margin: #{$x+1}px;\n  #{$p+1}-x: 1;\n}\n";
   let rule = configured(&ScssOperatorNoUnspaced, None);
   let found: Vec<usize> = rule
@@ -343,7 +341,16 @@ fn reports_each_operator_once_where_written() {
   let plus = |line: &str| source.find(line).unwrap() + line.find('+').unwrap();
   assert_eq!(
     found,
-    [plus("1px+2px"), plus("1+2"), plus("$x+1"), plus("$p+1"),]
+    [
+      plus("1px+2px"),
+      plus("1px+2px"),
+      plus("1+2"),
+      plus("1+2"),
+      plus("$x+1"),
+      plus("$x+1"),
+      plus("$p+1"),
+      plus("$p+1"),
+    ]
   );
 }
 
@@ -353,7 +360,7 @@ fn skips_private_variable_names() {
   let node = make_node("padding-inline-end", "$-icon-size");
   assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
   let node = make_node("width", "$a-$-b");
-  assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 1);
+  assert!(rule.check_source(&scss_ctx_with_source(&node)).is_empty());
 }
 
 #[test]
@@ -366,14 +373,8 @@ fn skips_keywords_glued_to_variables() {
       "{value}"
     );
   }
-  for value in ["$a-$b", "1-$b"] {
-    let node = make_node("width", value);
-    assert_eq!(
-      rule.check_source(&scss_ctx_with_source(&node)).len(),
-      1,
-      "{value}"
-    );
-  }
+  let node = make_node("width", "1-$b");
+  assert_eq!(rule.check_source(&scss_ctx_with_source(&node)).len(), 2);
 }
 
 #[test]

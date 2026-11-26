@@ -1,19 +1,22 @@
 use gale_css_parser::Syntax;
 use gale_css_parser::postcss_tree::PostcssTree;
-use gale_diagnostics::{Diagnostic, Span};
+use gale_diagnostics::Diagnostic;
 
 use crate::lint_env::LintEnv;
 use crate::options::{InvalidOption, Setting};
 use crate::rule::{Check, RuleContext, declare_rule};
+use crate::sass_operators::{is_whitespace, operator_sites};
 
 const NAME: &str = "scss/operator-no-newline-after";
 
 declare_rule! {
-  /// Disallow newlines after SCSS arithmetic/string operators (+, -, *, /, %).
+  /// Disallow a line break right after a Sass operator (`10px +\n  1`).
   ///
-  /// Equivalent to Stylelint's `scss/operator-no-newline-after`.
-  /// Flags lines where the last meaningful character before EOL is an operator
-  /// that appears to be binary (not unary).
+  /// Equivalent to stylelint-scss's `scss/operator-no-newline-after`, which
+  /// runs `operator-no-unspaced`'s `calculationOperatorSpaceChecker` over the
+  /// stylesheet and reports each operator with only whitespace, a line break
+  /// among it, after it.  Operators are told from signs, hyphens and CSS
+  /// slashes by [`find_operators`](crate::sass_operators::find_operators).
   pub struct ScssOperatorNoNewlineAfter => ScssOperatorNoNewlineAfterCheck {
     name: NAME,
     description: "Disallow newlines after Sass operators",
@@ -35,149 +38,30 @@ impl ScssOperatorNoNewlineAfterCheck {
   }
 }
 
-// `%` is excluded because it's indistinguishable from CSS percentage values (e.g., `63%`).
-const OPERATORS: &[char] = &['+', '-', '*', '/'];
-
 impl Check for ScssOperatorNoNewlineAfterCheck {
-  /// Flags a line ending in a binary arithmetic operator, scanning line by line
-  /// and tracking whether the position is inside a block comment.
-  fn check(&self, _tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
+  /// Reports each operator followed by whitespace with a line break in it
+  /// (upstream's `checkNewlineBefore`, misnamed in `operator-no-newline-after`).
+  fn check(&self, tree: &PostcssTree, ctx: &RuleContext) -> Vec<Diagnostic> {
     if !matches!(ctx.syntax, Syntax::Scss | Syntax::Sass) {
       return vec![];
     }
-
-    let source = ctx.source;
-    let mut diags = Vec::new();
-    let mut byte_offset: usize = 0;
-    let mut in_block_comment = false;
-
-    for raw_line in source.split('\n') {
-      // Strip \r for Windows line endings.
-      let line = raw_line.trim_end_matches('\r');
-
-      // Blank out `/* ... */` comment text (which may span lines) so an
-      // operator inside prose is never reported. Masking with spaces keeps
-      // byte offsets identical to the original line.
-      let masked = mask_block_comments(line, &mut in_block_comment);
-
-      // Strip trailing // comment.
-      let content = strip_line_comment(&masked);
-
-      // Strip trailing whitespace from the effective content.
-      let content_trimmed = content.trim_end();
-
-      if !content_trimmed.is_empty() {
-        let last_char = content_trimmed.chars().last().unwrap();
-        if OPERATORS.contains(&last_char) {
-          // Check if it looks binary: preceded by a closing character
-          // or identifier/digit character (not another operator or space).
-          let before_op = &content_trimmed[..content_trimmed.len() - last_char.len_utf8()];
-          let before_trimmed = before_op.trim_end();
-          if let Some(prev) = before_trimmed.chars().last()
-            && is_value_end_char(prev)
-            && !is_css_color_channel_separator(last_char, before_trimmed)
-          {
-            let op_byte_in_line = content_trimmed.len() - 1;
-            diags.push(
-              Diagnostic::new(NAME, format!("Unexpected newline after \"{}\"", last_char))
-                .span(Span::new(byte_offset + op_byte_in_line, 1)),
-            );
-          }
-        }
-      }
-
-      // Advance past this line + '\n'.
-      byte_offset += raw_line.len() + 1;
-    }
-
-    diags
+    operator_sites(tree)
+      .into_iter()
+      .filter(|site| {
+        site
+          .after()
+          .iter()
+          .take_while(|&&b| is_whitespace(b))
+          .any(|&b| b == b'\n')
+      })
+      .map(|site| {
+        let symbol = site.symbol();
+        Diagnostic::new(NAME, format!("Unexpected newline after \"{symbol}\""))
+          .message_args([symbol])
+          .span(site.span())
+      })
+      .collect()
   }
-}
-
-/// Replace every byte inside a `/* ... */` comment with a space, carrying the
-/// open/closed state across lines. Length and byte offsets are preserved.
-fn mask_block_comments(line: &str, in_block: &mut bool) -> String {
-  let bytes = line.as_bytes();
-  let mut out = bytes.to_vec();
-  let mut i = 0;
-  while i < bytes.len() {
-    if *in_block {
-      if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-        out[i] = b' ';
-        out[i + 1] = b' ';
-        *in_block = false;
-        i += 2;
-      } else {
-        if !bytes[i].is_ascii_whitespace() {
-          out[i] = b' ';
-        }
-        i += 1;
-      }
-    } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-      out[i] = b' ';
-      out[i + 1] = b' ';
-      *in_block = true;
-      i += 2;
-    } else {
-      i += 1;
-    }
-  }
-  // Only ASCII bytes were replaced, so this is still valid UTF-8.
-  String::from_utf8(out).unwrap_or_else(|_| line.to_string())
-}
-
-/// Strip a `//` line comment from the end of a line.
-fn strip_line_comment(line: &str) -> &str {
-  // Find `//` that isn't inside a string (simplified: find the first `//`
-  // not preceded by a URL-like `:`).
-  let bytes = line.as_bytes();
-  let mut i = 0;
-  let mut in_single = false;
-  let mut in_double = false;
-  while i < bytes.len().saturating_sub(1) {
-    match bytes[i] {
-      b'\'' if !in_double => in_single = !in_single,
-      b'"' if !in_single => in_double = !in_double,
-      b'/' if !in_single && !in_double && bytes[i + 1] == b'/' => {
-        return &line[..i];
-      }
-      _ => {}
-    }
-    i += 1;
-  }
-  line
-}
-
-/// Returns true if `c` is a character that typically ends a value expression
-/// (meaning the following operator is binary, not unary).
-fn is_value_end_char(c: char) -> bool {
-  c.is_alphanumeric() || matches!(c, ')' | ']' | '"' | '\'' | '_' | '%')
-}
-
-/// Returns true if the `/` operator at end of a line is a CSS Color Level 4
-/// channel separator (e.g. `rgb(from ... r g b /`), not a SCSS division operator.
-///
-/// The pattern: operator is `/`, no SCSS variable (`$`) in the preceding content,
-/// and the last "word" before the operator is a single lowercase letter (a CSS
-/// color channel identifier like `r`, `g`, `b`, `a`, `h`, `s`, `l`).
-fn is_css_color_channel_separator(op: char, before_trimmed: &str) -> bool {
-  if op != '/' {
-    return false;
-  }
-  // If the line contains a SCSS variable, it's arithmetic context.
-  if before_trimmed.contains('$') {
-    return false;
-  }
-  // Check if the last word is a single lowercase letter (CSS color channel).
-  let last_word = before_trimmed
-    .split_ascii_whitespace()
-    .next_back()
-    .unwrap_or("");
-  last_word.len() == 1
-    && last_word
-      .chars()
-      .next()
-      .is_some_and(|c| c.is_ascii_lowercase())
 }
 
 #[cfg(test)]
